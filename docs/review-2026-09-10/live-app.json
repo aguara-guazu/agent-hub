@@ -1,0 +1,29 @@
+{
+  "servers": [
+    {
+      "slug": "escalidrau",
+      "tools": 21,
+      "error": ""
+    }
+  ],
+  "clients": [
+    {
+      "kind": "claude_code",
+      "synced": true,
+      "servers": 1,
+      "drift": false
+    },
+    {
+      "kind": "codex_cli",
+      "synced": true,
+      "servers": 1,
+      "drift": false
+    },
+    {
+      "kind": "kiro",
+      "synced": true,
+      "servers": 1,
+      "drift": false
+    }
+  ]
+}

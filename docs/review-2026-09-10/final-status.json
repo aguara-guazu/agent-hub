@@ -1,0 +1,25 @@
+{
+  "appOpen": true,
+  "clients": [
+    {
+      "cli": "claude_code",
+      "synchronized": true,
+      "servers": 1
+    },
+    {
+      "cli": "codex_cli",
+      "synchronized": true,
+      "servers": 1
+    },
+    {
+      "cli": "kiro",
+      "synchronized": true,
+      "servers": 1
+    }
+  ],
+  "normalStartup": true,
+  "temporaryDebuggerClosed": true,
+  "previousServicesExitedCleanly": true,
+  "quitMs": 923,
+  "backup": "/Users/luciano/Library/Application Support/Agent Hub Backups/2026-09-10T19-34-55-453Z"
+}

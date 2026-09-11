@@ -1,0 +1,10 @@
+[
+  {
+    "check": "preload_error",
+    "message": "Cannot use import statement outside a module"
+  },
+  {
+    "check": "desktop_bridge",
+    "type": "undefined"
+  }
+]

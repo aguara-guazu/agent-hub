@@ -1,0 +1,7 @@
+{
+  "check": "codex_gemini_shared_root",
+  "codexPolicy": "on",
+  "geminiPolicy": "off",
+  "sameRoot": true,
+  "codexSkillReadable": false
+}

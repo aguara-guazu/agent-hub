@@ -1,0 +1,109 @@
+/* Piezas propias de las pantallas de gestión: catálogo, skills, máquinas,
+ *  personas y auditoría. Lo compartido vive en tokens.css y app.css.
+ */
+
+/* --- acciones de fila ----------------------------------------------------- */
+
+.actions { display: flex; gap: var(--sp-2); align-items: center; justify-content: flex-end; }
+
+/* Las acciones de fila aparecen al pasar por encima. En una tabla de 40 filas,
+   200 botones siempre visibles compiten con los datos. Se mantienen accesibles:
+   el foco de teclado las vuelve visibles igual. */
+@media (hover: hover) {
+  table.table tbody .actions .btn { opacity: 0.45; transition: opacity var(--dur-fast) var(--ease); }
+  table.table tbody tr:hover .actions .btn,
+  table.table tbody .actions .btn:focus-visible { opacity: 1; }
+}
+
+.link-button {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent-text);
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-button:hover { color: var(--accent-hover); }
+
+/* --- chips ---------------------------------------------------------------- */
+
+.chip-list { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  font-size: var(--fs-xxs);
+  white-space: nowrap;
+}
+.chip-remove {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--text-faint);
+  cursor: pointer;
+  line-height: 1;
+}
+.chip-remove:hover { color: var(--off-text); }
+
+/* --- listas de herramientas y agentes -------------------------------------- */
+
+.tool-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.tool-list li { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fs-sm); }
+.quarantine-reason { color: var(--warn-text); font-size: var(--fs-xs); }
+
+.agent-list { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.agent {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--fs-xxs);
+  line-height: 1.35;
+}
+
+/* --- vista previa y secretos ----------------------------------------------- */
+
+.preview {
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow: auto;
+}
+.preview.nameMismatch { border-color: var(--off-border); background: var(--off-weak); }
+
+.secrets-section { display: flex; flex-direction: column; gap: var(--sp-2); }
+.secret-preview { font-family: var(--mono); font-size: var(--fs-xs); color: var(--text-muted); }
+
+/* El token del daemon se muestra una sola vez: tiene que gritar "copiame ahora". */
+.token {
+  display: block;
+  padding: var(--sp-3);
+  border: 1px dashed var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-weak);
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  word-break: break-all;
+  user-select: all;
+}

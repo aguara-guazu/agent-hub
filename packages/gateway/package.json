@@ -1,0 +1,22 @@
+{
+  "name": "@agenthub/gateway",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "bin": { "agenthub-gateway": "./dist/gateway-cli.js" },
+  "exports": {
+    ".": "./dist/index.js",
+    "./headless": "./dist/headless.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agenthub/shared": "0.2.0",
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "devDependencies": { "@agenthub/testdata": "0.2.0" }
+}

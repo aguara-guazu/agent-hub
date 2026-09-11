@@ -1,0 +1,708 @@
+/* Composición de la consola: marco, navegación, encabezados, tablas y avisos.
+ *
+ *  Los colores, medidas y tiempos salen de tokens.css. Acá sólo se compone.
+ *  Los nombres de clase son contrato con el marcado: no renombrar sin tocar el TSX.
+ */
+
+/* =========================================================================
+   Marco
+   ========================================================================= */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  height: 100%;
+  background: var(--bg);
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.content {
+  flex: 1;
+  overflow: auto;
+  scroll-behavior: smooth;
+  /* Bloque contenedor de todo lo posicionado en absoluto dentro de una página, en
+     particular los textos para lectores de pantalla (`.sr-only`, `caption`). Sin
+     esto se anclan al viewport, escapan del recorte de `.main` y estiran el
+     documento entero hasta donde quede el último: la ventana pasa a tener scroll
+     propio y aparece un hueco vacío debajo de la consola. */
+  position: relative;
+}
+
+/* En pantallas angostas la barra lateral colapsa a sólo iconos. La navegación
+   no se esconde detrás de un menú: en una consola se salta de sección todo el
+   tiempo y un menú desplegable agrega un click a cada salto. */
+@media (max-width: 940px) {
+  .app-shell { grid-template-columns: 56px minmax(0, 1fr); }
+  .sidebar { padding-inline: var(--sp-2); }
+  .sidebar-brand span,
+  .sidebar-foot,
+  .nav-link .nav-text,
+  .nav-link .badge { display: none; }
+  .nav-link { justify-content: center; padding-inline: 0; }
+}
+
+/* =========================================================================
+   Barra lateral
+   ========================================================================= */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-3) var(--sp-3) var(--sp-4);
+  background: var(--rail);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-5);
+  min-width: 0;
+}
+.sidebar-brand .brand-mark {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(150deg, var(--accent), var(--accent-hover));
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.sidebar-brand .brand-mark svg { width: 15px; height: 15px; }
+.sidebar-brand span:not(.brand-mark) { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.sidebar-brand strong {
+  font-size: var(--fs-md);
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  color: var(--text);
+}
+.sidebar-brand .brand-sub {
+  font-size: var(--fs-xxs);
+  letter-spacing: 0.03em;
+  color: var(--text-faint);
+}
+
+.nav { display: flex; flex-direction: column; gap: 1px; }
+.nav-section {
+  padding: var(--sp-4) var(--sp-2) var(--sp-2);
+  font-size: var(--fs-xxs);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 31px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  text-decoration: none;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.nav-link:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
+.nav-link svg { width: 15px; height: 15px; flex: none; opacity: 0.7; }
+.nav-link .nav-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nav-link.active {
+  background: var(--accent-weak);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.nav-link.active svg { opacity: 1; }
+/* Riel de 2 px pegado al borde: marca la sección aunque el fondo cambie. */
+.nav-link.active::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--sp-3) * -1);
+  inset-block: 7px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding: var(--sp-4) var(--sp-2) 0;
+  border-top: 1px solid var(--border-soft);
+  font-size: var(--fs-xxs);
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+/* =========================================================================
+   Barra superior
+   ========================================================================= */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  height: var(--topbar-h);
+  flex: none;
+  padding: 0 var(--sp-6);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-user { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.topbar-user .avatar {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--accent-weak);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-text);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  text-transform: uppercase;
+}
+.topbar-email {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 30ch;
+}
+
+/* =========================================================================
+   Página
+   ========================================================================= */
+
+.page {
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-6) var(--sp-12);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+/* La matriz no se centra ni se limita: es una cuadrícula y cada píxel de ancho
+   es una columna de agente que no hay que ir a buscar con scroll. */
+.matrix-page {
+  max-width: none;
+  padding: var(--sp-5) var(--sp-6) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  /* Llena el alto de `.content` para que la página no scrollee: el único bloque
+     que scrollea es la cuadrícula (`.matrix-wrap`, con flex: 1). Así el
+     encabezado de agentes y la columna de recurso quedan pegajosos siempre, y la
+     leyenda queda a la vista abajo. `min-height: 0` deja que la cuadrícula se
+     achique en vez de empujar el fondo fuera de la pantalla. */
+  height: 100%;
+  min-height: 0;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+.page-title {
+  font-size: var(--fs-2xl);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin: 0 0 3px;
+}
+.page-subtitle {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  max-width: 82ch;
+  margin: 0;
+}
+.page-actions { display: flex; gap: var(--sp-2); flex: none; }
+
+.page-section {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+}
+
+.page-toolbar,
+.toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.page-toolbar .field,
+.toolbar .field { min-width: 170px; }
+
+.subsection { display: flex; flex-direction: column; gap: var(--sp-3); }
+.subsection-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.subsection-title { font-size: var(--fs-lg); font-weight: 620; letter-spacing: -0.012em; }
+
+.tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  align-self: flex-start;
+}
+.tab {
+  height: 27px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.tab:hover { color: var(--text); }
+.tab-active {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
+}
+
+/* Franja de métricas: da el estado de un vistazo sin leer la tabla entera. */
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.stat { display: flex; flex-direction: column; gap: 2px; padding: var(--sp-3) var(--sp-4); background: var(--surface); }
+.stat-value { font-size: var(--fs-xl); font-weight: 650; letter-spacing: -0.02em; line-height: 1.15; }
+.stat-label {
+  font-size: var(--fs-xxs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+.stat-hint { font-size: var(--fs-xs); color: var(--text-muted); }
+.stat-value.is-on { color: var(--on-text); }
+.stat-value.is-off { color: var(--off-text); }
+.stat-value.is-warn { color: var(--warn-text); }
+
+/* =========================================================================
+   Tablas
+   ========================================================================= */
+
+.table-wrap { overflow-x: auto; }
+
+table.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--fs-sm);
+}
+table.table caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+table.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 8px var(--sp-4);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: var(--fs-xxs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+table.table tbody td {
+  padding: 9px var(--sp-4);
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+table.table tbody td.wrap { white-space: normal; }
+table.table tbody tr:last-child td { border-bottom: 0; }
+table.table tbody tr { transition: background var(--dur-fast) var(--ease); }
+table.table tbody tr:hover td { background: var(--surface-2); }
+table.table tbody tr.row-denied td { background: var(--off-weak); }
+
+.cell-stack { display: flex; flex-direction: column; gap: 1px; line-height: 1.35; }
+.cell-stack > :first-child { color: var(--text); font-weight: 550; }
+.cell-stack > :not(:first-child) { font-size: var(--fs-xs); color: var(--text-faint); }
+
+.detail {
+  padding: var(--sp-4);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.detail-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); font-weight: 600; }
+.detail-row { display: flex; gap: var(--sp-2); padding: 2px 0; font-size: var(--fs-sm); }
+.detail-json {
+  margin: 0;
+  padding: var(--sp-3);
+  background: var(--surface-inset);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+  overflow: auto;
+  max-height: 260px;
+}
+
+/* =========================================================================
+   Avisos, modales y toasts
+   ========================================================================= */
+
+.callout {
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+.callout svg { width: 15px; height: 15px; flex: none; margin-top: 2px; }
+.callout-warning {
+  border-color: var(--warn-border);
+  border-left-color: var(--warn);
+  background: var(--warn-weak);
+  color: var(--warn-text);
+}
+.callout-error {
+  border-color: var(--off-border);
+  border-left-color: var(--off);
+  background: var(--off-weak);
+  color: var(--off-text);
+}
+.callout-info,
+.matrix-warning {
+  border-color: var(--accent-border);
+  border-left-color: var(--accent);
+  background: var(--accent-weak);
+  color: var(--accent-text);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-6);
+  background: rgba(16, 24, 40, 0.45);
+  backdrop-filter: blur(2px);
+  animation: fade var(--dur) var(--ease);
+}
+.modal {
+  width: min(680px, 100%);
+  max-height: min(86vh, 900px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  animation: pop var(--dur) var(--ease);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border);
+}
+.modal-title { font-size: var(--fs-lg); font-weight: 620; letter-spacing: -0.012em; }
+.modal-body {
+  padding: var(--sp-5);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.toast-stack {
+  position: fixed;
+  right: var(--sp-5);
+  bottom: var(--sp-5);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-width: 400px;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  animation: slide-in var(--dur) var(--ease);
+}
+.toast svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
+.toast-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.toast-message { font-weight: 550; }
+.toast-detail { font-size: var(--fs-xs); opacity: 0.85; word-break: break-word; }
+.toast-close {
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  line-height: 1;
+}
+.toast-close:hover { opacity: 1; }
+.toast-error { border-color: var(--off-border); background: var(--off-weak); color: var(--off-text); }
+.toast-success { border-color: var(--on-border); background: var(--on-weak); color: var(--on-text); }
+.toast-info { border-color: var(--accent-border); background: var(--accent-weak); color: var(--accent-text); }
+
+@keyframes fade { from { opacity: 0; } }
+@keyframes pop { from { opacity: 0; transform: translateY(6px) scale(0.99); } }
+@keyframes slide-in { from { opacity: 0; transform: translateX(14px); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+/* =========================================================================
+   Carga y error
+   ========================================================================= */
+
+.spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+  flex: none;
+}
+.loading-block,
+.loading-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-10);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.loading-page { min-height: 60vh; }
+
+.skeleton {
+  border-radius: var(--radius-xs);
+  background: linear-gradient(90deg, var(--surface-3) 25%, var(--surface-2) 50%, var(--surface-3) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-10) var(--sp-6);
+  text-align: center;
+  color: var(--off-text);
+  font-size: var(--fs-sm);
+}
+.error-state svg { width: 26px; height: 26px; }
+
+.placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-12);
+  text-align: center;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+
+/* =========================================================================
+   Login
+   ========================================================================= */
+
+.login-page {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  padding: var(--sp-6);
+  background:
+    radial-gradient(1000px 480px at 50% -8%, var(--accent-weak), transparent 62%),
+    var(--bg);
+}
+.login-card {
+  width: min(380px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.login-brand { display: flex; align-items: center; gap: var(--sp-2); }
+.login-brand .brand-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: var(--radius);
+  background: linear-gradient(150deg, var(--accent), var(--accent-hover));
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.login-brand .brand-mark svg { width: 17px; height: 17px; }
+/* El selector tiene que distinguir el envoltorio del subtitulo: si el gris se
+   aplica al envoltorio, el nombre de la marca lo hereda y queda deslavado. */
+.login-brand > span:not(.brand-mark) { display: flex; flex-direction: column; line-height: 1.25; }
+.login-brand strong { font-size: var(--fs-lg); font-weight: 650; letter-spacing: -0.015em; color: var(--text); }
+.login-brand > span:not(.brand-mark) > span { font-size: var(--fs-xs); color: var(--text-faint); }
+.login-form { display: flex; flex-direction: column; gap: var(--sp-3); }
+.login-form .btn { width: 100%; height: 36px; }
+.login-error {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--off-border);
+  border-radius: var(--radius-sm);
+  background: var(--off-weak);
+  color: var(--off-text);
+  font-size: var(--fs-sm);
+}
+.login-hint {
+  padding: var(--sp-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.login-hint code { color: var(--text-secondary); }
+
+/* Rastro de sección en la barra superior. */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.crumbs .sep { color: var(--text-faint); }
+.crumbs strong { color: var(--text); font-weight: 600; }
+
+/* =========================================================================
+   Raíz de página
+   ========================================================================= */
+
+/* Las pantallas usan `.section` como elemento raíz (es lo que ya montaba el
+   marcado). Sólo la que cuelga directo de `.content` es la raíz de la página, y
+   es la que lleva el respiro y el ancho máximo; las `.section` anidadas siguen
+   siendo un simple apilado vertical. */
+.content > .section {
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-6) var(--sp-12);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+/* La barra de filtros y la tabla que la sigue se leen como una sola pieza: sin
+   esto quedan dos bloques sueltos flotando sobre el fondo. La regla es por
+   descendencia, no por hijo directo, para que tambien alcance a las tablas de
+   las subsecciones (los squads dentro de Personas, por ejemplo). */
+.content > .section .toolbar {
+  border: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  margin-bottom: -1px;
+  box-shadow: var(--shadow-xs);
+}
+.content > .section .toolbar + .table-wrap,
+.content > .section .toolbar + .loading-block,
+.content > .section .toolbar + .empty,
+.content > .section .toolbar + .error-state {
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+.content > .section .table-wrap,
+.content > .section > .loading-block,
+.content > .section > .empty,
+.content > .section > .error-state {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+
+/* Las pestañas de auditoría separan dos bloques; el de abajo ya es tarjeta. */
+.content > .section > .tabs + .page-section { margin-top: 0; }
+
+/* El buscador es el control principal de cada barra: ocupa el espacio libre en
+   vez de quedar en un ancho fijo que corta el texto a los 20 caracteres. */
+.toolbar > .field:first-child,
+.page-toolbar > .field:first-child { flex: 1 1 280px; }
+.toolbar > .field:first-child input,
+.page-toolbar > .field:first-child input { width: 100%; }

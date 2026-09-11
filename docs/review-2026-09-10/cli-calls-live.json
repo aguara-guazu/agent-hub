@@ -1,0 +1,17 @@
+[
+  {
+    "cli": "claude_code",
+    "synchronized": true,
+    "readCalls": 1
+  },
+  {
+    "cli": "codex_cli",
+    "synchronized": true,
+    "readCalls": 1
+  },
+  {
+    "cli": "kiro",
+    "synchronized": true,
+    "readCalls": 1
+  }
+]

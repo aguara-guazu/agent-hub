@@ -1,0 +1,146 @@
+{
+  "date": "2026-09-10T19:29:28.486Z",
+  "checks": [
+    {
+      "check": "real_upstream_probe",
+      "tools": 21
+    },
+    {
+      "check": "gateway_initial_read",
+      "cli": "claude_code",
+      "tools": 21,
+      "isError": false
+    },
+    {
+      "check": "gateway_initial_read",
+      "cli": "codex_cli",
+      "tools": 21,
+      "isError": false
+    },
+    {
+      "check": "gateway_initial_read",
+      "cli": "kiro",
+      "tools": 21,
+      "isError": false
+    },
+    {
+      "check": "codex_real_tool_call",
+      "tools": 21,
+      "isError": false,
+      "contentTypes": [
+        "text"
+      ]
+    },
+    {
+      "check": "same_session_toggle",
+      "cli": "claude_code",
+      "state": "off",
+      "diskServers": 0,
+      "isError": true
+    },
+    {
+      "check": "same_session_toggle",
+      "cli": "codex_cli",
+      "state": "off",
+      "diskServers": 0,
+      "isError": true
+    },
+    {
+      "check": "same_session_toggle",
+      "cli": "kiro",
+      "state": "off",
+      "diskServers": 0,
+      "isError": true
+    },
+    {
+      "check": "codex_same_thread_toggle",
+      "state": "off",
+      "isError": true
+    },
+    {
+      "check": "same_session_toggle",
+      "cli": "claude_code",
+      "state": "on",
+      "diskServers": 1,
+      "isError": false
+    },
+    {
+      "check": "same_session_toggle",
+      "cli": "codex_cli",
+      "state": "on",
+      "diskServers": 1,
+      "isError": false
+    },
+    {
+      "check": "same_session_toggle",
+      "cli": "kiro",
+      "state": "on",
+      "diskServers": 1,
+      "isError": false
+    },
+    {
+      "check": "codex_same_thread_toggle",
+      "state": "on",
+      "isError": false
+    },
+    {
+      "check": "same_session_toggle",
+      "cli": "claude_code",
+      "state": "off",
+      "diskServers": 0,
+      "isError": true
+    },
+    {
+      "check": "same_session_toggle",
+      "cli": "codex_cli",
+      "state": "off",
+      "diskServers": 0,
+      "isError": true
+    },
+    {
+      "check": "same_session_toggle",
+      "cli": "kiro",
+      "state": "off",
+      "diskServers": 0,
+      "isError": true
+    },
+    {
+      "check": "codex_same_thread_toggle",
+      "state": "off",
+      "isError": true
+    },
+    {
+      "check": "fresh_session_off",
+      "tools": 0,
+      "isError": true
+    },
+    {
+      "check": "revocation_after_prior_snapshot_update",
+      "diskServers": 0,
+      "isError": true,
+      "returnedUpstreamStyle": false
+    },
+    {
+      "check": "skill_off_in_codex_only",
+      "claudeStillEnabled": true,
+      "claudeReadable": true,
+      "canonicalExists": true
+    },
+    {
+      "check": "new_cli_after_enrollment",
+      "detected": [
+        "claude_code",
+        "codex_cli",
+        "gemini_cli",
+        "kiro"
+      ],
+      "registered": [
+        "claude_code",
+        "codex_cli",
+        "gemini_cli",
+        "kiro"
+      ],
+      "configWritten": true
+    }
+  ]
+}

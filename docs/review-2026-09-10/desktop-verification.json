@@ -1,0 +1,66 @@
+{
+  "checks": [
+    {
+      "check": "sandboxed_preload_bridge",
+      "value": true
+    },
+    {
+      "check": "three_clients_detected_and_synchronized",
+      "value": true
+    },
+    {
+      "check": "create_and_probe_from_ui",
+      "value": 21
+    },
+    {
+      "check": "global_off_from_ui",
+      "value": true
+    },
+    {
+      "check": "global_on_from_ui",
+      "value": true
+    },
+    {
+      "check": "skill_created_and_distributed",
+      "value": true
+    },
+    {
+      "check": "new_cli_detected_while_running",
+      "value": true
+    },
+    {
+      "check": "route_clients",
+      "value": true
+    },
+    {
+      "check": "route_activity",
+      "value": true
+    },
+    {
+      "check": "route_settings",
+      "value": true
+    },
+    {
+      "check": "autostart_readable",
+      "value": true
+    },
+    {
+      "check": "restart_preserves_catalog_and_session",
+      "value": true
+    },
+    {
+      "check": "window_close_keeps_service_running",
+      "value": 4
+    },
+    {
+      "check": "quit_flushes_latest_off_to_disk",
+      "value": true
+    }
+  ],
+  "scratch": "/var/folders/lt/6p_w1cdj40q95m_jswxhfmy40000gn/T/agenthub-desktop-verification-BEalBM",
+  "corePids": [
+    34915,
+    34997
+  ],
+  "verifyFinalOff": true
+}

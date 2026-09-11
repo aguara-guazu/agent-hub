@@ -1,0 +1,471 @@
+/* La matriz de exposición.
+ *
+ *  Es la pantalla central y la más densa: decenas de recursos por varios agentes
+ *  a la vez. Tres decisiones sostienen el resto:
+ *
+ *  1. Cada estado tiene ICONO propio además de color. Distinguir "apagado propio"
+ *     de "apagado heredado" no puede depender del tono de un rojo.
+ *  2. La celda se parte en dos renglones: arriba la DECISIÓN del hub, abajo la
+ *     PROPAGACIÓN real hacia el CLI. Son cosas distintas y la interfaz no las mezcla.
+ *  3. Encabezado de columna y columna de recurso pegajosos: pasados los 15 recursos
+ *     ya no se ve de qué agente es la columna que estás tocando.
+ */
+
+/* =========================================================================
+   Selector de nivel de escritura
+   ========================================================================= */
+
+/* El error más caro de esta pantalla es escribir en el nivel equivocado, así que
+   el selector es un bloque con color propio, no un control más de la barra. */
+.matrix-scope {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  background: var(--accent-weak);
+}
+.matrix-scope-head { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.matrix-scope-label { font-size: var(--fs-sm); color: var(--accent-text); }
+.matrix-scope-current { font-weight: 650; }
+.matrix-scope-hint { font-size: var(--fs-xs); color: var(--accent-text); opacity: 0.82; }
+.matrix-scope-options {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.scope-option {
+  height: 26px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.scope-option:hover { background: var(--surface-3); color: var(--text); }
+.scope-option[aria-pressed='true'],
+.scope-option.active {
+  background: var(--accent);
+  color: #fff;
+}
+.matrix-scope-extra { display: flex; align-items: flex-end; gap: var(--sp-4); flex-wrap: wrap; }
+.matrix-scope-extra .field { flex: 1 1 260px; }
+.matrix-scope-extra .field input { background: var(--surface); }
+
+/* =========================================================================
+   Barra de filtros
+   ========================================================================= */
+
+.matrix-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.matrix-toolbar .field { min-width: 148px; }
+.matrix-toolbar-grow { flex: 1 1 260px; }
+.matrix-toolbar-actions { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+.matrix-count { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
+
+/* =========================================================================
+   Cuadrícula
+   ========================================================================= */
+
+/* La tabla es el único bloque de la página que scrollea. Toma el alto que dejan
+   libre los controles de arriba y la leyenda de abajo (ver `.matrix-page` en
+   app.css); no se calcula con un número fijo porque lo que hay arriba cambia de
+   alto: el selector de nivel con o sin motivo, el aviso de celdas sin aplicar, la
+   barra de acción masiva, los filtros envueltos en pantallas angostas. Con un
+   `max-height` adivinado quedaban dos scrolls anidados —la matriz y la página— y
+   la rueda, al llegar al fondo de la tabla, empujaba el encabezado pegajoso fuera
+   de la pantalla. */
+.matrix-wrap {
+  /* Cada celda lleva un `.sr-only` con el estado de propagación. Este es su
+     bloque contenedor: así scrollean con la tabla en vez de anclarse fuera de
+     ella y sumarle a la ventana un scroll fantasma del alto de toda la matriz. */
+  position: relative;
+  flex: 1 1 auto;
+  /* Piso: encabezado más un par de filas. Si los controles no dejan ni eso (una
+     ventana muy baja), recién ahí scrollea la página, y la tabla sigue usable. */
+  min-height: 200px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+table.matrix-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--fs-sm);
+}
+
+.matrix-sticky-left { position: sticky; left: 0; }
+
+table.matrix-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: var(--sp-3);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: bottom;
+  font-weight: 600;
+}
+table.matrix-table thead th.matrix-sticky-left { z-index: 4; }
+table.matrix-table thead th.matrix-col-pick { width: 34px; padding-right: 0; left: 0; }
+table.matrix-table thead th.matrix-col-resource {
+  min-width: 260px;
+  max-width: 380px;
+  left: 34px;
+  border-right: 1px solid var(--border);
+}
+table.matrix-table thead th:not(.matrix-sticky-left) {
+  min-width: 186px;
+  border-left: 1px solid var(--border-soft);
+}
+
+.matrix-agent { display: flex; flex-direction: column; gap: 3px; line-height: 1.3; }
+.matrix-agent-cli { font-size: var(--fs-md); font-weight: 650; letter-spacing: -0.01em; color: var(--text); }
+.matrix-agent-host { font-family: var(--mono); font-size: var(--fs-xxs); color: var(--text-faint); }
+.matrix-agent-flags { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* --- filas --------------------------------------------------------------- */
+
+table.matrix-table tbody td {
+  padding: 5px var(--sp-3);
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+  background: var(--surface);
+}
+table.matrix-table tbody td.matrix-col-pick { width: 34px; padding-right: 0; left: 0; z-index: 1; }
+table.matrix-table tbody td.matrix-col-resource {
+  left: 34px;
+  z-index: 1;
+  border-right: 1px solid var(--border);
+}
+table.matrix-table tbody td.matrix-cell { border-left: 1px solid var(--border-soft); }
+
+table.matrix-table tbody tr:hover > td { background: var(--surface-2); }
+
+/* La fila del server ancla su grupo de tools. */
+tr.matrix-row-server > td { background: var(--surface-2); }
+tr.matrix-row-server:hover > td { background: var(--surface-3); }
+tr.matrix-row-selected > td,
+tr.matrix-row-selected:hover > td { background: var(--accent-weak); }
+tr.matrix-row-recalc > td { opacity: 0.62; transition: opacity var(--dur) var(--ease); }
+
+.matrix-resource { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.matrix-chevron {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.matrix-chevron:hover { background: var(--surface-3); color: var(--text); }
+.matrix-chevron svg { width: 11px; height: 11px; transition: transform var(--dur-fast) var(--ease); }
+.matrix-chevron[aria-expanded='false'] svg { transform: rotate(-90deg); }
+.matrix-chevron-spacer { width: 18px; flex: none; }
+
+.matrix-resource-name { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.matrix-resource-label {
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+tr.matrix-row-server .matrix-resource-label { font-weight: 650; }
+tr.matrix-row-tool .matrix-resource-label { font-weight: 500; color: var(--text-secondary); }
+.matrix-resource-slug {
+  font-family: var(--mono);
+  font-size: var(--fs-xxs);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* `.matrix-check` se usa en dos lugares distintos: como la casilla de cada fila y
+   como la etiqueta con casilla del selector de nivel. Se estiliza por elemento
+   para que la regla de la casilla no le imponga 14 px de ancho a la etiqueta. */
+input.matrix-check { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+label.matrix-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: none;
+  padding-bottom: 7px;
+  font-size: var(--fs-sm);
+  color: var(--accent-text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+label.matrix-check input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+label.matrix-check:has(input:disabled) { color: var(--text-faint); cursor: not-allowed; }
+
+/* =========================================================================
+   Celda
+   ========================================================================= */
+
+.matrix-cell { padding: 4px var(--sp-2) !important; }
+.cell-box { display: flex; flex-direction: column; gap: 2px; }
+.cell-pending { opacity: 0.55; }
+
+.cell-empty {
+  display: block;
+  padding: 4px 8px;
+  font-size: var(--fs-xxs);
+  color: var(--text-faint);
+}
+
+/* Renglón 1: la decisión del hub. */
+.cell-toggle,
+.cell-static {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: left;
+  color: var(--text-muted);
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+.cell-toggle { cursor: pointer; }
+.cell-toggle:hover { box-shadow: var(--shadow-xs); filter: brightness(0.985); }
+.cell-toggle:active { transform: translateY(0.5px); }
+.cell-static { cursor: not-allowed; }
+
+.cell-icon { display: inline-grid; place-items: center; width: 13px; height: 13px; flex: none; }
+.cell-icon svg { width: 13px; height: 13px; }
+.cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- estados: color + relleno + estilo de borde -------------------------- */
+
+.cell-on-own {
+  background: var(--on-weak);
+  border-color: var(--on-border);
+  color: var(--on-text);
+}
+/* Heredado: mismo color, borde punteado y peso menor. La diferencia se lee sin
+   tener que comparar dos verdes uno al lado del otro. */
+.cell-on-inherited {
+  background: color-mix(in srgb, var(--on-weak) 50%, transparent);
+  border-color: var(--on-border);
+  border-style: dashed;
+  color: var(--on-text);
+  font-weight: 550;
+}
+
+.cell-off-own {
+  background: var(--off-weak);
+  border-color: var(--off-border);
+  color: var(--off-text);
+}
+.cell-off-inherited {
+  background: color-mix(in srgb, var(--off-weak) 50%, transparent);
+  border-color: var(--off-border);
+  border-style: dashed;
+  color: var(--off-text);
+  font-weight: 550;
+}
+/* Prendido porque es tuyo y no lo apagaste: es el estado normal de casi todo, así
+   que se pinta lo más callado posible. Un ON explícito tiene que destacarse contra
+   esto, no confundirse con esto. */
+.cell-on-default {
+  background: transparent;
+  border-color: var(--border-soft);
+  border-style: dotted;
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+/* En cuarentena: rayado diagonal. Se ve de lejos que no es una celda accionable, y
+   es el único estado que ningún toggle puede cambiar. */
+.cell-quarantined {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 4px,
+    var(--surface-3) 4px,
+    var(--surface-3) 5px
+  );
+  border-color: var(--border-soft);
+  color: var(--text-faint);
+  font-weight: 500;
+}
+.cell-quarantined .cell-text { text-decoration: line-through; text-decoration-thickness: 1px; }
+
+.cell-none {
+  border-color: var(--border-soft);
+  border-style: dotted;
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+/* Renglón 2: lo que el CLI está mostrando de verdad. Más tenue a propósito:
+   es contexto sobre la propagación, no la decisión. */
+.cell-prop {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 1px 7px;
+  border: 0;
+  background: none;
+  font-size: var(--fs-xxs);
+  line-height: 1.35;
+  text-align: left;
+  color: var(--text-faint);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.cell-prop:hover { background: var(--surface-3); color: var(--text-secondary); }
+.cell-prop .cell-icon { width: 10px; height: 10px; }
+.cell-prop .cell-icon svg { width: 10px; height: 10px; }
+.cell-prop-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cell-prop-applied_live { color: var(--on-text); opacity: 0.9; }
+/* El estado que la mayoría de las consolas oculta: el hub ya denegó, pero el CLI
+   sigue mostrando la herramienta. Se muestra en ámbar y con peso. */
+.cell-prop-applied_stale_list { color: var(--warn-text); font-weight: 600; }
+.cell-prop-pending_restart { color: var(--warn-text); }
+.cell-prop-pending_sync { color: var(--text-muted); }
+.cell-prop-unknown { color: var(--text-faint); }
+
+/* =========================================================================
+   Leyenda y acción masiva
+   ========================================================================= */
+
+.matrix-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.matrix-legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.matrix-legend-item .cell-icon { width: 12px; height: 12px; }
+.matrix-legend-item .cell-icon svg { width: 12px; height: 12px; }
+.matrix-legend > :last-child { margin-left: auto; color: var(--text-faint); }
+
+.matrix-bulkbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--accent-border);
+  background: var(--accent-weak);
+  color: var(--accent-text);
+  font-size: var(--fs-sm);
+  animation: slide-up var(--dur) var(--ease);
+}
+@keyframes slide-up { from { transform: translateY(100%); opacity: 0; } }
+
+/* =========================================================================
+   Explicación de una celda
+   ========================================================================= */
+
+.explain-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.explain-resource { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.explain-resource strong { font-size: var(--fs-sm); font-weight: 620; }
+.explain-resource .mono { font-size: var(--fs-xxs); color: var(--text-faint); }
+
+.explain-chain { display: flex; flex-direction: column; }
+.explain-step {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+.explain-step + .explain-step { border-top: 1px dashed var(--border-soft); }
+.explain-step-level {
+  min-width: 74px;
+  font-size: var(--fs-xxs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+}
+.explain-step-idle { opacity: 0.7; }
+.explain-step-decided { color: var(--text); font-weight: 620; }
+.explain-step-decided .explain-step-level { color: var(--accent-text); }
+
+.explain-gate {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-sm);
+  background: var(--warn-weak);
+  color: var(--warn-text);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.explain-note {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+}
+
+/* =========================================================================
+   Reducción de ruido
+   ========================================================================= */
+
+/* El renglón de propagación sólo aporta cuando hay algo que propagar. En una celda
+   en cuarentena, o en una que nadie tocó y cuyo cliente nunca se conectó, "sin
+   datos" es una línea repetida en cada fila que no dice nada. Se oculta
+   visualmente; el texto para lectores de pantalla sigue en el `.sr-only`. */
+td.matrix-cell[data-state='quarantined'] .cell-prop,
+td.matrix-cell[data-state='on_default'][data-propagation='unknown'] .cell-prop,
+td.matrix-cell[data-state='none'][data-propagation='unknown'] .cell-prop {
+  display: none;
+}
+
+/* Densidad: la matriz se lee de arriba abajo comparando filas, y cada píxel de
+   alto de fila es una fila menos en pantalla. */
+table.matrix-table tbody td { padding-block: 3px; }
+.cell-toggle,
+.cell-static { padding-block: 3px; }
+
+/* La columna de recurso no debe crecer para llenar la tabla: el ancho sobrante
+   es más útil en las columnas de agente. */
+table.matrix-table thead th.matrix-col-resource { width: 300px; }

@@ -1,0 +1,87 @@
+[
+  {
+    "check": "preload_error",
+    "message": "Cannot use import statement outside a module"
+  },
+  {
+    "check": "desktop_sso",
+    "authenticated": true,
+    "bridge": "undefined"
+  },
+  {
+    "check": "desktop_create_server",
+    "saved": true
+  },
+  {
+    "check": "catalog_actions",
+    "buttons": [
+      {
+        "text": "Cerrar sesión",
+        "title": "",
+        "aria": null
+      },
+      {
+        "text": "Nuevo MCP server",
+        "title": "",
+        "aria": null
+      },
+      {
+        "text": "0",
+        "title": "",
+        "aria": null
+      },
+      {
+        "text": "Sondear",
+        "title": "Conecta al server real y lista sus herramientas",
+        "aria": null
+      },
+      {
+        "text": "Editar",
+        "title": "",
+        "aria": null
+      },
+      {
+        "text": "Eliminar",
+        "title": "",
+        "aria": null
+      },
+      {
+        "text": "×",
+        "title": "",
+        "aria": "Cerrar aviso"
+      }
+    ]
+  },
+  {
+    "check": "desktop_probe_escalidrau",
+    "tools": 21
+  },
+  {
+    "check": "desktop_create_skill",
+    "saved": true
+  },
+  {
+    "check": "desktop_route",
+    "route": "matrix",
+    "heading": "Matriz de exposición",
+    "error": false
+  },
+  {
+    "check": "desktop_route",
+    "route": "machines",
+    "heading": "Máquinas",
+    "error": false
+  },
+  {
+    "check": "desktop_route",
+    "route": "users",
+    "heading": "Personas",
+    "error": false
+  },
+  {
+    "check": "desktop_route",
+    "route": "audit",
+    "heading": "Auditoría",
+    "error": false
+  }
+]

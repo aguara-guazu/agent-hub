@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "types": ["node"]
+  },
+  "references": [
+    { "path": "../packages/shared" },
+    { "path": "../packages/gateway" },
+    { "path": "../packages/daemon" },
+    { "path": "../packages/core" }
+  ],
+  "include": ["src/**/*.ts"]
+}

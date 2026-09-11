@@ -1,0 +1,23 @@
+{
+  "name": "@agenthub/daemon",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "bin": { "agenthub": "./dist/cli.js" },
+  "exports": {
+    ".": "./dist/index.js",
+    "./cli": "./dist/cli.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "start": "tsx src/cli.ts run",
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agenthub/gateway": "0.2.0",
+    "@agenthub/shared": "0.2.0",
+    "@iarna/toml": "2.2.5"
+  }
+}

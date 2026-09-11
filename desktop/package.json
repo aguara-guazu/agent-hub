@@ -1,0 +1,23 @@
+{
+  "name": "@agenthub/desktop",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Aplicación Electron local de Agent Hub",
+  "main": "dist/entry.js",
+  "scripts": {
+    "build": "tsc -b && node scripts/build-preload.mjs",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run src",
+    "dev": "electron dist/entry.js",
+    "package": "node dist/packager.js",
+    "package:darwin": "node dist/packager.js darwin",
+    "package:win32": "node dist/packager.js win32",
+    "package:linux": "node dist/packager.js linux"
+  },
+  "dependencies": {
+    "@agenthub/core": "0.2.0",
+    "@agenthub/daemon": "0.2.0",
+    "@agenthub/gateway": "0.2.0"
+  }
+}
