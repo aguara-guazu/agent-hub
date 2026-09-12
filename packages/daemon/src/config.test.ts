@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { packagedAppRoot, resolveGatewayLaunch } from './config.js'
+import { APPIMAGE_BOOTSTRAP, packagedAppRoot, resolveGatewayLaunch } from './config.js'
 
 const base = {
+  appImagePath: null,
   execPath: '/Applications/Agent Hub.app/Contents/MacOS/Agent Hub',
   devEntry: '/repo/desktop/dist/entry.js',
   cliEntry: '/repo/packages/daemon/dist/cli.js',
@@ -25,6 +26,17 @@ describe('cómo lanza un CLI el puente stdio', () => {
   it('dentro de Electron en desarrollo usa el entry.js del repositorio', () => {
     const launch = resolveGatewayLaunch({ ...base, electron: true, packagedAppRoot: null, execPath: '/repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron' })
     expect(launch.args).toEqual(['/repo/desktop/dist/entry.js', '--agenthub-headless'])
+    expect(launch.env).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
+  })
+
+  it('dentro de un AppImage apunta al archivo .AppImage y resuelve entry.js en tiempo de ejecución', () => {
+    const launch = resolveGatewayLaunch({ ...base, electron: true, appImagePath: '/home/ana/Apps/AgentHub-x64.AppImage', packagedAppRoot: '/tmp/.mount_agentXYZ/resources/app', execPath: '/tmp/.mount_agentXYZ/agent-hub' })
+    // El punto de montaje cambia en cada ejecución: no puede quedar en la configuración del CLI.
+    expect(launch.command).toBe('/home/ana/Apps/AgentHub-x64.AppImage')
+    expect(launch.args[0]).toBe('-e')
+    expect(launch.args[1]).toBe(APPIMAGE_BOOTSTRAP)
+    expect(launch.args.slice(2)).toEqual(['--', '--agenthub-headless'])
+    expect(JSON.stringify(launch)).not.toContain('.mount_')
     expect(launch.env).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
   })
 

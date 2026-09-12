@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Instala Agent Hub en /Applications a partir del bundle que genera `npm run package`.
+# Instala Agent Hub en /Applications a partir del bundle que genera `npm run package`
+# (electron-builder --dir, en release/).
 #
 #   make install-app            # empaqueta e instala
-#   SKIP_PACKAGE=1 make install-app   # reutiliza desktop/out sin volver a empaquetar
+#   SKIP_PACKAGE=1 make install-app   # reutiliza release/ sin volver a empaquetar
 #
 # Cierra sólo la app de escritorio en ejecución; los puentes headless que tienen
 # abiertos los CLIs (Claude Code, Codex, Gemini, Kiro) siguen vivos hasta que cada
@@ -12,8 +13,6 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Agent Hub"
-ARCH="${AGENTHUB_ARCH:-arm64}"
-BUNDLE="$ROOT/desktop/out/${APP_NAME}-darwin-${ARCH}/${APP_NAME}.app"
 INSTALL_DIR="${AGENTHUB_INSTALL_DIR:-/Applications}"
 TARGET="$INSTALL_DIR/${APP_NAME}.app"
 
@@ -22,10 +21,12 @@ log() { printf '%s\n' "$*" >&2; }
 [[ "$(uname -s)" == "Darwin" ]] || { log "este instalador es sólo para macOS"; exit 1; }
 
 if [[ "${SKIP_PACKAGE:-0}" != "1" ]]; then
-  log "== Empaquetando (npm run package -- darwin)"
-  (cd "$ROOT" && npm run package -- darwin)
+  log "== Empaquetando (npm run package: electron-builder --dir)"
+  (cd "$ROOT" && npm run package)
 fi
-[[ -d "$BUNDLE" ]] || { log "no existe el bundle $BUNDLE"; exit 1; }
+# electron-builder deja el bundle en release/mac/ (x64) o release/mac-arm64/ (Apple Silicon).
+BUNDLE="$(find "$ROOT/release" -maxdepth 2 -type d -name "${APP_NAME}.app" -path "*/mac*" 2>/dev/null | head -1)"
+[[ -n "$BUNDLE" && -d "$BUNDLE" ]] || { log "no se encontró el bundle en $ROOT/release (¿falló npm run package?)"; exit 1; }
 
 # 1. Cerrar la app de escritorio (proceso principal, sin argumentos). Los gateways
 #    headless llevan --agenthub-headless y no se tocan.

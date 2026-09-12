@@ -4,6 +4,38 @@ Agent Hub es una aplicación de escritorio para administrar los MCP servers y sk
 
 La propiedad central sigue siendo verificable: **si apagás una herramienta, la llamada siguiente se deniega aunque la sesión MCP ya estuviera abierta y nunca alcanza al upstream**.
 
+## Instalación
+
+Cada versión publica instaladores para macOS, Windows y Linux en la [página de releases](https://github.com/aguara-guazu/agent-hub/releases/latest). La app no está firmada con certificados de distribuidor, así que cada sistema avisa la primera vez; abajo está el paso extra de cada uno.
+
+**macOS** (Apple Silicon o Intel), en una terminal:
+
+```bash
+curl -fL "https://github.com/aguara-guazu/agent-hub/releases/latest/download/AgentHub-$(uname -m | sed s/x86_64/x64/).dmg" -o /tmp/AgentHub.dmg && open /tmp/AgentHub.dmg
+```
+
+Arrastrá **Agent Hub** a Aplicaciones. Al abrirla por primera vez macOS la bloquea por no estar notarizada: en **Ajustes del Sistema → Privacidad y seguridad**, bajá hasta el aviso y elegí **Abrir de todos modos** ([instrucciones de Apple](https://support.apple.com/es-es/102445)). La app vive en la barra de menú, no en el Dock.
+
+**Windows**, en PowerShell:
+
+```powershell
+irm https://github.com/aguara-guazu/agent-hub/releases/latest/download/AgentHub-Setup-x64.exe -OutFile "$env:TEMP\AgentHub-Setup.exe"; & "$env:TEMP\AgentHub-Setup.exe"
+```
+
+El instalador no pide permisos de administrador y deja la app en el menú Inicio. En equipos ARM reemplazá `x64` por `arm64`. Si Windows muestra el aviso de SmartScreen por tratarse de un ejecutable sin firma, elegí **Más información → Ejecutar de todas formas**.
+
+**Linux**, en una terminal:
+
+```bash
+curl -fL "https://github.com/aguara-guazu/agent-hub/releases/latest/download/AgentHub-$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/').AppImage" -o ~/AgentHub.AppImage && chmod +x ~/AgentHub.AppImage && ~/AgentHub.AppImage
+```
+
+Es la versión portable, sin instalar nada. Para Debian y Ubuntu hay `.deb` (`AgentHub-amd64.deb` y `AgentHub-arm64.deb`) que se instalan con `sudo apt install ./AgentHub-amd64.deb`. El ícono queda en la bandeja del sistema.
+
+**Primer arranque.** La app deja un catálogo inicial de MCP servers públicos listos para «Conectar cuenta», detecta los clientes instalados (Claude Code, Codex CLI, Gemini CLI y Kiro) y escribe en cada uno una única entrada `hub`. No hace falta cuenta ni otro equipo.
+
+**Actualizar y desinstalar.** Para actualizar, instalá la versión nueva encima; los datos quedan. Para desinstalar, borrá la app y su directorio de estado: `~/Library/Application Support/Agent Hub` en macOS, `%APPDATA%\Agent Hub` en Windows y `~/.config/Agent Hub` en Linux. La entrada `hub` de cada cliente se puede quitar a mano de su configuración.
+
 ## Un solo producto y un solo stack
 
 Todo el producto usa TypeScript/JavaScript sobre Node.js y Electron:
@@ -166,13 +198,27 @@ La prueba crítica mantiene la misma sesión MCP, cambia una tool de ON a OFF y 
 ## Empaquetado
 
 ```bash
-npm run package                       # plataforma host
-npm run package --workspace @agenthub/desktop -- darwin
-npm run package --workspace @agenthub/desktop -- win32
-npm run package --workspace @agenthub/desktop -- linux
+npm run package        # bundle sin instalador para esta máquina, en release/
+npm run dist           # instaladores de esta plataforma, en release/
+npm run dist:mac       # dmg arm64 y x64 (sólo desde macOS)
+npm run dist:win       # instalador NSIS y zip, x64 y arm64
+npm run dist:linux     # AppImage y deb, x64 y arm64
 ```
 
-`@electron/packager` genera bundles para macOS arm64, Windows x64 y Linux x64. La firma, notarización y publicación deben configurarse con credenciales del distribuidor antes de publicar artefactos externos.
+El empaquetado usa [electron-builder](https://www.electron.build/) con la configuración de `electron-builder.yml` en la raíz. Los bundles van sin asar porque core, daemon y gateway corren como procesos Node separados desde `resources/app`.
+
+### Publicar una versión
+
+El workflow `.github/workflows/release.yml` compila cada plataforma en su propio runner y adjunta los artefactos a la release del tag:
+
+```bash
+npm version 0.3.0 --no-git-tag-version   # actualiza package.json
+git commit -am "v0.3.0" && git tag v0.3.0 && git push origin main v0.3.0
+```
+
+Artefactos por release: `AgentHub-arm64.dmg`, `AgentHub-x64.dmg`, `AgentHub-Setup-x64.exe`, `AgentHub-Setup-arm64.exe`, `AgentHub-x64.zip`, `AgentHub-arm64.zip` (Windows portable), `AgentHub-x86_64.AppImage`, `AgentHub-arm64.AppImage`, `AgentHub-amd64.deb` y `AgentHub-arm64.deb`. `workflow_dispatch` corre la misma compilación sin publicar, para probar el pipeline. `ci.yml` corre lint, typecheck y todas las pruebas en cada push a `main` y en cada pull request.
+
+Los artefactos no van firmados ni notarizados: eso requiere credenciales de distribuidor (Developer ID de Apple, certificado de firma de código en Windows) que se configurarían como secretos del repositorio.
 
 ## Estructura
 

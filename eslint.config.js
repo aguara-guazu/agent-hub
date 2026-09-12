@@ -19,6 +19,12 @@ export default tseslint.config(
     languageOptions: { globals: { process: 'readonly', console: 'readonly' } }
   },
   {
+    // Hooks de electron-builder: CommonJS por contrato del empaquetador.
+    files: ['**/*.cjs'],
+    languageOptions: { sourceType: 'commonjs', globals: { require: 'readonly', module: 'writable', exports: 'writable', __dirname: 'readonly', process: 'readonly', console: 'readonly' } },
+    rules: { '@typescript-eslint/no-require-imports': 'off' }
+  },
+  {
     files: ['frontend/**/*.{ts,tsx}'],
     languageOptions: { globals: { window: 'readonly', document: 'readonly', navigator: 'readonly', localStorage: 'readonly', fetch: 'readonly' } }
   }

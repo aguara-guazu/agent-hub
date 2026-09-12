@@ -99,7 +99,9 @@ const linuxFs: LinuxAutostartFs = {
 }
 const autostart = new AutostartManager({
   platform: process.platform,
-  execPath: app.getPath('exe'),
+  // En un AppImage el binario vive en un punto de montaje distinto en cada ejecución;
+  // el archivo .AppImage sí es estable.
+  execPath: process.env.APPIMAGE ?? app.getPath('exe'),
   appName: APP_NAME,
   loginItem: {
     get: () => ({ openAtLogin: app.getLoginItemSettings().openAtLogin }),

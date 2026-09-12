@@ -9,11 +9,7 @@
     "build": "tsc -b && node scripts/build-preload.mjs",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run src",
-    "dev": "electron dist/entry.js",
-    "package": "node dist/packager.js",
-    "package:darwin": "node dist/packager.js darwin",
-    "package:win32": "node dist/packager.js win32",
-    "package:linux": "node dist/packager.js linux"
+    "dev": "electron dist/entry.js"
   },
   "dependencies": {
     "@agenthub/core": "0.2.0",

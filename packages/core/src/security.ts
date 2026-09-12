@@ -7,7 +7,6 @@
  * `/sync`, y un token de daemon nunca es un JWT.
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { hash as argonHash, verify as argonVerify } from '@node-rs/argon2'
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose'
 import type { Settings } from './config.js'
 
@@ -16,14 +15,25 @@ export const DAEMON_TOKEN_PREFIX = 'ahd_'
 /** Centinela que marca una cuenta sin contraseña local (creada por SSO o dueño local). */
 export const NO_LOCAL_PASSWORD = '!'
 
+/**
+ * `@node-rs/argon2` es un módulo nativo por plataforma. Se carga sólo al hashear o
+ * verificar una contraseña: en modo local nunca hay contraseñas, así que el bundle de
+ * escritorio arranca aunque el binario de otra arquitectura no venga incluido.
+ */
+async function argon2(): Promise<typeof import('@node-rs/argon2')> {
+  return import('@node-rs/argon2')
+}
+
 export async function hashPassword(plain: string): Promise<string> {
-  return argonHash(plain)
+  const { hash } = await argon2()
+  return hash(plain)
 }
 
 export async function verifyPassword(plain: string, hashed: string): Promise<boolean> {
   if (!hashed || hashed === NO_LOCAL_PASSWORD) return false
   try {
-    return await argonVerify(hashed, plain)
+    const { verify } = await argon2()
+    return await verify(hashed, plain)
   } catch {
     // Cualquier fallo (hash malformado, no-argon2) es "no verifica".
     return false

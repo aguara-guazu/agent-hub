@@ -4,7 +4,7 @@ SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-app dev test test-e2e lint typecheck build package seed clean
+.PHONY: help install install-app dev test test-e2e lint typecheck build package dist seed clean
 
 help: ## muestra esta ayuda
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -31,8 +31,11 @@ typecheck: ## TypeScript estricto de todos los workspaces
 build: ## compila paquetes, renderer y proceso Electron
 	npm run build
 
-package: ## genera el bundle Electron para la plataforma solicitada
+package: ## bundle Electron sin instalador para esta máquina (release/<plataforma>/)
 	npm run package
+
+dist: ## instaladores para esta plataforma (dmg, exe, AppImage/deb) en release/
+	npm run dist
 
 install-app: ## empaqueta e instala Agent Hub en /Applications (macOS); SKIP_PACKAGE=1 reutiliza desktop/out
 	bash scripts/install-macos.sh

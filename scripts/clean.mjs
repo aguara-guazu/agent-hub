@@ -7,3 +7,5 @@ for (const root of roots) {
   rmSync(join(root, 'out'), { recursive: true, force: true })
   rmSync(join(root, 'tsconfig.tsbuildinfo'), { force: true })
 }
+// Salida de electron-builder (bundles e instaladores).
+rmSync('release', { recursive: true, force: true })

@@ -71,6 +71,8 @@ export interface GatewayLaunchContext {
   /** El proceso actual corre sobre el runtime Electron (con o sin `ELECTRON_RUN_AS_NODE`). */
   electron: boolean
   execPath: string
+  /** Ruta al archivo .AppImage (variable `APPIMAGE`), o `null` fuera de un AppImage. */
+  appImagePath: string | null
   /** Raíz `app/` del bundle empaquetado, o `null` en desarrollo. */
   packagedAppRoot: string | null
   /** `desktop/dist/entry.js` del repositorio; sólo se usa en desarrollo. */
@@ -90,8 +92,19 @@ export interface GatewayLaunchContext {
  * como app gráfica, macOS lo tomaría por "Agent Hub ya abierto" y no lanzaría la app
  * real al hacer doble clic mientras algún CLI tuviera el puente vivo.
  */
+/**
+ * Dentro de un AppImage el ejecutable se monta en una ruta distinta cada vez, así que la
+ * configuración del CLI apunta al archivo .AppImage y el propio proceso resuelve dónde
+ * quedó montado `entry.js` a partir de su `process.execPath`.
+ */
+export const APPIMAGE_BOOTSTRAP =
+  "const p=require('node:path');import(p.join(p.dirname(process.execPath),'resources','app','desktop','dist','entry.js'))"
+
 export function resolveGatewayLaunch(ctx: GatewayLaunchContext): GatewayLaunch {
   if (ctx.electron) {
+    if (ctx.appImagePath) {
+      return { command: ctx.appImagePath, args: ['-e', APPIMAGE_BOOTSTRAP, '--', '--agenthub-headless'], env: { ELECTRON_RUN_AS_NODE: '1' } }
+    }
     const entry = ctx.packagedAppRoot ? join(ctx.packagedAppRoot, 'desktop', 'dist', 'entry.js') : ctx.devEntry
     return { command: ctx.execPath, args: [entry, '--agenthub-headless'], env: { ELECTRON_RUN_AS_NODE: '1' } }
   }
@@ -112,6 +125,7 @@ export function daemonCommand(): GatewayLaunch {
   return resolveGatewayLaunch({
     electron: Boolean(process.versions.electron),
     execPath: process.execPath,
+    appImagePath: process.env['APPIMAGE']?.trim() || null,
     packagedAppRoot: packagedAppRoot(process.execPath),
     devEntry: resolve(fileURLToPath(new URL('../../../desktop/dist/entry.js', import.meta.url))),
     pkg: Boolean((process as { pkg?: unknown }).pkg),

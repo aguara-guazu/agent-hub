@@ -46,6 +46,7 @@ export {
   gatewayUrl,
   hubUrl,
   loadConfig,
+  APPIMAGE_BOOTSTRAP,
   packagedAppRoot,
   resolveGatewayLaunch,
   stdioGateway,

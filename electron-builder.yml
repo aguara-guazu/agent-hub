@@ -1,0 +1,65 @@
+# Empaquetado e instaladores con electron-builder, un solo esquema para las tres
+# plataformas (mismo enfoque que escalidrau). La raíz del monorepo es la app: su
+# package.json declara las dependencias de ejecución y `desktop/dist/entry.js` es el main.
+#
+# asar: false a propósito: core y daemon corren como procesos Node aparte desde
+# `resources/app/packages/*/dist`, y el gateway headless desde `resources/app/desktop/dist`.
+appId: io.craftech.agenthub
+productName: Agent Hub
+# Sin espacios ni versión: las URLs de descarga del README son estables entre releases.
+artifactName: AgentHub-${arch}.${ext}
+copyright: Copyright © 2026 Craftech
+asar: false
+npmRebuild: false
+directories:
+  output: release
+  buildResources: build
+files:
+  - package.json
+  - desktop/package.json
+  - desktop/dist/**/*
+  - desktop/assets/icon.png
+  - desktop/assets/icon.icns
+  - frontend/dist/**/*
+  - packages/*/package.json
+  - packages/*/dist/**/*
+  - "!**/*.map"
+  - "!**/*.d.ts"
+  - "!**/*.test.js"
+  - "!**/*.tsbuildinfo"
+  - "!node_modules/@agenthub/*/src/**"
+  - "!node_modules/@agenthub/*/test/**"
+  - "!node_modules/@agenthub/*/scripts/**"
+afterPack: desktop/scripts/after-pack.cjs
+mac:
+  icon: desktop/assets/icon.icns
+  category: public.app-category.developer-tools
+  # Sin Developer ID: el hook afterPack firma ad hoc para que el bundle sea consistente.
+  identity: null
+  extendInfo:
+    LSUIElement: true
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+win:
+  icon: desktop/assets/icon.ico
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  artifactName: AgentHub-Setup-${arch}.${ext}
+linux:
+  icon: desktop/assets/icon.png
+  executableName: agent-hub
+  category: Development
+  synopsis: Un solo hub para los MCP servers y skills de tus agentes
+  target:
+    - target: AppImage
+      arch: [x64, arm64]
+    - target: deb
+      arch: [x64, arm64]
