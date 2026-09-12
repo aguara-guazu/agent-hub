@@ -2,6 +2,12 @@
   "name": "agent-hub",
   "version": "0.2.0",
   "private": true,
+  "description": "Un solo hub para los MCP servers y skills de tus agentes: Claude Code, Codex CLI, Gemini CLI y Kiro.",
+  "author": {
+    "name": "Luciano Serra",
+    "email": "noreply@github.com"
+  },
+  "homepage": "https://github.com/aguara-guazu/agent-hub",
   "type": "module",
   "main": "desktop/dist/entry.js",
   "workspaces": [
