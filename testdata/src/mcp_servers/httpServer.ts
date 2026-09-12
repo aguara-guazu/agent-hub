@@ -71,12 +71,15 @@ export async function startHttpEchoServer(
     }
     // Un TestServer y un transport nuevos por pedido: modo stateless, aislado.
     const mcp = createHttpEchoServer()
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
+    // Sin `sessionIdGenerator` el transporte es stateless. Con `exactOptionalPropertyTypes`
+    // no se puede pasar `undefined` explícito, y las clases del SDK no encajan con su
+    // propia interfaz `Transport`: de ahí el cast.
+    const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true })
     res.on('close', () => {
       void transport.close()
       void mcp.close()
     })
-    await mcp.connect(transport)
+    await mcp.connect(transport as unknown as Parameters<typeof mcp.connect>[0])
     const body = await readBody(req)
     await transport.handleRequest(req, res, body)
   }
