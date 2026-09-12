@@ -7,7 +7,7 @@ import type { SupervisorState } from './supervisor.js'
  * en pruebas qué acciones existen y qué estado muestran, sin Electron.
  */
 
-export type TrayAction = 'show' | 'hide' | 'toggle-autostart' | 'restart-core' | 'quit'
+export type TrayAction = 'show' | 'hide' | 'toggle-autostart' | 'restart-core' | 'check-updates' | 'apply-update' | 'open-release' | 'quit'
 
 export interface TrayItem {
   id?: TrayAction
@@ -17,10 +17,18 @@ export interface TrayItem {
   checked?: boolean
 }
 
+export interface TrayUpdateState {
+  version: string
+  /** `ready`: descargada, falta reiniciar. `available`: esta instalación sólo puede avisar. */
+  state: 'ready' | 'available'
+}
+
 export interface TrayViewModel {
   coreState: SupervisorState
   windowVisible: boolean
   autostartEnabled: boolean
+  update?: TrayUpdateState | null
+  checkingUpdates?: boolean
 }
 
 function coreLabel(state: SupervisorState): string {
@@ -61,8 +69,26 @@ export function buildTrayTemplate(vm: TrayViewModel): TrayItem[] {
       enabled: vm.coreState !== 'starting' && vm.coreState !== 'restarting',
     },
     { type: 'separator' },
+    ...updateItems(vm),
+    { type: 'separator' },
     { id: 'quit', label: 'Salir de Agent Hub', type: 'normal' },
   ]
+}
+
+function updateItems(vm: TrayViewModel): TrayItem[] {
+  const items: TrayItem[] = []
+  if (vm.update?.state === 'ready') {
+    items.push({ id: 'apply-update', label: `Reiniciar para actualizar a v${vm.update.version}`, type: 'normal' })
+  } else if (vm.update?.state === 'available') {
+    items.push({ id: 'open-release', label: `Nueva versión v${vm.update.version} disponible…`, type: 'normal' })
+  }
+  items.push({
+    id: 'check-updates',
+    label: vm.checkingUpdates ? 'Buscando actualizaciones…' : 'Buscar actualizaciones',
+    type: 'normal',
+    enabled: !vm.checkingUpdates,
+  })
+  return items
 }
 
 export const TRAY_TOOLTIP = 'Agent Hub'

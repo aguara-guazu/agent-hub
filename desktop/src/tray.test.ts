@@ -38,6 +38,24 @@ describe('plantilla de tray', () => {
     expect(running.find((i) => i.id === 'restart-core')?.enabled).toBe(true)
   })
 
+  it('ofrece buscar actualizaciones y refleja una actualización lista o sólo anunciable', () => {
+    const idle = buildTrayTemplate({ coreState: 'running', windowVisible: false, autostartEnabled: false })
+    expect(actions(idle)).toContain('check-updates')
+    expect(actions(idle)).not.toContain('apply-update')
+    expect(actions(idle)).not.toContain('open-release')
+
+    const ready = buildTrayTemplate({ coreState: 'running', windowVisible: false, autostartEnabled: false, update: { version: '0.3.0', state: 'ready' } })
+    expect(ready.find((i) => i.id === 'apply-update')?.label).toContain('0.3.0')
+    expect(actions(ready)).not.toContain('open-release')
+
+    const available = buildTrayTemplate({ coreState: 'running', windowVisible: false, autostartEnabled: false, update: { version: '0.3.0', state: 'available' } })
+    expect(available.find((i) => i.id === 'open-release')?.label).toContain('0.3.0')
+    expect(actions(available)).not.toContain('apply-update')
+
+    const checking = buildTrayTemplate({ coreState: 'running', windowVisible: false, autostartEnabled: false, checkingUpdates: true })
+    expect(checking.find((i) => i.id === 'check-updates')?.enabled).toBe(false)
+  })
+
   it('muestra una etiqueta legible del estado del core', () => {
     const items = buildTrayTemplate({ coreState: 'failed', windowVisible: true, autostartEnabled: false })
     expect(items[0]?.label).toMatch(/fallo/i)

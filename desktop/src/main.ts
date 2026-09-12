@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, Tray } from 'electron'
 
 import { CoreSupervisor } from './supervisor.js'
 import { resolvePaths, type PathContext } from './paths.js'
@@ -10,6 +10,7 @@ import { windowOptions, isAllowedNavigation } from './window.js'
 import { buildTrayTemplate, TRAY_TOOLTIP, type TrayAction } from './tray.js'
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus } from './ipc.js'
+import { AutoUpdater, CHECK_INTERVAL_MS, type UpdateStatus } from './updater.js'
 import { DaemonApp, loadConfig } from '@agenthub/daemon'
 
 const APP_NAME = 'Agent Hub'
@@ -32,6 +33,13 @@ let stopped = false
 let maintenance: Promise<void> | null = null
 /** Tope para el apagado ordenado; pasado este tiempo la app sale igual. */
 const QUIT_DEADLINE_MS = 20_000
+const APP_BUNDLE_ID = 'io.craftech.agenthub'
+/** Actualización ya descargada, pendiente de reiniciar. */
+let pendingUpdate: Extract<UpdateStatus, { state: 'downloaded' }> | null = null
+/** Hay versión nueva pero esta instalación (zip, .deb, bundle sin permisos) sólo puede avisar. */
+let availableUpdate: { version: string; page: string } | null = null
+let checkingUpdates = false
+let relaunchAfterQuit = false
 
 const appDir = dirname(fileURLToPath(import.meta.url))
 const pathContext = (): PathContext => ({
@@ -110,6 +118,88 @@ const autostart = new AutostartManager({
   linuxFs,
 })
 
+const updater = new AutoUpdater({
+  currentVersion: app.getVersion(),
+  platform: process.platform,
+  arch: process.arch,
+  execPath: process.execPath,
+  env: process.env,
+  bundleId: APP_BUNDLE_ID,
+  enabled: app.isPackaged,
+  // Para probar contra un servidor propio sin publicar una release.
+  ...(process.env.AGENTHUB_UPDATE_API ? { apiBase: process.env.AGENTHUB_UPDATE_API } : {}),
+  ...(process.env.AGENTHUB_UPDATE_REPO ? { repo: process.env.AGENTHUB_UPDATE_REPO } : {}),
+  log: (line) => console.error(line),
+})
+
+function notify(title: string, body: string): void {
+  try {
+    if (Notification.isSupported()) new Notification({ title, body }).show()
+  } catch {
+    // Sin centro de notificaciones no pasa nada: el menú de la barra muestra lo mismo.
+  }
+}
+
+/**
+ * Busca una versión nueva y, si esta instalación puede autoinstalarla, la baja. Con la
+ * ventana oculta se instala en el acto; con la ventana visible queda pendiente hasta
+ * que se cierre o hasta que la persona lo elija en el menú.
+ */
+async function checkForUpdates(reason: 'startup' | 'timer' | 'manual'): Promise<void> {
+  if (checkingUpdates || quitting) return
+  checkingUpdates = true
+  refreshTray()
+  try {
+    const status = await updater.check()
+    if (status.state === 'downloaded') {
+      pendingUpdate = status
+      availableUpdate = null
+      if (!mainWindow?.isVisible()) {
+        await applyUpdate()
+        return
+      }
+      notify('Actualización lista', `Agent Hub v${status.version} se instala al cerrar la ventana o desde el menú de la barra.`)
+    } else if (status.state === 'available') {
+      availableUpdate = { version: status.version, page: status.page }
+      if (reason !== 'timer') notify('Nueva versión disponible', `Agent Hub v${status.version}. Esta instalación no se actualiza sola: abrí la release desde el menú de la barra.`)
+    } else if (status.state === 'failed') {
+      console.error(`[updater] v${status.version}: ${status.error}`)
+      if (reason === 'manual') notify('No se pudo descargar la actualización', status.error)
+    } else if (reason === 'manual') {
+      notify('Agent Hub está al día', `Versión ${app.getVersion()}.`)
+    }
+  } finally {
+    checkingUpdates = false
+    refreshTray()
+  }
+}
+
+async function applyUpdate(): Promise<void> {
+  const update = pendingUpdate
+  if (!update || quitting) return
+  try {
+    const outcome = await updater.apply(update)
+    relaunchAfterQuit = outcome === 'relaunch'
+    console.error(`[updater] v${update.version} instalada; ${relaunchAfterQuit ? 'reiniciando' : 'el instalador vuelve a abrir la app'}`)
+    await quit()
+  } catch (error) {
+    pendingUpdate = null
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[updater] la instalación falló:', message)
+    notify('No se pudo instalar la actualización', message)
+    refreshTray()
+  }
+}
+
+/** Tras una actualización, avisa una sola vez con qué versión quedó la app. */
+function announceVersionChange(): void {
+  const marker = join(stateDir, 'last-version')
+  const previous = existsSync(marker) ? readFileSync(marker, 'utf8').trim() : ''
+  const current = app.getVersion()
+  if (previous && previous !== current) notify('Agent Hub se actualizó', `Ahora corre la versión ${current}.`)
+  if (previous !== current) writeFileSync(marker, current)
+}
+
 function coreStatus(): CoreStatus {
   return { state: coreSupervisor.state, apiBaseUrl: CORE_BASE_URL, pid: coreSupervisor.pid, daemonState: daemonSupervisor.state }
 }
@@ -122,6 +212,8 @@ function refreshTray(): void {
     coreState: coreSupervisor.state,
     windowVisible: Boolean(mainWindow?.isVisible()),
     autostartEnabled: safeAutostart(),
+    update: pendingUpdate ? { version: pendingUpdate.version, state: 'ready' } : availableUpdate ? { version: availableUpdate.version, state: 'available' } : null,
+    checkingUpdates,
   })
   tray.setContextMenu(Menu.buildFromTemplate(template.map((item): Electron.MenuItemConstructorOptions => {
     if (item.type === 'separator') return { type: 'separator' }
@@ -169,6 +261,9 @@ function handleTrayAction(action: TrayAction): void {
   else if (action === 'hide') hideWindow()
   else if (action === 'toggle-autostart') autostart.setEnabled(!safeAutostart())
   else if (action === 'restart-core') void restartCore()
+  else if (action === 'check-updates') void checkForUpdates('manual')
+  else if (action === 'apply-update') void applyUpdate()
+  else if (action === 'open-release' && availableUpdate) void shell.openExternal(availableUpdate.page)
   else if (action === 'quit') void quit()
   refreshTray()
 }
@@ -186,6 +281,8 @@ function hideWindow(): void {
   // teclado; devolver el foco a la app anterior evita esa sensación de bloqueo.
   if (process.platform === 'darwin') app.hide()
   refreshTray()
+  // La ventana se cerró: buen momento para aplicar una actualización ya descargada.
+  if (pendingUpdate) void applyUpdate()
 }
 function consoleUrl(token: string): string {
   const base = paths.renderer.kind === 'url' ? paths.renderer.url : CORE_BASE_URL
@@ -214,7 +311,8 @@ function createWindow(token: string): void {
     return { action: 'deny' }
   })
   void win.loadURL(consoleUrl(token))
-  win.once('ready-to-show', () => win.show())
+  // `--hidden`: arranca en la bandeja sin abrir la ventana (autostart de Linux, pruebas).
+  if (!process.argv.includes('--hidden')) win.once('ready-to-show', () => win.show())
 }
 function createTray(): void {
   // nativeImage reads PNG; the macOS .icns bundle icon is not a supported input.
@@ -278,6 +376,8 @@ async function quit(): Promise<void> {
   } finally {
     clearTimeout(deadline)
     stopped = true
+    // Tras intercambiar el bundle en macOS, la misma ruta ya es la versión nueva.
+    if (relaunchAfterQuit) app.relaunch()
     app.quit()
   }
 }
@@ -300,6 +400,10 @@ else {
     createTray()
     createWindow(token)
     app.on('activate', showWindow)
+    void updater.cleanup()
+    announceVersionChange()
+    void checkForUpdates('startup')
+    setInterval(() => void checkForUpdates('timer'), CHECK_INTERVAL_MS).unref()
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error(message)

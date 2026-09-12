@@ -34,7 +34,9 @@ Es la versión portable, sin instalar nada. Para Debian y Ubuntu hay `.deb` (`Ag
 
 **Primer arranque.** La app deja un catálogo inicial de MCP servers públicos listos para «Conectar cuenta», detecta los clientes instalados (Claude Code, Codex CLI, Gemini CLI y Kiro) y escribe en cada uno una única entrada `hub`. No hace falta cuenta ni otro equipo.
 
-**Actualizar y desinstalar.** Para actualizar, instalá la versión nueva encima; los datos quedan. Para desinstalar, borrá la app y su directorio de estado: `~/Library/Application Support/Agent Hub` en macOS, `%APPDATA%\Agent Hub` en Windows y `~/.config/Agent Hub` en Linux. La entrada `hub` de cada cliente se puede quitar a mano de su configuración.
+**Actualizaciones automáticas.** La app revisa las releases de GitHub al arrancar y cada seis horas. En macOS, con el instalador de Windows y con el AppImage de Linux baja la versión nueva y se reinstala sola: si la ventana está cerrada lo hace en el acto, y si está abierta espera a que la cierres o a que elijas «Reiniciar para actualizar» en el menú de la barra. El zip portable de Windows y el `.deb` sólo avisan con un enlace a la release. `AGENTHUB_NO_AUTO_UPDATE=1` lo desactiva.
+
+**Actualizar a mano y desinstalar.** Instalá la versión nueva encima; los datos quedan. Para desinstalar, borrá la app y su directorio de estado: `~/Library/Application Support/Agent Hub` en macOS, `%APPDATA%\Agent Hub` en Windows y `~/.config/Agent Hub` en Linux. La entrada `hub` de cada cliente se puede quitar a mano de su configuración.
 
 ## Un solo producto y un solo stack
 
@@ -216,7 +218,7 @@ npm version 0.3.0 --no-git-tag-version   # actualiza package.json
 git commit -am "v0.3.0" && git tag v0.3.0 && git push origin main v0.3.0
 ```
 
-Artefactos por release: `AgentHub-arm64.dmg`, `AgentHub-x64.dmg`, `AgentHub-Setup-x64.exe`, `AgentHub-Setup-arm64.exe`, `AgentHub-x64.zip`, `AgentHub-arm64.zip` (Windows portable), `AgentHub-x86_64.AppImage`, `AgentHub-arm64.AppImage`, `AgentHub-amd64.deb` y `AgentHub-arm64.deb`. `workflow_dispatch` corre la misma compilación sin publicar, para probar el pipeline. `ci.yml` corre lint, typecheck y todas las pruebas en cada push a `main` y en cada pull request.
+Artefactos por release: `AgentHub-arm64.dmg`, `AgentHub-x64.dmg`, `AgentHub-Setup-x64.exe`, `AgentHub-Setup-arm64.exe`, `AgentHub-x64.zip`, `AgentHub-arm64.zip` (Windows portable), `AgentHub-x86_64.AppImage`, `AgentHub-arm64.AppImage`, `AgentHub-amd64.deb` y `AgentHub-arm64.deb`. `workflow_dispatch` corre la misma compilación sin publicar, para probar el pipeline. Publicar el tag es todo lo que hace falta para que las instalaciones existentes se actualicen: el updater (`desktop/src/updater.ts`) lee `releases/latest` de la API de GitHub y baja el artefacto de su plataforma por nombre, así que los nombres de arriba no deben cambiar. `ci.yml` corre lint, typecheck y todas las pruebas en cada push a `main` y en cada pull request.
 
 Los artefactos no van firmados ni notarizados: eso requiere credenciales de distribuidor (Developer ID de Apple, certificado de firma de código en Windows) que se configurarían como secretos del repositorio.
 

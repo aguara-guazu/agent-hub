@@ -17,6 +17,7 @@ inicio al ingresar (autostart) y expone un puente IPC mínimo y seguro al render
 | `src/tray.ts` | Plantilla del menú de tray como datos puros | No |
 | `src/autostart.ts` | Autostart darwin/win32 (login item) y linux (`.desktop`) | No (efectos inyectables) |
 | `src/ipc.ts` | Contrato IPC: canales y tipos compartidos | No |
+| `src/updater.ts` | Actualización automática desde las releases de GitHub: consulta, descarga e instalación por plataforma (dmg, NSIS silencioso, AppImage) | No (red, procesos y disco inyectables) |
 
 La lógica que no importa Electron está cubierta por pruebas unitarias (`*.test.ts`).
 `main.ts` y `preload.ts` son deliberadamente delgados y delegan en esos módulos.
@@ -28,6 +29,16 @@ La lógica que no importa Electron está cubierta por pruebas unitarias (`*.test
 - El gateway headless que lanza cada CLI corre con `ELECTRON_RUN_AS_NODE=1` (`@agenthub/daemon`, `daemonCommand`). Como app gráfica quedaba registrado en LaunchServices como «Agent Hub» en primer plano: ocupaba el Dock y, al abrir la app, macOS activaba ese proceso sin ventana en vez de lanzar la app real.
 - Core y daemon reciben stdin abierto y `AGENTHUB_STDIN_LIFELINE=1`: si el proceso principal muere sin poder detenerlos, el EOF los apaga y liberan el puerto.
 - `quit()` tiene un tope de 20 s; si el apagado ordenado se cuelga, la app sale igual. Un fallo de arranque muestra un cuadro de error en vez de desaparecer en silencio.
+
+## Actualización automática
+
+Sin Squirrel ni electron-updater: los binarios no van firmados y Squirrel.Mac rechaza actualizar una app sin firma, así que se hace como en escalidrau. `main.ts` consulta al arrancar y cada seis horas (`CHECK_INTERVAL_MS`); si hay versión nueva y esta instalación puede autoinstalar, la baja con el `fetch` de Node (sin `com.apple.quarantine`) y la aplica:
+
+- macOS: `installDmg` monta el dmg, verifica el bundle id, copia el bundle nuevo a `Agent Hub.app.incoming`, aparta el actual a `.previous` y los intercambia; luego `app.relaunch()`. `cleanupLeftovers` borra los restos al próximo arranque.
+- Windows con instalador NSIS: lanza `AgentHub-Setup-<arch>.exe --updated /S --force-run` (los mismos argumentos que electron-updater) y sale; el instalador reabre la app. Se detecta por el desinstalador junto al ejecutable; el zip portable sólo avisa.
+- Linux AppImage: reemplaza el archivo `APPIMAGE` con un `rename` en el mismo directorio y lo vuelve a lanzar; el `.deb` sólo avisa.
+
+Con la ventana visible la actualización queda pendiente (aviso del sistema y opción en el menú) y se aplica al cerrarla. `AGENTHUB_NO_AUTO_UPDATE=1` desactiva todo; `AGENTHUB_UPDATE_API` y `AGENTHUB_UPDATE_REPO` permiten probar contra un servidor propio sin publicar una release, que es como se verificó el flujo completo en macOS.
 
 ## Seguridad del renderer
 
