@@ -191,6 +191,8 @@ Rutas administradas:
 
 Las skills se guardan una vez en `~/.agenthub/skills/` y se enlazan a cada cliente. Si el sistema no permite symlinks, el materializador usa una copia administrada por manifiesto.
 
+Al configurar la memoria, el hub instala la skill de fábrica **`memory`** («Memoria de proyectos») y la expone a todos los clientes: explica cuándo consultar la memoria, cómo resolver el alcance por proyecto o persona, cómo buscar y paginar de forma exhaustiva, cómo citar evidencia y distinguir hechos revisados de propuestas, cómo guardar conocimiento nuevo y cómo tratar identidades, con una referencia de todas las herramientas `memory_*` generada desde las operaciones reales. Se actualiza con cada versión de la app mientras no se edite; una copia editada se conserva y una borrada no vuelve.
+
 ## Políticas y modo degradado
 
 La precedencia es corta y explícita:

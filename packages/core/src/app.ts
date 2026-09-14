@@ -62,7 +62,7 @@ import type { AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, User }
 import type { CliKind } from '@agenthub/shared'
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
-import { registerMemory, memoryTools, MemoryError } from '@agenthub/memory'
+import { registerMemory, memoryTools, memorySkill, MemoryError } from '@agenthub/memory'
 
 const CLI_KINDS = ['claude_code', 'codex_cli', 'gemini_cli', 'kiro']
 const ORG_ROLES = ['owner', 'admin', 'member']
@@ -287,7 +287,29 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
         tools: memoryTools.map(t => ({ name: t.name, title: t.name, description: t.description, input_schema: t.inputSchema })) })
       store.setSetting('memory_catalog_installed', '1')
       store.setSetting('memory_catalog_server_id', server.id)
+      registerMemorySkill()
       publishPolicyChange(bus, store, 'user', owner.id)
+    }
+    // Skill de fábrica: llega a todos los clientes por la política por defecto. Se actualiza con la app
+    // mientras la persona no la haya editado; si la borró, no vuelve.
+    const registerMemorySkill = () => {
+      const skillId = store.setting('memory_skill_id')
+      const existing = skillId ? store.skill(skillId) : undefined
+      if (skillId && !existing) return
+      const body = memorySkill.body, hash = skillContentHash(memorySkill.display_name, memorySkill.description, body)
+      if (!existing) {
+        let slug = memorySkill.slug
+        for (let suffix = 2; store.skillBySlug(owner.id, slug); suffix++) slug = `${memorySkill.slug}-${suffix}`
+        const skill = store.insertSkill({ user_id: owner.id, slug, display_name: memorySkill.display_name, description: memorySkill.description, body, content_hash: hash })
+        store.setSetting('memory_skill_id', skill.id)
+        store.setSetting('memory_skill_hash', hash)
+        return
+      }
+      const shipped = store.setting('memory_skill_hash')
+      if (existing.content_hash === shipped && existing.content_hash !== hash) {
+        store.updateSkill(existing.id, { display_name: memorySkill.display_name, description: memorySkill.description, body, version: existing.version + 1, content_hash: hash })
+        store.setSetting('memory_skill_hash', hash)
+      }
     }
     if (process.env.AGENTHUB_MEMORY_DATABASE_URL || memory.service.vault.has('database')) registerCatalog()
     fastify.addHook('onResponse', async request => { if (request.url === '/api/memory/database' && request.method === 'PUT' && memory.service.vault.has('database')) registerCatalog() })

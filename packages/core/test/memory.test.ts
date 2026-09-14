@@ -35,6 +35,33 @@ describe.skipIf(!process.env.AGENTHUB_MEMORY_TEST_URL)('memoria HTTP y gateway M
     const credentialDenied = await app.fastify.inject({ method: 'POST', url: '/api/memory/mcp', headers: { authorization: `Bearer ${token}` }, payload: {} })
     expect(credentialDenied.statusCode).toBe(401)
   })
+  it('instala la skill de memoria de fábrica para todos los clientes, la actualiza con la app y respeta ediciones y borrados', async () => {
+    const skills = await app.fastify.inject({ method: 'GET', url: '/api/catalog/skills', headers: { authorization: `Bearer ${token}` } })
+    const skill = skills.json().find((s: any) => s.slug === 'memory')
+    expect(skill).toBeTruthy()
+    expect(skill.body).toContain('memory_search'); expect(skill.body).toContain('memory_review_duplicate'); expect(skill.body).not.toMatch(/^---/)
+    const machine = app.store.insertMachine({ user_id: owner.id, hostname: 'skill-test', os: 'test', daemon_version: 'test' })
+    const agent = app.store.insertAgent({ machine_id: machine.id, cli_kind: 'kiro', cli_version: 'test', config_path: '' })
+    expect(computeSnapshot(app.store, agent.id).skills.map(s => s.slug)).toEqual(['memory'])
+    // A newer app ships a different body: it replaces the untouched copy and bumps the version.
+    app.store.updateSkill(skill.id, { body: 'cuerpo de una versión anterior', content_hash: 'hash-anterior' })
+    app.store.setSetting('memory_skill_hash', 'hash-anterior')
+    await app.fastify.close(); app.db.close()
+    app = buildApp({ settings: { localMode: true, starterCatalog: false, databasePath: join(directory, 'hub.db') } })
+    const updated = app.store.skill(skill.id)!
+    expect(updated.version).toBe(2); expect(updated.body).toContain('memory_search')
+    // A personal edit survives restarts, and a deletion is final.
+    const edited = await app.fastify.inject({ method: 'PATCH', url: `/api/catalog/skills/${skill.id}`, headers: { authorization: `Bearer ${token}` }, payload: { body: 'Mis propias instrucciones' } })
+    expect(edited.statusCode).toBe(200)
+    await app.fastify.close(); app.db.close()
+    app = buildApp({ settings: { localMode: true, starterCatalog: false, databasePath: join(directory, 'hub.db') } })
+    expect(app.store.skill(skill.id)!.body).toBe('Mis propias instrucciones')
+    await app.fastify.inject({ method: 'DELETE', url: `/api/catalog/skills/${skill.id}`, headers: { authorization: `Bearer ${token}` } })
+    await app.fastify.close(); app.db.close()
+    app = buildApp({ settings: { localMode: true, starterCatalog: false, databasePath: join(directory, 'hub.db') } })
+    expect(app.store.skillsOfUser(owner.id).some(s => s.slug === 'memory')).toBe(false)
+  })
+
   it('crea un proyecto por MCP real y apagar la tool bloquea la llamada siguiente en la misma sesión', async () => {
     const base = await app.fastify.listen({ host: '127.0.0.1', port: 0 })
     const server = app.store.serverBySlug(owner.id, 'memory')!
