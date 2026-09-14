@@ -7,6 +7,6 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo",
     "types": ["node"]
   },
-  "references": [{ "path": "../shared" }, { "path": "../gateway" }],
+  "references": [{ "path": "../shared" }, { "path": "../gateway" }, { "path": "../memory" }],
   "include": ["src/**/*.ts"]
 }

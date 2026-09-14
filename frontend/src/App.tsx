@@ -4,6 +4,9 @@ import { LoadingBlock } from './components/Spinner'
 import { ToastProvider } from './components/Toast'
 import { AuthProvider, useAuth } from './lib/auth'
 import { HubActivity, HubCatalog, HubClients, HubSettings, HubSkills } from './pages/Hub'
+import { MemoryProjects, MemoryExplore, MemoryEntityPage, MemorySearch, MemoryReview } from './pages/Memory'
+import { MemorySettings } from './pages/MemorySettings'
+import { MemoryProcessing } from './pages/MemoryProcessing'
 
 function LocalSession() {
   const { user, loading, reload } = useAuth()
@@ -20,6 +23,14 @@ export function App() {
     <Route path="clients" element={<HubClients />} />
     <Route path="activity" element={<HubActivity />} />
     <Route path="settings" element={<HubSettings />} />
+    <Route path="projects" element={<MemoryProjects />} />
+    <Route path="projects/:id" element={<MemoryEntityPage />} />
+    <Route path="memory" element={<MemoryExplore />} />
+    <Route path="memory/entities/:id" element={<MemoryEntityPage />} />
+    <Route path="memory/search" element={<MemorySearch />} />
+    <Route path="memory/review" element={<MemoryReview />} />
+    <Route path="memory/sources" element={<MemorySettings />} />
+    <Route path="memory/processing" element={<MemoryProcessing />} />
     <Route path="machines" element={<Navigate to="/clients" replace />} />
     <Route path="audit" element={<Navigate to="/activity" replace />} />
     <Route path="*" element={<Navigate to="/catalog" replace />} />

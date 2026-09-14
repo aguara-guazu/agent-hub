@@ -7,6 +7,7 @@ import App from './App'
 import './styles/tokens.css'
 import './styles/app.css'
 import './styles/hub.css'
+import './styles/memory.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {

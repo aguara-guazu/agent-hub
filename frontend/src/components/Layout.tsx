@@ -8,6 +8,8 @@ export interface NavEntry { to: string; label: string; icon: IconName }
 export const NAV_ENTRIES: readonly NavEntry[] = [
   { to: '/catalog', label: 'MCP servers', icon: 'catalog' },
   { to: '/skills', label: 'Skills', icon: 'skills' },
+  { to: '/projects', label: 'Proyectos', icon: 'matrix' },
+  { to: '/memory', label: 'Memoria', icon: 'hub' },
   { to: '/clients', label: 'Clientes', icon: 'machines' },
   { to: '/activity', label: 'Actividad', icon: 'audit' },
 ]

@@ -97,6 +97,54 @@ make dev
 
 `npm run dev` compila todos los workspaces y abre Electron. El estado local vive en el directorio `userData` de la aplicación; la base es `hub.db`, el secreto de sesión queda en un archivo `0600` y los secretos de upstream nunca entran en la base.
 
+## Proyectos y memoria local
+
+El hub incorpora proyectos, empresas, personas, reuniones, documentos, conversaciones y tareas. **Proyectos** muestra el contexto de cada cliente; **Memoria** permite explorar, buscar, seguir citas hasta la intervención original y administrar fuentes. Las colecciones permiten crear tablas con columnas tipadas y reglas persistentes de extracción.
+
+La memoria usa PostgreSQL 17 con pgvector y conserva versiones de los originales en disco. El SQLite del hub mantiene su catálogo y sus políticas. El MCP **Memoria de proyectos** se registra al configurar la base y sus herramientas pasan por los mismos permisos del gateway.
+
+Para probar con datos ficticios y abrir la UI en el navegador:
+
+```bash
+npm run memory:dev
+```
+
+Requiere Docker con el motor iniciado, o PostgreSQL y pgvector instalados. Se puede elegir `-- --backend native` o `-- --backend docker`. La demostración guarda su estado en `.agenthub/memory-development`, usa la UI en `127.0.0.1:8876` y no ejecuta el daemon que modifica configuraciones de clientes. PostgreSQL usa `54349` para una demostración nueva, `54339` para pruebas y `54329` para la memoria normal; una instalación existente conserva su puerto.
+
+Para preparar la memoria de la aplicación de escritorio:
+
+```bash
+npm run memory:up
+npm run dev
+```
+
+`memory:up` guarda la configuración en el directorio de estado de Agent Hub. También admite `--dir`, `--port` y `--backend`. Para un directorio personalizado, configurá `AGENTHUB_MEMORY_DIR` al iniciar el hub. El worker reanuda trabajos e inicia el servicio administrado junto con el core; el inicio al login depende del autostart existente del hub y, con Docker, del motor Docker. `memory:down` detiene PostgreSQL sin borrar datos; cerrá antes el hub que lo supervisa.
+
+En **Memoria → Fuentes y ajustes** se configuran Google (Calendar, Meet y Docs/Drive), Notion, Slack y Jira Cloud, sus credenciales y su alcance. Google usa OAuth con un cliente de escritorio propio. Habilitá también **People API** para obtener emails por el identificador del participante de Meet; OAuth solicita lectura de contactos, otros contactos y directorio. Si Google ya estaba conectado, reconectalo para conceder esos permisos y usá **Actualizar hablantes y emails** para reparar lo importado. Las credenciales se guardan en archivos privados y no se exportan en los respaldos. Los conectores leen las fuentes; los cambios de la memoria permanecen locales.
+
+La búsqueda textual funciona sin IA. Para búsqueda semántica, instalá Ollama y un modelo de embeddings, por ejemplo `ollama pull nomic-embed-text`, y habilitalo en Ajustes. La extracción puede usar un modelo de Ollama o DeepSeek. **DeepSeek procesa contenido fuera de la computadora** y requiere habilitación explícita; cada proyecto o fuente también puede excluirse. Las propuestas extraídas conservan evidencia y se revisan en la UI. Al cambiar o actualizar un modelo de embeddings, reprocesá las fuentes.
+
+En **Memoria → Procesamiento** se ve la fuente, proveedor y modelo de cada trabajo, etapa, lotes completados, fragmentos, tokens registrados, propuestas, duración, errores y controles para cancelar o reintentar. La pantalla se actualiza cada tres segundos y distingue indexación local de extracción con IA. Los resultados son propuestas con evidencia, pendientes de revisión.
+
+La IA también puede **inferir vínculos de hablantes sin email** comparando sus intervenciones con personas conocidas y los invitados de Calendar de esa reunión. Sólo puede elegir correos presentes en esos datos; se guarda la propuesta, el motivo, la confianza declarada por el modelo y sus citas. En la fuente, la persona o **Por revisar → Vínculos sugeridos por IA** se puede confirmar el email o descartar el vínculo. Confirmar completa el registro de la persona y conserva la corrección; si ese email ya pertenece a una persona conocida, el hablante se **unifica** con ella (intervenciones, identidades externas y vínculos pasan al perfil vigente, con registro en el historial). Las inferencias pendientes no se utilizan como identidades confirmadas para generar nuevas inferencias. El procesamiento habitual incluye esta etapa; **Inferir emails pendientes** permite ejecutarla sobre el histórico sin regenerar embeddings ni resúmenes. Las exclusiones de procesamiento remoto siguen aplicándose.
+
+**Deduplicación de personas.** Con la opción **Unificar automáticamente… con confianza alta** (activa por defecto en Fuentes y ajustes), las inferencias de confianza alta se aplican sin revisión: si el candidato es una persona conocida con nombre compatible, se unifican; si es sólo un invitado del calendario, se completa el email marcado como confirmado por IA, y un email verificado por el proveedor lo reemplaza después. Los perfiles con el **mismo email verificado** se unifican siempre, salvo que sus nombres no se parezcan: entonces queda un conflicto para revisar. Además, el trabajo **Unificación de personas duplicadas** (se encola tras cada procesamiento y con **Buscar personas duplicadas**) pide al modelo comparar homónimos y nombres relacionados con su contexto: tipo de identidad (usuario de Meet, etiqueta de un documento, anónimo), reuniones, documentos vinculados y muestras de intervenciones. Un par con confianza alta se unifica solo, y uno con confianza media también cuando el nombre completo es idéntico y un lado es sólo una etiqueta de documento sin email; nunca cuando ambos tienen emails verificados distintos o hablan como personas distintas en la misma transcripción. El resto aparece en **Por revisar → Personas duplicadas** para unificar o marcar como distintos; las propuestas pendientes se releen en cada corrida, así que activar la opción más tarde las aplica sin volver a consultar al modelo. Las decisiones humanas no se vuelven a preguntar y cada par se consulta una sola vez por contexto. Las respuestas del modelo se validan ítem por ítem: una entrada malformada se descarta y se cuenta, sin perder el lote.
+
+Las intervenciones recientes se obtienen desde Meet; su disponibilidad está limitada por Google. Los documentos históricos conservados se importan desde Drive/Docs o desde archivos TXT, Markdown, VTT, SRT y JSON. En Docs se reconocen pestañas y secciones de transcripción, separando diálogos de notas y conservando las marcas de sección sin tratarlas como tiempos exactos. Sus hablantes se vinculan por nombre único dentro de las reuniones asociadas al documento; los homónimos quedan pendientes. Calendar aporta invitados y contexto, y no demuestra asistencia. Los emails que el proveedor no entrega quedan sin resolver hasta corregir o vincular la persona. Las correcciones manuales se conservan al sincronizar. Los adjuntos binarios, PDF/OCR y la transcripción de audio todavía no se procesan.
+
+Calendar revisita el período entre la fecha elegida y el momento de sincronización (90 días hacia atrás por defecto), con un límite superior explícito para no expandir recurrencias hacia años futuros. Las importaciones repetidas conservan los identificadores y sólo generan versiones si cambió el contenido. Esta ventana usa consultas completas paginadas: Google no permite combinar `timeMax` con `syncToken`. [Referencia de Calendar](https://developers.google.com/workspace/calendar/api/v3/reference/events/list).
+
+La UI ofrece respaldo y restauración en una memoria vacía. El respaldo incluye versiones, relaciones, vectores y originales; requiere volver a configurar credenciales e IA en el destino. La importación por archivo admite 5 MB y la restauración HTTP 128 MB. La búsqueda por relevancia toma hasta 200 candidatos por índice; las consultas sin texto y las colecciones permiten recorrer todos los registros mediante paginación.
+
+Verificación específica, además de `npm test`:
+
+```bash
+npm run test:memory
+npm run memory:dev -- --smoke
+```
+
+La primera usa una base dedicada terminada en `_test`. La segunda recorre la UI con Playwright, API y PostgreSQL reales; guarda capturas locales y elimina las entidades que crea. Si falta Chromium: `npm exec --workspace @agenthub/frontend -- playwright install chromium`. Las pruebas de conectores usan respuestas simuladas; la verificación contra cuentas reales requiere sus credenciales.
+
 ## Comandos headless
 
 El instalador incluye el CLI `agenthub`:

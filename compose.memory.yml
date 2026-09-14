@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agenthub
+      POSTGRES_DB: agenthub_memory
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    ports:
+      - "127.0.0.1:${AGENTHUB_MEMORY_PORT:-54329}:5432"
+    volumes:
+      - memory_postgres:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agenthub -d agenthub_memory"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+secrets:
+  postgres_password:
+    file: ${AGENTHUB_MEMORY_DIR:?Set AGENTHUB_MEMORY_DIR}/secrets/postgres-password
+volumes:
+  memory_postgres:

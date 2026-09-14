@@ -15,6 +15,9 @@ release/
 !.env.example
 .agenthub/
 
+# Notas locales de diseño del sistema de proyectos y memoria
+/docs/proyectos-memoria-local/
+
 # Capturas y temporales
 /tmp/
 agenthub-shots/

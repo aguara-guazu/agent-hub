@@ -7,6 +7,7 @@
  * - Daemon local: token opaco `ahd_...`. Nunca acepta JWT, y el JWT nunca sirve para `/sync`.
  */
 import { timingSafeEqual } from 'node:crypto'
+import { dirname, join } from 'node:path'
 import { hostname } from 'node:os'
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify'
 import cors from '@fastify/cors'
@@ -61,6 +62,7 @@ import type { AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, User }
 import type { CliKind } from '@agenthub/shared'
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
+import { registerMemory, memoryTools, MemoryError } from '@agenthub/memory'
 
 const CLI_KINDS = ['claude_code', 'codex_cli', 'gemini_cli', 'kiro']
 const ORG_ROLES = ['owner', 'admin', 'member']
@@ -145,8 +147,8 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
 
   // El cuerpo de las respuestas 204 no lleva contenido.
   fastify.setErrorHandler((error, _request, reply) => {
-    if (error instanceof HttpError) {
-      return reply.code(error.status).send({ detail: error.message })
+    if (error instanceof HttpError || error instanceof MemoryError) {
+      return reply.code(error instanceof HttpError ? error.status : error.statusCode).send({ detail: error.message })
     }
     if (error instanceof ValidationError) {
       return reply.code(422).send({ detail: error.message })
@@ -256,6 +258,39 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       throw new HttpError(403, 'el agente no es tuyo')
     }
     return agent
+  }
+
+  if (settings.localMode) {
+    const memoryDirectory = process.env.AGENTHUB_MEMORY_DIR || join(dirname(settings.databasePath), 'memory')
+    const owner = ensureLocalOwner(store)
+    const baseUrl = new URL(settings.oauthRedirectUrl).origin
+    const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
+      worker: process.env.AGENTHUB_MEMORY_WORKER !== '0',
+      authorize: async request => {
+        const user = await currentUser(request)
+        if (user.id !== owner.id) throw new HttpError(403, 'La memoria pertenece al dueño local del hub')
+        return user
+      },
+    })
+    const registerCatalog = () => {
+      const installedId = store.setting('memory_catalog_server_id')
+      const existing = installedId ? store.server(installedId) : undefined
+      if (installedId && !existing) return
+      let slug = 'memory'
+      for (let suffix = 2; !existing && store.serverBySlug(owner.id, slug); suffix++) slug = `memory-${suffix}`
+      const server = existing ?? store.insertServer({ user_id: owner.id, slug, display_name: 'Memoria de proyectos',
+        description: 'Proyectos, reuniones, documentos y conocimiento local con evidencia.', transport: 'http', command: '', args: [], env: {}, cwd: '',
+        url: `${baseUrl}/api/memory/mcp`, headers: {}, secret_refs: { Authorization: memory.credentialReference },
+        requires_host_access: false, container_image: '', allow_hosts: [], allow_ports: [], read_mounts: [], write_mounts: [] })
+      if (existing) store.updateServer(existing.id, { url: `${baseUrl}/api/memory/mcp`, secret_refs: { Authorization: memory.credentialReference } })
+      applyProbeResult(store, store.server(server.id)!, { ok: true, error: '', auth_required: false, server_name: 'agenthub-memory', server_version: '0.2.0',
+        tools: memoryTools.map(t => ({ name: t.name, title: t.name, description: t.description, input_schema: t.inputSchema })) })
+      store.setSetting('memory_catalog_installed', '1')
+      store.setSetting('memory_catalog_server_id', server.id)
+      publishPolicyChange(bus, store, 'user', owner.id)
+    }
+    if (process.env.AGENTHUB_MEMORY_DATABASE_URL || memory.service.vault.has('database')) registerCatalog()
+    fastify.addHook('onResponse', async request => { if (request.url === '/api/memory/database' && request.method === 'PUT' && memory.service.vault.has('database')) registerCatalog() })
   }
 
   function ownedMachine(user: User, machineId: string): Machine {
