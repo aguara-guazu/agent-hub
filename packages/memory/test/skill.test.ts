@@ -8,6 +8,11 @@ describe('skill de fábrica de la memoria', () => {
     for (const tool of memoryTools) expect(body).toContain(`\`memory_${tool.name}\`: ${tool.description}`)
     expect(body.startsWith('# ')).toBe(true)
     expect(body).toContain('hub')
+    // Navigation comes first: data model, how to read responses and step-by-step recipes precede writing.
+    const order = ['## Cómo está organizada', '## Cómo leer cada respuesta', '## Recetas de navegación', '## Cómo responder', '## Guardar y corregir', '## Referencia de herramientas'].map(h => body.indexOf(h))
+    expect(order.every((index, i) => index > 0 && (i === 0 || index > order[i - 1]!))).toBe(true)
+    for (const link of ['participant', 'calendar_event', 'meeting_document', 'derived_from']) expect(body).toContain(`\`${link}\``)
+    expect(body).toContain('exhaustive')
     expect(memorySkill.slug).toMatch(/^[a-z0-9][a-z0-9._-]*$/)
     expect(memorySkill.description.length).toBeLessThan(400)
   })
