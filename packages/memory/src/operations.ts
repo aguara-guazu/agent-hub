@@ -7,6 +7,9 @@ import type { MemoryAI } from './ai.js'
 import { exportMemory, deleteEntity } from './backup.js'
 import { reviewIdentity } from './identity-inference.js'
 import { mergePeople, resolveCanonical } from './people.js'
+import type { GoogleAuth } from './google-auth.js'
+import type { Vault } from './config.js'
+import { GOOGLE_SETUP_APIS, GOOGLE_SETUP_SCOPES, readGoogleClientFile } from './google-setup.js'
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
@@ -41,6 +44,9 @@ const definitions = {
   save_connector: ['Configurar alcance de una fuente. Las credenciales se cargan desde la UI del hub.', connectorInput.extend({ id: id.optional() })],
   sync_connector: ['Solicitar una sincronización del conector habilitado.', z.object({ id }).strict()],
   repair_google: ['Actualizar emails por identidad Google y recuperar hablantes de documentos ya guardados.', z.object({ id }).strict()],
+  google_setup_status: ['Diagnosticar la configuración de Google: cliente OAuth cargado, URL de retorno, APIs y permisos requeridos, y qué fuentes Google están conectadas. Sin credenciales.', z.object({}).strict()],
+  import_google_client: ['Cargar el cliente OAuth de escritorio de Google desde el archivo JSON descargado de Google Cloud (ruta absoluta en esta computadora). El secreto queda en un archivo privado y nunca se devuelve.', z.object({ path: z.string().min(1).max(4000) }).strict()],
+  connect_google: ['Obtener la URL para autorizar una fuente Google en el navegador. Vence a los 10 minutos; al terminar, el token queda en esta computadora.', z.object({ id }).strict()],
   list_jobs: ['Ver fuente, modelo, progreso, reintentos y errores de sincronización o procesamiento. kind admite varios tipos separados por coma.', z.object({ ...page, kind: z.string().max(100).optional(), state: z.enum(['active','queued','running','waiting','completed','failed','cancelled']).optional() }).strict()],
   processing_status: ['Ver actividad, tokens reportados y cobertura de extracción de la memoria.', z.object({}).strict()],
   retry_job: ['Volver a intentar un trabajo fallido o pausado.', z.object({ id }).strict()],
@@ -51,10 +57,10 @@ const definitions = {
 } satisfies Record<string, [string, z.ZodType]>
 
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: z.toJSONSchema(schema) as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set(['list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals'])
+export const READ_OPERATIONS = new Set(['list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status'])
 
 export class MemoryOperations {
-  constructor(readonly store: MemoryStore, private ai: MemoryAI) {}
+  constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault) {}
   async call(operation: string, raw: unknown, actor = 'user'): Promise<any> {
     const definition = definitions[operation as keyof typeof definitions]
     check(definition, 'Operación de memoria inexistente', 404)
@@ -176,6 +182,26 @@ export class MemoryOperations {
         }
         return store.enqueue('sync', { connector_id: input.id }, `sync:${input.id}`)
       }
+      case 'google_setup_status': {
+        const { google, vault } = this.googleSetup()
+        const client = vault.read('google-client')
+        const connectors = await db.query("SELECT id,name,enabled,project_ids,last_success_at,last_error FROM connectors WHERE provider='google' ORDER BY created_at")
+        return { client_configured: Boolean(client?.client_id), client_id: client?.client_id ?? null, client_has_secret: Boolean(client?.client_secret),
+          redirect_url: google.redirectUrl, apis: GOOGLE_SETUP_APIS, scopes: GOOGLE_SETUP_SCOPES,
+          connectors: connectors.map(row => ({ ...row, connected: Boolean(vault.read(row.id)?.refresh_token) })) }
+      }
+      case 'import_google_client': {
+        const { vault } = this.googleSetup()
+        const client = readGoogleClientFile(input.path)
+        vault.save('google-client', { client_id: client.client_id, ...(client.client_secret ? { client_secret: client.client_secret } : {}) })
+        return { configured: true, client_type: client.type, client_id: client.client_id, project_id: client.project_id ?? null }
+      }
+      case 'connect_google': {
+        const { google } = this.googleSetup()
+        const connector = (await db.query("SELECT id FROM connectors WHERE id=$1 AND provider='google'", [input.id]))[0]
+        check(connector, 'Conector de Google inexistente', 404)
+        return { authorization_url: google.start(input.id), expires_in_seconds: 600 }
+      }
       case 'list_jobs': {
         const where = `($1::text IS NULL OR j.kind=ANY(string_to_array($1,','))) AND ($2::text IS NULL OR j.state=$2 OR ($2='active' AND j.state IN ('queued','running','waiting')))`
         return { items: await db.query(`SELECT j.*,COALESCE(e.id::text,j.progress->>'entity_id') AS entity_id,
@@ -208,6 +234,11 @@ export class MemoryOperations {
       }
       default: throw new Error('Operación no implementada')
     }
+  }
+
+  private googleSetup(): { google: GoogleAuth; vault: Vault } {
+    check(this.google && this.vault, 'La configuración de Google no está disponible en este contexto', 503)
+    return { google: this.google, vault: this.vault }
   }
 
   private validateConnectorConfig(provider: string, config: Record<string, unknown>) {

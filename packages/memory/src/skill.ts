@@ -14,7 +14,7 @@ const groups: [string, string[]][] = [
   ['Escribir y vincular', ['create_entity', 'update_entity', 'import_source', 'link_entities', 'unlink_entities', 'assign_fragment']],
   ['Colecciones y reglas de seguimiento', ['add_record', 'update_record', 'list_records', 'create_rule', 'list_rules', 'update_rule']],
   ['Personas e identidades', ['merge_people', 'infer_identities', 'list_identity_proposals', 'review_identity', 'dedupe_people', 'list_duplicate_proposals', 'review_duplicate']],
-  ['Fuentes, procesamiento y mantenimiento', ['list_connectors', 'save_connector', 'sync_connector', 'repair_google', 'list_jobs', 'processing_status', 'retry_job', 'cancel_job', 'reprocess', 'export_backup', 'delete_entity']],
+  ['Fuentes, procesamiento y mantenimiento', ['list_connectors', 'save_connector', 'sync_connector', 'google_setup_status', 'import_google_client', 'connect_google', 'repair_google', 'list_jobs', 'processing_status', 'retry_job', 'cancel_job', 'reprocess', 'export_backup', 'delete_entity']],
 ]
 
 export function renderMemorySkill(tools: { name: string; description: string }[] = memoryTools): string {

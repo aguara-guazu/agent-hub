@@ -35,7 +35,7 @@ export class MemoryService {
     }
     const store = new MemoryStore(db, this.directory)
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher)
-    const operations = new MemoryOperations(store, ai)
+    const operations = new MemoryOperations(store, ai, this.google, this.vault)
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher)
     this.current = { db, store, ai, operations, runner }
     return this.current

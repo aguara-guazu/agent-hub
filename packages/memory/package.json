@@ -1,13 +1,13 @@
 {
   "name": "@agenthub/memory",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",
   "scripts": { "build": "tsc -b", "typecheck": "tsc -b --pretty false", "test": "vitest run" },
   "dependencies": {
-    "@agenthub/gateway": "0.3.2",
+    "@agenthub/gateway": "0.3.3",
     "@modelcontextprotocol/sdk": "1.30.0",
     "fastify": "5.12.3",
     "pg": "8.23.0",

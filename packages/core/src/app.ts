@@ -62,7 +62,7 @@ import type { AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, User }
 import type { CliKind } from '@agenthub/shared'
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
-import { registerMemory, memoryTools, memorySkill, MemoryError } from '@agenthub/memory'
+import { registerMemory, memoryTools, memorySkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
 
 const CLI_KINDS = ['claude_code', 'codex_cli', 'gemini_cli', 'kiro']
 const ORG_ROLES = ['owner', 'admin', 'member']
@@ -290,27 +290,33 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       registerMemorySkill()
       publishPolicyChange(bus, store, 'user', owner.id)
     }
-    // Skill de fábrica: llega a todos los clientes por la política por defecto. Se actualiza con la app
-    // mientras la persona no la haya editado; si la borró, no vuelve.
-    const registerMemorySkill = () => {
-      const skillId = store.setting('memory_skill_id')
+    // Skills de fábrica: llegan a todos los clientes por la política por defecto. Se actualizan con la app
+    // mientras la persona no las haya editado; si las borró, no vuelven. Cada una guarda su id y el hash
+    // de la versión distribuida en settings (`<clave>_id`, `<clave>_hash`); `memory` conserva sus claves históricas.
+    const factorySkills: { key: string; skill: { slug: string; display_name: string; description: string; body: string } }[] = [
+      { key: 'memory_skill', skill: memorySkill },
+      { key: 'google_setup_skill', skill: googleSetupSkill },
+    ]
+    const registerFactorySkill = ({ key, skill }: (typeof factorySkills)[number]) => {
+      const skillId = store.setting(`${key}_id`)
       const existing = skillId ? store.skill(skillId) : undefined
       if (skillId && !existing) return
-      const body = memorySkill.body, hash = skillContentHash(memorySkill.display_name, memorySkill.description, body)
+      const body = skill.body, hash = skillContentHash(skill.display_name, skill.description, body)
       if (!existing) {
-        let slug = memorySkill.slug
-        for (let suffix = 2; store.skillBySlug(owner.id, slug); suffix++) slug = `${memorySkill.slug}-${suffix}`
-        const skill = store.insertSkill({ user_id: owner.id, slug, display_name: memorySkill.display_name, description: memorySkill.description, body, content_hash: hash })
-        store.setSetting('memory_skill_id', skill.id)
-        store.setSetting('memory_skill_hash', hash)
+        let slug = skill.slug
+        for (let suffix = 2; store.skillBySlug(owner.id, slug); suffix++) slug = `${skill.slug}-${suffix}`
+        const created = store.insertSkill({ user_id: owner.id, slug, display_name: skill.display_name, description: skill.description, body, content_hash: hash })
+        store.setSetting(`${key}_id`, created.id)
+        store.setSetting(`${key}_hash`, hash)
         return
       }
-      const shipped = store.setting('memory_skill_hash')
+      const shipped = store.setting(`${key}_hash`)
       if (existing.content_hash === shipped && existing.content_hash !== hash) {
-        store.updateSkill(existing.id, { display_name: memorySkill.display_name, description: memorySkill.description, body, version: existing.version + 1, content_hash: hash })
-        store.setSetting('memory_skill_hash', hash)
+        store.updateSkill(existing.id, { display_name: skill.display_name, description: skill.description, body, version: existing.version + 1, content_hash: hash })
+        store.setSetting(`${key}_hash`, hash)
       }
     }
+    const registerMemorySkill = () => { for (const entry of factorySkills) registerFactorySkill(entry) }
     if (process.env.AGENTHUB_MEMORY_DATABASE_URL || memory.service.vault.has('database')) registerCatalog()
     fastify.addHook('onResponse', async request => { if (request.url === '/api/memory/database' && request.method === 'PUT' && memory.service.vault.has('database')) registerCatalog() })
   }

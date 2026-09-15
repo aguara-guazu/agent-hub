@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/gateway",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "bin": { "agenthub-gateway": "./dist/gateway-cli.js" },
@@ -15,8 +15,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/shared": "0.3.2",
+    "@agenthub/shared": "0.3.3",
     "@modelcontextprotocol/sdk": "1.30.0"
   },
-  "devDependencies": { "@agenthub/testdata": "0.3.2" }
+  "devDependencies": { "@agenthub/testdata": "0.3.3" }
 }
