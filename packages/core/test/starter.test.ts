@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { buildApp, type CoreApp } from '../src/app.js'
-import { STARTER_CATALOG_SETTING, STARTER_SERVERS, applyStarterCatalog } from '../src/catalog/starter.js'
+import { STARTER_CATALOG_SETTING, STARTER_CATALOG_VERSION, STARTER_SERVERS, applyStarterCatalog } from '../src/catalog/starter.js'
 import { ensureLocalOwner } from '../src/local.js'
 
 const dirs: string[] = []
@@ -25,13 +25,14 @@ function freshDb(): string {
 }
 
 describe('catálogo inicial', () => {
-  it('la lista de fábrica es sólo de servers http públicos con OAuth y slugs únicos', () => {
+  it('la lista de fábrica es sólo de servers http públicos con slugs únicos', () => {
     expect(STARTER_SERVERS.length).toBeGreaterThan(0)
     expect(new Set(STARTER_SERVERS.map((s) => s.slug)).size).toBe(STARTER_SERVERS.length)
     for (const server of STARTER_SERVERS) {
       expect(server.url).toMatch(/^https:\/\//)
       expect(server.slug).toMatch(/^[a-z][a-z0-9_-]{1,47}$/)
-      expect(server.description).toContain('Requiere autorizar')
+      if (server.auth === 'oauth') expect(server.description).toContain('Requiere autorizar')
+      else expect(server.description).toContain('No requiere')
     }
   })
 
@@ -43,11 +44,11 @@ describe('catálogo inicial', () => {
     expect(servers.map((s) => s.slug).sort()).toEqual([...STARTER_SERVERS.map((s) => s.slug)].sort())
     for (const server of servers) {
       expect(server.transport).toBe('http')
-      expect(server.auth).toBe('oauth')
+      expect(server.auth).toBe(STARTER_SERVERS.find((s) => s.slug === server.slug)!.auth)
       expect(server.last_probe_error).toBe('')
       expect(app.store.findRule(owner.id, null, 'mcp_server', server.id)).toBeUndefined()
     }
-    expect(app.store.setting(STARTER_CATALOG_SETTING)).toBe('1')
+    expect(app.store.setting(STARTER_CATALOG_SETTING)).toBe(String(STARTER_CATALOG_VERSION))
   })
 
   it('no duplica al volver a arrancar ni repone lo que la persona borró', () => {

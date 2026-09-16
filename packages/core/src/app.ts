@@ -21,6 +21,8 @@ import { applyProbeResult, QUARANTINE_TOOL_MISSING } from './catalog/reconcile.j
 import { DEFAULT_TIMEOUT_MS as PROBE_TIMEOUT_MS, probeServer } from './catalog/probe.js'
 import { ProbeRetryScheduler } from './catalog/retry.js'
 import { applyStarterCatalog } from './catalog/starter.js'
+import { applyFactorySkill, type FactorySkill } from './catalog/factory-skills.js'
+import { hubSkill } from './catalog/hub-skill.js'
 import { skillContentHash } from './hashing.js'
 import { computeSnapshot, explain } from './policy/resolver.js'
 import { ensureLocalOwner } from './local.js'
@@ -136,10 +138,13 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
 
   if (options.ensureOwner ?? settings.localMode) {
     const owner = ensureLocalOwner(store)
-    // Primer arranque: una base de servers públicos con OAuth, listos para «Conectar cuenta».
+    // Contenido de fábrica bajo AGENTHUB_STARTER_CATALOG: servers públicos listos para usar o
+    // para «Conectar cuenta», y la skill `agent-hub` que enseña a usar el hub a todos los clientes.
     if (settings.starterCatalog) {
       const seeded = applyStarterCatalog(store, owner)
       if (seeded.added.length) console.error(`[starter] catálogo inicial v${seeded.version}: ${seeded.added.join(', ')}`)
+      const skill = applyFactorySkill(store, owner, 'hub_skill', hubSkill)
+      if (skill === 'created' || skill === 'updated') console.error(`[starter] skill ${hubSkill.slug}: ${skill}`)
     }
   }
 
@@ -290,33 +295,14 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       registerMemorySkill()
       publishPolicyChange(bus, store, 'user', owner.id)
     }
-    // Skills de fábrica: llegan a todos los clientes por la política por defecto. Se actualizan con la app
-    // mientras la persona no las haya editado; si las borró, no vuelven. Cada una guarda su id y el hash
-    // de la versión distribuida en settings (`<clave>_id`, `<clave>_hash`); `memory` conserva sus claves históricas.
-    const factorySkills: { key: string; skill: { slug: string; display_name: string; description: string; body: string } }[] = [
+    // Skills de fábrica de la memoria: mismas reglas de actualización que `agent-hub`
+    // (catalog/factory-skills.ts). Las claves en settings son `<clave>_id` y `<clave>_hash`;
+    // `memory` conserva las históricas.
+    const factorySkills: { key: string; skill: FactorySkill }[] = [
       { key: 'memory_skill', skill: memorySkill },
       { key: 'google_setup_skill', skill: googleSetupSkill },
     ]
-    const registerFactorySkill = ({ key, skill }: (typeof factorySkills)[number]) => {
-      const skillId = store.setting(`${key}_id`)
-      const existing = skillId ? store.skill(skillId) : undefined
-      if (skillId && !existing) return
-      const body = skill.body, hash = skillContentHash(skill.display_name, skill.description, body)
-      if (!existing) {
-        let slug = skill.slug
-        for (let suffix = 2; store.skillBySlug(owner.id, slug); suffix++) slug = `${skill.slug}-${suffix}`
-        const created = store.insertSkill({ user_id: owner.id, slug, display_name: skill.display_name, description: skill.description, body, content_hash: hash })
-        store.setSetting(`${key}_id`, created.id)
-        store.setSetting(`${key}_hash`, hash)
-        return
-      }
-      const shipped = store.setting(`${key}_hash`)
-      if (existing.content_hash === shipped && existing.content_hash !== hash) {
-        store.updateSkill(existing.id, { display_name: skill.display_name, description: skill.description, body, version: existing.version + 1, content_hash: hash })
-        store.setSetting(`${key}_hash`, hash)
-      }
-    }
-    const registerMemorySkill = () => { for (const entry of factorySkills) registerFactorySkill(entry) }
+    const registerMemorySkill = () => { for (const entry of factorySkills) applyFactorySkill(store, owner, entry.key, entry.skill) }
     if (process.env.AGENTHUB_MEMORY_DATABASE_URL || memory.service.vault.has('database')) registerCatalog()
     fastify.addHook('onResponse', async request => { if (request.url === '/api/memory/database' && request.method === 'PUT' && memory.service.vault.has('database')) registerCatalog() })
   }

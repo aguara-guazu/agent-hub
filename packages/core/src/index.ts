@@ -25,6 +25,8 @@ export { probeServer, type ProbeResult, type DiscoveredTool } from './catalog/pr
 export { applyProbeResult, QUARANTINE_TOOL_MISSING, type SyncOutcome } from './catalog/reconcile.js'
 export { ProbeRetryScheduler, DEFAULT_PROBE_RETRY_MS, isConfigured, isEnabledForOwner, needsRetry, type ProbeRetryDeps } from './catalog/retry.js'
 export { applyStarterCatalog, STARTER_SERVERS, STARTER_CATALOG_VERSION, type StarterServer, type StarterOutcome } from './catalog/starter.js'
+export { applyFactorySkill, type FactorySkill, type FactorySkillOutcome } from './catalog/factory-skills.js'
+export { hubSkill, renderHubSkill, HUB_SKILL_SLUG, HUB_SKILL_DISPLAY_NAME, HUB_SKILL_DESCRIPTION } from './catalog/hub-skill.js'
 export {
   QUARANTINE_DEFINITION_CHANGED,
   definitionHash,
