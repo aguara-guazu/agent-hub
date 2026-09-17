@@ -323,6 +323,13 @@ label.matrix-check:has(input:disabled) { color: var(--text-faint); cursor: not-a
   font-weight: 500;
 }
 .cell-quarantined .cell-text { text-decoration: line-through; text-decoration-thickness: 1px; }
+.cell-unsupported {
+  background: transparent;
+  border-color: var(--border-soft);
+  border-style: dashed;
+  color: var(--text-faint);
+  font-weight: 500;
+}
 
 .cell-none {
   border-color: var(--border-soft);

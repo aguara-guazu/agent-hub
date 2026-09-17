@@ -151,6 +151,8 @@
 .hub-client-logo.claude_code { color: #dba68e; background: #3e2e29; }
 .hub-client-logo.gemini_cli { color: #a2bdd9; background: #28333f; }
 .hub-client-logo.kiro { color: #c2acd7; background: #342b3e; }
+.hub-client-logo.claude_desktop { color: #e8c4a0; background: #4a3628; }
+.hub-client-logo.opencode { color: #b8d4b0; background: #2b3a2b; }
 .hub-client-card h2 { font-size: 16px; margin-bottom: 9px; }
 .hub-client-counts { display: flex; gap: 20px; font-size: 10px; color: var(--text-muted); margin: 22px 0; padding-bottom: 18px; border-bottom: 1px solid var(--border-soft); }
 .hub-client-counts strong { color: var(--text-secondary); font-weight: 550; margin-right: 5px; }

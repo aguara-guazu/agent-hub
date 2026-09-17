@@ -5,7 +5,7 @@
  * resolución se carga una sola vez por cliente y todas las celdas se resuelven en memoria.
  * La decisión de cada celda sale de `resolveResource`, nunca de una copia de la precedencia.
  */
-import { CLI_HOT_RELOAD, type CliKind, type PropagationState, type RuleState } from '@agenthub/shared'
+import { CLI_FILE_SKILLS, CLI_HOT_RELOAD, type CliKind, type PropagationState, type RuleState } from '@agenthub/shared'
 import type { Store } from './store.js'
 import { cmp } from './store.js'
 import {
@@ -215,7 +215,11 @@ export function buildMatrix(store: Store, user: User): MatrixResponse {
         label: skill.display_name,
         parentId: null,
         description: skill.description,
-        decide: (ctx) => resolveResource(ctx, RESOURCE.skill, skill.id),
+        // Un cliente sin skills en disco no tiene celda que decidir: la compuerta
+        // `unsupported` se muestra estática, como la cuarentena.
+        decide: (ctx) => (CLI_FILE_SKILLS[ctx.agent.cli_kind as CliKind] ?? true)
+          ? resolveResource(ctx, RESOURCE.skill, skill.id)
+          : { exposed: false, source: 'unsupported', detail: 'Este cliente no carga skills desde el disco: se suben desde la propia app.' },
       }),
     )
   }

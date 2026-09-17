@@ -2,7 +2,7 @@
 
 export type OrgRole = 'owner' | 'admin' | 'member'
 export type SquadRole = 'lead' | 'member'
-export type CliKind = 'claude_code' | 'codex_cli' | 'gemini_cli' | 'kiro'
+export type CliKind = 'claude_code' | 'codex_cli' | 'gemini_cli' | 'kiro' | 'claude_desktop' | 'opencode'
 export type Transport = 'stdio' | 'http'
 export type ServerAuth = 'none' | 'oauth'
 export type OAuthStatus = 'none' | 'required' | 'authorized'
@@ -22,6 +22,8 @@ export const CLI_LABELS: Record<CliKind, string> = {
   codex_cli: 'Codex CLI',
   gemini_cli: 'Gemini CLI',
   kiro: 'Kiro',
+  claude_desktop: 'Claude Desktop',
+  opencode: 'OpenCode',
 }
 
 /** Solo Claude Code refresca su lista de herramientas en caliente. Los demas la
@@ -31,6 +33,18 @@ export const CLI_HOT_RELOAD: Record<CliKind, boolean> = {
   codex_cli: false,
   gemini_cli: false,
   kiro: false,
+  claude_desktop: false,
+  opencode: false,
+}
+
+/** Si el cliente carga skills desde el disco. Claude Desktop sólo las acepta subidas desde su interfaz. */
+export const CLI_FILE_SKILLS: Record<CliKind, boolean> = {
+  claude_code: true,
+  codex_cli: true,
+  gemini_cli: true,
+  kiro: true,
+  claude_desktop: false,
+  opencode: true,
 }
 
 export interface User {

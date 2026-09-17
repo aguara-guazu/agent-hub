@@ -61,12 +61,12 @@ import {
   verifyPassword,
 } from './security.js'
 import type { AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, User } from './types.js'
-import type { CliKind } from '@agenthub/shared'
+import { CLI_KINDS as SHARED_CLI_KINDS, type CliKind } from '@agenthub/shared'
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
 import { registerMemory, memoryTools, memorySkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
 
-const CLI_KINDS = ['claude_code', 'codex_cli', 'gemini_cli', 'kiro']
+const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
 const ORG_ROLES = ['owner', 'admin', 'member']
 
 /** Error HTTP con código explícito, como las `HTTPException` del backend. */

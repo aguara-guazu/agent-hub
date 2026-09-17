@@ -18,6 +18,10 @@ export const CLIENT_PREFIXES: Record<string, string> = {
   codex_cli: `${SERVER_ALIAS}__`,
   gemini_cli: `${SERVER_ALIAS}__`,
   kiro: `${SERVER_ALIAS}___`,
+  // Anthropic no documenta el prefijo de Claude Desktop; se toma el genérico.
+  claude_desktop: `${SERVER_ALIAS}__`,
+  // OpenCode registra `<server>_<tool>`: https://opencode.ai/docs/mcp-servers/
+  opencode: `${SERVER_ALIAS}_`,
 }
 
 export const HARD_LIMIT = 64

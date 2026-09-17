@@ -6,7 +6,7 @@
 #   SKIP_PACKAGE=1 make install-app   # reutiliza release/ sin volver a empaquetar
 #
 # Cierra sólo la app de escritorio en ejecución; los puentes headless que tienen
-# abiertos los CLIs (Claude Code, Codex, Gemini, Kiro) siguen vivos hasta que cada
+# abiertos los clientes (Claude Code, Codex, Gemini, Kiro, OpenCode, Claude Desktop) siguen vivos hasta que cada
 # sesión termine. Si había un ítem de inicio de sesión apuntando a otra copia, lo
 # reemplaza por la copia instalada.
 set -euo pipefail

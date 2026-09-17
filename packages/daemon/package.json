@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/daemon",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "type": "module",
   "bin": { "agenthub": "./dist/cli.js" },
@@ -16,8 +16,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/gateway": "0.3.4",
-    "@agenthub/shared": "0.3.4",
+    "@agenthub/gateway": "0.3.5",
+    "@agenthub/shared": "0.3.5",
     "@iarna/toml": "2.2.5"
   }
 }

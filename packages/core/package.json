@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/core",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "type": "module",
   "exports": {
@@ -16,9 +16,9 @@
     "seed": "tsx src/seed.ts"
   },
   "dependencies": {
-    "@agenthub/memory": "0.3.4",
-    "@agenthub/gateway": "0.3.4",
-    "@agenthub/shared": "0.3.4",
+    "@agenthub/memory": "0.3.5",
+    "@agenthub/gateway": "0.3.5",
+    "@agenthub/shared": "0.3.5",
     "@fastify/cors": "11.1.0",
     "@fastify/static": "10.1.3",
     "@modelcontextprotocol/sdk": "1.30.0",

@@ -1,7 +1,7 @@
 import { memoryTools } from './operations.js'
 
 /**
- * Skill de fábrica que enseña a cualquier cliente (Claude Code, Codex, Gemini, Kiro) a usar y recorrer la memoria.
+ * Skill de fábrica que enseña a cualquier cliente (Claude Code, Codex, Gemini, Kiro, OpenCode) a usar y recorrer la memoria.
  * El daemon la materializa como SKILL.md; el frontmatter lo agrega él a partir de slug y descripción.
  * La referencia de herramientas se genera desde las operaciones reales para que nunca quede desactualizada.
  */

@@ -1,6 +1,6 @@
 # Agent Hub
 
-Agent Hub es una aplicación de escritorio para administrar los MCP servers y skills de una persona y decidir en qué cliente aparece cada herramienta. Se instala una vez, corre en segundo plano desde el tray y configura Claude Code, Codex CLI, Gemini CLI y Kiro con una única entrada `hub`.
+Agent Hub es una aplicación de escritorio para administrar los MCP servers y skills de una persona y decidir en qué cliente aparece cada herramienta. Se instala una vez, corre en segundo plano desde el tray y configura Claude Code, Codex CLI, Gemini CLI, Kiro, OpenCode y Claude Desktop con una única entrada `hub`.
 
 La propiedad central sigue siendo verificable: **si apagás una herramienta, la llamada siguiente se deniega aunque la sesión MCP ya estuviera abierta y nunca alcanza al upstream**.
 
@@ -32,7 +32,7 @@ curl -fL "https://github.com/aguara-guazu/agent-hub/releases/latest/download/Age
 
 Es la versión portable, sin instalar nada. Para Debian y Ubuntu hay `.deb` (`AgentHub-amd64.deb` y `AgentHub-arm64.deb`) que se instalan con `sudo apt install ./AgentHub-amd64.deb`. El ícono queda en la bandeja del sistema.
 
-**Primer arranque.** La app deja un catálogo inicial de MCP servers públicos listos para «Conectar cuenta», detecta los clientes instalados (Claude Code, Codex CLI, Gemini CLI y Kiro) y escribe en cada uno una única entrada `hub`. No hace falta cuenta ni otro equipo.
+**Primer arranque.** La app deja un catálogo inicial de MCP servers públicos listos para «Conectar cuenta», detecta los clientes instalados (Claude Code, Codex CLI, Gemini CLI, Kiro, OpenCode y Claude Desktop) y escribe en cada uno una única entrada `hub`. No hace falta cuenta ni otro equipo.
 
 **Actualizaciones automáticas.** La app revisa las releases de GitHub al arrancar y cada seis horas. En macOS, con el instalador de Windows y con el AppImage de Linux baja la versión nueva y se reinstala sola: si la ventana está cerrada lo hace en el acto, y si está abierta espera a que la cierres o a que elijas «Reiniciar para actualizar» en el menú de la barra. El zip portable de Windows y el `.deb` sólo avisan con un enlace a la release. `AGENTHUB_NO_AUTO_UPDATE=1` lo desactiva.
 
@@ -188,8 +188,14 @@ Rutas administradas:
 | Codex CLI | `~/.codex/config.toml` | `~/.codex/skills/` |
 | Gemini CLI | `~/.gemini/settings.json` | `~/.gemini/skills/` |
 | Kiro | `~/.kiro/settings/mcp.json` | `~/.kiro/skills/` |
+| OpenCode | `~/.config/opencode/opencode.json` | `~/.config/opencode/skills/` |
+| Claude Desktop | macOS: `~/Library/Application Support/Claude/claude_desktop_config.json` · Windows: `%APPDATA%\Claude\claude_desktop_config.json` | no carga skills desde el disco |
 
 Las skills se guardan una vez en `~/.agenthub/skills/` y se enlazan a cada cliente. Si el sistema no permite symlinks, el materializador usa una copia administrada por manifiesto.
+
+**Claude Desktop** (la app de chat, no Claude Code) sólo admite servers stdio en su archivo, relee la configuración al salir por completo y volver a abrir la app, y no carga skills desde el disco: se suben como ZIP desde Personalizar → Skills ([documentación](https://support.claude.com/en/articles/12512180-use-skills-in-claude)). Por eso el snapshot no le envía skills y la matriz muestra esas celdas como «No aplica». La pestaña Code de esa app es Claude Code y usa `~/.claude/skills`. Sólo se detecta en macOS y Windows, las plataformas cuya ruta documenta la [guía de MCP](https://modelcontextprotocol.io/docs/develop/connect-local-servers).
+
+**OpenCode** respeta `XDG_CONFIG_HOME`, fusiona `opencode.jsonc` por encima del `.json` (el hub sólo administra el `.json`), no relee la configuración en caliente y nombra las herramientas `<server>_<tool>`, así que el modelo ve `hub_<nombre>` ([documentación](https://opencode.ai/docs/mcp-servers/)). Exige que el `name` de una skill cumpla `^[a-z0-9]+(-[a-z0-9]+)*$`: una skill con `.` o `_` en el slug se enlaza igual pero OpenCode la ignora. También lee `~/.claude/skills` y `~/.agents/skills`, así que con Claude Code instalado ve las mismas skills por dos rutas ([documentación](https://opencode.ai/docs/skills/)).
 
 Junto con el catálogo inicial, el hub instala la skill de fábrica **`agent-hub`** («Usar Agent Hub») y la expone a todos los clientes: explica cómo llegan las herramientas por el servidor `hub` y cómo se nombran, qué hacer cuando una está apagada o pide autorizar la cuenta, qué fuente preferir según el tema (para cualquier consulta sobre AWS, usar primero AWS Knowledge si está disponible y, si no, buscar en internet citando la fuente) y qué servers vienen de fábrica, lista que se genera desde el propio catálogo. Sigue las mismas reglas de actualización que las demás skills de fábrica y se desactiva con el mismo `AGENTHUB_STARTER_CATALOG=0`.
 

@@ -20,6 +20,7 @@ import { SCOPE_LABELS, WRITE_LEVELS, propagationMessage } from './ToggleCell'
  *  Refleja la cadena de decisiones de `packages/core/src/policy/resolver.ts`. */
 const GATE_TITLES: Record<string, string> = {
   quarantine: 'En cuarentena',
+  unsupported: 'No aplica en este cliente',
   server_off: 'El MCP server no está expuesto',
   not_found: 'El recurso no existe',
   inherited_from_server: 'Heredado del MCP server',

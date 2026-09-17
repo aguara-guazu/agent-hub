@@ -81,6 +81,8 @@ const LABELS: Record<string, string> = {
   codex_cli: 'Codex CLI',
   gemini_cli: 'Gemini CLI',
   kiro: 'Kiro',
+  claude_desktop: 'Claude Desktop',
+  opencode: 'OpenCode',
 }
 
 function label(cliKind: string): string {

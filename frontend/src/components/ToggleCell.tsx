@@ -37,6 +37,7 @@ export type CellVisual =
   | 'off_own'
   | 'off_inherited'
   | 'quarantined'
+  | 'unsupported'
 
 /** Orden de la cadena de precedencia, el mismo de `resolver.LEVEL_ORDER`. */
 export const WRITE_LEVELS: readonly RuleScope[] = ['user', 'client']
@@ -53,6 +54,7 @@ export const VISUAL_LABELS: Record<CellVisual, string> = {
   off_own: 'OFF propio',
   off_inherited: 'OFF heredado',
   quarantined: 'En cuarentena',
+  unsupported: 'No aplica',
 }
 
 const VISUAL_HINTS: Record<CellVisual, string> = {
@@ -62,11 +64,13 @@ const VISUAL_HINTS: Record<CellVisual, string> = {
   off_own: 'lo apagaste en este nivel',
   off_inherited: 'lo apagaste para todos tus clientes',
   quarantined: 'el server cambió su definición y espera que la mires',
+  unsupported: 'este cliente no admite el recurso',
 }
 
 /** Motivos del resolver que no son un nivel de la cadena. */
 const GATE_REASONS: Record<string, string> = {
   quarantine: 'la herramienta está en cuarentena',
+  unsupported: 'el cliente no admite este recurso',
   server_off: 'el MCP server que la contiene no está expuesto',
   not_found: 'el recurso ya no existe',
   default_on: 'es tuyo y no lo apagaste en ningún nivel',
@@ -101,6 +105,7 @@ export function rowOwnRuleAtScope(row: MatrixRow, scope: RuleScope): RuleState |
 
 export function cellVisual(row: MatrixRow, cell: MatrixCell, scope: RuleScope): CellVisual {
   if (cell.source === 'quarantine') return 'quarantined'
+  if (cell.source === 'unsupported') return 'unsupported'
   const own = ownRuleAtScope(cell, scope, row)
   if (cell.exposed) {
     if (own === 'on') return 'on_own'
@@ -196,6 +201,13 @@ function StateIcon({ visual }: { visual: CellVisual }) {
           <circle cx="8" cy="11.4" r="0.95" fill={stroke} />
         </svg>
       )
+    case 'unsupported':
+      return (
+        <svg {...common}>
+          <circle cx="8" cy="8" r="6.5" fill="none" stroke={stroke} strokeWidth="1.4" strokeDasharray="2 2" />
+          <path d="M5 8h6" fill="none" stroke={stroke} strokeWidth="1.6" />
+        </svg>
+      )
   }
 }
 
@@ -284,7 +296,7 @@ export function ToggleCell({
   }
 
   const visual = cellVisual(row, cell, scope)
-  const interactive = visual !== 'quarantined'
+  const interactive = visual !== 'quarantined' && visual !== 'unsupported'
   const own = ownRuleAtScope(cell, scope, row)
   const label = VISUAL_LABELS[visual]
 
@@ -292,6 +304,8 @@ export function ToggleCell({
   if (visual === 'quarantined') {
     if (cell.detail) reasons.push(cell.detail)
     reasons.push('Tocar el toggle no va a servir: revisá la definición nueva en el catálogo.')
+  } else if (visual === 'unsupported') {
+    if (cell.detail) reasons.push(cell.detail)
   } else {
     if (cell.detail) reasons.push(cell.detail)
     else if (GATE_REASONS[cell.source]) reasons.push(GATE_REASONS[cell.source])

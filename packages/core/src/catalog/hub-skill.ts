@@ -23,7 +23,7 @@ Agent Hub es el hub local de MCP servers y skills de la persona. Este agente ve 
 ## Cómo se nombran las herramientas
 
 - Cada herramienta llega como \`<server>_<herramienta>\`: el identificador del MCP server y el nombre original de la herramienta, ambos normalizados a minúsculas, dígitos y guiones bajos (los guiones y las secuencias de guiones bajos se reducen a un solo \`_\`). Por ejemplo, \`aws___search_documentation\` del server \`aws-knowledge\` llega como \`aws_knowledge_aws_search_documentation\`, y \`search\` del server \`memory\` como \`memory_search\`.
-- Según el cliente, el nombre completo lleva un prefijo: \`mcp__hub__\` en Claude Code, \`hub__\` en Codex y Gemini, \`hub___\` en Kiro.
+- Según el cliente, el nombre completo lleva un prefijo: \`mcp__hub__\` en Claude Code, \`hub__\` en Codex y Gemini, \`hub___\` en Kiro, \`hub_\` en OpenCode. Claude Desktop no documenta el suyo.
 - Si un nombre no entra en el límite del cliente, se acorta y termina en un sufijo estable de seis caracteres.
 
 ## Cuando una herramienta falta, está apagada o pide autorización

@@ -14,7 +14,7 @@
  * el `ORDER BY` del motor, porque de ese orden dependen el `snapshot_hash` y la
  * asignación de `exposed_name`.
  */
-import { snapshotHash, type PolicySnapshot, type ResourceType } from '@agenthub/shared'
+import { CLI_FILE_SKILLS, snapshotHash, type CliKind, type PolicySnapshot, type ResourceType } from '@agenthub/shared'
 import { buildExposedName } from '../naming.js'
 import type { Store } from '../store.js'
 import { cmp } from '../store.js'
@@ -218,7 +218,10 @@ export function computeSnapshot(
   }
 
   const skills: PolicySnapshot['skills'] = []
-  for (const skill of context.skills) {
+  // Un cliente sin skills en disco (Claude Desktop) no recibe skills ni las lista como denegadas:
+  // el daemon no tendría dónde materializarlas.
+  const fileSkills = CLI_FILE_SKILLS[context.agent.cli_kind as CliKind] ?? true
+  for (const skill of fileSkills ? context.skills : []) {
     const skillDecision = resolveResource(context, RESOURCE.skill, skill.id)
     if (!skillDecision.exposed) {
       denied.push({ resource_type: RESOURCE.skill, resource_id: skill.id, slug: skill.slug, ...skillDecision })

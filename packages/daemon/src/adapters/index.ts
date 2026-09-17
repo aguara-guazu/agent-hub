@@ -11,18 +11,22 @@
 
 import { CLI_KINDS, type CliAdapter, type DetectionResult, type GatewayEndpoint, type Snapshot } from './base.js'
 import { ClaudeCodeAdapter } from './claude_code.js'
+import { ClaudeDesktopAdapter } from './claude_desktop.js'
 import { CodexCliAdapter } from './codex_cli.js'
 import { GeminiCliAdapter } from './gemini_cli.js'
 import { KiroAdapter } from './kiro.js'
+import { OpenCodeAdapter } from './opencode.js'
 import type { FileChange } from './atomic.js'
 
 export * from './atomic.js'
 export * from './base.js'
 export * from './skills.js'
 export { ClaudeCodeAdapter } from './claude_code.js'
+export { ClaudeDesktopAdapter } from './claude_desktop.js'
 export { CodexCliAdapter } from './codex_cli.js'
 export { GeminiCliAdapter } from './gemini_cli.js'
 export { KiroAdapter } from './kiro.js'
+export { OpenCodeAdapter } from './opencode.js'
 
 /** Un adaptador por CLI soportado. La clave es el `cli_kind` del control plane. */
 export const ADAPTERS: Record<string, CliAdapter> = {
@@ -30,6 +34,8 @@ export const ADAPTERS: Record<string, CliAdapter> = {
   codex_cli: new CodexCliAdapter(),
   gemini_cli: new GeminiCliAdapter(),
   kiro: new KiroAdapter(),
+  claude_desktop: new ClaudeDesktopAdapter(),
+  opencode: new OpenCodeAdapter(),
 }
 
 export function adapterFor(cliKind: string): CliAdapter {

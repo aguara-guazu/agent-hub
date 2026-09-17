@@ -19,7 +19,7 @@ import type { DriftItem, DriftReport, FileChange } from './atomic.js'
 
 export { SERVER_ALIAS }
 
-export const CLI_KINDS = ['claude_code', 'codex_cli', 'gemini_cli', 'kiro'] as const
+export const CLI_KINDS = ['claude_code', 'codex_cli', 'gemini_cli', 'kiro', 'claude_desktop', 'opencode'] as const
 
 const TRANSPORT_STDIO = 'stdio'
 

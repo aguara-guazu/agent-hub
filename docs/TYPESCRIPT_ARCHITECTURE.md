@@ -8,7 +8,7 @@ Agent Hub se distribuye como una aplicación Electron y usa exclusivamente TypeS
 
 - `packages/shared`: tipos, esquemas, nombres expuestos, JSON canónico y hashes. No accede a disco ni red.
 - `packages/core`: SQLite, migraciones, autenticación, catálogo, políticas, matriz, snapshots, auditoría y API HTTP compatible bajo `/api`.
-- `packages/daemon`: estado en disco, sincronización, adaptadores de Claude/Codex/Gemini/Kiro, materialización de skills, secretos y selección de runtime.
+- `packages/daemon`: estado en disco, sincronización, adaptadores de Claude Code/Codex/Gemini/Kiro/OpenCode/Claude Desktop, materialización de skills, secretos y selección de runtime.
 - `packages/gateway`: servidor MCP headless por stdio, política por llamada, pool de upstreams stdio/HTTP y auditoría al core.
 - `desktop`: proceso principal Electron, tray, single-instance, inicio al login, supervisor del core y enlaces IPC mínimos.
 - `frontend`: renderer React/Vite existente, consumiendo la misma API y tipos compartidos.

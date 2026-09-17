@@ -186,8 +186,8 @@ describe('detección y registro', () => {
 })
 
 describe('registro de adaptadores', () => {
-  it('tiene los cuatro CLIs', () => {
-    expect(Object.keys(ADAPTERS).sort()).toEqual(['claude_code', 'codex_cli', 'gemini_cli', 'kiro'])
+  it('tiene un adaptador por CLI soportado', () => {
+    expect(Object.keys(ADAPTERS).sort()).toEqual(['claude_code', 'claude_desktop', 'codex_cli', 'gemini_cli', 'kiro', 'opencode'])
     expect(new ClaudeCodeAdapter().cliKind).toBe('claude_code')
     expect(new CodexCliAdapter().cliKind).toBe('codex_cli')
     expect(new GeminiCliAdapter().cliKind).toBe('gemini_cli')

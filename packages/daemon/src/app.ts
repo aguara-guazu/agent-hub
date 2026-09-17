@@ -97,8 +97,9 @@ export interface EnrollResult {
 export function detectClis(home: string): DetectionSummary {
   const found = detectAll(home)
   const seen = new Set(found.map((f) => f.cliKind))
-  const binaries: Record<string, string> = { claude_code: 'claude', codex_cli: 'codex', gemini_cli: 'gemini', kiro: 'kiro-cli' }
-  const directories = [join(home, '.local/bin'), join(home, '.cargo/bin'),
+  // Claude Desktop no tiene binario en el PATH: lo detecta su adaptador por el directorio de datos.
+  const binaries: Record<string, string> = { claude_code: 'claude', codex_cli: 'codex', gemini_cli: 'gemini', kiro: 'kiro-cli', opencode: 'opencode' }
+  const directories = [join(home, '.local/bin'), join(home, '.cargo/bin'), join(home, '.opencode/bin'),
     ...(resolve(home) === resolve(homedir()) ? (process.env.PATH ?? '').split(delimiter) : []),
   ]
   for (const [kind, binary] of Object.entries(binaries)) {
@@ -106,7 +107,7 @@ export function detectClis(home: string): DetectionSummary {
     const executable = directories.flatMap(dir => platform() === 'win32' ? [join(dir, binary + '.exe'), join(dir, binary + '.cmd')] : [join(dir, binary)])
       .find(path => { try { accessSync(path, constants.X_OK); return true } catch { return false } })
     if (!executable) continue
-    const paths: Record<string, string> = { claude_code: '.claude.json', codex_cli: '.codex/config.toml', gemini_cli: '.gemini/settings.json', kiro: '.kiro/settings/mcp.json' }
+    const paths: Record<string, string> = { claude_code: '.claude.json', codex_cli: '.codex/config.toml', gemini_cli: '.gemini/settings.json', kiro: '.kiro/settings/mcp.json', opencode: '.config/opencode/opencode.json' }
     found.push({ cliKind: kind, home, configPath: join(home, paths[kind]!), evidence: executable, version: '' })
     seen.add(kind)
   }
