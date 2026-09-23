@@ -14,6 +14,8 @@
  * llamada viaja su digest (`args_digest`), calculado en el gateway.
  */
 
+import type { AccountSkillsReport } from './adapters/claude_desktop.js'
+import type { ExternalSkill, ExternalSkillsOutcome } from './external_skills.js'
 import type { DaemonState } from './state.js'
 
 export const DEFAULT_MAX_ATTEMPTS = 5
@@ -232,7 +234,14 @@ export class SyncClient {
   /** `POST /sync/report`. Cada campo omitido significa 'sin novedades'. */
   async report(
     agentId: string,
-    fields: { listedHash?: string; connected?: boolean; driftDetected?: boolean; driftDetail?: string; syncedHash?: string } = {},
+    fields: {
+      listedHash?: string
+      connected?: boolean
+      driftDetected?: boolean
+      driftDetail?: string
+      syncedHash?: string
+      accountSkills?: AccountSkillsReport
+    } = {},
   ): Promise<void> {
     const body: Record<string, unknown> = { agent_id: agentId }
     if (fields.listedHash !== undefined) body['listed_hash'] = fields.listedHash
@@ -240,7 +249,19 @@ export class SyncClient {
     if (fields.driftDetected !== undefined) body['drift_detected'] = fields.driftDetected
     if (fields.driftDetail !== undefined) body['drift_detail'] = fields.driftDetail
     if (fields.syncedHash !== undefined) body['synced_hash'] = fields.syncedHash
+    if (fields.accountSkills !== undefined) body['account_skills'] = fields.accountSkills
     await this.request('POST', '/sync/report', { json: body })
+  }
+
+  /** `PUT /sync/external-skills`: foto completa de la biblioteca de skills de la máquina. */
+  async putExternalSkills(skills: readonly ExternalSkill[]): Promise<ExternalSkillsOutcome> {
+    const response = await this.request('PUT', '/sync/external-skills', { json: { skills } })
+    const data = await asDict(response)
+    const names = (value: unknown): string[] => (Array.isArray(value) ? value.map((item) => String(item)) : [])
+    const skipped = Array.isArray(data['skipped'])
+      ? (data['skipped'] as Array<Record<string, unknown>>).map((item) => ({ slug: String(item['slug'] ?? ''), reason: String(item['reason'] ?? '') }))
+      : []
+    return { created: names(data['created']), updated: names(data['updated']), removed: names(data['removed']), skipped }
   }
 
   /** `POST /sync/tool-call`. Viaja el digest de los argumentos, nunca los argumentos. */

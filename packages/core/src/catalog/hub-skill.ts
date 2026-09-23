@@ -18,7 +18,7 @@ export function renderHubSkill(servers: readonly StarterServer[] = STARTER_SERVE
   const factory = servers.map(s => `- **${s.display_name}** (\`${s.slug}\`): ${s.description}`).join('\n')
   return `# Usar Agent Hub
 
-Agent Hub es el hub local de MCP servers y skills de la persona. Este agente ve un único servidor MCP, \`hub\`, que reúne las herramientas de todos los MCP servers habilitados para él. La lista de herramientas la decide el hub según la política vigente: qué servers están conectados y encendidos para este cliente. Las skills que instala el hub, esta incluida, llegan por la carpeta de skills de cada cliente.
+Agent Hub es el hub local de MCP servers y skills de la persona. Este agente ve un único servidor MCP, \`hub\`, que reúne las herramientas de todos los MCP servers habilitados para él. La lista de herramientas la decide el hub según la política vigente: qué servers están conectados y encendidos para este cliente. Las skills que instala el hub, esta incluida, llegan por la carpeta de skills de cada cliente; en Claude Desktop, que no lee skills del disco, llegan por la herramienta \`use_skill\` del mismo servidor \`hub\`: su descripción lista las skills habilitadas y la llamada con el slug devuelve el SKILL.md completo (con \`file\`, un archivo auxiliar de la skill).
 
 ## Cómo se nombran las herramientas
 

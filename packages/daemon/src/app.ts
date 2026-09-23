@@ -17,9 +17,11 @@ import {
   adapterFor,
   applyChanges,
   CLI_KINDS,
+  ClaudeDesktopAdapter,
   detectAll,
   exposedNameOf,
   gatewayEndpoint,
+  type AccountSkillsReport,
   type ApplyResult,
   type DetectionResult,
   type DriftItem,
@@ -27,6 +29,13 @@ import {
   type GatewayEndpoint,
   type Snapshot,
 } from './adapters/index.js'
+import {
+  scanDigest,
+  scanExternalSkills,
+  watchExternalSkills,
+  type ExternalScan,
+  type ExternalSkillsOutcome,
+} from './external_skills.js'
 import {
   configApiBase,
   gatewayArgs,
@@ -81,7 +90,18 @@ export interface AgentPass {
 export interface SyncReport {
   agents: AgentPass[]
   bootstrapError: string
+  /** Qué cambió en el catálogo por la biblioteca de skills; `null` si no hubo nada nuevo que reportar. */
+  externalSkills?: ExternalSkillsOutcome | null
+  externalScan?: ExternalScan | null
+  externalError?: string
 }
+
+/** Cada cuánto se vuelve a recorrer la biblioteca aunque el observador no haya avisado. */
+const EXTERNAL_RESCAN_MS = 60_000
+/** Cada cuánto se recalcula la caché de skills de la cuenta de Claude Desktop sin cambios visibles. */
+const ACCOUNT_RECHECK_MS = 5 * 60_000
+/** Único cliente que recibe las skills por herramienta y guarda una caché de su cuenta. */
+const DESKTOP_KIND: CliKind = 'claude_desktop'
 
 export interface EnrollResult {
   machineId: string
@@ -128,6 +148,7 @@ export function normalizeToolName(raw: string): string {
 export function diffFor(change: FileChange): string {
   if (change.action === 'delete') return `- borrar ${change.path}`
   if (change.action === 'symlink') return `+ enlazar ${change.path} -> ${change.target ?? ''}`
+  if (change.action === 'adopt') return `= adoptar ${change.path} (ya enlaza a ${change.target ?? ''})`
   const lines = change.content.split('\n')
   const preview = lines.slice(0, 20)
   const suffix = lines.length > 20 ? [`… (${lines.length - 20} líneas más)`] : []
@@ -149,6 +170,10 @@ export class DaemonApp {
   readonly state: DaemonState
   private readonly fetcher: Fetcher | undefined
   private readonly maxAttempts: number
+  private externalDirty = true
+  private externalScannedAt = 0
+  private externalDigest = ''
+  private readonly accountMemo = new Map<string, { stamp: string; report: AccountSkillsReport | null }>()
 
   constructor(config: DaemonConfig, options: { fetcher?: Fetcher; maxAttempts?: number } = {}) {
     this.config = config
@@ -370,6 +395,19 @@ export class DaemonApp {
       }
     }
 
+    let externalSkills: ExternalSkillsOutcome | null = null
+    let externalScan: ExternalScan | null = null
+    let externalError = ''
+    if (credentials !== null && bootstrapError === '') {
+      try {
+        const result = await this.syncExternalSkills(this.clientFor(credentials))
+        externalSkills = result.outcome
+        externalScan = result.scan
+      } catch (exc) {
+        externalError = (exc as Error).message
+      }
+    }
+
     const passes: AgentPass[] = []
     const sync =
       credentials !== null ? new SnapshotSync(this.clientFor(credentials), this.state, { pollSeconds: this.config.pollSeconds }) : null
@@ -381,7 +419,50 @@ export class DaemonApp {
       passes.push(pass)
     }
 
-    return { agents: passes, bootstrapError }
+    return { agents: passes, bootstrapError, externalSkills, externalScan, externalError }
+  }
+
+  /**
+   * Recorre `~/.agents/skills` cuando el observador avisó o venció el plazo, y manda la foto
+   * al core sólo si cambió respecto de la última que aceptó. Devuelve el recorrido siempre
+   * que lo haya hecho, y el resultado del core sólo cuando le mandó algo.
+   */
+  async syncExternalSkills(client: SyncClient): Promise<{ scan: ExternalScan | null; outcome: ExternalSkillsOutcome | null }> {
+    const now = Date.now()
+    if (!this.externalDirty && now - this.externalScannedAt < EXTERNAL_RESCAN_MS) return { scan: null, outcome: null }
+    this.externalDirty = false
+    this.externalScannedAt = now
+    const scan = scanExternalSkills(this.home)
+    const digest = scanDigest(scan)
+    if (digest === this.externalDigest) return { scan, outcome: null }
+    try {
+      const outcome = await client.putExternalSkills(scan.skills)
+      this.externalDigest = digest
+      return { scan, outcome }
+    } catch (exc) {
+      // El reporte se reintenta en el próximo plazo; mientras tanto el catálogo conserva la foto anterior.
+      this.externalDirty = true
+      throw exc
+    }
+  }
+
+  /** Observa la biblioteca para adelantar el reescaneo. Devuelve cómo dejar de observar. */
+  watchExternalSkills(): () => void {
+    return watchExternalSkills(this.home, () => {
+      this.externalDirty = true
+    })
+  }
+
+  /** Estado de las skills del snapshot en la cuenta de claude.ai de Claude Desktop, con memoria por pasada. */
+  private accountSkillsFor(agent: AgentInstance, snapshot: Snapshot, snapshotHash: string): AccountSkillsReport | null {
+    if (agent.cliKind !== DESKTOP_KIND) return null
+    const adapter = adapterFor(agent.cliKind) as ClaudeDesktopAdapter
+    const stamp = `${snapshotHash}|${adapter.accountCacheStamp(this.home)}|${Math.floor(Date.now() / ACCOUNT_RECHECK_MS)}`
+    const memo = this.accountMemo.get(agent.id)
+    if (memo !== undefined && memo.stamp === stamp) return memo.report
+    const report = adapter.readAccountSkills(snapshot, this.home)
+    this.accountMemo.set(agent.id, { stamp, report })
+    return report
   }
 
   private async processAgent(
@@ -438,10 +519,12 @@ export class DaemonApp {
     const credentials = this.state.loadCredentials()
     if (credentials) {
       const allDrift = [...drift, ...applied.drift]
+      const accountSkills = this.accountSkillsFor(agent, snapshot, base.snapshotHash)
       await this.clientFor(credentials).report(agent.id, {
         driftDetected: allDrift.length > 0,
         driftDetail: allDrift.map(d => `${d.path}: ${d.reason}`).join('\n'),
         syncedHash: allDrift.length === 0 ? base.snapshotHash : '',
+        ...(accountSkills !== null ? { accountSkills } : {}),
       }).catch(() => undefined)
     }
     return { ...base, changes, drift, applied, skipped: '' }

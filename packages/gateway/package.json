@@ -1,9 +1,11 @@
 {
   "name": "@agenthub/gateway",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "type": "module",
-  "bin": { "agenthub-gateway": "./dist/gateway-cli.js" },
+  "bin": {
+    "agenthub-gateway": "./dist/gateway-cli.js"
+  },
   "exports": {
     ".": "./dist/index.js",
     "./headless": "./dist/headless.js"
@@ -15,8 +17,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/shared": "0.3.5",
+    "@agenthub/shared": "0.3.6",
     "@modelcontextprotocol/sdk": "1.30.0"
   },
-  "devDependencies": { "@agenthub/testdata": "0.3.5" }
+  "devDependencies": {
+    "@agenthub/testdata": "0.3.6"
+  }
 }

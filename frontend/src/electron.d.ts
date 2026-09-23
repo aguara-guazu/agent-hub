@@ -21,6 +21,11 @@ export interface CoreStatus {
   daemonState?: CoreState
 }
 
+export interface ClientRestartResult {
+  ok: boolean
+  detail: string
+}
+
 export interface AgentHubBridge {
   getCoreStatus(): Promise<CoreStatus>
   restartCore(): Promise<void>
@@ -30,6 +35,8 @@ export interface AgentHubBridge {
   readonly platform: NodeJS.Platform
   getSession(): Promise<string>
   syncNow(): Promise<void>
+  /** Cierra y vuelve a abrir un cliente de escritorio (hoy sólo `claude_desktop`). */
+  restartClient(cliKind: string): Promise<ClientRestartResult>
 }
 
 declare global {

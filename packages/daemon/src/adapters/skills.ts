@@ -1,18 +1,21 @@
 /**
  * Materialización de skills en el disco de la persona.
  *
- * Cada skill vive una sola vez, en el store canónico del daemon
+ * Cada skill del hub vive una sola vez, en el store canónico del daemon
  * (`~/.agenthub/skills/<slug>/SKILL.md`), y cada CLI la ve por un symlink desde su
- * propia raíz de skills. Si el symlink no se puede crear (Windows sin privilegios)
- * se cae a una copia, que es el plan B previsto y no un error.
+ * propia raíz de skills. Una skill externa (importada de `~/.agents/skills`) no pasa por
+ * el store: el symlink apunta a su carpeta original, que conserva scripts y referencias.
+ * Si el symlink no se puede crear (Windows sin privilegios) se cae a una copia, que es
+ * el plan B previsto y no un error.
  *
  * Lo que el hub borra sale del manifiesto, nunca de listar el directorio: en esas
  * carpetas también viven las skills personales y no se tocan.
  */
 
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
-import type { SnapshotSkill } from '@agenthub/shared'
+import { renderSkillMd, SKILL_FILENAME, type SnapshotSkill } from '@agenthub/shared'
 
 import {
   contentTree,
@@ -42,7 +45,7 @@ export const SKILL_ROOTS: Record<string, string> = {
   opencode: '.config/opencode/skills',
 }
 
-export const SKILL_FILENAME = 'SKILL.md'
+export { renderSkillMd, SKILL_FILENAME }
 const STORE_SUBDIR = 'skills'
 
 /** El slug es nombre de carpeta: se valida acá aunque el catálogo ya lo valide. */
@@ -64,24 +67,9 @@ export function storeFile(home: string, slug: string): string {
   return join(storeDir(home, slug), SKILL_FILENAME)
 }
 
-/** Escalar YAML siempre entre comillas dobles: evita sorpresas con `:`, `#` y saltos. */
-function yamlScalar(value: string): string {
-  const escaped = value
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\r\n/g, ' ')
-    .replace(/\n/g, ' ')
-    .replace(/\t/g, ' ')
-  return `"${escaped.trim()}"`
-}
-
-/** Reconstruye el SKILL.md completo: frontmatter válido más el cuerpo. */
-export function renderSkillMd(skill: SnapshotSkill): string {
-  const slug = skill.slug
-  const description = skill.description || skill.display_name || slug
-  const body = (skill.body ?? '').replace(/^\n+|\n+$/g, '')
-  const front = ['---', `name: ${yamlScalar(slug)}`, `description: ${yamlScalar(description)}`, '---']
-  return front.join('\n') + '\n\n' + body + '\n'
+/** Una skill externa se enlaza a su carpeta original; sin carpeta no hay nada que enlazar. */
+export function isExternalSkill(skill: SnapshotSkill): boolean {
+  return skill.source === 'external' && typeof skill.source_path === 'string' && skill.source_path !== ''
 }
 
 /** Planifica store, enlaces y bajas de las skills del snapshot. */
@@ -106,13 +94,21 @@ export function planSkills(
       )
       continue
     }
+    if (isExternalSkill(skill) && !existsSync(skill.source_path!)) {
+      drift.push(
+        driftItem(skill.source_path!, 'carpeta', `la skill externa '${slug}' ya no está en su carpeta; no se enlaza`),
+      )
+      continue
+    }
     wanted[slug] = skill
   }
 
   const rendered: Record<string, string> = {}
-  for (const slug of Object.keys(wanted)) rendered[slug] = renderSkillMd(wanted[slug]!)
+  for (const slug of Object.keys(wanted)) {
+    if (!isExternalSkill(wanted[slug]!)) rendered[slug] = renderSkillMd(wanted[slug]!)
+  }
 
-  for (const slug of Object.keys(wanted).sort()) {
+  for (const slug of Object.keys(rendered).sort()) {
     const [change, items] = planFileWrite({
       home,
       path: storeFile(home, slug),
@@ -130,16 +126,18 @@ export function planSkills(
 
   for (const root of roots) {
     for (const slug of Object.keys(wanted).sort()) {
+      const skill = wanted[slug]!
+      const external = isExternalSkill(skill)
       const [change, items] = planSymlink({
         home,
         path: join(root, slug),
-        target: storeDir(home, slug),
+        target: external ? skill.source_path! : storeDir(home, slug),
         manifest,
         cliKind,
         skillsRoot: root,
         skillSlug: slug,
-        summary: `skill ${slug} disponible en ${root}`,
-        targetTree: contentTree(SKILL_FILENAME, rendered[slug]!),
+        summary: external ? `skill ${slug} (biblioteca) enlazada en ${root}` : `skill ${slug} disponible en ${root}`,
+        ...(external ? { adopt: true } : { targetTree: contentTree(SKILL_FILENAME, rendered[slug]!) }),
       })
       if (change !== null) changes.push(change)
       drift.push(...items)

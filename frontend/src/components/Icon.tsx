@@ -23,6 +23,10 @@ export type IconName =
   | 'check'
   | 'x'
   | 'refresh'
+  | 'back'
+  | 'sparkles'
+  | 'filter'
+  | 'document'
 
 const PATHS: Record<IconName, ReactNode> = {
   // Cuadrícula: la matriz de recursos por agentes.
@@ -77,6 +81,10 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="m4.2 4.6 2.4 2.2M11.8 4.6 9.4 6.8M8 10v2.6" />
     </>
   ),
+  back: <path d="M13 8H3m5-5L3 8l5 5" />,
+  sparkles: <><path d="m6 2 1.5 4.5L12 8l-4.5 1.5L6 14 4.5 9.5 0 8l4.5-1.5L6 2ZM12 1l.75 2.25L15 4l-2.25.75L12 7l-.75-2.25L9 4l2.25-.75L12 1Z" /></>,
+  filter: <><path d="M2 4h12M2 12h12" /><circle cx="6" cy="4" r="2" fill="var(--surface)" /><circle cx="10" cy="12" r="2" fill="var(--surface)" /></>,
+  document: <><path d="M9 1.5H3v13h10v-9L9 1.5Z" /><path d="M9 1.5v4h4M5.5 8h5M5.5 11h4" /></>,
   chevron: <path d="m4 6 4 4 4-4" />,
   search: (
     <>

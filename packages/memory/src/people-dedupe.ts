@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { lenientItems, type MemoryAI } from './ai.js'
-import type { AIConfig } from './config.js'
+import { usesRemoteExtraction, type AIConfig } from './config.js'
 import type { Entity } from './contracts.js'
 import type { Sql } from './database.js'
 import type { MemoryStore } from './store.js'
@@ -145,7 +145,7 @@ export async function duplicateCandidates(store: MemoryStore, remote: boolean, m
  * then the model compares name-related profiles. Only high confidence without conflicting signals merges by itself.
  */
 export async function dedupePeople(store: MemoryStore, ai: MemoryAI, config: AIConfig, progress: (value: Record<string, unknown>) => Promise<void>, signal: AbortSignal) {
-  const remote = config.extraction === 'deepseek'
+  const remote = usesRemoteExtraction(config)
   const totals = { dedupe_email_groups: 0, dedupe_email_merged: 0, dedupe_email_conflicts: 0, dedupe_identities_applied: 0, dedupe_pairs: 0,
     dedupe_batches: 0, dedupe_batch: 0, dedupe_auto_merged: 0, dedupe_proposals: 0, dedupe_different: 0, dedupe_rejected: 0, input_tokens: 0, output_tokens: 0 }
   await progress({ stage: 'dedupe_people', provider: config.extraction, model: config.extraction_model, source_title: 'Personas de la memoria', ...totals })
@@ -166,7 +166,7 @@ export async function dedupePeople(store: MemoryStore, ai: MemoryAI, config: AIC
   }
   totals.dedupe_auto_merged += await reevaluatePending(store, config)
   await progress(totals)
-  const extractionAllowed = config.extraction !== 'disabled' && (config.extraction !== 'deepseek' || config.remote_processing_enabled)
+  const extractionAllowed = config.extraction !== 'disabled' && (!usesRemoteExtraction(config) || config.remote_processing_enabled)
   if (!extractionAllowed) return { stage: 'complete', ...totals, extraction: config.extraction === 'disabled' ? 'not_configured' : 'disabled_for_source' }
   const pairs = await duplicateCandidates(store, remote, config.extraction_model)
   const size = 6

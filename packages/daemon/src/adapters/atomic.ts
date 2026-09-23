@@ -34,7 +34,7 @@ import {
   symlinkSync,
   writeSync,
 } from 'node:fs'
-import { dirname, join, relative, sep } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 
 import * as toml from '@iarna/toml'
 
@@ -42,7 +42,8 @@ export const HUB_DIRNAME = '.agenthub'
 export const MANIFEST_VERSION = 1
 
 export type RegionKind = 'json_value' | 'json_prefixed_list' | 'toml_table' | 'tree'
-export type ChangeAction = 'write' | 'symlink' | 'delete'
+/** `adopt`: un enlace ajeno equivalente pasa al manifiesto sin reescribirse. */
+export type ChangeAction = 'write' | 'symlink' | 'delete' | 'adopt'
 
 export function hubDir(home: string): string {
   return join(home, HUB_DIRNAME)
@@ -398,13 +399,15 @@ export function driftDetail(report: DriftReport): string {
 export interface ApplyResult {
   written: string[]
   removed: string[]
+  /** Enlaces que ya existían con el mismo destino y ahora administra el hub. */
+  adopted: string[]
   skipped: string[]
   drift: DriftItem[]
   backups: Record<string, string>
 }
 
 function emptyResult(): ApplyResult {
-  return { written: [], removed: [], skipped: [], drift: [], backups: {} }
+  return { written: [], removed: [], adopted: [], skipped: [], drift: [], backups: {} }
 }
 
 export function applyOk(result: ApplyResult): boolean {
@@ -555,6 +558,10 @@ export function applyChanges(changes: readonly FileChange[]): ApplyResult {
 }
 
 function perform(change: FileChange, result: ApplyResult): void {
+  if (change.action === 'adopt') {
+    result.adopted.push(change.path)
+    return
+  }
   if (change.action === 'write') {
     const backupPath = backup(change)
     if (backupPath) result.backups[change.path] = backupPath
@@ -863,6 +870,12 @@ interface PlanSymlinkArgs {
   skillSlug?: string | null
   summary?: string
   targetTree?: unknown
+  /**
+   * Un enlace idéntico que el hub no registró (lo dejó otra herramienta, p. ej. `npx skills`)
+   * se vuelve a escribir sólo para anotarlo en el manifiesto: desde entonces el hub lo
+   * administra y lo retira cuando la skill se apaga.
+   */
+  adopt?: boolean
 }
 
 export function planSymlink(args: PlanSymlinkArgs): PlanOutcome {
@@ -872,7 +885,28 @@ export function planSymlink(args: PlanSymlinkArgs): PlanOutcome {
   const desiredDigest = canonicalDigest(desired)
   const expected = args.manifest.digestFor(args.path, TREE_REGION)
 
-  if (currentDigest === desiredDigest) return [null, []]
+  // Un enlace relativo (`../../.agents/skills/x`, como los deja `npx skills`) y el absoluto
+  // del hub son el mismo destino: se comparan resueltos, no por el texto del enlace.
+  const currentLink = current !== null && typeof current === 'object' && 'symlink' in current ? String((current as { symlink: unknown }).symlink) : null
+  const sameTarget = currentLink !== null && resolve(dirname(args.path), currentLink) === resolve(args.target)
+  if (currentDigest === desiredDigest || sameTarget) {
+    if (!args.adopt || expected !== null) return [null, []]
+    return [
+      makeChange({
+        home: args.home,
+        path: args.path,
+        action: 'adopt',
+        region: TREE_REGION,
+        expectedDigest: currentDigest,
+        target: args.target,
+        summary: `${args.summary || `${args.path} -> ${args.target}`} (enlace existente adoptado)`,
+        cliKind: args.cliKind ?? '',
+        skillsRoot: args.skillsRoot ?? null,
+        skillSlug: args.skillSlug ?? null,
+      }),
+      [],
+    ]
+  }
   // Si el symlink no se pudo crear y quedó una copia, la copia al día vale igual.
   const finalTree = args.targetTree === undefined || args.targetTree === UNSET ? readTree(args.target) : args.targetTree
   if (current !== null && canonicalDigest(current) === canonicalDigest(finalTree)) return [null, []]

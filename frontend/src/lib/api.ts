@@ -32,7 +32,7 @@ export class ApiError extends Error {
 
 let sessionRenewal: Promise<string> | null = null
 
-async function request<T>(method: string, path: string, body?: unknown, retry = true, asBlob = false): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, retry = true, asBlob = false, signal?: AbortSignal): Promise<T> {
   const headers: Record<string, string> = {}
   const token = getToken()
   if (token) headers.Authorization = `Bearer ${token}`
@@ -41,6 +41,7 @@ async function request<T>(method: string, path: string, body?: unknown, retry = 
   const res = await fetch(`/api${path}`, {
     method,
     headers,
+    ...(signal ? { signal } : {}),
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 
@@ -48,7 +49,7 @@ async function request<T>(method: string, path: string, body?: unknown, retry = 
     if (retry && window.agentHub) {
       sessionRenewal ??= window.agentHub.getSession().finally(() => { sessionRenewal = null })
       setToken(await sessionRenewal)
-      return request<T>(method, path, body, false, asBlob)
+      return request<T>(method, path, body, false, asBlob, signal)
     }
     setToken(null)
     if (!path.startsWith('/auth/')) window.location.hash = '#/login'
@@ -74,7 +75,7 @@ async function request<T>(method: string, path: string, body?: unknown, retry = 
 export const api = {
   download: (path: string) => request<Blob>('GET', path, undefined, true, true),
   get: <T>(path: string) => request<T>('GET', path),
-  post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
+  post: <T>(path: string, body?: unknown, signal?: AbortSignal) => request<T>('POST', path, body, true, false, signal),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
   delete: <T>(path: string) => request<T>('DELETE', path),

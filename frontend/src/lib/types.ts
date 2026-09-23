@@ -37,7 +37,7 @@ export const CLI_HOT_RELOAD: Record<CliKind, boolean> = {
   opencode: false,
 }
 
-/** Si el cliente carga skills desde el disco. Claude Desktop sólo las acepta subidas desde su interfaz. */
+/** Si el cliente carga skills desde el disco. Claude Desktop las recibe por la herramienta `use_skill` del conector hub. */
 export const CLI_FILE_SKILLS: Record<CliKind, boolean> = {
   claude_code: true,
   codex_cli: true,
@@ -110,6 +110,17 @@ export interface McpServer {
   tools: McpTool[]
 }
 
+/** Origen de una skill: escrita en el hub o importada de `~/.agents/skills` (biblioteca `npx skills`). */
+export type SkillSource = 'hub' | 'external'
+
+/** Estado de la skill en la cuenta de claude.ai de un Claude Desktop, según la caché que leyó el daemon. */
+export interface ClaudeAiSkillStatus {
+  agent_id: string
+  machine_hostname: string
+  checked_at: string
+  status: 'synced' | 'stale' | 'missing'
+}
+
 export interface Skill {
   id: string
   slug: string
@@ -118,6 +129,10 @@ export interface Skill {
   body: string
   version: number
   content_hash: string
+  source: SkillSource
+  source_path: string
+  source_ref: string
+  claude_ai: ClaudeAiSkillStatus[]
 }
 
 export interface AgentInstance {

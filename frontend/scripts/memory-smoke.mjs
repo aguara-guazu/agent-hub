@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chromium } from 'playwright'
+import { smokeGlobalSearch } from './search-smoke.mjs'
 
 /** Real browser + real API/database. Uses only fictitious demo data and removes its new entities. */
 export async function smokeMemoryUI({ base, token, directory }) {
@@ -88,6 +89,7 @@ export async function smokeMemoryUI({ base, token, directory }) {
     await go('/projects')
     assert.ok(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.window.innerWidth), 'La UI desborda el ancho disponible')
     await shot('06-compact')
+    await smokeGlobalSearch({ page, base, token, directory })
     assert.deepEqual(errors, [])
     console.log('UI verificada: proyecto, importación VTT, citas, persona, búsqueda, colección, ajustes, worker y vista compacta. Sin errores de navegador.')
     console.log(`Capturas: ${shots}`)

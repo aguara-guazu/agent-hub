@@ -4,7 +4,7 @@ import type { MemoryStore } from './store.js'
 import { hash, requireEntity, validateEvidence, validateProjects } from './store.js'
 import { fieldsSchema, parse, check } from './contracts.js'
 import { lenientItems, type MemoryAI } from './ai.js'
-import type { AIConfig } from './config.js'
+import { usesRemoteExtraction, type AIConfig } from './config.js'
 import { inferIdentities } from './identity-inference.js'
 
 const factSchema = z.object({ category: z.enum(['summary', 'decision', 'commitment', 'finding', 'risk']),
@@ -47,9 +47,9 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
       await progress({ stage: 'embeddings', embeddings, total_fragments: fragments.length })
     }
   }
-  const extractionAllowed = config.extraction !== 'disabled' && (config.extraction !== 'deepseek' || (config.remote_processing_enabled && allowedRemote))
+  const extractionAllowed = config.extraction !== 'disabled' && (!usesRemoteExtraction(config) || (config.remote_processing_enabled && allowedRemote))
   if (extractionAllowed) {
-    const identities = await inferIdentities(store, ai, source, config.extraction === 'deepseek', config.extraction_model, async p => {
+    const identities = await inferIdentities(store, ai, source, usesRemoteExtraction(config), config.extraction_model, async p => {
       await progress({ ...p, ...(typeof p.identity_input_tokens === 'number' ? { input_tokens: inputTokens + p.identity_input_tokens, output_tokens: outputTokens + Number(p.identity_output_tokens ?? 0) } : {}) })
     }, signal, config.identity_auto_merge)
     inputTokens += identities.identity_input_tokens; outputTokens += identities.identity_output_tokens; extracted += identities.identity_suggestions
@@ -63,9 +63,9 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
   }
   const processingKey = `${config.extraction}:${config.extraction_model}:v1:${hash(fragments.map(f => ({ id: f.id, projects: f.project_ids, speaker: f.speaker_id })))}`
   const processed = (await store.db.query('SELECT metadata->>\'extraction_key\' AS key FROM versions WHERE id=$1', [versionId]))[0]?.key
-  if (config.extraction !== 'disabled' && (config.extraction !== 'deepseek' || (config.remote_processing_enabled && allowedRemote)) && (force || processed !== processingKey)) {
+  if (config.extraction !== 'disabled' && (!usesRemoteExtraction(config) || (config.remote_processing_enabled && allowedRemote)) && (force || processed !== processingKey)) {
     dedupeNeeded = true
-    const projects = await store.db.query("SELECT id,title FROM entities WHERE kind='project' AND ($1::boolean=false OR COALESCE(data->>'remote_processing','true')<>'false') ORDER BY title LIMIT 500", [config.extraction === 'deepseek'])
+    const projects = await store.db.query("SELECT id,title FROM entities WHERE kind='project' AND ($1::boolean=false OR COALESCE(data->>'remote_processing','true')<>'false') ORDER BY title LIMIT 500", [usesRemoteExtraction(config)])
     const planned = batches(fragments)
     let processedFragments = 0
     await progress({ stage: 'extraction', total_batches: planned.length, batch: 0, processed_fragments: 0, extracted, input_tokens: inputTokens, output_tokens: outputTokens })
@@ -103,14 +103,14 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
     }
     await store.db.query("UPDATE versions SET metadata=metadata || jsonb_build_object('extraction_key',$2::text) WHERE id=$1", [versionId, processingKey])
   }
-  if (config.extraction !== 'disabled' && (config.extraction !== 'deepseek' || (config.remote_processing_enabled && allowedRemote))) {
+  if (config.extraction !== 'disabled' && (!usesRemoteExtraction(config) || (config.remote_processing_enabled && allowedRemote))) {
     const rules = await store.db.query('SELECT * FROM rules WHERE enabled=true ORDER BY created_at')
     for (const rule of rules) await runRule(store, ai, rule, versionId, fragments, signal)
   }
   // New speakers or fresh identity results can create duplicates across sources; one queued pass covers every version processed since.
   if (dedupeNeeded) await store.enqueue('dedupe_people', {}, 'dedupe:people')
   return { stage: 'complete', embeddings, extracted, extraction_rejected: extractionRejected, input_tokens: inputTokens, output_tokens: outputTokens,
-    extraction: config.extraction === 'disabled' ? 'not_configured' : config.extraction === 'deepseek' && (!allowedRemote || !config.remote_processing_enabled) ? 'disabled_for_source' : 'processed' }
+    extraction: config.extraction === 'disabled' ? 'not_configured' : usesRemoteExtraction(config) && (!allowedRemote || !config.remote_processing_enabled) ? 'disabled_for_source' : 'processed' }
 }
 
 export async function runRule(store: MemoryStore, ai: MemoryAI, rule: Record<string, any>, versionId: string, fragments: Record<string, any>[], signal: AbortSignal) {
@@ -124,6 +124,7 @@ export async function runRule(store: MemoryStore, ai: MemoryAI, rule: Record<str
     const current = (await store.db.query('SELECT enabled,revision FROM rules WHERE id=$1', [rule.id]))[0]
     if (!current?.enabled || current.revision !== rule.revision) return
     const result = await ai.extract(`Completá registros de la colección. Campos: ${JSON.stringify(fields)}. Regla del usuario: ${rule.instructions}`, { fragments: batch }, ruleResult)
+    signal.throwIfAborted()
     const allowed = new Set(batch.map(f => f.id))
     for (const record of result.value.records) {
       check(record.evidence_ids.every(e => allowed.has(e)), 'La regla devolvió evidencia ajena al alcance')

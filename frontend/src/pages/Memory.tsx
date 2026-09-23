@@ -7,14 +7,31 @@ import { EntityForm, ImportForm } from './MemoryForms'
 import { MemoryCollection } from './MemoryCollection'
 import { IdentityProposals, IdentityProposalCard, DuplicateProposals, DuplicateProposalCard } from './MemoryIdentity'
 
+/** Keep list filters and project tabs in the history entry so Back restores the same context. */
+function useMemoryView() {
+  const [params, setParams] = useSearchParams()
+  const change = (values: Record<string, string | number>) => setParams(current => {
+    const next = new URLSearchParams(current)
+    for (const [key, value] of Object.entries(values)) {
+      if (value === '' || value === 0 || value === 'all') next.delete(key)
+      else next.set(key, String(value))
+    }
+    return next
+  }, { replace: true })
+  const offset = Number(params.get('offset') ?? 0)
+  return { params, change, offset: Number.isSafeInteger(offset) && offset >= 0 ? offset : 0 }
+}
+
 export function MemoryProjects() { return <MemoryFrame><Projects /></MemoryFrame> }
 function Projects() {
-  const [query, setQuery] = useState(''), [offset, setOffset] = useState(0), [form, setForm] = useState('')
+  const { params, change, offset } = useMemoryView(), query = params.get('q') ?? ''
+  const setQuery = (q: string) => change({ q, offset: 0 }), setOffset = (offset: number) => change({ offset })
+  const [form, setForm] = useState('')
   const status = useMemoryStatus()
   const projects = useMemory<Page<MemoryEntity>>('list_entities', { kind: 'project', query, limit: 24, offset })
   return <><PageHeading title="Proyectos" description="El contexto de cada cliente, conectado y siempre a mano."><button className="btn" onClick={() => setForm('company')}>Nueva empresa</button><button className="btn btn-primary" onClick={() => setForm('project')}>Nuevo proyecto</button></PageHeading>
     <div className="memory-stats">{[['Proyectos', status.data?.counts.project], ['Reuniones', status.data?.counts.meeting], ['Documentos', status.data?.counts.document], ['Personas', status.data?.counts.person]].map(([label, count]) => <div key={label} className="card"><strong>{count ?? 0}</strong><span>{label}</span></div>)}</div>
-    <div className="memory-toolbar"><input className="input" aria-label="Buscar proyectos" placeholder="Buscar un proyecto…" value={query} onChange={e => { setQuery(e.target.value); setOffset(0) }} /><Link to="/memory/sources" className="btn">Conectar fuentes</Link></div>
+    <div className="memory-toolbar"><input className="input" aria-label="Buscar proyectos" placeholder="Buscar un proyecto…" value={query} onChange={e => setQuery(e.target.value)} /><Link to="/memory/sources" className="btn">Conectar fuentes</Link></div>
     <ErrorBox error={projects.error} retry={projects.refetch} />
     {projects.isPending ? <p role="status">Cargando proyectos…</p> : projects.data?.items.length ? <div className="memory-project-grid">{projects.data.items.map(project => <Link key={project.id} className="memory-project-card card" to={entityPath(project)}>
       <div className="spread"><span className="memory-project-icon">P</span><span className="badge badge-accent">{project.data.status ?? 'discovery'}</span></div><h2>{project.title}</h2><p>{project.data.description || 'Agregá fuentes para comenzar a construir el contexto de este proyecto.'}</p><div className="memory-card-footer">Actualizado {formatTime(project.updated_at)} <span>→</span></div>
@@ -26,10 +43,12 @@ function Projects() {
 
 export function MemoryExplore() { return <MemoryFrame><Explore /></MemoryFrame> }
 function Explore() {
-  const [kind, setKind] = useState(''), [query, setQuery] = useState(''), [offset, setOffset] = useState(0), [form, setForm] = useState(''), [importing, setImporting] = useState(false)
+  const { params, change, offset } = useMemoryView(), query = params.get('q') ?? '', kind = params.get('kind') ?? ''
+  const setQuery = (q: string) => change({ q, offset: 0 }), setKind = (kind: string) => change({ kind, offset: 0 }), setOffset = (offset: number) => change({ offset })
+  const [form, setForm] = useState(''), [importing, setImporting] = useState(false)
   const entities = useMemory<Page<MemoryEntity>>('list_entities', { ...(kind ? { kind } : {}), query, limit: 50, offset })
   return <><PageHeading title="Explorar memoria" description="Navegá las fuentes, las personas y sus conexiones."><button className="btn" onClick={() => setForm('note')}>Nueva nota</button><button className="btn" onClick={() => setForm('collection')}>Nueva colección</button><button className="btn btn-primary" onClick={() => setImporting(true)}>Importar fuente</button></PageHeading>
-    <div className="memory-toolbar"><input className="input" aria-label="Buscar entidades" placeholder="Buscar por nombre…" value={query} onChange={e => { setQuery(e.target.value); setOffset(0) }} /><select className="input" aria-label="Tipo de entidad" value={kind} onChange={e => { setKind(e.target.value); setOffset(0) }}><option value="">Todos los tipos</option>{Object.entries(entityLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
+    <div className="memory-toolbar"><input className="input" aria-label="Buscar entidades" placeholder="Buscar por nombre…" value={query} onChange={e => setQuery(e.target.value)} /><select className="input" aria-label="Tipo de entidad" value={kind} onChange={e => setKind(e.target.value)}><option value="">Todos los tipos</option>{Object.entries(entityLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
     <ErrorBox error={entities.error} retry={entities.refetch} /><div className="card">{entities.isPending ? <p className="memory-loading" role="status">Cargando memoria…</p> : <EntityRows items={entities.data?.items ?? []} />}</div>
     {entities.data && <Pager total={entities.data.total} offset={offset} limit={50} setOffset={setOffset} />}
     {form && <EntityForm kind={form} open onClose={() => setForm('')} />}{importing && <ImportForm open onClose={() => setImporting(false)} />}
@@ -42,13 +61,13 @@ export function MemoryEntityPage() {
 }
 function EntityPage({ entityId }: { entityId: string }) {
   const detail = useMemory<any>('get_entity', { id: entityId }), navigate = useNavigate()
-  const [tab, setTab] = useState('all'), [editing, setEditing] = useState(false), [importing, setImporting] = useState(false), [form, setForm] = useState(''), [deleting, setDeleting] = useState(false), [linking, setLinking] = useState(false)
-  const [relatedOffset, setRelatedOffset] = useState(0)
+  const { params, change, offset: relatedOffset } = useMemoryView(), tab = params.get('tab') ?? 'all'
+  const setTab = (tab: string) => change({ tab, offset: 0 }), setRelatedOffset = (offset: number) => change({ offset })
+  const [editing, setEditing] = useState(false), [importing, setImporting] = useState(false), [form, setForm] = useState(''), [deleting, setDeleting] = useState(false), [linking, setLinking] = useState(false)
   const remove = useMemoryMutation('delete_entity', () => navigate('/memory'))
   const reprocess = useMemoryMutation('reprocess'), update = useMemoryMutation('update_entity'), reviewIdentity = useMemoryMutation('review_identity'), reviewDuplicate = useMemoryMutation('review_duplicate')
   const entity: MemoryEntity | undefined = detail.data?.entity
   const related = useMemory<Page<MemoryEntity>>('list_entities', { project_id: entityId, ...(tab !== 'all' ? { kind: tab } : {}), limit: 100, offset: relatedOffset }, entity?.kind === 'project')
-  useEffect(() => { setRelatedOffset(0) }, [tab])
   if (detail.isPending) return <p role="status">Abriendo contexto…</p>
   if (detail.error || !entity) return <ErrorBox error={detail.error} retry={detail.refetch} />
   const isProject = entity.kind === 'project'
@@ -117,6 +136,7 @@ export function EvidenceCard({ fragment }: { fragment: any }) {
 }
 
 function EditEntity({ entity, onClose }: { entity: MemoryEntity; onClose: () => void }) {
+  const [expectedUpdatedAt] = useState(entity.updated_at)
   const [title, setTitle] = useState(entity.title), [data, setData] = useState(JSON.stringify(entity.data, null, 2)), [error, setError] = useState<Error | null>(null)
   const [description, setDescription] = useState(entity.data.description ?? ''), [email, setEmail] = useState(entity.data.email ?? '')
   const [text, setText] = useState(entity.data.text ?? ''), [status, setStatus] = useState(entity.data.status ?? 'discovery')
@@ -124,13 +144,13 @@ function EditEntity({ entity, onClose }: { entity: MemoryEntity; onClose: () => 
   const update = useMemoryMutation('update_entity', onClose)
   return <Modal open title="Editar información" onClose={onClose} busy={update.isPending}><form className="memory-form" onSubmit={e => { e.preventDefault(); try { update.mutate({ id: entity.id, title, data: { ...JSON.parse(data), description, remote_processing: remote,
     ...(entity.kind === 'person' ? { email: email || null, identity_status: identity, identity_verified: identity === 'verified' } : {}),
-    ...(entity.kind === 'project' ? { status } : {}), ...(['note','fact'].includes(entity.kind) && text ? { text } : {}) }, expected_updated_at: entity.updated_at }); setError(null) } catch { setError(new Error('Los campos adicionales deben ser JSON válido')) } }}>
+    ...(entity.kind === 'project' ? { status } : {}), ...(['note','fact'].includes(entity.kind) && text ? { text } : {}) }, expected_updated_at: expectedUpdatedAt }); setError(null) } catch { setError(new Error('Los campos adicionales deben ser JSON válido')) } }}>
     <Field label="Nombre"><input value={title} onChange={e => setTitle(e.target.value)} required /></Field>
     <Field label="Descripción"><textarea rows={3} value={description} onChange={e => setDescription(e.target.value)} /></Field>
     {entity.kind === 'project' && <Field label="Etapa"><select value={status} onChange={e => setStatus(e.target.value)}>{['discovery','presales','poc','delivery','support','completed','paused'].map(s => <option key={s}>{s}</option>)}</select></Field>}
     {entity.kind === 'person' && <><Field label="Email"><input type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field><Field label="Identidad"><select value={identity} onChange={e => setIdentity(e.target.value)}><option value="unresolved">Por verificar</option><option value="verified">Confirmada por mí</option>{identity === 'merged' && <option value="merged">Unificada</option>}</select></Field></>}
     {['note','fact'].includes(entity.kind) && <Field label="Contenido"><textarea rows={5} value={text} onChange={e => setText(e.target.value)} /></Field>}
-    {['project','meeting','document','message','issue','note'].includes(entity.kind) && <label className="check"><input type="checkbox" checked={remote} onChange={e => setRemote(e.target.checked)} />Permitir extracción con DeepSeek si está habilitada en Ajustes</label>}
+    {['project','meeting','document','message','issue','note'].includes(entity.kind) && <label className="check"><input type="checkbox" checked={remote} onChange={e => setRemote(e.target.checked)} />Permitir extracción con proveedores remotos si está habilitada en Ajustes</label>}
     <details><summary>Campos adicionales</summary><Field label="Campos adicionales (JSON)"><textarea rows={10} value={data} onChange={e => setData(e.target.value)} /></Field></details><ErrorBox error={error ?? update.error} /><button className="btn btn-primary" disabled={update.isPending}>Guardar cambios</button></form></Modal>
 }
 function LinkEntity({ entity, links, onClose }: { entity: MemoryEntity; links: any[]; onClose: () => void }) {

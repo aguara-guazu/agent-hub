@@ -3,9 +3,11 @@
  * consultas que usan el resolver, la matriz, el ledger y los routers. Concentra el
  * parseo de JSON y la conversión de enteros SQLite (0/1) a booleanos en un solo lugar.
  */
-import { newId, nowIso } from '@agenthub/shared'
+import { newId, nowIso, type SkillSource } from '@agenthub/shared'
 import type { Database, Row } from './db/database.js'
 import type {
+  AccountSkillsReport,
+  AccountSkillStatus,
   AgentInstance,
   ApiToken,
   AuditEventRow,
@@ -116,6 +118,26 @@ function toAgent(row: Row): AgentInstance {
     last_listed_hash: nullableStr(row.last_listed_hash),
     drift_detected: bool(row.drift_detected),
     drift_detail: str(row.drift_detail),
+    account_skills: parseAccountSkills(row.account_skills),
+  }
+}
+
+/** La columna guarda JSON canónico o vacío; un valor ilegible cuenta como sin reporte. */
+function parseAccountSkills(raw: unknown): AccountSkillsReport | null {
+  const text = str(raw)
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(text) as { checked_at?: unknown; skills?: unknown }
+    const skills = Array.isArray(parsed.skills) ? parsed.skills : []
+    return {
+      checked_at: str(parsed.checked_at),
+      skills: skills
+        .filter((item): item is { slug: unknown; status: unknown } => typeof item === 'object' && item !== null)
+        .map((item) => ({ slug: str(item.slug), status: (str(item.status) === 'stale' ? 'stale' : 'synced') as AccountSkillStatus }))
+        .filter((item) => item.slug !== ''),
+    }
+  } catch {
+    return null
   }
 }
 
@@ -185,6 +207,10 @@ function toSkill(row: Row): SkillRow {
     body: str(row.body),
     version: Number(row.version ?? 1),
     content_hash: str(row.content_hash),
+    source: str(row.source) === 'external' ? 'external' : 'hub',
+    source_path: str(row.source_path),
+    source_ref: str(row.source_ref),
+    source_machine_id: str(row.source_machine_id),
   }
 }
 
@@ -538,9 +564,13 @@ export class Store {
     return this.agent(id)!
   }
 
-  updateAgent(id: string, fields: Partial<Pick<AgentInstance, 'cli_version' | 'config_path' | 'enabled' | 'last_connected_at' | 'last_listed_hash' | 'drift_detected' | 'drift_detail'>>): void {
+  updateAgent(id: string, fields: Partial<Pick<AgentInstance, 'cli_version' | 'config_path' | 'enabled' | 'last_connected_at' | 'last_listed_hash' | 'drift_detected' | 'drift_detail' | 'account_skills'>>): void {
     const sets: string[] = []
     const params: (string | number | null)[] = []
+    if (fields.account_skills !== undefined) {
+      sets.push('account_skills = ?')
+      params.push(fields.account_skills === null ? '' : JSON.stringify(fields.account_skills))
+    }
     if (fields.cli_version !== undefined) { sets.push('cli_version = ?'); params.push(fields.cli_version) }
     if (fields.config_path !== undefined) { sets.push('config_path = ?'); params.push(fields.config_path) }
     if (fields.enabled !== undefined) { sets.push('enabled = ?'); params.push(fields.enabled ? 1 : 0) }
@@ -751,17 +781,36 @@ export class Store {
     return row ? toSkill(row) : undefined
   }
 
-  insertSkill(input: { user_id: string; slug: string; display_name: string; description: string; body: string; content_hash: string }): SkillRow {
+  /** Skills externas que reporta el daemon de una máquina; el orden por slug es el del catálogo. */
+  externalSkillsOfMachine(userId: string, machineId: string): SkillRow[] {
+    return this.db
+      .all("SELECT * FROM skills WHERE user_id = ? AND source = 'external' AND source_machine_id = ? ORDER BY slug", userId, machineId)
+      .map(toSkill)
+  }
+
+  insertSkill(input: {
+    user_id: string
+    slug: string
+    display_name: string
+    description: string
+    body: string
+    content_hash: string
+    source?: SkillSource
+    source_path?: string
+    source_ref?: string
+    source_machine_id?: string
+  }): SkillRow {
     const id = newId()
     const at = nowIso()
     this.db.run(
-      'INSERT INTO skills (id, user_id, slug, display_name, description, body, version, content_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)',
-      id, input.user_id, input.slug, input.display_name, input.description, input.body, input.content_hash, at, at,
+      'INSERT INTO skills (id, user_id, slug, display_name, description, body, version, content_hash, source, source_path, source_ref, source_machine_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)',
+      id, input.user_id, input.slug, input.display_name, input.description, input.body, input.content_hash,
+      input.source ?? 'hub', input.source_path ?? '', input.source_ref ?? '', input.source_machine_id ?? '', at, at,
     )
     return this.skill(id)!
   }
 
-  updateSkill(id: string, fields: { display_name?: string; description?: string; body?: string; version?: number; content_hash?: string }): void {
+  updateSkill(id: string, fields: { display_name?: string; description?: string; body?: string; version?: number; content_hash?: string; source_path?: string; source_ref?: string }): void {
     const sets: string[] = []
     const params: (string | number)[] = []
     if (fields.display_name !== undefined) { sets.push('display_name = ?'); params.push(fields.display_name) }
@@ -769,6 +818,8 @@ export class Store {
     if (fields.body !== undefined) { sets.push('body = ?'); params.push(fields.body) }
     if (fields.version !== undefined) { sets.push('version = ?'); params.push(fields.version) }
     if (fields.content_hash !== undefined) { sets.push('content_hash = ?'); params.push(fields.content_hash) }
+    if (fields.source_path !== undefined) { sets.push('source_path = ?'); params.push(fields.source_path) }
+    if (fields.source_ref !== undefined) { sets.push('source_ref = ?'); params.push(fields.source_ref) }
     if (sets.length === 0) return
     sets.push('updated_at = ?'); params.push(nowIso())
     params.push(id)
@@ -836,6 +887,20 @@ export class Store {
       'SELECT snapshot_hash FROM exposure_snapshots WHERE agent_instance_id = ? ORDER BY created_at DESC, id DESC LIMIT 1',
       agentId,
     )
+  }
+
+  /** Snapshot guardado con ese hash, para comparar lo que un cliente listó con lo vigente. */
+  snapshotByHash(agentId: string, snapshotHash: string): unknown | undefined {
+    const row = this.db.get<{ payload: string }>(
+      'SELECT payload FROM exposure_snapshots WHERE agent_instance_id = ? AND snapshot_hash = ? ORDER BY created_at DESC LIMIT 1',
+      agentId, snapshotHash,
+    )
+    if (!row) return undefined
+    try {
+      return JSON.parse(row.payload)
+    } catch {
+      return undefined
+    }
   }
 
   storeSnapshot(agentId: string, snapshotHash: string, payload: unknown): void {

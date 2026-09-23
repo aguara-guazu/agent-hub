@@ -14,7 +14,7 @@ import { LOCAL_KEY, resourceEnabled, useLocalRule, useOverview } from '../lib/lo
 import type { LocalClient } from '../lib/local'
 import { queryKeys, useServers, useSkills, useToolCalls } from '../lib/queries'
 import { CLI_FILE_SKILLS, CLI_LABELS } from '../lib/types'
-import type { MatrixRow, McpServer, ResourceType, Skill } from '../lib/types'
+import type { ClaudeAiSkillStatus, MatrixRow, McpServer, ResourceType, Skill } from '../lib/types'
 
 /** Cliente OAuth propio para proveedores sin registro dinámico (Google, Slack, HubSpot). */
 function OAuthClientForm({ server, onSaved }: { server: McpServer; onSaved: () => Promise<void> }) {
@@ -201,11 +201,39 @@ function ImportMcp({ open, close, saved }: { open: boolean; close: () => void; s
   </Modal>
 }
 
+const CLAUDE_AI_LABELS: Record<ClaudeAiSkillStatus['status'], string> = { synced: 'en claude.ai', stale: 'desactualizada en claude.ai', missing: 'no subida a claude.ai' }
+const CLAUDE_AI_HINTS: Record<ClaudeAiSkillStatus['status'], string> = {
+  synced: 'La cuenta de claude.ai tiene esta misma versión: chat y Cowork de Claude Desktop la usan como skill nativa.',
+  stale: 'La cuenta de claude.ai tiene otra versión. Descargá el ZIP y volvé a subirla desde Claude Desktop: Personalizar → Skills.',
+  missing: 'No está en la cuenta de claude.ai. Descargá el ZIP y subila desde Claude Desktop: Personalizar → Skills → Subir skill.',
+}
+
+/** Descarga por la API autenticada: un enlace directo no llevaría el token. */
+async function saveBlob(blob: Blob, filename: string): Promise<void> {
+  const url = URL.createObjectURL(blob)
+  try {
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+}
+
 export function HubSkills() {
   const skills = useSkills()
   const overview = useOverview()
   const cache = useQueryClient()
   const toast = useToast()
+  const downloadZip = async (skill: Skill) => {
+    try {
+      await saveBlob(await api.download(`/catalog/skills/${skill.id}/zip`), `${skill.slug}.zip`)
+      toast.success('ZIP listo', 'Subilo en Claude Desktop: Personalizar → Skills → Subir skill.')
+    } catch (error) {
+      toast.error('No se pudo exportar', (error as Error).message)
+    }
+  }
   const rule = useLocalRule()
   const [form, setForm] = useState<Skill | 'new' | null>(null)
   const [removing, setRemoving] = useState<Skill | null>(null)
@@ -217,13 +245,14 @@ export function HubSkills() {
   const visible = all.filter(skill => `${skill.display_name} ${skill.slug} ${skill.description}`.toLowerCase().includes(search.toLowerCase()))
   return <><Heading eyebrow="CONOCIMIENTO COMPARTIDO" title="Skills" description="Tus instrucciones reutilizables, sincronizadas en tus clientes."><button className="btn btn-primary" onClick={() => setForm('new')}><Icon name="plus" />Agregar skill</button></Heading>
     <LoadError error={skills.error ?? overview.error} retry={() => { void skills.refetch(); void overview.refetch() }} />
-    {skills.isLoading ? <Loading /> : all.length === 0 ? <Empty kind="skills" title="Enseñales una vez."><p>Guardá tus flujos de trabajo en una skill.<br />El hub mantiene una copia y la distribuye a los clientes que elijas.</p><button className="btn btn-primary btn-lg" onClick={() => setForm('new')}><Icon name="plus" />Crear mi primera skill</button></Empty> : <>
+    {skills.isLoading ? <Loading /> : all.length === 0 ? <Empty kind="skills" title="Enseñales una vez."><p>Guardá tus flujos de trabajo en una skill.<br />El hub mantiene una copia y la distribuye a los clientes que elijas.<br />Las que instales con <code>npx skills add -g</code> aparecen acá solas.</p><button className="btn btn-primary btn-lg" onClick={() => setForm('new')}><Icon name="plus" />Crear mi primera skill</button></Empty> : <>
       <div className="hub-notice"><Icon name="info" /><span>Los archivos se actualizan automáticamente. Si una sesión ya cargó una skill, iniciá una nueva sesión para usar la versión actual.</span></div>
       <SearchBar value={search} set={setSearch} count={visible.length} noun="skills" />
       <div className="hub-resource-list">{visible.map(skill => {
         const row = overview.data?.rows.find(r => r.resource_type === 'skill' && r.resource_id === skill.id)
         const enabled = resourceEnabled(row)
-        return <article key={skill.id} className={`hub-resource ${enabled ? '' : 'disabled'}`}><div className="hub-resource-main"><div className="hub-resource-icon violet"><Icon name="skills" /></div><div className="hub-resource-title"><div><h2>{skill.display_name}</h2><span className="hub-tag">v{skill.version}</span></div><p>{skill.description || skill.slug}</p></div><span className={`hub-state ${enabled ? 'on' : ''}`}>{enabled ? 'Habilitada' : 'Apagada'}</span><Switch checked={enabled} label={`${enabled ? 'Apagar' : 'Habilitar'} skill ${skill.display_name}`} disabled={rule.isPending} onChange={value => rule.mutate({ type: 'skill', id: skill.id, enabled: value })} /></div><div className="hub-resource-footer"><ClientAccess row={row} clients={overview.data?.clients ?? []} type="skill" id={skill.id} /><div className="hub-actions"><button className="btn btn-ghost btn-sm" onClick={() => setForm(skill)}>Editar</button><button className="btn btn-ghost btn-sm destructive" aria-label={`Eliminar ${skill.display_name}`} onClick={() => setRemoving(skill)}><Icon name="x" /></button></div></div><details className="hub-tools"><summary><code>{skill.slug}/SKILL.md</code><Icon name="chevron" /></summary><pre className="hub-skill-preview">{skill.body}</pre></details></article>
+        const external = skill.source === 'external'
+        return <article key={skill.id} className={`hub-resource ${enabled ? '' : 'disabled'}`}><div className="hub-resource-main"><div className="hub-resource-icon violet"><Icon name="skills" /></div><div className="hub-resource-title"><div><h2>{skill.display_name}</h2><span className="hub-tag">v{skill.version}</span>{external && <span className="hub-tag" title={skill.source_path}>biblioteca{skill.source_ref ? ` · ${skill.source_ref}` : ''}</span>}{skill.claude_ai.map(status => <span key={status.agent_id} className={`hub-tag ${status.status === 'synced' ? 'ok' : 'warn'}`} title={CLAUDE_AI_HINTS[status.status]}>{CLAUDE_AI_LABELS[status.status]}</span>)}</div><p>{skill.description || skill.slug}</p></div><span className={`hub-state ${enabled ? 'on' : ''}`}>{enabled ? 'Habilitada' : 'Apagada'}</span><Switch checked={enabled} label={`${enabled ? 'Apagar' : 'Habilitar'} skill ${skill.display_name}`} disabled={rule.isPending} onChange={value => rule.mutate({ type: 'skill', id: skill.id, enabled: value })} /></div><div className="hub-resource-footer"><ClientAccess row={row} clients={overview.data?.clients ?? []} type="skill" id={skill.id} /><div className="hub-actions"><button className="btn btn-ghost btn-sm" title="Descarga la skill como ZIP para subirla en Claude Desktop: Personalizar → Skills → Subir skill" onClick={() => void downloadZip(skill)}>ZIP para claude.ai</button>{external ? <span className="faint" title={`Instalada con npx skills en ${skill.source_path}. Se actualiza y se quita con npx skills; el hub sólo decide dónde se enlaza.`}>npx skills</span> : <><button className="btn btn-ghost btn-sm" onClick={() => setForm(skill)}>Editar</button><button className="btn btn-ghost btn-sm destructive" aria-label={`Eliminar ${skill.display_name}`} onClick={() => setRemoving(skill)}><Icon name="x" /></button></>}</div></div><details className="hub-tools"><summary><code>{external ? skill.source_path : `${skill.slug}/SKILL.md`}</code><Icon name="chevron" /></summary><pre className="hub-skill-preview">{skill.body}</pre></details></article>
       })}</div>{!visible.length && <p className="hub-no-results">No hay skills que coincidan con la búsqueda.</p>}
     </>}
     <SkillForm open={form !== null} skill={form === 'new' ? null : form} busy={save.isPending} onSubmit={p => save.mutate(p)} onClose={() => setForm(null)} />
@@ -242,7 +271,7 @@ export function HubClients() {
   return <><Heading eyebrow="ESTA COMPUTADORA" title="Clientes" description="Los harness y terminales que usan tu catálogo local."><button className="btn" disabled={sync.isPending} onClick={() => sync.mutate()}><Icon name="refresh" />{sync.isPending ? 'Buscando…' : 'Revisar clientes'}</button></Heading>
     <LoadError error={overview.error} retry={overview.refetch} />
     {overview.isLoading ? <Loading /> : <><div className="hub-notice"><Icon name="info" /><span>El hub detecta tus clientes y configura su conexión automáticamente. Después de conectar uno por primera vez, abrí una sesión nueva en ese cliente.</span></div>
-      <div className="hub-client-grid">{clients.map(client => <article className="hub-client-card" key={client.id}><div className="hub-client-card-top"><span className={`hub-client-logo ${client.cli_kind}`}>{client.cli_kind === 'claude_code' || client.cli_kind === 'claude_desktop' ? '✳' : client.cli_kind === 'codex_cli' ? 'C' : client.cli_kind === 'gemini_cli' ? '✦' : client.cli_kind === 'opencode' ? 'O' : 'K'}</span><Switch checked={client.enabled} disabled={change.isPending} label={`${client.enabled ? 'Pausar' : 'Activar'} ${CLI_LABELS[client.cli_kind]}`} onChange={enabled => change.mutate({ id: client.id, enabled })} /></div><h2>{CLI_LABELS[client.cli_kind]}</h2><span className={`hub-state ${client.synchronized ? 'on' : 'pending'}`}><span className="dot" />{client.drift_detected ? 'Requiere atención' : !client.enabled ? 'Pausado' : client.synchronized ? 'Configuración sincronizada' : 'Sincronizando…'}</span><div className="hub-client-counts"><span><strong>{client.server_count}</strong> MCP servers</span>{CLI_FILE_SKILLS[client.cli_kind] ? <span><strong>{client.skill_count}</strong> skills</span> : <span title="Este cliente no carga skills desde el disco: se suben desde la propia app.">Skills desde la app</span>}</div><div className="hub-client-meta"><span>Archivo administrado</span><code>{client.config_path}</code><span>Última conexión al hub</span><strong>{client.last_connected_at ? new Date(client.last_connected_at).toLocaleString() : 'Todavía no inició una sesión'}</strong></div>{client.drift_detected && <div className="hub-notice error"><span>{client.drift_detail}</span></div>}</article>)}</div>
+      <div className="hub-client-grid">{clients.map(client => <article className="hub-client-card" key={client.id}><div className="hub-client-card-top"><span className={`hub-client-logo ${client.cli_kind}`}>{client.cli_kind === 'claude_code' || client.cli_kind === 'claude_desktop' ? '✳' : client.cli_kind === 'codex_cli' ? 'C' : client.cli_kind === 'gemini_cli' ? '✦' : client.cli_kind === 'opencode' ? 'O' : 'K'}</span><Switch checked={client.enabled} disabled={change.isPending} label={`${client.enabled ? 'Pausar' : 'Activar'} ${CLI_LABELS[client.cli_kind]}`} onChange={enabled => change.mutate({ id: client.id, enabled })} /></div><h2>{CLI_LABELS[client.cli_kind]}</h2><span className={`hub-state ${client.synchronized ? 'on' : 'pending'}`}><span className="dot" />{client.drift_detected ? 'Requiere atención' : !client.enabled ? 'Pausado' : client.synchronized ? 'Configuración sincronizada' : 'Sincronizando…'}</span><div className="hub-client-counts"><span><strong>{client.server_count}</strong> MCP servers</span><span title={CLI_FILE_SKILLS[client.cli_kind] ? undefined : 'Este cliente no carga skills desde el disco: las recibe por la herramienta use_skill del conector hub. Para tenerlas como skills nativas hay que subir el ZIP desde la propia app.'}><strong>{client.skill_count}</strong> skills{CLI_FILE_SKILLS[client.cli_kind] ? '' : ' por tool'}</span></div><div className="hub-client-meta"><span>Archivo administrado</span><code>{client.config_path}</code><span>Última conexión al hub</span><strong>{client.last_connected_at ? new Date(client.last_connected_at).toLocaleString() : 'Todavía no inició una sesión'}</strong></div>{client.drift_detected && <div className="hub-notice error"><span>{client.drift_detail}</span></div>}</article>)}</div>
       {missing.length > 0 && <section className="hub-supported"><h3>{clients.length ? 'También podés conectar' : 'Clientes compatibles'}</h3><p>Instalá o abrí el cliente en esta computadora. El hub lo detectará sin volver a configurar tu catálogo.</p><div>{missing.map(([kind, label]) => <span key={kind}><Icon name="plus" />{label}<small>No detectado</small></span>)}</div></section>}
     </>}
   </>

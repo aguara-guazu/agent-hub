@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
+import type { OpenCodeRuntime } from '../src/opencode.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
 import { exportMemory, restoreMemory } from '../src/backup.js'
@@ -222,13 +223,13 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     expect((await operations.call('list_identity_proposals', {})).total).toBe(0)
   })
 
-  it('respeta exclusiones remotas y no vuelve a proponer vínculos descartados', async () => {
+  it.each(['deepseek', 'opencode'] as const)('respeta exclusiones remotas de %s y no vuelve a proponer vínculos descartados', async extraction => {
     const { meeting, event, source, mockAI } = await identityFixture()
     const privateProject = await store.create({ kind: 'project', title: 'Privado', data: { remote_processing: false } })
     await store.link({ from_id: event.entity_id, to_id: privateProject.id, type: 'project' })
     expect((await identityContext(store, source, true)).candidates.map(c => c.email)).toEqual(['ana@example.com'])
     await store.update(meeting.entity_id, { data: { remote_processing: false } })
-    const excluded = await processVersion(store, mockAI, meeting.version_id, { ...defaultAI, extraction: 'deepseek', remote_processing_enabled: true }, async () => {}, new AbortController().signal, false, true)
+    const excluded = await processVersion(store, mockAI, meeting.version_id, { ...defaultAI, extraction, remote_processing_enabled: true }, async () => {}, new AbortController().signal, false, true)
     expect(excluded.extraction).toBe('disabled_for_source')
     expect((await operations.call('list_identity_proposals', {})).total).toBe(0)
     await inferIdentities(store, mockAI, source, false, 'identity-test', async () => {}, new AbortController().signal)
@@ -441,10 +442,10 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     expect((await store.list({ kind: 'fact' })).total).toBe(1)
   })
 
-  it('no envía contenido a DeepSeek cuando un proyecto relacionado lo excluye', async () => {
+  it.each(['deepseek', 'opencode'] as const)('no envía contenido a %s cuando un proyecto relacionado lo excluye', async extraction => {
     const project = await store.create({ kind: 'project', title: 'Proyecto privado', data: { remote_processing: false } })
     const source = await store.ingest({ kind: 'document', title: 'NDA', external_id: 'private', text: 'Contenido privado', project_ids: [project.id] })
-    const config = { ...defaultAI, extraction: 'deepseek' as const, remote_processing_enabled: true }
+    const config = { ...defaultAI, extraction, remote_processing_enabled: true }
     let requests = 0
     const model = new MemoryAI(async () => config, vault, async () => { requests++; throw new Error('No debería llamar al proveedor') })
     const result = await processVersion(store, model, source.version_id, config, async () => {}, new AbortController().signal)
@@ -465,6 +466,36 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     await processVersion(store, model, source.current_version_id, config, async () => {}, new AbortController().signal, true)
     expect((await store.records(demo.collection)).total).toBe(2) // one manually seeded row and one rule result
     expect((await db.query('SELECT * FROM rule_runs')).length).toBe(1)
+  })
+
+  it('procesa automáticamente una transcripción nueva con OpenCode y conserva hechos, reglas y evidencias', async () => {
+    const collection = await store.create({ kind: 'collection', title: 'Hallazgos', data: { fields: [{ key: 'text', label: 'Texto', type: 'text' }] } })
+    await operations.call('create_rule', { name: 'Hallazgos', collection_id: collection.id, instructions: 'Guardar el hallazgo.' })
+    const config = { ...defaultAI, extraction: 'opencode' as const, extraction_model: 'fixture/chat', remote_processing_enabled: true }
+    const extract = vi.fn(async (model: string, _system: string, content: any, schema: any, signal: AbortSignal) => {
+      expect(signal.aborted).toBe(false)
+      const evidence_ids = [content.fragments[0].id]
+      const value = schema.properties.records ? { records: [{ values: { text: 'Solicitan una demo.' }, evidence_ids }] }
+        : { facts: [{ category: 'finding', text: 'Solicitan una demo.', evidence_ids, project_ids: [] }] }
+      return { value, usage: { model, input_tokens: 10, output_tokens: 5 } }
+    })
+    const model = new MemoryAI(async () => defaultAI, vault, fetch, { extract } as unknown as OpenCodeRuntime)
+    const runner = new JobRunner(store, model, vault, new GoogleAuth(vault, 'http://127.0.0.1/callback'), async () => config)
+    const input = { kind: 'meeting', title: 'Nueva reunión', external_id: 'auto-opencode', text: 'Solicitan una demo.' }
+    const source = await store.ingest(input)
+    expect((await operations.call('list_jobs', { state: 'queued' })).total).toBe(1)
+    await runner.once(new AbortController().signal)
+    const jobs = await operations.call('list_jobs', { kind: 'process' })
+    expect(jobs.items[0]).toMatchObject({ state: 'completed', progress: { provider: 'opencode', model: 'fixture/chat', extracted: 1 } })
+    const facts = await store.list({ kind: 'fact' })
+    expect(facts.items[0]!.data).toMatchObject({ category: 'finding', review_state: 'pending', model: 'fixture/chat' })
+    expect((await store.detail(facts.items[0]!.id)).evidence[0]!.entity_id).toBe(source.entity_id)
+    expect((await store.records(collection.id)).total).toBe(1)
+    expect(extract).toHaveBeenCalledTimes(2)
+    await store.ingest(input)
+    await runner.once(new AbortController().signal) // pending people deduplication
+    expect(extract).toHaveBeenCalledTimes(2)
+    expect((await store.list({ kind: 'fact' })).total).toBe(1)
   })
 
   it('recupera trabajos con lease vencido y los ejecuta una sola vez', async () => {

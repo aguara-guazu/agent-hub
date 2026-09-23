@@ -55,7 +55,14 @@ Dos principales distintos, nunca intercambiables:
 | POST | `/catalog/servers/{id}/oauth/logout` | user | — | `McpServer` (borra la cuenta autorizada) |
 | POST | `/catalog/servers/{id}/oauth/client` | user | `{client_id, client_secret?}` | `McpServer` (cliente OAuth propio; descarta la cuenta anterior) |
 | GET | `/oauth/settings` | user | — | `{redirect_url}` (la URL de retorno a registrar en el proveedor) |
-| GET/POST/PATCH/DELETE | `/catalog/skills[...]` | user | | `Skill` |
+| GET/POST/PATCH/DELETE | `/catalog/skills[...]` | user | | `Skill` (con `source`, `source_path`, `source_ref` y `claude_ai[]`: estado en la cuenta de claude.ai de cada Claude Desktop, `synced`/`stale`/`missing`) |
+| GET | `/catalog/skills/{id}/zip` | user | — | `application/zip` con `<slug>/SKILL.md` y los archivos de la skill, para «Subir skill» en Claude Desktop |
+| GET | `/local/overview` | user | — | `{hostname, clients[], rows[]}`; cada cliente trae `restart_pending` y `pending` (skills `added/removed/changed/auto` y servers `added/removed` respecto de lo que listó al abrirse, o `null`) |
+| GET | `/local/pending-restarts` | user | — | clientes sin recarga en caliente que listaron un snapshot distinto del vigente: `[{agent_id, cli_kind, machine_hostname, snapshot_hash, listed_hash, changes}]`; lo consulta el proceso de escritorio para ofrecer reiniciar Claude Desktop |
+
+Una skill con `source: external` viene de la biblioteca de la máquina (`~/.agents/skills`,
+`npx skills`): PATCH y DELETE responden **409**, porque se edita y se quita con `npx skills`.
+El hub sólo decide dónde se expone.
 
 El recurso de otra persona devuelve **404, no 403**: con un 403 la respuesta
 confirmaría que ese id existe. La unicidad del slug es `(user_id, slug)`, así que dos
@@ -121,7 +128,8 @@ acto explícito. Las tools heredan la decisión de su server.
 ### sync (prefix `/sync`)
 | GET | `/sync/bootstrap` | daemon | — | `{machine_id, user_email, agents: AgentInstance[]}` |
 | GET | `/sync/snapshot/{agent_id}?known_hash=` | daemon | — | snapshot de `resolver.compute_snapshot`, o `304` si el hash coincide |
-| POST | `/sync/report` | daemon | `{agent_id, listed_hash?, connected?, drift_detected?, drift_detail?}` | `204` |
+| POST | `/sync/report` | daemon | `{agent_id, listed_hash?, connected?, drift_detected?, drift_detail?, account_skills?: {checked_at, skills: [{slug, status: synced|stale}]}}` | `204` |
+| PUT | `/sync/external-skills` | daemon | `{skills: [{slug, display_name, description, body, tree_hash, source_path, source_ref}]}` foto completa de `~/.agents/skills` | `{created, updated, removed, skipped: [{slug, reason}]}`; lo que falta respecto al reporte anterior se da de baja con sus reglas |
 | POST | `/sync/tool-call` | daemon | `{agent_id, server_slug, tool_name, exposed_name, decision, denial_reason, args_digest, duration_ms, error}` | `204` |
 
 ### audit (prefix `/audit`)
@@ -140,13 +148,18 @@ Lo produce `agenthub.modules.policy.resolver.compute_snapshot`. Forma exacta:
   "servers": [{"id","slug","display_name","transport","command","args","env","cwd",
                "url","headers","secret_refs",
                "tools":[{"id","name","exposed_name","title","description","input_schema","definition_hash"}]}],
-  "skills": [{"id","slug","display_name","description","body","version","content_hash"}],
+  "skills": [{"id","slug","display_name","description","body","version","content_hash",
+              "source"?,"source_path"?,"source_ref"?}],
   "denied": [{"resource_type","resource_id","slug","exposed","source","detail"}],
   "snapshot_hash": "sha256...", "generated_at": "iso8601"
 }
 ```
 
 `snapshot_hash` es determinista sobre todo el cuerpo menos el propio hash y `generated_at`.
+Los campos de origen de una skill sólo aparecen cuando es externa (`source: "external"`), así
+el hash de las skills del hub no cambia. Todos los clientes reciben sus skills: los que tienen
+carpeta las materializan como archivos y Claude Desktop las obtiene por la herramienta
+`use_skill` del gateway, cuya descripción lista las habilitadas.
 
 ## Propagación
 
@@ -162,3 +175,25 @@ Regla de cálculo: si `agent.last_listed_hash == snapshot_hash` → `applied_liv
 Si difiere y el CLI es Claude Code → `pending_sync`. Si difiere y el CLI no recarga
 en caliente → `applied_stale_list` cuando el daemon ya tiene el snapshot, y
 `pending_restart` cuando además hay que reiniciar. Si nunca se conectó → `unknown`.
+
+## Búsqueda global de memoria
+
+`POST /api/memory/search` requiere la sesión local. Acepta `query` (hasta 2000 caracteres),
+`kind`, `project_id`, `from` (fecha ISO de actualización), `limit` (1–50, por defecto 20)
+y `offset`. Sin consulta devuelve entidades recientes. Combina recuperación textual y
+vectores de Ollama local mediante reciprocal rank fusion, filtrando antes de ordenar.
+Busca metadatos de todas las clases de entidad y fragmentos de las fuentes vigentes;
+omite personas fusionadas, propuestas rechazadas y fuentes eliminadas.
+
+Devuelve `items`, `total`, `limit`, `offset`, `has_more`, `semantic_status` y `coverage`.
+Cada resultado incluye tipo, título, vista previa, proyectos y `href`; los fragmentos
+incluyen también `fragment_id` y `version_id` para abrir la evidencia exacta. Agrupa los
+fragmentos de una misma fuente en su mejor resultado. `total` cuenta las entidades
+recuperadas entre los candidatos, no toda la base.
+
+`semantic_status` distingue `ready`, `indexing`, `not_configured`, `unavailable` y
+`not_requested` (consulta vacía). Un modelo local desactivado o sin respuesta conserva
+los resultados textuales. El worker descubre cambios e indexa entidades y fuentes en
+segundo plano; los vectores de entidades se invalidan por contenido y se regeneran
+después de una restauración. El endpoint de búsqueda de fragmentos existente conserva
+su contrato para los clientes MCP.

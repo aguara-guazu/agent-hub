@@ -8,6 +8,7 @@ import './styles/tokens.css'
 import './styles/app.css'
 import './styles/hub.css'
 import './styles/memory.css'
+import './styles/search.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {

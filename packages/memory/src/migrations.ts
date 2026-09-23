@@ -113,4 +113,17 @@ CREATE TABLE changes (
   id bigserial PRIMARY KEY, entity_id uuid, action text NOT NULL, actor text NOT NULL,
   before_value jsonb, after_value jsonb, created_at timestamptz NOT NULL DEFAULT now()
 );
+`, String.raw`
+-- Entity metadata is searchable even when it has no imported source (projects, facts, people…).
+CREATE FUNCTION memory_entity_text(title text, data jsonb) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT title || E'\n' || COALESCE(data->>'description','') || E'\n' || COALESCE(data->>'text','') || E'\n'
+    || COALESCE(data->>'email','') || E'\n' || COALESCE(data->>'category','') || E'\n' || COALESCE(data->>'status','')
+$$;
+CREATE INDEX entities_search ON entities USING gin(to_tsvector('simple',memory_entity_text(title,data)));
+CREATE TABLE entity_embeddings (
+  entity_id uuid REFERENCES entities ON DELETE CASCADE,
+  model text NOT NULL, dimension integer NOT NULL, embedding vector NOT NULL, content_hash text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(entity_id,model),
+  CHECK(vector_dims(embedding)=dimension)
+);
 `]

@@ -11,6 +11,7 @@ import { buildTrayTemplate, TRAY_TOOLTIP, type TrayAction } from './tray.js'
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus } from './ipc.js'
 import { AutoUpdater, CHECK_INTERVAL_MS, type UpdateStatus } from './updater.js'
+import { defaultClientDeps, isClientRunning, restartClient, supportsClientRestart } from './clients.js'
 import { DaemonApp, loadConfig } from '@agenthub/daemon'
 
 const APP_NAME = 'Agent Hub'
@@ -40,6 +41,26 @@ let pendingUpdate: Extract<UpdateStatus, { state: 'downloaded' }> | null = null
 let availableUpdate: { version: string; page: string } | null = null
 let checkingUpdates = false
 let relaunchAfterQuit = false
+
+/** Forma de `GET /api/local/pending-restarts`, calcada de `packages/core/src/restart.ts`. */
+interface PendingRestart {
+  agent_id: string
+  cli_kind: string
+  snapshot_hash: string
+  changes: {
+    skills: { added: string[]; removed: string[]; changed: string[]; auto: string[] }
+    servers: { added: string[]; removed: string[] }
+  } | null
+}
+/** Claude Desktop sigue con una lista vieja; se ofrece reiniciarla desde el tray y la consola. */
+let pendingClientRestart: PendingRestart | null = null
+/** Skills automáticas por las que ya se avisó a cada cliente: se repite sólo si entra una nueva. */
+const offeredRestarts = new Map<string, Set<string>>()
+/** Cada cuánto el proceso principal pregunta al core si algún cliente quedó con una lista vieja. */
+const PENDING_RESTART_POLL_MS = 10_000
+let sessionToken = ''
+let restartingClient = false
+const clientDeps = defaultClientDeps()
 
 const appDir = dirname(fileURLToPath(import.meta.url))
 const pathContext = (): PathContext => ({
@@ -203,6 +224,99 @@ function announceVersionChange(): void {
 function coreStatus(): CoreStatus {
   return { state: coreSupervisor.state, apiBaseUrl: CORE_BASE_URL, pid: coreSupervisor.pid, daemonState: daemonSupervisor.state }
 }
+
+function describePending(entry: PendingRestart): string {
+  const changes = entry.changes
+  if (!changes) return 'la lista de herramientas cambió'
+  const parts = [
+    changes.skills.added.length ? `skills nuevas: ${changes.skills.added.join(', ')}` : '',
+    changes.skills.changed.length ? `skills actualizadas: ${changes.skills.changed.join(', ')}` : '',
+    changes.skills.removed.length ? `skills retiradas: ${changes.skills.removed.join(', ')}` : '',
+    changes.servers.added.length ? `MCP servers nuevos: ${changes.servers.added.join(', ')}` : '',
+    changes.servers.removed.length ? `MCP servers retirados: ${changes.servers.removed.join(', ')}` : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join('; ') : 'la lista de herramientas cambió'
+}
+
+async function fetchPendingRestarts(): Promise<PendingRestart[]> {
+  const request = (token: string): Promise<Response> => fetch(`${CORE_BASE_URL}/api/local/pending-restarts`, {
+    headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(3000),
+  })
+  if (!sessionToken) sessionToken = await waitForSession()
+  let response = await request(sessionToken)
+  if (response.status === 401) {
+    sessionToken = await waitForSession()
+    response = await request(sessionToken)
+  }
+  if (!response.ok) throw new Error(`pending-restarts: HTTP ${response.status}`)
+  return await response.json() as PendingRestart[]
+}
+
+/**
+ * Pregunta al core si Claude Desktop quedó con una lista vieja. Si el cambio entró solo
+ * (una skill de la biblioteca) y la app está abierta, avisa una vez por snapshot con una
+ * notificación que ofrece reiniciarla; el tray y la consola muestran el mismo botón.
+ */
+async function pollPendingRestarts(): Promise<void> {
+  if (quitting || coreSupervisor.state !== 'running') return
+  let list: PendingRestart[]
+  try {
+    list = await fetchPendingRestarts()
+  } catch {
+    return
+  }
+  const desktop = list.find((entry) => entry.cli_kind === 'claude_desktop' && supportsClientRestart(entry.cli_kind, process.platform)) ?? null
+  const before = pendingClientRestart?.snapshot_hash ?? ''
+  pendingClientRestart = desktop
+  if ((desktop?.snapshot_hash ?? '') !== before) refreshTray()
+  if (!desktop) {
+    // La app ya cargó lo vigente: el próximo cambio vuelve a avisar.
+    offeredRestarts.clear()
+    return
+  }
+  if (!desktop.changes || desktop.changes.skills.auto.length === 0) return
+  const offered = offeredRestarts.get(desktop.agent_id) ?? new Set<string>()
+  const fresh = desktop.changes.skills.auto.filter((slug) => !offered.has(slug))
+  if (fresh.length === 0) return
+  for (const slug of desktop.changes.skills.auto) offered.add(slug)
+  offeredRestarts.set(desktop.agent_id, offered)
+  if (!(await isClientRunning('claude_desktop', clientDeps))) return
+  const skills = fresh.join(', ')
+  try {
+    if (!Notification.isSupported()) return
+    const notification = new Notification({
+      title: `Skill instalada: ${skills}`,
+      body: 'Claude Desktop tiene que reiniciarse para verla. Hacé clic para reiniciarla ahora.',
+    })
+    notification.on('click', () => void confirmAndRestartClient())
+    notification.show()
+  } catch {
+    // Sin centro de notificaciones queda el botón del tray y de la consola.
+  }
+}
+
+/** Diálogo de confirmación y reinicio: nunca se cierra la app de la persona sin preguntar. */
+async function confirmAndRestartClient(): Promise<void> {
+  if (restartingClient) return
+  const entry = pendingClientRestart
+  const detail = entry ? `Cambios pendientes: ${describePending(entry)}. Se cierra y se vuelve a abrir Claude Desktop; guardá lo que tengas a medias en la app.` : 'Se cierra y se vuelve a abrir Claude Desktop; guardá lo que tengas a medias en la app.'
+  const choice = await dialog.showMessageBox({
+    type: 'question',
+    message: 'Reiniciar Claude Desktop',
+    detail,
+    buttons: ['Reiniciar ahora', 'Más tarde'],
+    defaultId: 0,
+    cancelId: 1,
+  })
+  if (choice.response !== 0) return
+  restartingClient = true
+  try {
+    const result = await restartClient('claude_desktop', clientDeps)
+    notify(result.ok ? 'Claude Desktop reiniciada' : 'No se pudo reiniciar Claude Desktop', result.detail)
+  } finally {
+    restartingClient = false
+  }
+}
 function safeAutostart(): boolean {
   try { return autostart.isEnabled() } catch { return false }
 }
@@ -214,6 +328,7 @@ function refreshTray(): void {
     autostartEnabled: safeAutostart(),
     update: pendingUpdate ? { version: pendingUpdate.version, state: 'ready' } : availableUpdate ? { version: availableUpdate.version, state: 'available' } : null,
     checkingUpdates,
+    clientRestart: pendingClientRestart ? { label: 'Reiniciar Claude Desktop (cambios sin cargar)' } : null,
   })
   tray.setContextMenu(Menu.buildFromTemplate(template.map((item): Electron.MenuItemConstructorOptions => {
     if (item.type === 'separator') return { type: 'separator' }
@@ -261,6 +376,7 @@ function handleTrayAction(action: TrayAction): void {
   else if (action === 'hide') hideWindow()
   else if (action === 'toggle-autostart') autostart.setEnabled(!safeAutostart())
   else if (action === 'restart-core') void restartCore()
+  else if (action === 'restart-client') void confirmAndRestartClient()
   else if (action === 'check-updates') void checkForUpdates('manual')
   else if (action === 'apply-update') void applyUpdate()
   else if (action === 'open-release' && availableUpdate) void shell.openExternal(availableUpdate.page)
@@ -327,6 +443,15 @@ function registerIpc(): void {
   ipcMain.handle(IPC.syncNow, syncNow)
   ipcMain.handle(IPC.getCoreStatus, coreStatus)
   ipcMain.handle(IPC.restartCore, restartCore)
+  ipcMain.handle(IPC.restartClient, async (_event, cliKind: string) => {
+    if (restartingClient) return { ok: false, detail: 'ya hay un reinicio en curso' }
+    restartingClient = true
+    try {
+      return await restartClient(String(cliKind), clientDeps)
+    } finally {
+      restartingClient = false
+    }
+  })
   ipcMain.handle(IPC.getAutostart, safeAutostart)
   ipcMain.handle(IPC.setAutostart, (_event, enabled: boolean) => {
     autostart.setEnabled(Boolean(enabled))
@@ -395,6 +520,7 @@ else {
     daemonSupervisor.on('error', (error) => console.error('[daemon]', error.message))
     coreSupervisor.start()
     const token = await waitForSession()
+    sessionToken = token
     daemonSupervisor.start()
     registerIpc()
     createTray()
@@ -404,6 +530,7 @@ else {
     announceVersionChange()
     void checkForUpdates('startup')
     setInterval(() => void checkForUpdates('timer'), CHECK_INTERVAL_MS).unref()
+    setInterval(() => void pollPendingRestarts(), PENDING_RESTART_POLL_MS).unref()
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error(message)

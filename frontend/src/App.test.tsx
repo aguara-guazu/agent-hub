@@ -147,7 +147,8 @@ describe('hub local de escritorio', () => {
     setToken('expired')
     const getSession = vi.fn(async () => 'renewed')
     window.agentHub = { getSession, getCoreStatus: async () => ({state:'running', daemonState:'running', apiBaseUrl:'http://localhost', pid:1}),
-      getAutostart: async () => false, setAutostart: async value => value, restartCore: async () => {}, syncNow: async () => {}, onCoreStateChanged: () => () => {}, platform:'darwin' }
+      getAutostart: async () => false, setAutostart: async value => value, restartCore: async () => {}, syncNow: async () => {}, onCoreStateChanged: () => () => {}, platform:'darwin',
+      restartClient: async () => ({ ok: true, detail: '' }) }
     vi.stubGlobal('fetch', vi.fn(async (input, init) => {
       if (String(input).endsWith('/auth/me')) return init.headers.Authorization === 'Bearer renewed' ? jsonResponse(member) : new Response('{}', {status:401})
       if (String(input).endsWith('/local/overview')) return jsonResponse({hostname:'Mi Mac', clients:[], rows:[]})

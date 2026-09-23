@@ -5,7 +5,7 @@
  * vienen parseados (args, env, headers, secret_refs, input_schema, detail, payload) y
  * los timestamps como texto ISO-8601 UTC.
  */
-import type { CliKind, ResourceType, RuleState, ServerAuth, Transport } from '@agenthub/shared'
+import type { CliKind, ResourceType, RuleState, ServerAuth, SkillSource, Transport } from '@agenthub/shared'
 
 export type OrgRole = 'owner' | 'admin' | 'member'
 export type SquadRole = 'lead' | 'member'
@@ -61,6 +61,15 @@ export interface Machine {
   last_snapshot_hash: string | null
 }
 
+/** Estado de una skill del hub en la cuenta de claude.ai de un cliente, según su caché local. */
+export type AccountSkillStatus = 'synced' | 'stale'
+
+/** Lo que el daemon encontró en la caché de skills de Claude Desktop. */
+export interface AccountSkillsReport {
+  checked_at: string
+  skills: { slug: string; status: AccountSkillStatus }[]
+}
+
 export interface AgentInstance {
   id: string
   machine_id: string
@@ -72,6 +81,8 @@ export interface AgentInstance {
   last_listed_hash: string | null
   drift_detected: boolean
   drift_detail: string
+  /** `null` mientras el daemon no haya reportado la caché (clientes sin cuenta de claude.ai). */
+  account_skills: AccountSkillsReport | null
 }
 
 export interface ApiToken {
@@ -134,6 +145,12 @@ export interface SkillRow {
   body: string
   version: number
   content_hash: string
+  source: SkillSource
+  /** Carpeta original de una skill externa; vacío para las del hub. */
+  source_path: string
+  source_ref: string
+  /** Máquina cuyo daemon reporta la skill externa; vacío para las del hub. */
+  source_machine_id: string
 }
 
 export interface ExposureRule {

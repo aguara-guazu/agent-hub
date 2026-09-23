@@ -1,16 +1,35 @@
 import { z } from 'zod'
 import { type AIConfig, type Vault, localUrl } from './config.js'
+import { OpenCodeRuntime } from './opencode.js'
 import { check, MemoryError, parse } from './contracts.js'
 
 export interface AIUsage { input_tokens: number; output_tokens: number; model: string }
 export class MemoryAI {
-  constructor(private readonly settings: () => Promise<AIConfig>, private readonly vault: Vault, private readonly fetcher: typeof fetch = fetch) {}
-  async embed(texts: string[]): Promise<{ model: string; vectors: number[][] }> {
+  private queryVectors = new Map<string, { expires: number; result: { model: string; vectors: number[][] } }>()
+  async embedQuery(text: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const config = await this.settings()
+    if (!config.embeddings_enabled) throw new MemoryError(409, 'Los embeddings locales todavía no están configurados')
+    const key = JSON.stringify([config.ollama_url, config.embedding_model, text]), cached = this.queryVectors.get(key)
+    if (cached && cached.expires > Date.now()) return cached.result
+    const result = await this.forJob(config, signal ?? new AbortController().signal).embed([text])
+    if (this.queryVectors.size >= 50) this.queryVectors.delete(this.queryVectors.keys().next().value!)
+    this.queryVectors.set(key, { result, expires: Date.now() + 60_000 })
+    return result
+  }
+  constructor(private readonly settings: () => Promise<AIConfig>, private readonly vault: Vault, private readonly fetcher: typeof fetch = fetch,
+    private readonly openCode = new OpenCodeRuntime(vault.directory), private readonly signal?: AbortSignal) {}
+  /** Pin provider/privacy settings and cancellation for the entire job, including identities and rules. */
+  forJob(config: AIConfig, signal: AbortSignal): MemoryAI {
+    return new MemoryAI(async () => config, this.vault, this.fetcher, this.openCode, signal)
+  }
+  private requestSignal() { return AbortSignal.any([AbortSignal.timeout(120_000), ...(this.signal ? [this.signal] : [])]) }
+  async embed(texts: string[], signal?: AbortSignal): Promise<{ model: string; vectors: number[][] }> {
     const config = await this.settings()
     if (!config.embeddings_enabled) throw new MemoryError(409, 'Los embeddings locales todavía no están configurados')
     const response = await this.fetcher(`${localUrl(config.ollama_url)}/api/embed`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: config.embedding_model, input: texts, truncate: false }), signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify({ model: config.embedding_model, input: texts, truncate: false }), signal: signal ? AbortSignal.any([this.requestSignal(), signal]) : this.requestSignal(),
     })
     check(response.ok, `Ollama no pudo generar embeddings (HTTP ${response.status})`, 502)
     const body = await response.json() as { embeddings?: number[][] }
@@ -29,13 +48,19 @@ export class MemoryAI {
       Cada evidencia debe ser un ID de fragmento presente en la entrada. Conservá el idioma original. Esquema: ${JSON.stringify(z.toJSONSchema(schema))}. ${instructions}`
     const messages = [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(content) }]
     let output: string, usage: AIUsage
+    this.signal?.throwIfAborted()
+    if (config.extraction === 'opencode') {
+      check(config.remote_processing_enabled, 'El procesamiento remoto está desactivado', 409)
+      const result = await this.openCode.extract(config.extraction_model, system, content, z.toJSONSchema(schema), this.signal)
+      return { value: decode ? decode(result.value) : parse(schema, result.value), usage: result.usage }
+    }
     if (config.extraction === 'deepseek') {
       check(config.remote_processing_enabled, 'El procesamiento remoto está desactivado', 409)
       const credentials = this.vault.read('deepseek')
       check(credentials?.api_key, 'Falta la clave de DeepSeek', 409)
       const response = await this.fetcher('https://api.deepseek.com/chat/completions', {
         method: 'POST', headers: { Authorization: `Bearer ${credentials.api_key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: config.extraction_model, messages, response_format: { type: 'json_object' }, max_tokens: 6000, thinking: { type: 'disabled' } }), signal: AbortSignal.timeout(120_000),
+        body: JSON.stringify({ model: config.extraction_model, messages, response_format: { type: 'json_object' }, max_tokens: 6000, thinking: { type: 'disabled' } }), signal: this.requestSignal(),
       })
       check(response.ok, `DeepSeek no pudo procesar la solicitud (HTTP ${response.status})`, 502)
       const body = await response.json() as any
@@ -45,7 +70,7 @@ export class MemoryAI {
     } else {
       const response = await this.fetcher(`${localUrl(config.ollama_url)}/api/chat`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: config.extraction_model, messages, format: z.toJSONSchema(schema), stream: false }), signal: AbortSignal.timeout(120_000),
+        body: JSON.stringify({ model: config.extraction_model, messages, format: z.toJSONSchema(schema), stream: false }), signal: this.requestSignal(),
       })
       check(response.ok, `El modelo local no pudo procesar la solicitud (HTTP ${response.status})`, 502)
       const body = await response.json() as any

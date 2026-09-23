@@ -14,7 +14,7 @@
  * el `ORDER BY` del motor, porque de ese orden dependen el `snapshot_hash` y la
  * asignación de `exposed_name`.
  */
-import { CLI_FILE_SKILLS, snapshotHash, type CliKind, type PolicySnapshot, type ResourceType } from '@agenthub/shared'
+import { snapshotHash, type PolicySnapshot, type ResourceType } from '@agenthub/shared'
 import { buildExposedName } from '../naming.js'
 import type { Store } from '../store.js'
 import { cmp } from '../store.js'
@@ -218,10 +218,11 @@ export function computeSnapshot(
   }
 
   const skills: PolicySnapshot['skills'] = []
-  // Un cliente sin skills en disco (Claude Desktop) no recibe skills ni las lista como denegadas:
-  // el daemon no tendría dónde materializarlas.
-  const fileSkills = CLI_FILE_SKILLS[context.agent.cli_kind as CliKind] ?? true
-  for (const skill of fileSkills ? context.skills : []) {
+  // Todos los clientes reciben sus skills: los que tienen carpeta las materializan por
+  // archivos y los demás (Claude Desktop) las obtienen por la herramienta `use_skill` del
+  // gateway. Los campos de origen sólo viajan en las externas, para no mover el hash de
+  // las skills del hub que ya existían.
+  for (const skill of context.skills) {
     const skillDecision = resolveResource(context, RESOURCE.skill, skill.id)
     if (!skillDecision.exposed) {
       denied.push({ resource_type: RESOURCE.skill, resource_id: skill.id, slug: skill.slug, ...skillDecision })
@@ -235,6 +236,9 @@ export function computeSnapshot(
       body: skill.body,
       version: skill.version,
       content_hash: skill.content_hash,
+      ...(skill.source === 'external'
+        ? { source: skill.source, source_path: skill.source_path, source_ref: skill.source_ref }
+        : {}),
     })
   }
 

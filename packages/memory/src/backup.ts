@@ -44,7 +44,7 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
   check(Object.keys(backup.tables).every(table => (tables as readonly string[]).includes(table)), 'El respaldo contiene tablas desconocidas')
   for (const table of tables) check(Array.isArray(backup.tables[table]), `Falta la tabla ${table}`)
   const schemas = await store.db.query('SELECT max(version)::int AS version FROM schema_versions')
-  check(backup.schema_version === schemas[0]!.version, 'El respaldo requiere la misma versión de esquema')
+  check(backup.schema_version >= 1 && backup.schema_version <= schemas[0]!.version, 'El respaldo requiere una versión de esquema compatible')
   for (const version of backup.tables.versions ?? []) {
     const path = String(version.original_path), original = backup.originals[path]
     check(/^[a-f0-9]{64}\.json$/.test(path) && original !== undefined, 'El respaldo tiene un original faltante o inválido')

@@ -98,6 +98,8 @@
 .hub-resource-title h2 { font-size: 14px; font-weight: 600; letter-spacing: -.2px; }
 .hub-resource-title p { margin-top: 6px; color: var(--text-muted); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .hub-tag { color: var(--text-faint); font-size: 8px; border: 1px solid var(--border-strong); padding: 2px 5px; border-radius: 4px; letter-spacing: .4px; }
+.hub-tag.ok { color: var(--accent); border-color: var(--accent); }
+.hub-tag.warn { color: var(--warn); border-color: var(--warn); }
 .hub-state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text-faint); font-size: 10px; }
 .hub-state.on { color: var(--accent); }
 .hub-state.pending { color: var(--warn); }

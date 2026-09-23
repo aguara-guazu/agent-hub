@@ -4,6 +4,7 @@ import type { MemoryAI } from './ai.js'
 import type { AIConfig, Vault } from './config.js'
 import type { GoogleAuth } from './google-auth.js'
 import { MemoryError } from './contracts.js'
+import { scheduleEntityIndex, indexEntities } from './entity-index.js'
 import { processVersion } from './processing.js'
 import { dedupePeople } from './people-dedupe.js'
 import { ProviderError, ProviderHttp } from './connectors/http.js'
@@ -26,6 +27,7 @@ export class JobRunner {
       AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='sync' AND j.payload->>'connector_id'=c.id::text
         AND (j.state IN ('queued','running','waiting') OR j.updated_at>now()-make_interval(mins=>c.interval_minutes)))`)
     for (const connector of due) await this.store.enqueue('sync', { connector_id: connector.id }, `sync:${connector.id}`)
+    await scheduleEntityIndex(this.store, await this.settings())
     await this.store.db.query(`INSERT INTO settings(key,value) VALUES('worker',jsonb_build_object('heartbeat',now(),'id',$1::text)) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [this.workerId])
   }
 
@@ -52,10 +54,14 @@ export class JobRunner {
         const settings = await this.settings()
         if (job.payload.index_only) { settings.extraction = 'disabled'; await progress({ index_only: true }) }
         if (job.payload.identity_only) await progress({ identity_only: true })
-        const result = await processVersion(this.store, this.ai, job.payload.version_id, settings, progress, controller.signal, Boolean(job.payload.force), Boolean(job.payload.identity_only))
+        const result = await processVersion(this.store, this.ai.forJob(settings, controller.signal), job.payload.version_id, settings, progress, controller.signal, Boolean(job.payload.force), Boolean(job.payload.identity_only))
         await progress(result)
+      } else if (job.kind === 'index_entities') {
+        const settings = await this.settings()
+        await progress(await indexEntities(this.store, this.ai.forJob(settings, controller.signal), settings, controller.signal, progress))
       } else if (job.kind === 'dedupe_people') {
-        await progress(await dedupePeople(this.store, this.ai, await this.settings(), progress, controller.signal))
+        const settings = await this.settings()
+        await progress(await dedupePeople(this.store, this.ai.forJob(settings, controller.signal), settings, progress, controller.signal))
       } else if (job.kind === 'sync' || job.kind === 'google_document' || job.kind === 'google_repair') {
         const connector = (await this.store.db.query<Connector>('SELECT * FROM connectors WHERE id=$1', [job.payload.connector_id]))[0]
         if (!connector) throw new MemoryError(404, 'El conector ya no existe')

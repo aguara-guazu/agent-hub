@@ -5,18 +5,23 @@ import { MemoryStore } from './store.js'
 import { MemoryOperations } from './operations.js'
 import { MemoryAI } from './ai.js'
 import { GoogleAuth } from './google-auth.js'
+import { OpenCodeRuntime } from './opencode.js'
 import { JobRunner } from './jobs.js'
 import { check, MemoryError, parse } from './contracts.js'
 
-export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama']), extraction_model: z.string().min(1).max(200),
+export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode']), extraction_model: z.string().min(1).max(200),
   embeddings_enabled: z.boolean(), embedding_model: z.string().min(1).max(200), ollama_url: z.url(), remote_processing_enabled: z.boolean(),
-  identity_auto_merge: z.boolean().default(true) }).strict()
+  identity_auto_merge: z.boolean().default(true) }).strict().refine(
+    config => config.extraction !== 'opencode' || /^[^/\s]+\/\S+$/.test(config.extraction_model),
+    { message: 'Elegí un modelo de OpenCode con formato proveedor/modelo', path: ['extraction_model'] })
 export class MemoryService {
   readonly vault: Vault
   readonly google: GoogleAuth
+  readonly openCode: OpenCodeRuntime
   private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch) {
+    this.openCode = new OpenCodeRuntime(directory)
     this.vault = new Vault(directory)
     this.google = new GoogleAuth(this.vault, redirectUrl, fetcher)
   }
@@ -34,7 +39,7 @@ export class MemoryService {
       throw new MemoryError(503, 'No se pudo conectar con PostgreSQL y pgvector. Revisá que el servicio local esté iniciado')
     }
     const store = new MemoryStore(db, this.directory)
-    const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher)
+    const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode)
     const operations = new MemoryOperations(store, ai, this.google, this.vault)
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher)
     this.current = { db, store, ai, operations, runner }
@@ -65,11 +70,15 @@ export class MemoryService {
     const config = parse(aiConfigSchema, raw)
     localUrl(config.ollama_url)
     check(new URL(config.ollama_url).protocol === 'http:' || new URL(config.ollama_url).protocol === 'https:', 'URL de Ollama inválida')
+    if (config.extraction === 'opencode' && config.remote_processing_enabled) {
+      const status = await this.openCode.status()
+      check(status.models.some(m => m.id === config.extraction_model), status.detail ?? 'El modelo elegido no está disponible en OpenCode', 409)
+    }
     const { db } = await this.get()
     await db.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(config)])
     return config
   }
-  async close() { const current = this.current; this.current = null; if (current) await current.db.close() }
+  async close() { const current = this.current; this.current = null; await this.openCode.close(); if (current) await current.db.close() }
   async saveDatabase(url: string) {
     const parsed = new URL(url)
     check(['postgres:', 'postgresql:'].includes(parsed.protocol), 'Se requiere una URL de PostgreSQL')

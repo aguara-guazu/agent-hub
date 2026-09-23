@@ -16,7 +16,16 @@
  * Es HEADLESS y por STDIO: el CLI lanza `agenthub gateway --agent <id>` como proceso
  * hijo y le habla por tuberias. No hay ningun puerto abierto ni token en el archivo
  * de configuracion.
+ *
+ * SKILLS POR HERRAMIENTA. Un cliente sin carpeta de skills (Claude Desktop) no puede
+ * recibirlas como archivos, asi que el gateway le expone `use_skill`: la descripcion
+ * lista las skills habilitadas y la llamada devuelve el SKILL.md o un archivo auxiliar.
+ * Prender o apagar una skill en el panel cambia esa descripcion en el siguiente
+ * `tools/list`, y la llamada se decide contra el snapshot vigente como cualquier otra.
  */
+
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { join, relative, resolve, sep } from 'node:path'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
@@ -27,7 +36,9 @@ import {
   type CallToolResult,
   type ListToolsResult,
 } from '@modelcontextprotocol/sdk/types.js'
-import type { PolicyStore } from './policy.js'
+import { CLI_FILE_SKILLS, renderSkillMd, SKILL_FILENAME, SKILL_TOOL_NAME, type CliKind } from '@agenthub/shared'
+
+import type { ExposedSkill, PolicyStore, SnapshotView } from './policy.js'
 import { DECISION_ALLOW, DECISION_DENY, argsDigest, denialMessage, serverOffMessage, unknownToolMessage } from './policy.js'
 import { ConnectionPool, UpstreamError, resultText } from './runtime.js'
 
@@ -42,6 +53,107 @@ const INSTRUCTIONS =
   'Entrada unica a los MCP servers y skills habilitados por Agent Hub para este agente. ' +
   'La lista de herramientas la decide el hub: si una herramienta figura pero el hub la apago, ' +
   'la llamada devuelve un error explicando el motivo.'
+
+/** El server que figura en la auditoria para la herramienta propia del gateway. */
+const SKILL_TOOL_SERVER = 'hub'
+/** Tope de un archivo auxiliar devuelto por `use_skill`. */
+const MAX_SKILL_FILE_BYTES = 1024 * 1024
+/** Cuantos archivos auxiliares se enumeran al devolver un SKILL.md. */
+const MAX_LISTED_FILES = 200
+
+/** Si el cliente recibe las skills por herramienta en vez de por su carpeta de skills. */
+function skillsByTool(cliKind: string): boolean {
+  return CLI_FILE_SKILLS[cliKind as CliKind] === false
+}
+
+/** Archivos auxiliares de una skill externa, relativos a su carpeta; sin ocultos ni enlaces. */
+function listSkillFiles(root: string): string[] {
+  const found: string[] = []
+  const walk = (dir: string): void => {
+    let names: string[]
+    try {
+      names = readdirSync(dir).sort()
+    } catch {
+      return
+    }
+    for (const name of names) {
+      if (found.length >= MAX_LISTED_FILES) return
+      if (name.startsWith('.')) continue
+      const child = join(dir, name)
+      let info
+      try {
+        info = lstatSync(child)
+      } catch {
+        continue
+      }
+      if (info.isSymbolicLink()) continue
+      if (info.isDirectory()) walk(child)
+      else if (info.isFile()) {
+        const rel = relative(root, child).split(sep).join('/')
+        if (rel !== SKILL_FILENAME) found.push(rel)
+      }
+    }
+  }
+  walk(root)
+  return found
+}
+
+/**
+ * Resuelve un archivo auxiliar dentro de la carpeta de la skill. La ruta se ancla al
+ * `realpath` de la carpeta y se vuelve a comprobar tras resolver enlaces: nada fuera de
+ * la skill se puede leer, ni por `..` ni por un symlink.
+ */
+function resolveSkillFile(root: string, file: string): { path: string } | { error: string } {
+  const base = realpathSync(root)
+  const inside = (path: string): boolean => path === base || path.startsWith(base + sep)
+  const target = resolve(base, file)
+  if (!inside(target)) return { error: `'${file}' queda fuera de la carpeta de la skill` }
+  if (!existsSync(target)) return { error: `la skill no tiene el archivo '${file}'` }
+  const real = realpathSync(target)
+  if (!inside(real)) return { error: `'${file}' apunta fuera de la carpeta de la skill` }
+  const info = statSync(real)
+  if (!info.isFile()) return { error: `'${file}' no es un archivo` }
+  if (info.size > MAX_SKILL_FILE_BYTES) return { error: `'${file}' supera el tope de ${MAX_SKILL_FILE_BYTES / 1024} KB` }
+  return { path: real }
+}
+
+/** Texto completo del SKILL.md de una skill: el archivo real si es externa, o el render del snapshot. */
+function skillMarkdown(skill: ExposedSkill): string {
+  if (skill.source === 'external') {
+    try {
+      return readFileSync(join(skill.sourcePath, SKILL_FILENAME), 'utf-8')
+    } catch {
+      // La carpeta pudo desaparecer entre el snapshot y la llamada: el cuerpo guardado sigue valiendo.
+    }
+  }
+  return renderSkillMd({ slug: skill.slug, display_name: skill.displayName, description: skill.description, body: skill.body })
+}
+
+/** Definicion de `use_skill` para la vista, o `null` si a este cliente no le corresponde. */
+function skillToolFor(view: SnapshotView): ListToolsResult['tools'][number] | null {
+  if (!skillsByTool(view.cliKind) || view.skills.length === 0) return null
+  if (view.tool(SKILL_TOOL_NAME) !== undefined) return null
+  const lines = view.skills.map((skill) => `- ${skill.slug}: ${skill.description || skill.displayName || skill.slug}`)
+  const description =
+    'Skills habilitadas por Agent Hub para este agente. Cuando la tarea coincide con la descripcion de una skill, ' +
+    'llamar ANTES de empezar con su slug: devuelve las instrucciones completas (SKILL.md), que hay que seguir. ' +
+    "Con 'file' devuelve un archivo auxiliar de esa skill (scripts, referencias) por su ruta relativa.\n\n" +
+    `Skills:\n${lines.join('\n')}`
+  return {
+    name: SKILL_TOOL_NAME,
+    title: 'Usar una skill',
+    description,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slug: { type: 'string', description: 'Slug de la skill', enum: view.skills.map((skill) => skill.slug) },
+        file: { type: 'string', description: 'Ruta relativa de un archivo auxiliar dentro de la skill (opcional)' },
+      },
+      required: ['slug'],
+      additionalProperties: false,
+    },
+  }
+}
 
 /** Lo que se reporta al control plane de una invocacion. Nunca lleva los argumentos: solo su digest. */
 export interface ToolCallRecord {
@@ -134,14 +246,88 @@ export class GatewayServer {
     const view = this.store.current
     this.lastListedHashValue = view.snapshotHash
     this.onListed?.(view.snapshotHash)
-    return {
-      tools: view.tools.map((tool) => ({
-        name: tool.exposedName,
-        ...(tool.title ? { title: tool.title } : {}),
-        ...(tool.description ? { description: tool.description } : {}),
-        inputSchema: tool.inputSchema as { type: 'object'; [k: string]: unknown },
-      })),
+    const tools: ListToolsResult['tools'] = view.tools.map((tool) => ({
+      name: tool.exposedName,
+      ...(tool.title ? { title: tool.title } : {}),
+      ...(tool.description ? { description: tool.description } : {}),
+      inputSchema: tool.inputSchema as { type: 'object'; [k: string]: unknown },
+    }))
+    const skillTool = skillToolFor(view)
+    if (skillTool !== null) tools.push(skillTool)
+    return { tools }
+  }
+
+  /** `use_skill`: la politica vigente decide, como en cualquier otra llamada. */
+  private async handleSkillCall(
+    view: SnapshotView,
+    args: Record<string, unknown>,
+    digest: string,
+    started: number,
+  ): Promise<CallToolResult> {
+    const slug = typeof args['slug'] === 'string' ? args['slug'].trim() : ''
+    const file = typeof args['file'] === 'string' ? args['file'].trim() : ''
+    const record = (decision: string, denialReason: string, error = ''): Promise<void> =>
+      this.report({
+        agent_id: this.agentInstanceId,
+        server_slug: SKILL_TOOL_SERVER,
+        tool_name: SKILL_TOOL_NAME,
+        exposed_name: SKILL_TOOL_NAME,
+        decision,
+        args_digest: digest,
+        duration_ms: elapsedMs(started),
+        denial_reason: denialReason,
+        error,
+      })
+
+    const skill = view.skill(slug)
+    if (skill === undefined) {
+      const denied = view.deniedSkill(slug)
+      const available = view.skills.map((item) => item.slug).join(', ') || 'ninguna'
+      const message = denied !== undefined
+        ? `El hub tiene apagada la skill '${slug}' para este agente, asi que no se entrega.` +
+          (denied.detail ? ` Motivo: ${denied.detail}.` : '') + (denied.source ? ` Nivel que decide: ${denied.source}.` : '') +
+          ' Para volver a tenerla hay que prenderla en el panel del hub.'
+        : `El hub no tiene ninguna skill '${slug}' habilitada para este agente. Skills disponibles: ${available}.`
+      await record(DECISION_DENY, message)
+      return errorResult(message)
     }
+
+    if (file !== '') {
+      if (skill.source !== 'external') {
+        const message = `La skill '${slug}' es un unico SKILL.md: no tiene archivos auxiliares.`
+        await record(DECISION_ALLOW, '', message)
+        return errorResult(message)
+      }
+      let resolved: ReturnType<typeof resolveSkillFile>
+      try {
+        resolved = resolveSkillFile(skill.sourcePath, file)
+      } catch (err) {
+        resolved = { error: `no se pudo leer '${file}': ${String(err)}` }
+      }
+      if ('error' in resolved) {
+        await record(DECISION_ALLOW, '', resolved.error)
+        return errorResult(resolved.error)
+      }
+      const data = readFileSync(resolved.path)
+      if (data.includes(0)) {
+        const message = `'${file}' es un archivo binario y no se puede mostrar como texto.`
+        await record(DECISION_ALLOW, '', message)
+        return errorResult(message)
+      }
+      await record(DECISION_ALLOW, '')
+      return { content: [{ type: 'text', text: data.toString('utf-8') }] }
+    }
+
+    let text = skillMarkdown(skill)
+    if (skill.source === 'external') {
+      const files = listSkillFiles(skill.sourcePath)
+      if (files.length > 0) {
+        text += `\n\n---\nArchivos auxiliares de la skill (pedirlos con use_skill {slug: '${slug}', file: <ruta>}):\n` +
+          files.map((item) => `- ${item}`).join('\n') + '\n'
+      }
+    }
+    await record(DECISION_ALLOW, '')
+    return { content: [{ type: 'text', text }] }
   }
 
   private async handleCallTool(request: CallToolRequest): Promise<CallToolResult> {
@@ -154,6 +340,10 @@ export class GatewayServer {
     const name = request.params.name
     const args = (request.params.arguments ?? {}) as Record<string, unknown>
     const digest = argsDigest(args)
+
+    if (name === SKILL_TOOL_NAME && skillsByTool(view.cliKind) && view.tool(name) === undefined) {
+      return this.handleSkillCall(view, args, digest, started)
+    }
 
     const tool = view.tool(name)
     if (tool === undefined) {

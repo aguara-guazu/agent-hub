@@ -3,12 +3,20 @@ import { api } from './api'
 import type { AgentInstance, MatrixRow, ResourceType } from './types'
 import { useToast } from '../components/Toast'
 
+/** Qué difiere entre lo que el cliente listó al abrirse y el snapshot vigente. */
+export interface PendingChanges {
+  skills: { added: string[]; removed: string[]; changed: string[]; auto: string[] }
+  servers: { added: string[]; removed: string[] }
+}
 export interface LocalClient extends AgentInstance {
   config_path: string
   synced_at: string | null
   synchronized: boolean
   server_count: number
   skill_count: number
+  /** El cliente no recarga en caliente y sigue con una lista vieja: hace falta reiniciarlo. */
+  restart_pending: boolean
+  pending: PendingChanges | null
 }
 export interface LocalOverview { hostname: string; clients: LocalClient[]; rows: MatrixRow[] }
 export const LOCAL_KEY = ['local-overview'] as const

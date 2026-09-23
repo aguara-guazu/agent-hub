@@ -170,6 +170,7 @@ function describePass(item: AgentPass): string {
   if (item.applied !== null) {
     const parts = [`${item.applied.written.length} archivos escritos`]
     if (item.applied.removed.length > 0) parts.push(`${item.applied.removed.length} borrados`)
+    if (item.applied.adopted.length > 0) parts.push(`${item.applied.adopted.length} enlaces adoptados`)
     if (item.applied.drift.length > 0) parts.push(`${item.applied.drift.length} con deriva, sin pisar`)
     return parts.join(', ')
   }
@@ -181,10 +182,26 @@ function where(app: DaemonApp, item: AgentPass): string {
   return app.stdioGateway ? 'stdio' : `puerto ${item.port}`
 }
 
+function printExternalSkills(report: SyncReport): void {
+  if (report.externalError) warn(`biblioteca de skills: no se pudo reportar (${report.externalError})`)
+  const outcome = report.externalSkills
+  if (!outcome) return
+  const scan = report.externalScan
+  const parts = [
+    outcome.created.length ? `nuevas: ${outcome.created.join(', ')}` : '',
+    outcome.updated.length ? `actualizadas: ${outcome.updated.join(', ')}` : '',
+    outcome.removed.length ? `dadas de baja: ${outcome.removed.join(', ')}` : '',
+  ].filter(Boolean)
+  if (parts.length > 0) say(`biblioteca de skills (${scan?.root ?? ''}): ${parts.join('; ')}`)
+  for (const item of outcome.skipped) warn(`biblioteca de skills: ${item.slug} omitida: ${item.reason}`)
+  for (const item of scan?.ignored ?? []) warn(`biblioteca de skills: ${item.name} ignorada: ${item.reason}`)
+}
+
 function printSync(app: DaemonApp, report: SyncReport, applied: boolean): void {
   if (report.bootstrapError) {
     warn(`modo degradado: el control plane no contesta (${report.bootstrapError}). Se usa el último estado en disco.`)
   }
+  printExternalSkills(report)
   if (report.agents.length === 0) {
     say("No hay agentes registrados para esta máquina. Ejecutá 'agenthub enroll' primero.")
     return
@@ -396,6 +413,7 @@ async function cmdRun(app: DaemonApp, args: ParsedArgs): Promise<number> {
     process.stdin.once('close', onSignal)
   }
 
+  const stopWatching = app.watchExternalSkills()
   const first = await app.syncOnce({ apply: true, wait: 0 })
   printSync(app, first, true)
   if (app.stdioGateway) {
@@ -406,10 +424,12 @@ async function cmdRun(app: DaemonApp, args: ParsedArgs): Promise<number> {
   let cycles = 1
   while (!stop.aborted) {
     if (args.maxCycles && cycles >= args.maxCycles) break
-    await app.syncOnce({ apply: true, wait: 0 })
+    const pass = await app.syncOnce({ apply: true, wait: 0 })
+    printExternalSkills(pass)
     await new Promise<void>(resolve => setTimeout(resolve, 1000))
     cycles += 1
   }
+  stopWatching()
   process.off('SIGINT', onSignal)
   process.off('SIGTERM', onSignal)
   say('Daemon apagado.')

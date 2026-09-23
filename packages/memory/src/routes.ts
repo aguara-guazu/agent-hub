@@ -9,6 +9,7 @@ import { memoryTools } from './operations.js'
 import { constantEqual } from './config.js'
 import { check, id, MemoryError, parse } from './contracts.js'
 import { restoreMemory, readBackup } from './backup.js'
+import { globalSearch } from './global-search.js'
 import { WorkerSupervisor } from './supervisor.js'
 
 export interface MemoryRouteOptions {
@@ -33,6 +34,13 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     if (options.worker) { await worker.stop(); worker.start() }
     return result
   })
+  app.post('/api/memory/search', { preHandler: auth }, async (request, reply) => {
+    const controller = new AbortController(), abort = () => controller.abort()
+    reply.raw.once('close', abort)
+    try { const { db, ai } = await service.get(); return await globalSearch(db, ai, request.body, controller.signal) }
+    finally { reply.raw.off('close', abort) }
+  })
+  app.get('/api/memory/opencode', { preHandler: auth }, () => service.openCode.status())
   app.put('/api/memory/ai', { preHandler: auth }, request => service.saveAI(request.body))
   app.put('/api/memory/credentials/:key', { preHandler: auth }, async request => {
     const { key } = request.params as { key: string }

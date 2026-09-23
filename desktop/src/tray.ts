@@ -7,7 +7,7 @@ import type { SupervisorState } from './supervisor.js'
  * en pruebas qué acciones existen y qué estado muestran, sin Electron.
  */
 
-export type TrayAction = 'show' | 'hide' | 'toggle-autostart' | 'restart-core' | 'check-updates' | 'apply-update' | 'open-release' | 'quit'
+export type TrayAction = 'show' | 'hide' | 'toggle-autostart' | 'restart-core' | 'restart-client' | 'check-updates' | 'apply-update' | 'open-release' | 'quit'
 
 export interface TrayItem {
   id?: TrayAction
@@ -29,6 +29,8 @@ export interface TrayViewModel {
   autostartEnabled: boolean
   update?: TrayUpdateState | null
   checkingUpdates?: boolean
+  /** Cliente de escritorio que sigue con una lista de herramientas vieja. */
+  clientRestart?: { label: string } | null
 }
 
 function coreLabel(state: SupervisorState): string {
@@ -68,6 +70,7 @@ export function buildTrayTemplate(vm: TrayViewModel): TrayItem[] {
       type: 'normal',
       enabled: vm.coreState !== 'starting' && vm.coreState !== 'restarting',
     },
+    ...(vm.clientRestart ? [{ id: 'restart-client' as const, label: vm.clientRestart.label, type: 'normal' as const }] : []),
     { type: 'separator' },
     ...updateItems(vm),
     { type: 'separator' },

@@ -5,7 +5,7 @@ import { SecretResolver } from '@agenthub/gateway'
 import { check } from './contracts.js'
 
 export interface AIConfig {
-  extraction: 'disabled' | 'deepseek' | 'ollama'
+  extraction: 'disabled' | 'deepseek' | 'ollama' | 'opencode'
   extraction_model: string
   embeddings_enabled: boolean
   embedding_model: string
@@ -17,6 +17,11 @@ export interface AIConfig {
 export const defaultAI: AIConfig = {
   extraction: 'disabled', extraction_model: 'deepseek-flash', embeddings_enabled: false,
   embedding_model: 'nomic-embed-text', ollama_url: 'http://127.0.0.1:11434', remote_processing_enabled: false, identity_auto_merge: true,
+}
+
+/** OpenCode can route any model to a remote endpoint; keep source/project exclusions conservative. */
+export function usesRemoteExtraction(config: AIConfig): boolean {
+  return config.extraction === 'deepseek' || config.extraction === 'opencode'
 }
 
 /** Secret files are private, atomic, outside the repository and excluded from exports. */

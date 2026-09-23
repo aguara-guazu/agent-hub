@@ -7,6 +7,12 @@ export type Transport = 'stdio' | 'http'
 /** Cómo se autentica el hub ante un MCP server http: nada/encabezados, u OAuth 2.1 en el navegador. */
 export type ServerAuth = 'none' | 'oauth'
 export type ResourceType = 'mcp_server' | 'mcp_tool' | 'skill'
+/**
+ * De dónde sale una skill: escrita en el hub (`hub`) o importada de la biblioteca de
+ * skills de la persona (`external`, carpeta `~/.agents/skills/<slug>` que administra
+ * `npx skills`). Una skill externa se enlaza a su carpeta original, nunca se copia.
+ */
+export type SkillSource = 'hub' | 'external'
 export type RuleState = 'on' | 'off' | 'inherit'
 export type RuleScope = 'user' | 'client'
 export type PropagationState = 'applied_live' | 'applied_stale_list' | 'pending_restart' | 'pending_sync' | 'unknown'
@@ -22,8 +28,8 @@ export const CLI_HOT_RELOAD: Readonly<Record<CliKind, boolean>> = {
 }
 /**
  * Si el cliente carga skills desde una carpeta del disco. Claude Desktop sólo las acepta
- * subidas desde su interfaz, así que el snapshot no se las envía y la matriz las marca
- * como no aplicables.
+ * subidas desde su interfaz, así que el daemon no le materializa archivos: el gateway le
+ * entrega las skills habilitadas por la herramienta `use_skill` (SKILL_TOOL_NAME).
  */
 export const CLI_FILE_SKILLS: Readonly<Record<CliKind, boolean>> = {
   claude_code: true,
@@ -75,6 +81,43 @@ export interface SnapshotSkill {
   body: string
   version: number
   content_hash: string
+  /** Ausente en las skills del hub: los campos sólo viajan para las externas. */
+  source?: SkillSource
+  /** Carpeta original de una skill externa; los clientes se enlazan a ella. */
+  source_path?: string
+  /** Procedencia declarada por la biblioteca (`owner/repo`), si la conoce. */
+  source_ref?: string
+}
+
+/**
+ * Herramienta del gateway que entrega skills a los clientes sin carpeta de skills
+ * (CLI_FILE_SKILLS en false). Su descripción lista las habilitadas y la llamada devuelve
+ * el SKILL.md o un archivo auxiliar.
+ */
+export const SKILL_TOOL_NAME = 'use_skill'
+export const SKILL_FILENAME = 'SKILL.md'
+
+/** Escalar YAML siempre entre comillas dobles: evita sorpresas con `:`, `#` y saltos. */
+export function yamlScalar(value: string): string {
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r\n/g, ' ')
+    .replace(/\n/g, ' ')
+    .replace(/\t/g, ' ')
+  return `"${escaped.trim()}"`
+}
+
+/**
+ * Reconstruye el SKILL.md completo de una skill del hub: frontmatter válido más el
+ * cuerpo. `name` es el slug porque los clientes exigen que coincida con la carpeta.
+ */
+export function renderSkillMd(skill: Pick<SnapshotSkill, 'slug' | 'display_name' | 'description' | 'body'>): string {
+  const slug = skill.slug
+  const description = skill.description || skill.display_name || slug
+  const body = (skill.body ?? '').replace(/^\n+|\n+$/g, '')
+  const front = ['---', `name: ${yamlScalar(slug)}`, `description: ${yamlScalar(description)}`, '---']
+  return front.join('\n') + '\n\n' + body + '\n'
 }
 
 export interface SnapshotDenied {

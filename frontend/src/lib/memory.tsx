@@ -8,8 +8,11 @@ export interface MemoryEntity { id: string; kind: string; title: string; data: R
 export interface Page<T = any> { items: T[]; total: number; limit: number; offset: number }
 export const entityLabels: Record<string, string> = { company: 'Empresa', project: 'Proyecto', person: 'Persona', meeting: 'Reunión', event: 'Evento', document: 'Documento', message: 'Conversación', issue: 'Tarea', note: 'Nota', collection: 'Colección', fact: 'Conocimiento' }
 export const memoryCall = <T = any,>(operation: string, input: unknown = {}) => api.post<T>('/memory/call', { operation, input })
+export const MEMORY_REFRESH_MS = 5000
 export function useMemory<T = any>(operation: string, input: unknown = {}, enabled = true) {
-  return useQuery({ queryKey: ['memory', operation, input], queryFn: () => memoryCall<T>(operation, input), enabled })
+  return useQuery({ queryKey: ['memory', operation, input], queryFn: () => memoryCall<T>(operation, input), enabled,
+    // MCP clients and the worker can write while this screen stays open. Only mounted, visible queries poll.
+    refetchInterval: MEMORY_REFRESH_MS, refetchIntervalInBackground: false, refetchOnWindowFocus: 'always' })
 }
 export function useMemoryMutation<T = any>(operation: string, onSuccess?: (data: T) => void) {
   const cache = useQueryClient(), toast = useToast()

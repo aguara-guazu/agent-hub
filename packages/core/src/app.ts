@@ -16,7 +16,8 @@ import { Database } from './db/database.js'
 import { runMigrations } from './db/migrations.js'
 import { Store } from './store.js'
 import { record as auditRecord, verify as auditVerify } from './audit/ledger.js'
-import { buildMatrix } from './matrix.js'
+import { buildMatrix, hotReload } from './matrix.js'
+import { diffSnapshots, hasChanges, type PendingRestart } from './restart.js'
 import { applyProbeResult, QUARANTINE_TOOL_MISSING } from './catalog/reconcile.js'
 import { DEFAULT_TIMEOUT_MS as PROBE_TIMEOUT_MS, probeServer } from './catalog/probe.js'
 import { ProbeRetryScheduler } from './catalog/retry.js'
@@ -24,6 +25,7 @@ import { applyStarterCatalog } from './catalog/starter.js'
 import { applyFactorySkill, type FactorySkill } from './catalog/factory-skills.js'
 import { hubSkill } from './catalog/hub-skill.js'
 import { skillContentHash } from './hashing.js'
+import { buildZip, collectFiles } from './zip.js'
 import { computeSnapshot, explain } from './policy/resolver.js'
 import { ensureLocalOwner } from './local.js'
 import {
@@ -60,8 +62,8 @@ import {
   NO_LOCAL_PASSWORD,
   verifyPassword,
 } from './security.js'
-import type { AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, User } from './types.js'
-import { CLI_KINDS as SHARED_CLI_KINDS, type CliKind } from '@agenthub/shared'
+import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, SkillRow, User } from './types.js'
+import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
 import { registerMemory, memoryTools, memorySkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
@@ -516,19 +518,56 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     return servers.map((s) => serverView(s, tools.get(s.id) ?? []))
   })
 
+  /**
+   * Lo que un cliente sin recarga en caliente listó y ya cambió. `null` si recarga solo, si
+   * nunca listó o si ya tiene lo vigente. Con el snapshot listado guardado se detalla qué
+   * skills y servers difieren; si se perdió, sólo se informa que hay cambios.
+   */
+  function pendingRestartFor(agent: AgentInstance, machine: Machine, current: PolicySnapshot): PendingRestart | null {
+    if (hotReload(agent.cli_kind)) return null
+    const listed = agent.last_listed_hash
+    if (!listed || listed === current.snapshot_hash) return null
+    const previous = store.snapshotByHash(agent.id, listed) as PolicySnapshot | undefined
+    let changes = previous ? diffSnapshots(previous, current) : null
+    if (changes !== null && !hasChanges(changes)) changes = null
+    return {
+      agent_id: agent.id,
+      cli_kind: agent.cli_kind,
+      machine_hostname: machine.hostname,
+      snapshot_hash: current.snapshot_hash,
+      listed_hash: listed,
+      changes,
+    }
+  }
+
   fastify.get('/api/local/overview', async (request) => {
     const user = await currentUser(request)
     const matrix = buildMatrix(store, user)
     const clients = store.agentsOfUser(user.id).map(({ agent, machine }) => {
       const sync = db.get('SELECT snapshot_hash, synced_at FROM local_client_sync WHERE agent_id = ?', agent.id)
       const snapshot = computeSnapshot(store, agent.id)
+      const pending = pendingRestartFor(agent, machine, snapshot)
       return { ...serializeAgent(agent, machine), config_path: agent.config_path,
         synced_at: sync?.synced_at ?? null,
         synchronized: !agent.drift_detected && sync?.snapshot_hash === snapshot.snapshot_hash,
         server_count: snapshot.servers.length, skill_count: snapshot.skills.length,
+        restart_pending: pending !== null,
+        pending: pending?.changes ?? null,
       }
     })
     return { hostname: hostname(), clients, rows: matrix.rows }
+  })
+
+  /** Clientes que necesitan reiniciarse para ver lo vigente; lo consulta el proceso de escritorio. */
+  fastify.get('/api/local/pending-restarts', async (request) => {
+    const user = await currentUser(request)
+    const out: PendingRestart[] = []
+    for (const { agent, machine } of store.agentsOfUser(user.id)) {
+      if (hotReload(agent.cli_kind) || !agent.last_listed_hash) continue
+      const pending = pendingRestartFor(agent, machine, computeSnapshot(store, agent.id))
+      if (pending !== null) out.push(pending)
+    }
+    return out
   })
 
   const SERVER_FIELDS = [
@@ -805,9 +844,60 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     return serverView(fresh)
   })
 
+  /**
+   * Estado de una skill en la cuenta de claude.ai de cada Claude Desktop de la persona, según
+   * la caché que el daemon reportó. `missing` es «no subida»; sin reporte no hay entrada.
+   */
+  function claudeAiStatus(user: User, skill: SkillRow) {
+    return store.agentsOfUser(user.id)
+      .filter(({ agent }) => agent.cli_kind === 'claude_desktop' && agent.account_skills !== null)
+      .map(({ agent, machine }) => {
+        const report = agent.account_skills as AccountSkillsReport
+        const found = report.skills.find((item) => item.slug === skill.slug)
+        return {
+          agent_id: agent.id,
+          machine_hostname: machine.hostname,
+          checked_at: report.checked_at,
+          status: found ? found.status : 'missing',
+        }
+      })
+  }
+
+  function skillView(user: User, skill: SkillRow) {
+    return { ...serializeSkill(skill), claude_ai: claudeAiStatus(user, skill) }
+  }
+
+  /** Una skill externa se edita y se borra con `npx skills`; el hub sólo decide dónde se expone. */
+  function rejectExternal(skill: SkillRow, verb: string): void {
+    if (skill.source !== 'external') return
+    throw new HttpError(409, `la skill ${skill.slug} viene de la biblioteca de skills (${skill.source_path}); ${verb} con npx skills, no desde el hub`)
+  }
+
   fastify.get('/api/catalog/skills', async (request) => {
     const user = await currentUser(request)
-    return store.skillsOfUser(user.id).map(serializeSkill)
+    return store.skillsOfUser(user.id).map((skill) => skillView(user, skill))
+  })
+
+  fastify.get('/api/catalog/skills/:id/zip', async (request, reply) => {
+    const user = await currentUser(request)
+    const { id } = request.params as { id: string }
+    const skill = skillOr404(user, id)
+    let files
+    if (skill.source === 'external') {
+      try {
+        files = collectFiles(skill.source_path)
+      } catch (error) {
+        throw new HttpError(413, (error as Error).message)
+      }
+      if (files === null) throw new HttpError(409, `la carpeta de la skill ya no está en ${skill.source_path}`)
+    } else {
+      files = [{ name: SKILL_FILENAME, data: Buffer.from(renderSkillMd(skill), 'utf-8') }]
+    }
+    const archive = buildZip(files.map((file) => ({ name: `${skill.slug}/${file.name}`, data: file.data })))
+    return reply
+      .header('Content-Type', 'application/zip')
+      .header('Content-Disposition', `attachment; filename="${skill.slug}.zip"`)
+      .send(archive)
   })
 
   fastify.post('/api/catalog/skills', async (request, reply) => {
@@ -828,13 +918,14 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       content_hash: skillContentHash(displayName, description, skillBody),
     })
     notifyAfterCommit('user', user.id)
-    return reply.code(201).send(serializeSkill(skill))
+    return reply.code(201).send(skillView(user, skill))
   })
 
   fastify.patch('/api/catalog/skills/:id', async (request) => {
     const user = await currentUser(request)
     const { id } = request.params as { id: string }
     const skill = skillOr404(user, id)
+    rejectExternal(skill, 'se edita')
     const body = requireObject(request.body)
     rejectUnknown(body, ['display_name', 'description', 'body'])
     const displayName = 'display_name' in body ? requireString(body, 'display_name') : skill.display_name
@@ -852,13 +943,14 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     }
     store.updateSkill(skill.id, fields)
     notifyAfterCommit('user', user.id)
-    return serializeSkill(store.skill(skill.id)!)
+    return skillView(user, store.skill(skill.id)!)
   })
 
   fastify.delete('/api/catalog/skills/:id', async (request, reply) => {
     const user = await currentUser(request)
     const { id } = request.params as { id: string }
     const skill = skillOr404(user, id)
+    rejectExternal(skill, 'se quita')
     store.forgetResource('skill', [skill.id])
     store.deleteSkill(skill.id)
     notifyAfterCommit('user', user.id)
@@ -897,7 +989,11 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const user = await currentUserOrDaemon(request)
     const { agentId } = request.params as { agentId: string }
     ownedAgent(user, agentId)
-    return computeSnapshot(store, agentId)
+    const snapshot = computeSnapshot(store, agentId)
+    // El gateway lista con este snapshot y reporta su hash: guardarlo permite comparar
+    // después lo que la app vio con lo vigente.
+    store.storeSnapshot(agentId, snapshot.snapshot_hash, snapshot)
+    return snapshot
   })
 
   function resourceSlug(user: User, resourceType: string, resourceId: string): string {
@@ -1143,6 +1239,16 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     if (body.connected === true) fields.last_connected_at = new Date().toISOString()
     if (typeof body.drift_detected === 'boolean') fields.drift_detected = body.drift_detected
     if (typeof body.drift_detail === 'string') fields.drift_detail = body.drift_detail
+    if (isObject(body.account_skills)) {
+      const raw = body.account_skills
+      const items = Array.isArray(raw.skills) ? raw.skills.filter(isObject) : []
+      fields.account_skills = {
+        checked_at: typeof raw.checked_at === 'string' && raw.checked_at ? raw.checked_at : new Date().toISOString(),
+        skills: items
+          .map((item) => ({ slug: typeof item.slug === 'string' ? item.slug : '', status: item.status === 'stale' ? 'stale' as const : 'synced' as const }))
+          .filter((item) => item.slug !== ''),
+      }
+    }
     store.updateAgent(agent.id, fields)
     if (typeof body.synced_hash === 'string') {
       db.run(`INSERT INTO local_client_sync (agent_id, snapshot_hash, synced_at) VALUES (?, ?, ?)
@@ -1150,6 +1256,84 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       agent.id, body.synced_hash, new Date().toISOString())
     }
     return reply.code(204).send()
+  })
+
+  /**
+   * Lo que el daemon encontró en la biblioteca de skills de la máquina (`~/.agents/skills`).
+   * Es una foto completa: lo que falta respecto al reporte anterior se da de baja, junto con
+   * sus reglas. Una skill del hub con el mismo slug no se pisa: se informa como omitida.
+   */
+  fastify.put('/api/sync/external-skills', async (request) => {
+    const daemon = currentDaemon(request)
+    const body = requireObject(request.body)
+    const reported = Array.isArray(body.skills) ? body.skills.filter(isObject) : []
+    const user = daemon.user
+    const machineId = daemon.machine.id
+    const actor = `daemon@${daemon.machine.hostname}`
+    const existing = new Map(store.externalSkillsOfMachine(user.id, machineId).map((skill) => [skill.slug, skill]))
+    const seen = new Set<string>()
+    const created: string[] = []
+    const updated: string[] = []
+    const removed: string[] = []
+    const skipped: { slug: string; reason: string }[] = []
+
+    for (const item of reported) {
+      const rawSlug = typeof item.slug === 'string' ? item.slug : ''
+      let slug: string
+      try {
+        slug = validateCatalogSlug(rawSlug)
+      } catch (error) {
+        skipped.push({ slug: rawSlug, reason: (error as Error).message })
+        continue
+      }
+      if (seen.has(slug)) continue
+      seen.add(slug)
+      const displayName = optionalString(item, 'display_name') || slug
+      const description = optionalString(item, 'description')
+      const skillBody = optionalString(item, 'body')
+      const treeHash = optionalString(item, 'tree_hash')
+      const sourcePath = optionalString(item, 'source_path')
+      const sourceRef = optionalString(item, 'source_ref')
+      if (!treeHash || !sourcePath) {
+        skipped.push({ slug, reason: 'faltan tree_hash o source_path' })
+        continue
+      }
+      const current = existing.get(slug)
+      if (current === undefined) {
+        const other = store.skillBySlug(user.id, slug)
+        if (other) {
+          skipped.push({ slug, reason: other.source === 'hub' ? 'ya existe una skill del hub con ese slug' : 'ya la reporta otra máquina' })
+          continue
+        }
+        const row = store.insertSkill({
+          user_id: user.id, slug, display_name: displayName, description, body: skillBody, content_hash: treeHash,
+          source: 'external', source_path: sourcePath, source_ref: sourceRef, source_machine_id: machineId,
+        })
+        auditRecord(store, user.organization_id, actor, 'skill.imported', 'skill', row.id, { slug, source_path: sourcePath, source_ref: sourceRef })
+        created.push(slug)
+        continue
+      }
+      const changed =
+        current.content_hash !== treeHash || current.display_name !== displayName || current.description !== description ||
+        current.body !== skillBody || current.source_path !== sourcePath || current.source_ref !== sourceRef
+      if (!changed) continue
+      store.updateSkill(current.id, {
+        display_name: displayName, description, body: skillBody, source_path: sourcePath, source_ref: sourceRef,
+        ...(current.content_hash !== treeHash ? { content_hash: treeHash, version: current.version + 1 } : {}),
+      })
+      updated.push(slug)
+    }
+
+    for (const [slug, row] of existing) {
+      if (seen.has(slug)) continue
+      store.forgetResource('skill', [row.id])
+      store.deleteSkill(row.id)
+      auditRecord(store, user.organization_id, actor, 'skill.removed', 'skill', row.id, { slug, source_path: row.source_path })
+      removed.push(slug)
+    }
+
+    if (created.length > 0 || updated.length > 0 || removed.length > 0) notifyAfterCommit('user', user.id)
+    return { created, updated, removed, skipped }
   })
 
   fastify.post('/api/sync/tool-call', async (request, reply) => {

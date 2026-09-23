@@ -269,6 +269,19 @@ export const MIGRATIONS: Migration[] = [
       updated_at TEXT NOT NULL
     )`],
   },
+  {
+    // Skills importadas de la biblioteca de la persona (`~/.agents/skills`): de dónde salen y
+    // qué máquina las reporta. `account_skills` guarda, por cliente, qué skills del hub están
+    // cargadas en su cuenta de claude.ai según lo que el daemon encontró en la caché de la app.
+    id: '0005_skill_source',
+    statements: [
+      addColumnIfMissing('skills', 'source', "TEXT NOT NULL DEFAULT 'hub'"),
+      addColumnIfMissing('skills', 'source_path', "TEXT NOT NULL DEFAULT ''"),
+      addColumnIfMissing('skills', 'source_ref', "TEXT NOT NULL DEFAULT ''"),
+      addColumnIfMissing('skills', 'source_machine_id', "TEXT NOT NULL DEFAULT ''"),
+      addColumnIfMissing('agent_instances', 'account_skills', "TEXT NOT NULL DEFAULT ''"),
+    ],
+  },
 ]
 
 const SCHEMA_MIGRATIONS_DDL = `CREATE TABLE IF NOT EXISTS schema_migrations (

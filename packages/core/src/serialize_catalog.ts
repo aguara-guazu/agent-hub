@@ -79,6 +79,9 @@ export function serializeSkill(skill: SkillRow) {
     body: skill.body,
     version: skill.version,
     content_hash: skill.content_hash,
+    source: skill.source,
+    source_path: skill.source_path,
+    source_ref: skill.source_ref,
   }
 }
 
@@ -94,6 +97,7 @@ export function serializeAgent(agent: AgentInstance, machine: Machine) {
     drift_detected: agent.drift_detected,
     drift_detail: agent.drift_detail,
     hot_reload: hotReload(agent.cli_kind),
+    account_skills: agent.account_skills,
   }
 }
 

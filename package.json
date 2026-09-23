@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "description": "Un solo hub para los MCP servers y skills de tus agentes: Claude Code, Codex CLI, Gemini CLI y Kiro.",
   "author": {
@@ -43,11 +43,11 @@
     "clean": "node scripts/clean.mjs"
   },
   "dependencies": {
-    "@agenthub/memory": "0.3.5",
-    "@agenthub/core": "0.3.5",
-    "@agenthub/daemon": "0.3.5",
-    "@agenthub/gateway": "0.3.5",
-    "@agenthub/shared": "0.3.5",
+    "@agenthub/memory": "0.3.6",
+    "@agenthub/core": "0.3.6",
+    "@agenthub/daemon": "0.3.6",
+    "@agenthub/gateway": "0.3.6",
+    "@agenthub/shared": "0.3.6",
     "@fastify/cors": "11.1.0",
     "@fastify/static": "10.1.3",
     "@iarna/toml": "2.2.5",

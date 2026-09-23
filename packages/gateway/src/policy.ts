@@ -22,6 +22,7 @@ export const DECISION_DENY = 'deny'
 
 const RESOURCE_MCP_TOOL = 'mcp_tool'
 const RESOURCE_MCP_SERVER = 'mcp_server'
+const RESOURCE_SKILL = 'skill'
 
 /** Huella de los argumentos de una llamada. Se reporta en lugar de los argumentos. */
 export function argsDigest(args: unknown): string {
@@ -47,6 +48,17 @@ export interface DeniedTool {
   source: string
   detail: string
   lockedAt: string | null
+}
+
+/** Una skill habilitada para el agente, tal como la entrega la herramienta `use_skill`. */
+export interface ExposedSkill {
+  slug: string
+  displayName: string
+  description: string
+  body: string
+  /** `external` cuando vive en la biblioteca de la persona; `hub` cuando el cuerpo esta en el snapshot. */
+  source: 'hub' | 'external'
+  sourcePath: string
 }
 
 export function denialMessage(denied: DeniedTool): string {
@@ -101,10 +113,13 @@ export class SnapshotView {
   readonly generatedAt: string
   readonly userEmail: string
   readonly tools: readonly ExposedTool[]
+  readonly skills: readonly ExposedSkill[]
   private readonly specs: ReadonlyMap<string, UpstreamSpec>
   private readonly denied: ReadonlyMap<string, DeniedTool>
   private readonly deniedServers: ReadonlyMap<string, DeniedTool>
+  private readonly deniedSkills: ReadonlyMap<string, DeniedTool>
   private readonly byName: ReadonlyMap<string, ExposedTool>
+  private readonly bySkill: ReadonlyMap<string, ExposedSkill>
 
   private constructor(init: {
     agentInstanceId: string
@@ -113,9 +128,11 @@ export class SnapshotView {
     generatedAt: string
     userEmail: string
     tools: ExposedTool[]
+    skills: ExposedSkill[]
     specs: Map<string, UpstreamSpec>
     denied: Map<string, DeniedTool>
     deniedServers: Map<string, DeniedTool>
+    deniedSkills: Map<string, DeniedTool>
   }) {
     this.agentInstanceId = init.agentInstanceId
     this.cliKind = init.cliKind
@@ -123,10 +140,13 @@ export class SnapshotView {
     this.generatedAt = init.generatedAt
     this.userEmail = init.userEmail
     this.tools = init.tools
+    this.skills = init.skills
     this.specs = init.specs
     this.denied = init.denied
     this.deniedServers = init.deniedServers
+    this.deniedSkills = init.deniedSkills
     this.byName = new Map(init.tools.map((tool) => [tool.exposedName, tool]))
+    this.bySkill = new Map(init.skills.map((skill) => [skill.slug, skill]))
   }
 
   /** Vista sin herramientas, para antes del primer snapshot: vacia, no "todo prendido". */
@@ -138,9 +158,11 @@ export class SnapshotView {
       generatedAt: '',
       userEmail: '',
       tools: [],
+      skills: [],
       specs: new Map(),
       denied: new Map(),
       deniedServers: new Map(),
+      deniedSkills: new Map(),
     })
   }
 
@@ -167,11 +189,42 @@ export class SnapshotView {
       }
     }
 
+    const skills: ExposedSkill[] = []
+    for (const skill of (payload['skills'] ?? []) as unknown as Array<Record<string, unknown>>) {
+      const slug = String(skill['slug'] ?? '')
+      if (!slug) continue
+      const sourcePath = String(skill['source_path'] ?? '')
+      skills.push({
+        slug,
+        displayName: String(skill['display_name'] ?? ''),
+        description: String(skill['description'] ?? ''),
+        body: String(skill['body'] ?? ''),
+        source: skill['source'] === 'external' && sourcePath ? 'external' : 'hub',
+        sourcePath,
+      })
+    }
+    skills.sort((a, b) => a.slug.localeCompare(b.slug))
+
     const denied = new Map<string, DeniedTool>()
     const deniedServers = new Map<string, DeniedTool>()
+    const deniedSkills = new Map<string, DeniedTool>()
     const deniedEntries = (payload['denied'] ?? []) as DeniedEntry[]
     for (const item of deniedEntries) {
       const kind = item.resource_type
+      if (kind === RESOURCE_SKILL) {
+        const slug = String(item.slug ?? '')
+        if (slug) {
+          deniedSkills.set(slug, {
+            exposedName: slug,
+            slug,
+            resourceId: String(item.resource_id ?? ''),
+            source: String(item.source ?? ''),
+            detail: String(item.detail ?? ''),
+            lockedAt: item.locked_at ?? null,
+          })
+        }
+        continue
+      }
       if (kind === RESOURCE_MCP_SERVER) {
         const slug = String(item.slug ?? '')
         if (slug) {
@@ -208,14 +261,24 @@ export class SnapshotView {
       generatedAt: String(payload['generated_at'] ?? ''),
       userEmail: String(payload['user_email'] ?? ''),
       tools: ordered,
+      skills,
       specs,
       denied,
       deniedServers,
+      deniedSkills,
     })
   }
 
   tool(exposedName: string): ExposedTool | undefined {
     return this.byName.get(exposedName)
+  }
+
+  skill(slug: string): ExposedSkill | undefined {
+    return this.bySkill.get(slug)
+  }
+
+  deniedSkill(slug: string): DeniedTool | undefined {
+    return this.deniedSkills.get(slug)
   }
 
   denialFor(exposedName: string): DeniedTool | undefined {
