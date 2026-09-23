@@ -41,6 +41,13 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     finally { reply.raw.off('close', abort) }
   })
   app.get('/api/memory/opencode', { preHandler: auth }, () => service.openCode.status())
+  app.post('/api/memory/opencode/test', { preHandler: auth }, async (request, reply) => {
+    const { model } = parse(z.object({ model: z.string().min(1).max(200).regex(/^[^/\s]+\/\S+$/) }).strict(), request.body)
+    const controller = new AbortController(), abort = () => controller.abort()
+    reply.raw.once('close', abort)
+    try { return await service.openCode.test(model, controller.signal) }
+    finally { reply.raw.off('close', abort) }
+  })
   app.put('/api/memory/ai', { preHandler: auth }, request => service.saveAI(request.body))
   app.put('/api/memory/credentials/:key', { preHandler: auth }, async request => {
     const { key } = request.params as { key: string }

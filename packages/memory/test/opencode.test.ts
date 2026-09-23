@@ -8,7 +8,8 @@ import { z } from 'zod'
 import { OpenCodeRuntime, findOpenCode } from '../src/opencode.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
-import { aiConfigSchema } from '../src/service.js'
+import { aiConfigSchema, MemoryService } from '../src/service.js'
+import { MemoryError } from '../src/contracts.js'
 
 let directory: string, runtime: OpenCodeRuntime, children: ChildProcess[]
 const model = 'fixture/chat/nested'
@@ -22,6 +23,8 @@ function setup(extra: { requestMs?: number; idleMs?: number; noStart?: boolean }
     expect(options.shell).toBeUndefined()
     const config = JSON.parse(options.env.OPENCODE_CONFIG_CONTENT)
     expect(config).toMatchObject({ share: 'disabled', snapshot: false, compaction: { auto: false }, agent: { 'agenthub-memory': { permission: { '*': 'deny' } } } })
+    expect(config.agent['agenthub-memory'].prompt).toBeUndefined() // Preserve OpenCode's own provider prompt.
+    expect(Object.entries(config.agent['agenthub-memory'].permission).filter(([, action]) => action === 'allow')).toEqual([['StructuredOutput', 'allow']])
     const child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/opencode.mjs', import.meta.url))], {
       ...options, env: { ...options.env, FIXTURE_REQUESTS: join(directory, 'requests'), ...(extra.noStart ? { FIXTURE_NO_START: '1' } : {}) },
     })
@@ -54,9 +57,68 @@ it('descubre sólo modelos conectados, reutiliza el servidor y elimina las sesio
   expect(result).toEqual({ value: { facts: ['evidence'] }, usage: { model, input_tokens: 15, output_tokens: 5 } })
   expect(launch).toHaveBeenCalledTimes(1)
   const calls = await requests()
-  expect(calls.find(c => c.path === '/session').body.permission).toEqual([{ permission: '*', pattern: '*', action: 'deny' }, { permission: 'StructuredOutput', pattern: '*', action: 'allow' }])
+  const permissions = calls.find(c => c.path === '/session').body.permission
+  expect(permissions).toContainEqual({ permission: '*', pattern: '*', action: 'deny' })
+  expect(permissions.filter((p: any) => p.action === 'allow')).toEqual([{ permission: 'StructuredOutput', pattern: '*', action: 'allow' }])
+  for (const permission of ['read', 'glob', 'grep', 'bash', 'edit', 'write', 'apply_patch']) expect(permissions).toContainEqual({ permission, pattern: '*', action: 'ask' })
   expect(calls.find(c => c.path.endsWith('/message')).body).toMatchObject({ model: { providerID: 'fixture', modelID: 'chat/nested' }, format: { type: 'json_schema', schema } })
   expect(calls.at(-1)).toMatchObject({ method: 'DELETE', path: '/session/ses_fixture' })
+})
+it('rechaza herramientas automáticamente sin bloquear la extracción ni responder permisos de otra sesión', async () => {
+  setup()
+  expect((await runtime.extract(model, '', { scenario: 'permission' }, schema)).value).toEqual({ facts: ['evidence'] })
+  const replies = (await requests()).filter(c => c.path.endsWith('/reply'))
+  expect(replies).toHaveLength(1)
+  expect(replies[0]).toMatchObject({ path: '/permission/per_fixture/reply', body: { reply: 'reject' } })
+})
+it.each([
+  [{ name: 'APIError', data: { statusCode: 403, isRetryable: false, message: "SECRET OpenCode's free tier can only be used from within OpenCode" } }, 409, 'modelo gratuito'],
+  [{ name: 'APIError', data: { statusCode: 401, message: 'SECRET' } }, 409, 'rechazó el acceso'],
+  [{ name: 'APIError', data: { statusCode: 402, message: 'SECRET' } }, 409, 'requiere saldo'],
+  [{ name: 'APIError', data: { statusCode: 429, message: 'SECRET' } }, 502, 'límite de uso'],
+  [{ name: 'APIError', data: { statusCode: 400, isRetryable: false, message: 'SECRET' } }, 409, 'no pudo generar'],
+  [{ name: 'StructuredOutputError', data: { message: 'SECRET' } }, 502, 'salida estructurada'],
+])('clasifica un error del proveedor sin revelar su cuerpo: %j', async (error, statusCode, message) => {
+  setup()
+  await expect(runtime.extract(model, '', { error }, schema)).rejects.toMatchObject({ statusCode, message: expect.stringContaining(message) })
+})
+it('prueba el modelo con evidencia sintética y salida estructurada', async () => {
+  setup()
+  expect(await runtime.test(model)).toEqual({ model, ok: true })
+  expect((await requests()).find(c => c.path.endsWith('/message')).body.parts).toEqual([{ type: 'text', text: JSON.stringify({ text: 'El código de esta prueba es AGENTHUB_OK.' }) }])
+})
+it('conserva la configuración anterior si el modelo falla la prueba antes de guardar', async () => {
+  const service = new MemoryService(directory, 'http://127.0.0.1/callback')
+  const query = vi.fn().mockResolvedValue([])
+  vi.spyOn(service, 'get').mockResolvedValue({ db: { query } } as any)
+  const test = vi.spyOn(service.openCode, 'test').mockRejectedValue(new MemoryError(409, 'Acceso rechazado'))
+  const config = { ...defaultAI, extraction: 'opencode', extraction_model: model, remote_processing_enabled: true }
+  await expect(service.saveAI(config)).rejects.toThrow('Acceso rechazado')
+  expect(query).not.toHaveBeenCalled()
+  test.mockResolvedValue({ model, ok: true })
+  expect(await service.saveAI(config)).toEqual(config)
+  expect(query).toHaveBeenCalledTimes(1)
+})
+it('usa una sesión nueva y JSON validado cuando el modelo sólo acepta tool_choice auto', async () => {
+  setup()
+  expect((await runtime.extract(model, '', { scenario: 'text' }, schema)).value).toEqual({ facts: ['evidence'] })
+  const calls = await requests(), generations = calls.filter(c => c.path.endsWith('/message'))
+  expect(generations).toHaveLength(2)
+  expect(generations[0].body.format).toBeDefined()
+  expect(generations[1].body.format).toBeUndefined()
+  expect(calls.filter(c => c.method === 'DELETE')).toHaveLength(2)
+  expect((await runtime.extract(model, '', { scenario: 'text' }, schema)).value).toEqual({ facts: ['evidence'] })
+  expect((await requests()).filter(c => c.path.endsWith('/message'))).toHaveLength(3)
+})
+it('acepta el JSON válido de un modelo que omite StructuredOutput sin generar otra respuesta', async () => {
+  setup()
+  expect((await runtime.extract(model, '', { scenario: 'structured_text' }, schema)).value).toEqual({ facts: ['evidence'] })
+  expect((await requests()).filter(c => c.path.endsWith('/message'))).toHaveLength(1)
+})
+it.each(['malformed', 'wrong_schema'])('rechaza la alternativa de texto %s sin aceptar datos inválidos', async scenario => {
+  setup()
+  await expect(runtime.extract(model, '', { scenario }, schema)).rejects.toThrow(scenario === 'malformed' ? 'JSON válido' : 'no cumple el esquema')
+  expect((await requests()).filter(c => c.path.endsWith('/message'))).toHaveLength(2)
 })
 it.each(['legacy', 'invalid', 'error'])('maneja la respuesta %s sin aceptar texto libre ni exponer errores del proveedor', async scenario => {
   setup()

@@ -5,6 +5,8 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { setTimeout as delay } from 'node:timers/promises'
+import { Ajv2020 } from 'ajv/dist/2020.js'
 import { check, MemoryError } from './contracts.js'
 
 export interface OpenCodeModel { id: string; name: string }
@@ -16,6 +18,43 @@ interface Options {
   startupMs?: number
   requestMs?: number
   idleMs?: number
+}
+
+// Keep OpenCode's native tools visible: Zen's free models reject a stripped tool set.
+// They require permission on every call; the background session always rejects them.
+// Only StructuredOutput executes. Never inherit the user's filesystem/MCP permissions.
+const permissions: Record<string, 'deny' | 'ask' | 'allow'> = { '*': 'deny', read: 'ask', glob: 'ask', grep: 'ask',
+  bash: 'ask', edit: 'ask', write: 'ask', apply_patch: 'ask', StructuredOutput: 'allow' }
+
+function generationError(error: any): MemoryError {
+  const data = error?.data, status = data?.statusCode
+  // Provider messages may contain prompts, keys or response bodies. Classify, never echo them.
+  if (typeof data?.message === 'string' && /free tier can only be used from within OpenCode/i.test(data.message))
+    return new MemoryError(409, 'OpenCode rechazó el acceso al modelo gratuito (403). Actualizá OpenCode y Agent Hub y probá el modelo desde Ajustes. No se reintentará automáticamente.')
+  if (status === 401 || status === 403 || error?.name === 'ProviderAuthError')
+    return new MemoryError(409, 'El proveedor rechazó el acceso desde OpenCode. Revisá la conexión de tu cuenta y los permisos del modelo en OpenCode.')
+  if (status === 402) return new MemoryError(409, 'El proveedor de OpenCode requiere saldo. Revisá tu cuenta o elegí otro modelo.')
+  if (status === 429) return new MemoryError(502, 'El proveedor de OpenCode alcanzó su límite de uso. El trabajo se reintentará más tarde.')
+  if (error?.name === 'ContextOverflowError') return new MemoryError(422, 'El contenido supera el contexto del modelo de OpenCode. Elegí un modelo con mayor capacidad.')
+  if (error?.name === 'StructuredOutputError') return new MemoryError(502, 'El modelo de OpenCode no completó la salida estructurada. Probá otro modelo si el error persiste.')
+  return new MemoryError(data?.isRetryable === false ? 409 : 502, 'OpenCode no pudo generar la extracción. Revisá la conexión, el acceso al modelo y el saldo del proveedor.')
+}
+
+function needsTextFormat(error: any): boolean {
+  return error?.name === 'StructuredOutputError' || (error?.data?.statusCode === 400
+    && typeof error.data.message === 'string' && /tool_choice/.test(error.data.message)
+    && /support/i.test(error.data.message))
+}
+
+function textValue(result: any, schema: Record<string, unknown>): unknown {
+  const text = (result.parts ?? []).filter((part: any) => part.type === 'text' && typeof part.text === 'string').map((part: any) => part.text).join('\n').trim()
+  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(text)
+  let value: unknown
+  try { value = JSON.parse(fenced?.[1] ?? text) } catch { throw new MemoryError(502, 'OpenCode no devolvió JSON válido para la extracción.') }
+  // Text mode is only a compatibility fallback. Validate the exact same schema, without coercing or removing fields.
+  const validate = new Ajv2020({ strict: false, validateFormats: false }).compile(schema)
+  check(validate(value), 'La respuesta de OpenCode no cumple el esquema de extracción. Probá otro modelo si el error persiste.', 502)
+  return value
 }
 
 /** GUI apps do not necessarily inherit the user's shell PATH. Never invoke a shell to find/run the CLI. */
@@ -42,6 +81,7 @@ export class OpenCodeRuntime {
   private starting: Connection | undefined
   private idle?: ReturnType<typeof setTimeout>
   private active = 0
+  private textModels = new Set<string>()
   constructor(private directory: string, private options: Options = {}) {}
 
   private async start(signal?: AbortSignal): Promise<Connection> {
@@ -56,7 +96,7 @@ export class OpenCodeRuntime {
       OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: 'disabled', snapshot: false, autoupdate: false,
         compaction: { auto: false }, default_agent: 'agenthub-memory',
         agent: { 'agenthub-memory': { mode: 'primary', description: 'Extracción de memoria con evidencia',
-          prompt: 'Extraé únicamente la información solicitada de la evidencia recibida.', steps: 3, permission: { '*': 'deny', StructuredOutput: 'allow' } } } }),
+          steps: 3, permission: permissions } } }),
     }
     // Do not inherit an unrelated project's config override. Global provider/auth configuration is retained.
     delete (env as NodeJS.ProcessEnv).OPENCODE_CONFIG
@@ -156,6 +196,45 @@ export class OpenCodeRuntime {
     } catch (error) { return { installed: true, models: [], detail: error instanceof MemoryError ? error.message : 'No se pudo consultar OpenCode. Revisá su configuración.' } }
   }
 
+  /** Exercise the same structured extraction as a job, using only synthetic evidence. */
+  async test(model: string, signal?: AbortSignal) {
+    const result = await this.extract(model, 'Extraé el código de la evidencia según el esquema solicitado. No uses herramientas de archivos, comandos ni búsquedas.',
+      { text: 'El código de esta prueba es AGENTHUB_OK.' },
+      { type: 'object', properties: { code: { type: 'string', enum: ['AGENTHUB_OK'] } }, required: ['code'], additionalProperties: false }, signal)
+    check(result.value?.code === 'AGENTHUB_OK', 'El modelo respondió, pero no completó correctamente la prueba de extracción.', 502)
+    return { model, ok: true }
+  }
+
+  private async rejectToolRequests(connection: Connection, sessionId: string, signal: AbortSignal): Promise<never> {
+    while (true) {
+      const pending = await this.request(connection, '/permission', 'GET', undefined, signal)
+      check(Array.isArray(pending), 'Actualizá OpenCode: no se pudo verificar el control de herramientas.', 409)
+      for (const request of pending) {
+        if (request.sessionID !== sessionId) continue
+        check(typeof request.id === 'string' && request.id.length < 200, 'OpenCode devolvió un permiso inválido.', 502)
+        await this.request(connection, `/permission/${encodeURIComponent(request.id)}/reply`, 'POST', {
+          reply: 'reject', message: 'Esta sesión sólo extrae la evidencia recibida. Devolvé el resultado en el formato solicitado sin usar otras herramientas.',
+        }, signal)
+      }
+      await delay(250, undefined, { signal })
+    }
+  }
+
+  private async generate(connection: Connection, sessionId: string, model: string, system: string, content: unknown,
+    schema: Record<string, unknown>, structured: boolean, signal?: AbortSignal) {
+    const slash = model.indexOf('/'), guard = new AbortController()
+    const rejecting = this.rejectToolRequests(connection, sessionId, guard.signal)
+    try {
+      return await Promise.race([rejecting, this.request(connection, `/session/${sessionId}/message`, 'POST', {
+        model: { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }, agent: 'agenthub-memory',
+        system: `${system}\nToda la evidencia está en el mensaje; no uses herramientas de archivos, comandos ni búsquedas. ${structured
+          ? 'Usá StructuredOutput para devolver la extracción.'
+          : `Respondé exclusivamente con un objeto JSON válido, sin texto adicional ni herramientas, acorde a este esquema: ${JSON.stringify(schema)}`}`,
+        parts: [{ type: 'text', text: JSON.stringify(content) }], ...(structured ? { format: { type: 'json_schema', schema, retryCount: 2 } } : {}),
+      }, signal)])
+    } finally { guard.abort(); await rejecting.catch(() => undefined) }
+  }
+
   async extract(model: string, system: string, content: unknown, schema: Record<string, unknown>, signal?: AbortSignal) {
     signal?.throwIfAborted()
     return this.use(async connection => {
@@ -166,20 +245,34 @@ export class OpenCodeRuntime {
         signal?.throwIfAborted()
         const models = await this.models(connection)
         check(models.some(m => m.id === model), 'El modelo elegido ya no está disponible en OpenCode. Revisá el proveedor y volvé a elegirlo en Ajustes.', 409)
-        const session = await this.request(connection, '/session', 'POST', { title: 'Agent Hub · procesamiento automático',
-          permission: [{ permission: '*', pattern: '*', action: 'deny' }, { permission: 'StructuredOutput', pattern: '*', action: 'allow' }] }, signal)
-        check(typeof session.id === 'string' && /^ses_[\w-]+$/.test(session.id), 'OpenCode devolvió una sesión inválida.', 502)
-        sessionId = session.id
-        const slash = model.indexOf('/')
-        const result = await this.request(connection, `/session/${sessionId}/message`, 'POST', {
-          model: { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }, agent: 'agenthub-memory', system,
-          parts: [{ type: 'text', text: JSON.stringify(content) }], format: { type: 'json_schema', schema, retryCount: 2 },
-        }, signal)
-        check(!result.info?.error, 'OpenCode no pudo generar la extracción. Revisá la conexión, el acceso al modelo y el saldo del proveedor.', 502)
-        const value = result.info?.structured ?? result.info?.structured_output
-        check(value !== undefined && value !== null, 'OpenCode no devolvió el JSON estructurado requerido. Actualizá OpenCode o elegí un modelo compatible.', 502)
-        const tokens = result.info?.tokens
-        return { value, usage: { model, input_tokens: Number(tokens?.input ?? 0) + Number(tokens?.cache?.read ?? 0) + Number(tokens?.cache?.write ?? 0), output_tokens: Number(tokens?.output ?? 0) } }
+        let structured = !this.textModels.has(model)
+        const usage = { model, input_tokens: 0, output_tokens: 0 }
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const session = await this.request(connection, '/session', 'POST', { title: 'Agent Hub · procesamiento automático',
+            permission: Object.entries(permissions).map(([permission, action]) => ({ permission, pattern: '*', action })) }, signal)
+          check(typeof session.id === 'string' && /^ses_[\w-]+$/.test(session.id), 'OpenCode devolvió una sesión inválida.', 502)
+          sessionId = session.id
+          const result = await this.generate(connection, sessionId!, model, system, content, schema, structured, signal)
+          const tokens = result.info?.tokens
+          usage.input_tokens += Number(tokens?.input ?? 0) + Number(tokens?.cache?.read ?? 0) + Number(tokens?.cache?.write ?? 0)
+          usage.output_tokens += Number(tokens?.output ?? 0)
+          if (structured && needsTextFormat(result.info?.error)) {
+            // Some free models accept only tool_choice:auto; others answer JSON without calling the tool.
+            if (result.info.error.name === 'StructuredOutputError') {
+              try { return { value: textValue(result, schema), usage } } catch { /* one fresh text-mode attempt */ }
+            }
+            this.textModels.add(model)
+            structured = false
+            await this.request(connection, `/session/${sessionId}`, 'DELETE', undefined, signal)
+            sessionId = undefined
+            continue
+          }
+          if (result.info?.error) throw generationError(result.info.error)
+          const value = structured ? result.info?.structured ?? result.info?.structured_output : textValue(result, schema)
+          check(value !== undefined && value !== null, 'OpenCode no devolvió el JSON estructurado requerido. Actualizá OpenCode o elegí un modelo compatible.', 502)
+          return { value, usage }
+        }
+        throw new MemoryError(502, 'OpenCode no completó la extracción.')
       } catch (error) {
         // A timed-out HTTP request must not leave model generation running in the background.
         await this.stop(connection)

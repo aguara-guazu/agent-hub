@@ -71,8 +71,7 @@ export class MemoryService {
     localUrl(config.ollama_url)
     check(new URL(config.ollama_url).protocol === 'http:' || new URL(config.ollama_url).protocol === 'https:', 'URL de Ollama inválida')
     if (config.extraction === 'opencode' && config.remote_processing_enabled) {
-      const status = await this.openCode.status()
-      check(status.models.some(m => m.id === config.extraction_model), status.detail ?? 'El modelo elegido no está disponible en OpenCode', 409)
+      await this.openCode.test(config.extraction_model)
     }
     const { db } = await this.get()
     await db.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(config)])

@@ -6,7 +6,9 @@ import { randomUUID } from 'node:crypto'
 import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
-import type { OpenCodeRuntime } from '../src/opencode.js'
+import { OpenCodeRuntime } from '../src/opencode.js'
+import { spawn } from 'node:child_process'
+import { MemoryError } from '../src/contracts.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
 import { exportMemory, restoreMemory } from '../src/backup.js'
@@ -496,6 +498,38 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     await runner.once(new AbortController().signal) // pending people deduplication
     expect(extract).toHaveBeenCalledTimes(2)
     expect((await store.list({ kind: 'fact' })).total).toBe(1)
+  })
+
+  it.skipIf(!process.env.AGENTHUB_OPENCODE_LIVE_MODEL)('procesa una reunión y una regla con un modelo real de OpenCode en segundo plano', async () => {
+    const config = { ...defaultAI, extraction: 'opencode' as const, extraction_model: process.env.AGENTHUB_OPENCODE_LIVE_MODEL!, remote_processing_enabled: true }
+    const runtime = new OpenCodeRuntime(directory, { launch: (command, args, options) =>
+      spawn(command, [args[0]!.replace('/src/opencode-host.js', '/dist/opencode-host.js'), args[1]!], options) })
+    try {
+      const collection = await store.create({ kind: 'collection', title: 'Decisiones de prueba', data: { fields: [{ key: 'text', label: 'Decisión', type: 'text' }] } })
+      await operations.call('create_rule', { name: 'Decisiones', collection_id: collection.id, instructions: 'Guardá una fila por cada decisión explícita, en el campo text, con evidencia.' })
+      const model = new MemoryAI(async () => config, vault, fetch, runtime)
+      const runner = new JobRunner(store, model, vault, new GoogleAuth(vault, 'http://127.0.0.1/callback'), async () => config)
+      const source = await store.ingest({ kind: 'meeting', external_id: 'real-opencode-test', title: 'Reunión sintética de validación',
+        text: 'Decidimos publicar la versión de prueba el viernes. Detectamos que faltan pruebas de integración y debemos completarlas antes de publicar.' })
+      await runner.once(new AbortController().signal)
+      const job = (await operations.call('list_jobs', { kind: 'process' })).items[0]
+      expect(job, job.error).toMatchObject({ state: 'completed', attempts: 1, progress: { provider: 'opencode', model: config.extraction_model } })
+      const facts = await store.list({ kind: 'fact' })
+      expect(facts.total).toBeGreaterThan(0)
+      for (const fact of facts.items) expect((await store.detail(fact.id)).evidence.some(e => e.entity_id === source.entity_id)).toBe(true)
+      expect((await store.records(collection.id)).total).toBeGreaterThan(0)
+    } finally { await runtime.close() }
+  }, 180_000)
+
+  it.each([409, 502])('un error OpenCode %s sólo se reintenta si es transitorio', async status => {
+    const config = { ...defaultAI, extraction: 'opencode' as const, extraction_model: 'fixture/chat', remote_processing_enabled: true }
+    const extract = vi.fn().mockRejectedValue(new MemoryError(status, 'Error de modelo verificado'))
+    const model = new MemoryAI(async () => config, vault, fetch, { extract } as unknown as OpenCodeRuntime)
+    await store.ingest({ kind: 'meeting', external_id: 'opencode-error', title: 'Prueba', text: 'Una decisión explícita.' })
+    const runner = new JobRunner(store, model, vault, new GoogleAuth(vault, 'http://127.0.0.1/callback'), async () => config)
+    await runner.once(new AbortController().signal)
+    expect((await operations.call('list_jobs', { kind: 'process' })).items[0]).toMatchObject({ state: status === 409 ? 'failed' : 'waiting', attempts: 1 })
+    expect(extract).toHaveBeenCalledTimes(1)
   })
 
   it('recupera trabajos con lease vencido y los ejecuta una sola vez', async () => {

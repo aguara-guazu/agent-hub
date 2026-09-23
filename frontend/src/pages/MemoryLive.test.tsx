@@ -79,3 +79,23 @@ it('permite configurar OpenCode una sola vez con un modelo conectado', async () 
   await act(async () => { models.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await tick()
   expect(mock.lastCall('/memory/ai', 'PUT')?.body).toMatchObject({ extraction: 'opencode', extraction_model: 'fixture/chat', remote_processing_enabled: true })
 })
+
+it.each([true, false])('prueba el modelo de OpenCode y limpia el resultado al cambiarlo (éxito: %s)', async success => {
+  const mock = installFetch({ handle: call => {
+    if (call.path === '/memory/status') return jsonResponse(status)
+    if (call.path === '/memory/opencode') return jsonResponse({ installed: true, models: [{ id: 'fixture/chat', name: 'Modelo A' }, { id: 'fixture/other', name: 'Modelo B' }] })
+    if (call.path === '/memory/opencode/test') return success ? jsonResponse({ model: 'fixture/chat', ok: true }) : jsonResponse({ detail: 'El proveedor rechazó el acceso desde OpenCode.' }, 409)
+    if (call.path === '/memory/call') return jsonResponse((call.body as any).operation === 'list_connectors' ? [] : { items: [], total: 0 })
+  } })
+  await mount('settings')
+  await change(container.querySelector<HTMLSelectElement>('select')!, 'opencode')
+  const models = [...container.querySelectorAll('select')].find(s => s.textContent?.includes('Modelo A'))!
+  await change(models, 'fixture/chat')
+  await act(async () => { [...container.querySelectorAll('button')].find(b => b.textContent === 'Probar modelo')!.click() }); await tick()
+  expect(mock.lastCall('/memory/opencode/test', 'POST')?.body).toEqual({ model: 'fixture/chat' })
+  const message = success ? 'Modelo verificado' : 'El proveedor rechazó el acceso'
+  expect(container.textContent).toContain(message)
+  await change(models, 'fixture/other')
+  expect(container.textContent).not.toContain(message)
+  expect(mock.calls.some(c => c.path === '/memory/ai')).toBe(false)
+})

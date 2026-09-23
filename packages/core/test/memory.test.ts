@@ -27,6 +27,7 @@ describe.skipIf(!process.env.AGENTHUB_MEMORY_TEST_URL)('memoria HTTP y gateway M
     expect(denied.statusCode).toBe(401)
     expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/search', payload: { query: 'privado' } })).statusCode).toBe(401)
     expect((await app.fastify.inject({ method: 'GET', url: '/api/memory/opencode' })).statusCode).toBe(401)
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/opencode/test', payload: { model: 'opencode/big-pickle' } })).statusCode).toBe(401)
     const saved = await app.fastify.inject({ method: 'PUT', url: '/api/memory/credentials/deepseek', headers: { authorization: `Bearer ${token}` }, payload: { api_key: 'private-mcp-key' } })
     expect(saved.statusCode).toBe(200)
     const status = await app.fastify.inject({ method: 'GET', url: '/api/memory/status', headers: { authorization: `Bearer ${token}` } })

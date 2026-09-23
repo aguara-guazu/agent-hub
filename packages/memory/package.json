@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/memory",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "type": "module",
   "exports": {
@@ -13,8 +13,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/gateway": "0.3.6",
+    "@agenthub/gateway": "0.3.7",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "ajv": "8.20.0",
     "fastify": "5.12.3",
     "pg": "8.23.0",
     "zod": "4.1.5"
