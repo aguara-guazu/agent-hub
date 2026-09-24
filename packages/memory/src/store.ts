@@ -7,6 +7,7 @@ import { check, parse, id, instant, entityInput, entityPatch, fieldsSchema, impo
   type Entity, type EntityKind, type Fragment, type ImportInput, type CollectionField } from './contracts.js'
 import { parseTranscript, splitText } from './transcript.js'
 import { unifyByEmail } from './people.js'
+import { effectiveJiraSite, jiraSiteUrl } from './jira-settings.js'
 
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -47,18 +48,19 @@ function validateData(data: Record<string, any>) {
   if (data.remote_processing !== undefined) parse(z.boolean(), data.remote_processing)
   if (data.jira_project_key != null && data.jira_project_key !== '') data.jira_project_key = parse(jiraProjectKey, String(data.jira_project_key).trim().toUpperCase())
   if (data.jira_site_url != null && data.jira_site_url !== '') {
-    const url = new URL(parse(z.url(), data.jira_site_url))
-    check(url.protocol === 'https:' && url.hostname.endsWith('.atlassian.net') && !url.username && !url.password, 'Se requiere un sitio de Jira Cloud (https://empresa.atlassian.net)')
-    data.jira_site_url = url.origin
+    data.jira_site_url = parse(jiraSiteUrl, data.jira_site_url)
   }
   if (data.folders != null) data.folders = [...new Set(parse(z.array(workFolder).max(20), data.folders).map(f => f.replace(/[\\/]+$/, '') || '/'))]
 }
 
 async function uniqueJiraKey(sql: Sql, projectId: string | null, key: unknown, site: unknown) {
   if (!key) return
+  await sql.query("SELECT pg_advisory_xact_lock(hashtextextended('jira-sites',0))")
   await sql.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`jira-project:${key}`])
+  const defaultSite = await effectiveJiraSite(sql,null)
   const other = (await sql.query(`SELECT title FROM entities WHERE kind='project' AND data->>'jira_project_key'=$1 AND ($2::uuid IS NULL OR id<>$2)
-    AND ($3::text IS NULL OR NULLIF(data->>'jira_site_url','') IS NULL OR data->>'jira_site_url'=$3)`, [key, projectId, site || null]))[0]
+    AND ($3::text IS NULL OR COALESCE(NULLIF(data->>'jira_site_url',''),$4::text) IS NULL
+      OR COALESCE(NULLIF(data->>'jira_site_url',''),$4::text)=$3)`, [key, projectId, site || defaultSite,defaultSite]))[0]
   check(!other, `La clave de Jira ${key} ya está asignada al proyecto «${other?.title}»`, 409)
 }
 const PROPOSAL_CATEGORIES = ['identity_match', 'person_duplicate', 'project_match']
@@ -156,7 +158,8 @@ export class MemoryStore {
     if (input.project_id) await requireEntity(this.db, input.project_id, 'project')
     const params = [input.kind ?? null, input.project_id ?? null, input.query ?? '', Boolean(input.unassigned), limit, offset]
     const where = `($1::text IS NULL OR e.kind=$1) AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='project'))
-      AND ($3::text='' OR e.title ILIKE '%' || $3 || '%')
+      AND ($3::text='' OR e.title ILIKE '%' || $3 || '%' OR (e.kind='project' AND EXISTS(
+        SELECT 1 FROM entities company WHERE company.id=(e.data->>'company_id')::uuid AND company.title ILIKE '%' || $3 || '%')))
       AND (NOT $4::boolean OR (e.kind IN ('meeting','document','message','issue','note','fact','event')
         AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project')))`
     const rows = await this.db.query<Entity>(`SELECT e.* FROM entities e WHERE ${where} ORDER BY COALESCE(e.data->>'occurred_at',e.created_at::text) DESC,e.id LIMIT $5 OFFSET $6`, params)

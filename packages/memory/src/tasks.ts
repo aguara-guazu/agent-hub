@@ -5,6 +5,7 @@ import type { Vault } from './config.js'
 import { check, id, MemoryError, parse } from './contracts.js'
 import { ProviderHttp, richText } from './connectors/http.js'
 import { requireEntity, validateEvidence, type MemoryStore } from './store.js'
+import { effectiveJiraSite, getJiraSettings } from './jira-settings.js'
 
 export const TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done', 'dropped'] as const
 export const taskStatus = z.enum(TASK_STATUSES)
@@ -67,7 +68,8 @@ async function recordEvent(sql: Sql, taskId: string, action: string, actor: stri
 }
 
 async function projectsByJiraKey(sql: Sql) {
-  const rows = await sql.query("SELECT id,title,data->>'jira_project_key' AS key,data->>'jira_site_url' AS site FROM entities WHERE kind='project' AND COALESCE(data->>'jira_project_key','')<>''")
+  const { default_site_url } = await getJiraSettings(sql)
+  const rows = await sql.query("SELECT id,title,data->>'jira_project_key' AS key,COALESCE(NULLIF(data->>'jira_site_url',''),$1::text) AS site FROM entities WHERE kind='project' AND COALESCE(data->>'jira_project_key','')<>''",[default_site_url])
   return rows
 }
 
@@ -76,6 +78,7 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
   return store.db.transaction(async sql => {
     const byKey = await projectsByJiraKey(sql)
     const explicit = projectId ? await requireEntity(sql, projectId, 'project') : null
+    const explicitSite = explicit ? await effectiveJiraSite(sql,explicit.data.jira_site_url) : null
     const summary = { received: issues.length, created: 0, updated: 0, status_changed: 0, unchanged: 0, unmatched: [] as string[], tasks: [] as Record<string, unknown>[] }
     for (const issue of [...issues].sort((a, b) => a.key.localeCompare(b.key))) {
       // Concurrent agent calls may both observe a missing row; serialize before the first insert too.
@@ -83,8 +86,8 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
       const prefix = issue.key.slice(0, issue.key.lastIndexOf('-'))
       const candidates = byKey.filter(p => p.key === prefix && (!issue.site || !p.site || p.site === issue.site))
       const owner = explicit && (!explicit.data.jira_project_key || explicit.data.jira_project_key === prefix)
-        && (!issue.site || !explicit.data.jira_site_url || explicit.data.jira_site_url === issue.site)
-        ? { id: explicit.id, title: explicit.title, site: explicit.data.jira_site_url }
+        && (!issue.site || !explicitSite || explicitSite === issue.site)
+        ? { id: explicit.id, title: explicit.title, site: explicitSite }
         : !explicit && candidates.length === 1 ? candidates[0] : undefined
       if (!owner) { summary.unmatched.push(issue.key); continue }
       const url = issue.url ?? (owner.site ? `${owner.site}/browse/${encodeURIComponent(issue.key)}` : null)
@@ -156,10 +159,11 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
   for (const project of projects) {
     const key = project.data.jira_project_key
     check(key, `Configura la clave de Jira del proyecto «${project.title}» en su sección de tareas`, 409)
-    const access = await jiraAccess(store, vault, project.data.jira_site_url ?? null)
+    const site = await effectiveJiraSite(store.db,project.data.jira_site_url)
+    const access = await jiraAccess(store, vault, site)
     if (!access && jiraMcp) {
       let received = 0
-      await jiraMcp({ key, site: project.data.jira_site_url ?? null, ...(agentId ? { agentId } : {}) }, async (page, site) => {
+      await jiraMcp({ key, site, ...(agentId ? { agentId } : {}) }, async (page, site) => {
         const issues = page.map(issue => normalizeJiraIssue(issue, site))
         check(issues.every(issue => issue !== null), 'Jira devolvió un issue incompleto; vuelve a sincronizar', 502)
         const result = await upsertJiraIssues(store, issues as JiraIssue[], `${actor}:jira-sync`, project.id)
@@ -194,7 +198,11 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
 /** Pushes a transition or comment with the connector token, then refreshes the mirror from Jira. */
 async function pushToJira(store: MemoryStore, vault: Vault, task: Record<string, any>, change: { transition?: string | undefined; comment?: string | undefined }, actor: string, fetcher: typeof fetch) {
   const project = task.project_id ? await requireEntity(store.db, task.project_id, 'project') : null
-  const access = await jiraAccess(store, vault, project?.data.jira_site_url ?? null)
+  const projectSite = await effectiveJiraSite(store.db,project?.data.jira_site_url)
+  check(!task.external_site || !projectSite || task.external_site === projectSite,
+    'Esta tarea pertenece a un sitio de Jira distinto del que usa ahora el proyecto. Revisa el sitio del proyecto antes de modificarla.',409)
+  const site = task.external_site || projectSite
+  const access = await jiraAccess(store, vault, site)
   if (!access) throw new MemoryError(409, `No hay un conector de Jira con token. Actualiza ${task.external_key} con el MCP de Jira; el hub refleja el cambio en esta tarea automáticamente.`)
   const call = async (path: string, method: string, body?: unknown) => {
     const response = await fetcher(`${access.origin}/rest/api/3/issue/${encodeURIComponent(task.external_key)}${path}`, { method, redirect: 'error',

@@ -4,6 +4,7 @@ import { Modal, ConfirmDialog } from '../components/Modal'
 import { MemoryFrame, PageHeading, Field, ProjectSelect, Pager, ErrorBox, EmptyMemory, EntityRows, entityLabels, entityPath,
   formatTime, useMemory, useMemoryMutation, useMemoryStatus, type MemoryEntity, type Page } from '../lib/memory'
 import { EntityForm, ImportForm } from './MemoryForms'
+import { ProfileDraft, ProjectCompanyForm, SuggestedProjectSelect } from './MemoryAssistance'
 import { MemoryCollection } from './MemoryCollection'
 import { IdentityProposals, IdentityProposalCard, DuplicateProposals, DuplicateProposalCard } from './MemoryIdentity'
 import { ProjectTasks } from './MemoryTasks'
@@ -66,7 +67,7 @@ function EntityPage({ entityId }: { entityId: string }) {
   const detail = useMemory<any>('get_entity', { id: entityId }), navigate = useNavigate()
   const { params, change, offset: relatedOffset } = useMemoryView(), tab = params.get('tab') ?? 'all'
   const setTab = (tab: string) => change({ tab, offset: 0 }), setRelatedOffset = (offset: number) => change({ offset })
-  const [editing, setEditing] = useState(false), [importing, setImporting] = useState(false), [form, setForm] = useState(''), [deleting, setDeleting] = useState(false), [linking, setLinking] = useState(false)
+  const [editing, setEditing] = useState(false), [importing, setImporting] = useState(false), [form, setForm] = useState(''), [deleting, setDeleting] = useState(false), [linking, setLinking] = useState(false), [companyForm, setCompanyForm] = useState(false)
   const remove = useMemoryMutation('delete_entity', () => navigate('/memory'))
   const reprocess = useMemoryMutation('reprocess'), update = useMemoryMutation('update_entity'), reviewIdentity = useMemoryMutation('review_identity'), reviewDuplicate = useMemoryMutation('review_duplicate')
   const entity: MemoryEntity | undefined = detail.data?.entity
@@ -77,6 +78,7 @@ function EntityPage({ entityId }: { entityId: string }) {
   return <><div className="memory-breadcrumb"><Link to={isProject ? '/projects' : '/memory'}>{isProject ? 'Proyectos' : 'Memoria'}</Link><span>/</span><span>{entityLabels[entity.kind]}</span></div>
     <PageHeading title={entity.title} description={entity.data.description ?? entity.data.email ?? ''}>
       <button className="btn" onClick={() => setEditing(true)}>Editar</button><button className="btn" onClick={() => setLinking(true)}>Vincular</button>
+      {isProject && <button className="btn" onClick={() => setCompanyForm(true)}>{entity.data.company_id ? 'Cambiar empresa' : 'Asociar empresa'}</button>}
       {isProject ? <button className="btn btn-primary" onClick={() => setImporting(true)}>Importar fuente</button> : detail.data.sources.length > 0 && <button className="btn" disabled={reprocess.isPending} onClick={() => reprocess.mutate({ entity_id: entityId, force: true })}>Reprocesar</button>}
     </PageHeading>
     <div className="memory-meta"><span className="badge">{entityLabels[entity.kind]}</span>{entity.data.status && <span className="badge badge-accent">{entity.data.status}</span>}<span>{formatTime(entity.data.occurred_at ?? entity.updated_at)}</span>
@@ -103,6 +105,7 @@ function EntityPage({ entityId }: { entityId: string }) {
     {entity.kind === 'event' && <section className="memory-section card memory-panel"><h2>Invitados del calendario</h2><p className="muted">La invitación y su respuesta no prueban asistencia.</p>{(entity.data.attendees ?? []).map((p: any, i: number) => <div key={i} className="spread"><span>{p.displayName ?? p.email ?? 'Sin identificar'}</span><span className="muted">{p.email} · {p.responseStatus}</span></div>)}</section>}
     <details className="memory-details"><summary>Información adicional e historial</summary><pre>{JSON.stringify(entity.data, null, 2)}</pre>{detail.data.changes.map((c: any) => <p key={c.id}>{formatTime(c.created_at)} · {c.action} · {c.actor}</p>)}<button className="btn btn-danger" onClick={() => setDeleting(true)}>Eliminar de la memoria</button></details>
     {editing && <EditEntity entity={entity} onClose={() => setEditing(false)} />}{linking && <LinkEntity entity={entity} links={detail.data.links} onClose={() => setLinking(false)} />}
+    {companyForm && <ProjectCompanyForm project={entity} onClose={() => setCompanyForm(false)} />}
     {importing && <ImportForm open projectId={isProject ? entityId : undefined} onClose={() => setImporting(false)} />}{form && <EntityForm kind={form} open projectId={entityId} onClose={() => setForm('')} />}
     <ConfirmDialog open={deleting} title="Eliminar de la memoria" message="Se eliminarán esta entidad, sus fuentes y los datos derivados que dependan de ellas. Los respaldos anteriores se conservan." destructive confirmLabel="Eliminar" busy={remove.isPending} onClose={() => setDeleting(false)} onConfirm={() => remove.mutate({ id: entityId })} />
   </>
@@ -152,6 +155,7 @@ function EditEntity({ entity, onClose }: { entity: MemoryEntity; onClose: () => 
     ...(entity.kind === 'project' ? { status, folders: folders.split('\n').map(f => f.trim()).filter(Boolean) } : {}), ...(['note','fact'].includes(entity.kind) && text ? { text } : {}) }, expected_updated_at: expectedUpdatedAt }); setError(null) } catch { setError(new Error('Los campos adicionales deben ser JSON válido')) } }}>
     <Field label="Nombre"><input value={title} onChange={e => setTitle(e.target.value)} required /></Field>
     <Field label="Descripción"><textarea rows={3} value={description} onChange={e => setDescription(e.target.value)} /></Field>
+    {entity.kind === 'project' && <ProfileDraft projectId={entity.id} kind="project" onUse={draft => setDescription(draft.description)} />}
     {entity.kind === 'project' && <Field label="Etapa"><select value={status} onChange={e => setStatus(e.target.value)}>{['discovery','presales','poc','delivery','support','completed','paused'].map(s => <option key={s}>{s}</option>)}</select></Field>}
     {entity.kind === 'project' && <Field label="Carpetas de trabajo (una ruta absoluta por línea)"><textarea rows={3} value={folders} onChange={e => setFolders(e.target.value)} placeholder="/Users/nombre/proyectos/cliente-api" /><span className="field-hint">Un agente (Claude Code, Codex, etc.) que trabaja dentro de estas carpetas busca primero en este proyecto y deja sus notas aquí.</span></Field>}
     {entity.kind === 'person' && <><Field label="Email"><input type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field><Field label="Identidad"><select value={identity} onChange={e => setIdentity(e.target.value)}><option value="unresolved">Por verificar</option><option value="verified">Confirmada por mí</option>{identity === 'merged' && <option value="merged">Unificada</option>}</select></Field></>}
@@ -160,11 +164,12 @@ function EditEntity({ entity, onClose }: { entity: MemoryEntity; onClose: () => 
     <details><summary>Campos adicionales</summary><Field label="Campos adicionales (JSON)"><textarea rows={10} value={data} onChange={e => setData(e.target.value)} /></Field></details><ErrorBox error={error ?? update.error} /><button className="btn btn-primary" disabled={update.isPending}>Guardar cambios</button></form></Modal>
 }
 function LinkEntity({ entity, links, onClose }: { entity: MemoryEntity; links: any[]; onClose: () => void }) {
-  const [target, setTarget] = useState(''), [type, setType] = useState('related'), [query, setQuery] = useState('')
+  const source = ['meeting','document'].includes(entity.kind)
+  const [target, setTarget] = useState(''), [type, setType] = useState(source ? 'project' : 'related'), [query, setQuery] = useState('')
   const choices = useMemory<Page<MemoryEntity>>('list_entities', { query, limit: 100 })
   const link = useMemoryMutation('link_entities'), unlink = useMemoryMutation('unlink_entities')
   return <Modal open title="Conectar información" onClose={onClose}><form className="memory-form" onSubmit={e => { e.preventDefault(); link.mutate({ from_id: entity.id, to_id: target, type }) }}>
-    <Field label="Buscar entidad"><input value={query} onChange={e => setQuery(e.target.value)} /></Field><Field label="Entidad relacionada"><select required value={target} onChange={e => { setTarget(e.target.value); if (choices.data?.items.find(i => i.id === e.target.value)?.kind === 'project') setType('project'); else setType('related') }}><option value="">Seleccionar…</option>{choices.data?.items.filter(i => i.id !== entity.id).map(i => <option key={i.id} value={i.id}>{entityLabels[i.kind]} · {i.title}</option>)}</select></Field>
+    {source && type === 'project' ? <SuggestedProjectSelect sourceId={entity.id} value={target} onChange={setTarget} label="Proyecto para esta fuente" /> : <><Field label="Buscar entidad"><input value={query} onChange={e => setQuery(e.target.value)} /></Field><Field label="Entidad relacionada"><select required value={target} onChange={e => { setTarget(e.target.value); if (choices.data?.items.find(i => i.id === e.target.value)?.kind === 'project') setType('project'); else setType('related') }}><option value="">Seleccionar…</option>{choices.data?.items.filter(i => i.id !== entity.id).map(i => <option key={i.id} value={i.id}>{entityLabels[i.kind]} · {i.title}</option>)}</select></Field></>}
     <Field label="Relación"><select value={type} onChange={e => setType(e.target.value)}>{['related','project','company','participant','meeting_document','derived_from','calendar_event'].map(t => <option key={t}>{t}</option>)}</select></Field><button className="btn btn-primary" disabled={!target || link.isPending}>Agregar vínculo</button><ErrorBox error={link.error} />
     <div>{links.map(l => <div key={l.id} className="spread"><span>{l.entity.title} · {l.type}</span><button type="button" className="btn btn-ghost btn-sm" disabled={unlink.isPending} onClick={() => unlink.mutate({ id: l.id })}>Quitar</button></div>)}</div>
   </form></Modal>

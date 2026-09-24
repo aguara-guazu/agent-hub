@@ -13,6 +13,7 @@ import { type AgentContext } from '../src/agents.js'
 import { exportMemory, readBackup, restoreMemory } from '../src/backup.js'
 import { syncJira } from '../src/connectors/jira.js'
 import { ProviderHttp } from '../src/connectors/http.js'
+import { getJiraSettings, saveJiraSettings } from '../src/jira-settings.js'
 import type { ConnectorContext, Connector } from '../src/connectors/types.js'
 
 const url = process.env.AGENTHUB_MEMORY_TEST_URL
@@ -36,6 +37,39 @@ describe.skipIf(!url)('proyectos, tareas y agentes con PostgreSQL real', () => {
   })
   afterAll(async () => { await db?.close(); if (directory) await rm(directory, { recursive: true, force: true }) })
   async function project() { return store.create({ kind: 'project', title: 'API', data: { folders: ['/work/api'], jira_project_key: 'APP' } }) }
+  it('hereda el sitio Jira global en la consulta MCP y conserva las excepciones de cada proyecto',async () => {
+    await saveJiraSettings(db,{default_site_url:'https://empresa.atlassian.net/jira/'})
+    expect(await getJiraSettings(db)).toEqual({default_site_url:'https://empresa.atlassian.net'})
+    const p=await project()
+    const other=await store.create({kind:'project',title:'Otra cuenta',data:{jira_project_key:'APP',jira_site_url:'https://otra.atlassian.net'}})
+    const reader=vi.fn(async(request,onPage)=>onPage([issue()],request.site))
+    const operation=new MemoryOperations(store,new MemoryAI(async()=>defaultAI,vault),undefined,vault,fetch,reader)
+    await operation.call('sync_tasks',{project_id:p.id});expect(reader.mock.calls[0]![0].site).toBe('https://empresa.atlassian.net')
+    await operation.call('sync_tasks',{project_id:other.id});expect(reader.mock.calls[1]![0].site).toBe('https://otra.atlassian.net')
+    expect((await store.detail(p.id)).entity.data.jira_site_url).toBeUndefined()
+    const local=(await ops.call('list_tasks',{project_id:p.id})).items[0]
+    expect(local.external_url).toBe('https://empresa.atlassian.net/browse/APP-1')
+    await saveJiraSettings(db,{default_site_url:'https://nueva.atlassian.net'})
+    await operation.call('sync_tasks',{project_id:p.id});expect(reader.mock.calls[2]![0].site).toBe('https://nueva.atlassian.net')
+    await expect(ops.call('save_task',{id:local.id,jira:{transition:'Done'}})).rejects.toMatchObject({statusCode:409})
+    await store.update(p.id,{data:{jira_site_url:'https://propia.atlassian.net'}})
+    await saveJiraSettings(db,{default_site_url:''});expect(await getJiraSettings(db)).toEqual({default_site_url:null})
+    await operation.call('sync_tasks',{project_id:p.id});expect(reader.mock.calls[3]![0].site).toBe('https://propia.atlassian.net')
+  })
+  it('el espejo usa el sitio heredado para separar claves iguales y rechaza defaults que creen ambigüedad',async () => {
+    await saveJiraSettings(db,{default_site_url:'https://empresa.atlassian.net'})
+    const p=await project(),other=await store.create({kind:'project',title:'Otra cuenta',data:{jira_project_key:'APP',jira_site_url:'https://otra.atlassian.net'}})
+    await ops.call('sync_tasks',{issues:[issue()],site_url:'https://empresa.atlassian.net',source:'mcp_mirror'})
+    await ops.call('sync_tasks',{issues:[issue('Done')],site_url:'https://otra.atlassian.net',source:'mcp_mirror'})
+    expect((await ops.call('list_tasks',{project_id:p.id})).items[0].external_status).toBe('To Do')
+    expect((await ops.call('list_tasks',{project_id:other.id})).items[0].external_status).toBe('Done')
+    await expect(saveJiraSettings(db,{default_site_url:'https://otra.atlassian.net'})).rejects.toMatchObject({statusCode:409})
+    expect((await getJiraSettings(db)).default_site_url).toBe('https://empresa.atlassian.net')
+    await expect(store.create({kind:'project',title:'Duplicado',data:{jira_project_key:'APP',jira_site_url:'https://empresa.atlassian.net'}})).rejects.toMatchObject({statusCode:409})
+  })
+  it.each(['http://empresa.atlassian.net','https://otra.com','https://user:pass@empresa.atlassian.net','no es una URL'])('rechaza un sitio predeterminado inválido: %s',async site => {
+    await expect(saveJiraSettings(db,{default_site_url:site})).rejects.toMatchObject({statusCode:422})
+  })
   function model(ref: string, confidence = 'high') {
     return { extract: vi.fn(async (_instructions: string, content: any) => ({ value: content.projects?.[0]?.id === 'p1' || 'extracted_facts' in content
       ? { verdicts: [{ project_ref: ref, confidence, reason: 'Se menciona API.', evidence_ids: ['f1'], suggested_title: 'API nueva', suggested_description: 'Trabajo nuevo' }] }

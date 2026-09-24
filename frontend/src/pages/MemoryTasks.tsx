@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useJiraSettings } from './JiraSettings'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/Toast'
@@ -24,18 +25,20 @@ export function ProjectTasks({ project }: { project: MemoryEntity }) {
 }
 
 function JiraSetup({ project }: { project: MemoryEntity }) {
+  const settings = useJiraSettings(), defaultSite = settings.data?.default_site_url ?? ''
+  const effectiveSite = project.data.jira_site_url || defaultSite
   const toast = useToast(), [editing, setEditing] = useState(!project.data.jira_project_key)
   const [key, setKey] = useState(project.data.jira_project_key ?? ''), [site, setSite] = useState(project.data.jira_site_url ?? '')
   const save = useMemoryMutation('update_entity', () => { setEditing(false); toast.success('Clave de Jira guardada') })
   const sync = useMemoryMutation<any>('sync_tasks', result => toast.success('Tareas de Jira sincronizadas',
     `${result.received} issues · ${result.created} nuevas · ${result.status_changed} con cambio de estado${result.unmatched?.length ? ` · ${result.unmatched.length} sin proyecto` : ''}`))
   return <div className="card memory-panel memory-jira-setup">
-    <div className="spread"><div><h2>Jira</h2><p className="muted">{project.data.jira_project_key ? `Proyecto ${project.data.jira_project_key}${project.data.jira_site_url ? ` · ${project.data.jira_site_url.replace('https://', '')}` : ''}` : 'Sin clave de Jira configurada'}</p></div>
+    <div className="spread"><div><h2>Jira</h2><p className="muted">{project.data.jira_project_key ? `Proyecto ${project.data.jira_project_key}${effectiveSite ? ` · ${effectiveSite.replace('https://', '')}${!project.data.jira_site_url ? ' (predeterminado)' : ''}` : ''}` : 'Sin clave de Jira configurada'}</p></div>
       <div className="memory-button-wrap">{!editing && <button className="btn btn-sm" onClick={() => setEditing(true)}>Configurar</button>}
         <button className="btn btn-primary btn-sm" disabled={!project.data.jira_project_key || sync.isPending} onClick={() => sync.mutate({ project_id: project.id })}>{sync.isPending ? 'Sincronizando…' : 'Sincronizar con Jira'}</button></div></div>
     {editing && <form className="memory-form" onSubmit={e => { e.preventDefault(); save.mutate({ id: project.id, expected_updated_at: project.updated_at, data: { jira_project_key: key.trim().toUpperCase() || null, jira_site_url: site.trim() || null } }) }}>
       <div className="memory-form-grid"><Field label="Clave del proyecto en Jira"><input value={key} onChange={e => setKey(e.target.value.toUpperCase())} placeholder="POC" pattern="[A-Za-z][A-Za-z0-9_]{0,19}" /><span className="field-hint">El prefijo de los issues: POC en POC-123.</span></Field>
-        <Field label="Sitio de Jira (opcional)"><input type="url" value={site} onChange={e => setSite(e.target.value)} placeholder="https://empresa.atlassian.net" /><span className="field-hint">Arma los enlaces y elige el conector si hay varios sitios.</span></Field></div>
+        <Field label="Sitio de Jira (opcional)"><input type="url" value={site} onChange={e => setSite(e.target.value)} placeholder={defaultSite || 'https://empresa.atlassian.net'} /><span className="field-hint">{defaultSite ? `Vacío: usa ${defaultSite}, configurado en Ajustes. Escribe otro sitio para este proyecto.` : 'Puedes configurar un sitio predeterminado en Ajustes o indicar uno para este proyecto.'}</span>{site && defaultSite && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSite('')}>Usar sitio predeterminado</button>}</Field></div>
       <ErrorBox error={save.error} /><div className="memory-button-wrap"><button className="btn btn-primary btn-sm" disabled={save.isPending}>Guardar</button>{project.data.jira_project_key && <button type="button" className="btn btn-sm" onClick={() => setEditing(false)}>Cancelar</button>}</div>
     </form>}
     <p className="field-hint">{project.data.jira_synced_at ? `Última sincronización desde el hub: ${formatTime(project.data.jira_synced_at)}. ` : ''}El hub intenta actualizar estas tareas cuando un agente consulta o modifica Jira a través del hub, y le avisa si no puede confirmar la actualización. Sincroniza con tu cuenta de Atlassian conectada en MCP servers o con un conector Jira de Fuentes y ajustes.</p>

@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
+import { getJiraSettings, saveJiraSettings } from './jira-settings.js'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
@@ -25,10 +26,15 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }
   app.get('/api/memory/status', { preHandler: auth }, () => service.status())
-  app.post('/api/memory/call', { preHandler: auth, bodyLimit: 12_000_000 }, async request => {
+  app.get('/api/memory/jira-settings', { preHandler: auth }, async () => getJiraSettings((await service.get()).db))
+  app.put('/api/memory/jira-settings', { preHandler: auth }, async request => saveJiraSettings((await service.get()).db,request.body))
+  app.post('/api/memory/call', { preHandler: auth, bodyLimit: 12_000_000 }, async (request, reply) => {
     const input = parse(z.object({ operation: z.string().max(100), input: z.unknown().optional() }).strict(), request.body)
     const actor = await options.authorize(request)
-    return (await service.get()).operations.call(input.operation, input.input, actor.id)
+    const controller = new AbortController(), abort = () => controller.abort()
+    reply.raw.once('close', abort)
+    try { return await (await service.get()).operations.call(input.operation, input.input, actor.id, undefined, controller.signal) }
+    finally { reply.raw.off('close', abort) }
   })
   app.put('/api/memory/database', { preHandler: auth }, async request => {
     const input = parse(z.object({ url: z.string().min(1).max(2000) }).strict(), request.body)

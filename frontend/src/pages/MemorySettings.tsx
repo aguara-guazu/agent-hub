@@ -7,6 +7,7 @@ import { useToast } from '../components/Toast'
 import { Field, ProjectSelect, ErrorBox, MemoryFrame, PageHeading, Pager, formatTime, useMemory, useMemoryMutation, useMemoryStatus } from '../lib/memory'
 import { OpenCodeExtraction } from './OpenCodeExtraction'
 import { MemoryJobCard } from './MemoryProcessing'
+import { JiraSettings } from './JiraSettings'
 
 export function MemorySettings() { return <MemoryFrame setup><Settings /></MemoryFrame> }
 function Settings() {
@@ -50,6 +51,7 @@ function Settings() {
       <p>Configurá un cliente OAuth de escritorio de Google y luego conectá cada cuenta desde su fuente. El acceso se solicita en el navegador.</p><p className="field-hint">APIs: Calendar, Meet, Drive, Docs y People. Para resolver emails, reconectá Google y autorizá la lectura de contactos y directorio. Las identidades sin email disponible quedan pendientes de revisión.</p>
       <code className="memory-code">{status.data?.google_redirect_url}</code><button className="btn" onClick={() => setCredentials({ id: 'google-client', provider: 'google-client', name: 'Cliente OAuth de Google' })}>Configurar cliente OAuth</button>
     </section>
+    {status.data?.ready && <JiraSettings />}
     {ai && <section className="card memory-panel"><h2>Procesamiento y búsqueda</h2><p>Los embeddings permiten buscar por significado. La extracción genera propuestas con evidencia para revisar.</p>
       <form className="memory-form" onSubmit={e => { e.preventDefault(); saveAI.mutate() }}><div className="memory-form-grid"><Field label="Modelo de extracción"><select value={ai.extraction} onChange={e => setAI({ ...ai, extraction: e.target.value, extraction_model: e.target.value === 'deepseek' ? 'deepseek-flash' : ['ollama', 'opencode'].includes(e.target.value) ? '' : ai.extraction_model })}><option value="disabled">Sin extracción automática</option><option value="deepseek">DeepSeek por API</option><option value="ollama">Modelo local en Ollama</option><option value="opencode">OpenCode en segundo plano</option></select></Field>{ai.extraction !== 'opencode' && <Field label="Nombre del modelo"><input required value={ai.extraction_model} onChange={e => setAI({ ...ai, extraction_model: e.target.value })} /></Field>}</div>
         {ai.extraction === 'opencode' && <><OpenCodeExtraction model={ai.extraction_model} onModel={extraction_model => setAI({ ...ai, extraction_model })} /><label className="check"><input type="checkbox" checked={ai.remote_processing_enabled} onChange={e => setAI({ ...ai, remote_processing_enabled: e.target.checked })} />Permitir enviar fragmentos al proveedor configurado en OpenCode</label><p className="field-hint">Se respetan las fuentes y proyectos que excluyen el procesamiento remoto.</p></>}

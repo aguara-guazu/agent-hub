@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/Toast'
 import { Field, ErrorBox, formatTime, useMemory, useMemoryMutation, entityLabels, type MemoryEntity, type Page } from '../lib/memory'
+import { SuggestedProjectSelect } from './MemoryAssistance'
 
 const CONFIDENCE: Record<string, string> = { high: 'confianza alta', medium: 'confianza media', low: 'confianza baja' }
 
@@ -31,16 +32,15 @@ export function ProjectSuggestions() {
 
 function SuggestionCard({ item }: { item: any }) {
   const d = item.data, toast = useToast(), [project, setProject] = useState(d.candidate_project_id ?? ''), [creating, setCreating] = useState(false)
-  const projects = useMemory<Page<MemoryEntity>>('list_entities', { kind: 'project', limit: 200 })
   const review = useMemoryMutation<any>('review_project_suggestion', result => toast.success(result.decision === 'none' ? 'Quedó sin proyecto' : 'Fuente asociada al proyecto'))
   const people: any[] = item.participants ?? []
   return <article className="card memory-panel memory-suggestion">
     <div className="spread"><div><span className="badge">{entityLabels[item.source_kind] ?? 'Fuente'}</span> <Link to={`/memory/entities/${d.source_entity_id}`}><strong>{item.source_title}</strong></Link></div><span className="muted">{formatTime(item.occurred_at)}</span></div>
     {people.length > 0 && <p className="muted">Participantes: {people.slice(0, 8).map(p => p.title).join(', ')}{people.length > 8 ? ` y ${people.length - 8} más` : ''}</p>}
     {item.fact_count > 0 && <div><p className="muted">{item.fact_count} {item.fact_count === 1 ? 'hecho extraído' : 'hechos extraídos'}:</p><ul className="memory-suggestion-facts">{item.facts.slice(0, 4).map((f: any) => <li key={f.id}><span className="badge">{f.category}</span> {f.text}</li>)}</ul></div>}
-    <div className="memory-callout"><span>{d.candidate_project_title ? <>La IA sugiere <strong>{d.candidate_project_title}</strong> ({CONFIDENCE[d.confidence] ?? d.confidence}).</> : d.suggested_title ? <>No coincide con ningún proyecto. Proyecto sugerido: <strong>{d.suggested_title}</strong>.</> : 'No coincide con ningún proyecto existente.'}</span><p>{d.reason}</p></div>
+    <div className="memory-callout"><span>{d.candidate_project_title ? <>La IA sugiere <strong>{d.candidate_project_title}</strong> ({CONFIDENCE[d.confidence] ?? d.confidence}).</> : d.suggested_title ? <>Nombre propuesto para un proyecto nuevo: <strong>{d.suggested_title}</strong>.</> : 'El análisis de fondo no sugirió un proyecto existente.'}</span><p>{d.reason}</p></div>
     <div className="memory-suggestion-actions">
-      <select className="input" aria-label={`Proyecto para ${item.source_title}`} value={project} onChange={e => setProject(e.target.value)}><option value="">Elegir proyecto existente…</option>{projects.data?.items.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}</select>
+      <SuggestedProjectSelect sourceId={d.source_entity_id} label={`Proyecto para ${item.source_title}`} value={project} onChange={setProject} />
       <button className="btn btn-primary btn-sm" disabled={!project || review.isPending} onClick={() => review.mutate({ id: item.id, decision: 'assign', project_id: project })}>Asociar</button>
       <button className="btn btn-sm" disabled={review.isPending} onClick={() => setCreating(true)}>Crear proyecto</button>
       <button className="btn btn-ghost btn-sm" disabled={review.isPending} onClick={() => review.mutate({ id: item.id, decision: 'none' })}>Dejar sin proyecto</button>
