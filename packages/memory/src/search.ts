@@ -1,5 +1,5 @@
 import type { MemoryDatabase } from './database.js'
-import { parse, searchInput, type SearchInput, MemoryError } from './contracts.js'
+import { check, parse, searchInput, type SearchInput, MemoryError } from './contracts.js'
 import { requireEntity } from './store.js'
 import type { MemoryAI } from './ai.js'
 
@@ -7,6 +7,7 @@ export async function searchMemory(db: MemoryDatabase, ai: MemoryAI, raw: unknow
   const input = parse(searchInput, raw)
   if (input.project_id) await requireEntity(db, input.project_id, 'project')
   if (input.person_id) await requireEntity(db, input.person_id, 'person')
+  check(!(input.project_id && input.unassigned), 'Usa project_id o unassigned, no ambos')
   const filters = filterSql(input)
   let semantic: Record<string, any>[] = [], semanticStatus = input.mode === 'text' || !input.query ? 'not_requested' : 'unavailable'
   if (input.query && input.mode !== 'text') {
@@ -52,7 +53,8 @@ function filterSql(input: SearchInput) {
       AND ($1::uuid IS NULL OR EXISTS(SELECT 1 FROM fragment_projects fp WHERE fp.fragment_id=f.id AND fp.project_id=$1))
       AND ($2::uuid IS NULL OR f.speaker_id=$2) AND ($3::text IS NULL OR e.kind=$3) AND ($4::text IS NULL OR s.provider=$4)
       AND ($5::timestamptz IS NULL OR COALESCE(f.start_time,(e.data->>'occurred_at')::timestamptz,e.created_at)>=$5)
-      AND ($6::timestamptz IS NULL OR COALESCE(f.start_time,(e.data->>'occurred_at')::timestamptz,e.created_at)<=$6)`,
+      AND ($6::timestamptz IS NULL OR COALESCE(f.start_time,(e.data->>'occurred_at')::timestamptz,e.created_at)<=$6)
+      ${input.unassigned ? `AND NOT EXISTS(SELECT 1 FROM fragment_projects fp WHERE fp.fragment_id=f.id) AND NOT EXISTS(SELECT 1 FROM links pl WHERE pl.from_id=e.id AND pl.type='project')` : ''}`,
   }
 }
 export function citation(row: Record<string, any>) {

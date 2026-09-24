@@ -17,7 +17,7 @@
  * ese comando lo sirve `@agenthub/gateway`; acá se limita a señalarlo.
  */
 
-import { runHeadless } from '@agenthub/gateway'
+import { runHeadless, recordLifecycle, integrationDirectory } from '@agenthub/gateway'
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -469,6 +469,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   try {
+    if (args.command === 'memory-hook') {
+      if (!args.agent || !args.stateDir) return EXIT_ERROR
+      const state = new DaemonState(args.stateDir), snapshot = state.loadSnapshot(args.agent)
+      if (!snapshot) { say('{}'); return EXIT_OK }
+      let raw = ''
+      for await (const chunk of process.stdin) { raw += String(chunk); if (raw.length > 2_000_000) return EXIT_ERROR }
+      const event = JSON.parse(raw || '{}') as Record<string, unknown>
+      await recordLifecycle(integrationDirectory(args.stateDir, args.agent), args.agent, String(snapshot['cli_kind'] ?? ''), event)
+      say('{}')
+      return EXIT_OK
+    }
     const app = buildApp(args)
     if (args.command === 'gateway') return await cmdGateway(app, args)
     switch (args.command) {

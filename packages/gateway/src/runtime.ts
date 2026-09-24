@@ -167,7 +167,7 @@ export class UpstreamSpec {
 /** Un MCP server vivo con el que ya se hizo el handshake. */
 export interface UpstreamConnection {
   listTools(): Promise<ToolDef[]>
-  callTool(name: string, args: Record<string, unknown>): Promise<CallResult>
+  callTool(name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<CallResult>
   close(): Promise<void>
   readonly isAlive: boolean
 }
@@ -228,10 +228,10 @@ export class ClientConnection implements UpstreamConnection {
     }
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<CallResult> {
+  async callTool(name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<CallResult> {
     let result: CallShape
     try {
-      result = (await this.client.callTool({ name, arguments: args }, undefined, {
+      result = (await this.client.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) }, undefined, {
         timeout: this.requestTimeoutMs,
       })) as CallShape
     } catch (err) {
@@ -577,10 +577,10 @@ export class ConnectionPool {
    * efectos y un reintento a ciegas la ejecutaria dos veces. Si la llamada rompe la
    * conexion, se descarta para que la siguiente reconecte.
    */
-  async callTool(agentId: string, spec: UpstreamSpec, name: string, args: Record<string, unknown>): Promise<CallResult> {
+  async callTool(agentId: string, spec: UpstreamSpec, name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<CallResult> {
     const connection = await this.get(agentId, spec)
     try {
-      return await connection.callTool(name, args)
+      return await connection.callTool(name, args, meta)
     } catch (err) {
       await this.evict(agentId, spec.slug)
       if (err instanceof UpstreamError) throw err

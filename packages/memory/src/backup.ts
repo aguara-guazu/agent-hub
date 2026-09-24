@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm, writeFile, unlink } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -6,8 +7,11 @@ import type { MemoryStore } from './store.js'
 import { canonical, hash } from './store.js'
 import { check, parse, id } from './contracts.js'
 
-const tables = ['entities', 'connectors', 'sources', 'versions', 'identities', 'fragments', 'fragment_projects', 'links', 'evidence', 'link_evidence',
+const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identities', 'fragments', 'fragment_projects', 'links', 'evidence', 'link_evidence',
   'embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'changes'] as const
+// Added by schema version 3; backups taken before it restore without them.
+const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes'] as const
+const tables = [...requiredTables, ...laterTables] as const
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -15,24 +19,49 @@ export async function exportMemory(store: MemoryStore) {
   return store.db.withOriginals(() => exportOriginals(store))
 }
 async function exportOriginals(store: MemoryStore) {
-  const backup = await store.db.transaction(async sql => {
-    const data: Record<string, any[]> = {}
-    for (const table of tables) data[table] = await sql.query(`SELECT * FROM ${table}`)
-    const originals: Record<string, string> = {}
-    for (const version of data.versions ?? []) {
-      check(/^[a-f0-9]{64}\.json$/.test(version.original_path), 'Ruta de original inválida')
-      const original = await readFile(join(store.directory, 'originals', version.original_path), 'utf8')
-      check(hash(JSON.parse(original)) === version.content_hash, 'El original no coincide con su hash')
-      originals[version.original_path] = original
-    }
-    const schema = (await sql.query('SELECT max(version) AS version FROM schema_versions'))[0]!.version
-    return { format: 'agenthub-memory-v1', schema_version: schema, exported_at: new Date().toISOString(), tables: data, originals }
-  }, 'ISOLATION LEVEL REPEATABLE READ READ ONLY')
   const backupId = randomUUID(), dir = join(store.directory, 'backups')
   await mkdir(dir, { recursive: true, mode: 0o700 })
-  await writeFile(join(dir, `${backupId}.json`), JSON.stringify(backup), { mode: 0o600 })
-  return { id: backupId, exported_at: backup.exported_at, download_url: `/api/memory/backups/${backupId}`, includes_credentials: false }
+  const path = join(dir, `${backupId}.json`), temp = `${path}.tmp`, exportedAt = new Date().toISOString()
+  const file = await open(temp, 'wx', 0o600)
+  try {
+    // A real memory can contain gigabytes of vectors. Keep one cursor batch in memory,
+    // while the same repeatable-read snapshot and originals lock cover the whole export.
+    await store.db.transaction(async sql => {
+      const schema = (await sql.query('SELECT max(version) AS version FROM schema_versions'))[0]!.version
+      await file.writeFile(`{"format":"agenthub-memory-v1","schema_version":${schema},"exported_at":${JSON.stringify(exportedAt)},"tables":{`)
+      for (const [index, table] of tables.entries()) {
+        await file.writeFile(`${index ? ',' : ''}${JSON.stringify(table)}:[`)
+        await sql.query(`DECLARE backup_rows NO SCROLL CURSOR FOR SELECT * FROM ${table}`)
+        let first = true
+        for (;;) {
+          const rows = await sql.query('FETCH 128 FROM backup_rows')
+          if (!rows.length) break
+          for (const row of rows) { await file.writeFile(`${first ? '' : ','}${JSON.stringify(row)}`); first = false }
+        }
+        await sql.query('CLOSE backup_rows')
+        await file.writeFile(']')
+      }
+      await file.writeFile('},"originals":{')
+      await sql.query('DECLARE backup_rows NO SCROLL CURSOR FOR SELECT DISTINCT original_path,content_hash FROM versions')
+      let first = true
+      for (;;) {
+        const versions = await sql.query('FETCH 128 FROM backup_rows')
+        if (!versions.length) break
+        for (const version of versions) {
+          check(/^[a-f0-9]{64}\.json$/.test(version.original_path), 'Ruta de original inválida')
+          const original = await readFile(join(store.directory, 'originals', version.original_path), 'utf8')
+          check(hash(JSON.parse(original)) === version.content_hash, 'El original no coincide con su hash')
+          await file.writeFile(`${first ? '' : ','}${JSON.stringify(version.original_path)}:${JSON.stringify(original)}`); first = false
+        }
+      }
+      await sql.query('CLOSE backup_rows')
+      await file.writeFile('}}')
+    }, 'ISOLATION LEVEL REPEATABLE READ READ ONLY')
+    await file.sync(); await file.close(); await rename(temp, path)
+    return { id: backupId, exported_at: exportedAt, download_url: `/api/memory/backups/${backupId}`, includes_credentials: false }
+  } catch (error) { await file.close().catch(() => undefined); await rm(temp, { force: true }); throw error }
 }
+export function streamBackup(store: MemoryStore, backupId: string) { return createReadStream(join(store.directory, 'backups', `${parse(id, backupId)}.json`)) }
 export async function readBackup(store: MemoryStore, backupId: string) {
   return readFile(join(store.directory, 'backups', `${parse(id, backupId)}.json`), 'utf8')
 }
@@ -42,7 +71,7 @@ export async function restoreMemory(store: MemoryStore, raw: unknown) {
 async function restoreOriginals(store: MemoryStore, raw: unknown) {
   const backup = parse(backupSchema, raw)
   check(Object.keys(backup.tables).every(table => (tables as readonly string[]).includes(table)), 'El respaldo contiene tablas desconocidas')
-  for (const table of tables) check(Array.isArray(backup.tables[table]), `Falta la tabla ${table}`)
+  for (const table of requiredTables) check(Array.isArray(backup.tables[table]), `Falta la tabla ${table}`)
   const schemas = await store.db.query('SELECT max(version)::int AS version FROM schema_versions')
   check(backup.schema_version >= 1 && backup.schema_version <= schemas[0]!.version, 'El respaldo requiere una versión de esquema compatible')
   for (const version of backup.tables.versions ?? []) {
@@ -71,6 +100,7 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
       await writeFile(join(store.directory, 'originals', path), backup.originals[path]!, { mode: 0o600 })
     }
     await sql.query("SELECT setval(pg_get_serial_sequence('changes','id'),COALESCE((SELECT max(id) FROM changes),1),(SELECT count(*)>0 FROM changes))")
+    await sql.query("SELECT setval(pg_get_serial_sequence('task_events','id'),COALESCE((SELECT max(id) FROM task_events),1),(SELECT count(*)>0 FROM task_events))")
   })
   return { restored: true, entities: backup.tables.entities!.length, credentials_required: true }
 }

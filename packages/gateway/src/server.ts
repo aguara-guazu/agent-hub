@@ -24,8 +24,10 @@
  * `tools/list`, y la llamada se decide contra el snapshot vigente como cualquier otra.
  */
 
+import { randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
@@ -40,7 +42,11 @@ import { CLI_FILE_SKILLS, renderSkillMd, SKILL_FILENAME, SKILL_TOOL_NAME, type C
 
 import type { ExposedSkill, PolicyStore, SnapshotView } from './policy.js'
 import { DECISION_ALLOW, DECISION_DENY, argsDigest, denialMessage, serverOffMessage, unknownToolMessage } from './policy.js'
-import { ConnectionPool, UpstreamError, resultText } from './runtime.js'
+import { ConnectionPool, UpstreamError, resultText, type CallResult, type UpstreamSpec } from './runtime.js'
+import { JIRA_REREADS, MEMORY_META_KEY, isJiraTool, isJiraWrite, isMemorySpec, issuesIn, rereadArgs, siteFromArgs, writtenKey } from './memory-bridge.js'
+import { MemoryOutbox } from './memory-outbox.js'
+import { sessionForCall, type NativeSession } from './memory-lifecycle.js'
+import type { FSWatcher } from 'node:fs'
 
 export const SERVER_NAME = 'agenthub'
 export const SERVER_VERSION = '0.2.0'
@@ -56,6 +62,11 @@ const INSTRUCTIONS =
 
 /** El server que figura en la auditoria para la herramienta propia del gateway. */
 const SKILL_TOOL_SERVER = 'hub'
+/** Lo que puede demorar el espejo de Jira antes de devolverle el resultado al agente. */
+const JIRA_MIRROR_TIMEOUT_MS = 10_000
+/** Cierre de las notas de la sesion al apagar: best effort, no retiene la salida del CLI. */
+const SESSION_END_TIMEOUT_MS = 1500
+
 /** Tope de un archivo auxiliar devuelto por `use_skill`. */
 const MAX_SKILL_FILE_BYTES = 1024 * 1024
 /** Cuantos archivos auxiliares se enumeran al devolver un SKILL.md. */
@@ -190,12 +201,20 @@ export class GatewayServer {
   private readonly refreshPolicy: (() => Promise<void>) | undefined
   private lastListedHashValue = ''
   private connected = false
+  /** Una sesion por proceso de gateway: es lo que la memoria llama sesion de agente. */
+  private readonly sessionId = randomUUID()
+  private memoryUsed = false
+  private workFolder: Promise<string | null> | undefined
+  private readonly outbox: MemoryOutbox | undefined
+  private deliveryTimer: ReturnType<typeof setInterval> | undefined
+  private deliveryWatcher: FSWatcher | undefined
+  private readonly memorySessions = new Map<string, Record<string, unknown>>()
 
   constructor(
     agentInstanceId: string,
     store: PolicyStore,
     pool: ConnectionPool,
-    options: { reporter?: ToolCallReporter; onListed?: (hash: string) => void; refreshPolicy?: () => Promise<void>; serverName?: string; version?: string } = {},
+    options: { reporter?: ToolCallReporter; onListed?: (hash: string) => void; refreshPolicy?: () => Promise<void>; serverName?: string; version?: string; outbox?: MemoryOutbox } = {},
   ) {
     if (store.agentInstanceId !== agentInstanceId) {
       throw new Error('el store de politica es de otro agent_instance')
@@ -206,6 +225,7 @@ export class GatewayServer {
     this.reporter = options.reporter
     this.onListed = options.onListed
     this.refreshPolicy = options.refreshPolicy
+    this.outbox = options.outbox
     this.server = new Server(
       { name: options.serverName ?? SERVER_NAME, version: options.version ?? SERVER_VERSION },
       { capabilities: { tools: { listChanged: true } }, instructions: INSTRUCTIONS },
@@ -233,11 +253,117 @@ export class GatewayServer {
   async connect(transport: Transport): Promise<void> {
     await this.server.connect(transport)
     this.connected = true
+    if (this.outbox) {
+      this.deliveryWatcher = await this.outbox.watch(() => { void this.flushMemory().catch(() => undefined) })
+      this.deliveryTimer = setInterval(() => { void this.flushMemory().catch(() => undefined) }, 5000)
+      this.deliveryTimer.unref()
+      void this.flushMemory().catch(() => undefined)
+    }
   }
 
   async close(): Promise<void> {
+    clearInterval(this.deliveryTimer)
+    this.deliveryWatcher?.close()
+    if (this.memoryUsed) await this.endMemorySession()
+    this.memoryUsed = false
     this.connected = false
     await this.server.close()
+  }
+
+  /** La carpeta del cliente: su primer root MCP si lo declara, si no la carpeta desde la que lanzo el gateway. */
+  private workingFolder(): Promise<string | null> {
+    this.workFolder ??= (async () => {
+      if (this.server.getClientCapabilities()?.roots) {
+        try {
+          const { roots } = await this.server.listRoots(undefined, { timeout: 1500 })
+          const first = roots.find((root) => root.uri.startsWith('file://'))
+          if (first) return fileURLToPath(first.uri)
+        } catch {
+          // El cliente no respondio roots: se usa la carpeta del proceso.
+        }
+      }
+      return process.cwd()
+    })()
+    return this.workFolder
+  }
+
+  async flushMemory(): Promise<void> {
+    this.store.refresh()
+    await this.refreshPolicy?.()
+    await this.outbox?.flush(() => this.store.current, this.pool)
+  }
+
+  private async memoryMeta(view: SnapshotView, native?: NativeSession): Promise<Record<string, unknown>> {
+    this.memoryUsed = true
+    const who = native ?? { agent_id: this.agentInstanceId, cli_kind: view.cliKind, client: this.server.getClientVersion()?.name ?? '',
+      session_id: this.sessionId, cwd: await this.workingFolder() }
+    const meta = { [MEMORY_META_KEY]: who }
+    this.memorySessions.set(who.session_id, meta)
+    return meta
+  }
+
+  /** El server de memoria vigente para este agente, si expone la herramienta pedida. */
+  private memoryFor(view: SnapshotView, toolName: string): UpstreamSpec | undefined {
+    const spec = view.upstreams().find(isMemorySpec)
+    return spec && view.tools.some((tool) => tool.serverSlug === spec.slug && tool.toolName === toolName) ? spec : undefined
+  }
+
+  private async mirrorJira(view: SnapshotView, spec: UpstreamSpec, toolName: string, args: Record<string, unknown>, result: CallResult, native?: NativeSession): Promise<void> {
+    const memory = this.memoryFor(view, 'sync_tasks')
+    const issues = issuesIn(result)
+    const key = isJiraWrite(toolName) ? writtenKey(args, result) : undefined
+    const reread = view.tools.find((tool) => tool.serverSlug === spec.slug && JIRA_REREADS.includes(tool.toolName.toLowerCase()))
+    const readArgs = key && reread ? rereadArgs(reread.toolName, args, key) : undefined
+    const site = siteFromArgs(args), meta = await this.memoryMeta(view, native)
+    const resources = !site && typeof args['cloudId'] === 'string'
+      ? view.tools.find(tool => tool.serverSlug === spec.slug && tool.toolName.toLowerCase() === 'getaccessibleatlassianresources') : undefined
+    if (this.outbox && (issues.length || (reread && readArgs))) {
+      const ids: string[] = []
+      for (let offset = 0; offset < Math.max(1, issues.length); offset += 500) {
+        ids.push(await this.outbox.enqueue({ operation: 'sync_tasks',
+          args: { issues: issues.slice(offset, offset + 500), source: 'mcp_mirror', ...(site ? { site_url: site } : {}) }, meta,
+          ...(resources ? { siteLookup: { server: spec.slug, tool: resources.toolName, cloudId: String(args['cloudId']) } } : {}),
+          ...(reread && readArgs ? { reread: { server: spec.slug, tool: reread.toolName, args: readArgs } } : {}) }))
+      }
+      await this.flushMemory()
+      if ((await Promise.all(ids.map(id => this.outbox!.has(id)))).some(Boolean)) throw new Error('delivery_pending')
+      return
+    }
+    if (!memory) throw new Error('memory_unavailable')
+    if (reread && readArgs) {
+      const fresh = await this.pool.callTool(this.agentInstanceId, spec, reread.toolName, readArgs)
+      if (fresh.is_error) throw new Error('jira_reread_failed')
+      issues.push(...issuesIn(fresh))
+    }
+    if (!issues.length) {
+      if (isJiraWrite(toolName)) throw new Error('jira_issue_missing')
+      return
+    }
+    for (let offset = 0; offset < issues.length; offset += 500) {
+      const mirrored = await this.pool.callTool(this.agentInstanceId, memory, 'sync_tasks',
+        { issues: issues.slice(offset, offset + 500), source: 'mcp_mirror', ...(site ? { site_url: site } : {}) }, meta)
+      if (mirrored.is_error) throw new Error('memory_sync_failed')
+      const summary = mirrored.structured_content ?? (() => {
+        try { return JSON.parse(resultText(mirrored)) as Record<string, unknown> } catch { return {} }
+      })()
+      if (Number(summary['invalid']) > 0 || (Array.isArray(summary['unmatched']) && summary['unmatched'].length)) throw new Error('memory_sync_incomplete')
+    }
+  }
+
+  private async endMemorySession(): Promise<void> {
+    if (this.outbox) {
+      for (const meta of this.memorySessions.values()) await this.outbox.enqueue({ operation: 'finish_notes', args: { reason: 'session_end', before: new Date().toISOString() }, meta })
+      this.memorySessions.clear()
+      await Promise.race([this.flushMemory().catch(() => undefined), new Promise(resolve => setTimeout(resolve, SESSION_END_TIMEOUT_MS).unref())])
+      return
+    }
+    const memory = this.memoryFor(this.store.current, 'finish_notes')
+    if (!memory) return
+    const meta = await this.memoryMeta(this.store.current)
+    await Promise.race([
+      this.pool.callTool(this.agentInstanceId, memory, 'finish_notes', { reason: 'session_end' }, meta).catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, SESSION_END_TIMEOUT_MS).unref?.()),
+    ])
   }
 
   private async handleListTools(): Promise<ListToolsResult> {
@@ -368,7 +494,21 @@ export class GatewayServer {
     }
 
     try {
-      const result = await this.pool.callTool(this.agentInstanceId, spec, tool.toolName, args)
+      const native = this.outbox ? await sessionForCall(this.outbox.directory, name, args) : undefined
+      const meta = isMemorySpec(spec) ? await this.memoryMeta(view, native) : undefined
+      const result = await this.pool.callTool(this.agentInstanceId, spec, tool.toolName, args, meta)
+      if (!result.is_error && !meta && isJiraTool(tool.toolName)) {
+        // Preserve the successful Jira result, but never silently claim the local mirror is current.
+        let timeout: ReturnType<typeof setTimeout> | undefined
+        try {
+          await Promise.race([
+            this.mirrorJira(view, spec, tool.toolName, args, result, native),
+            new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('mirror_timeout')), JIRA_MIRROR_TIMEOUT_MS); timeout.unref?.() }),
+          ])
+        } catch {
+          result.content.push({ type: 'text', text: 'Jira respondió correctamente, pero no se pudo confirmar la actualización de las tareas locales. No repitas el cambio en Jira. El hub reintenta las entregas guardadas incluso después de reiniciar. Revisa memory_list_tasks y la clave del proyecto; si el resultado no incluye issues, sincronízalos con memory_sync_tasks.' })
+        } finally { clearTimeout(timeout) }
+      }
       await this.report({
         agent_id: this.agentInstanceId,
         server_slug: tool.serverSlug,

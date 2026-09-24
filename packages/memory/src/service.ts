@@ -11,7 +11,7 @@ import { check, MemoryError, parse } from './contracts.js'
 
 export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode']), extraction_model: z.string().min(1).max(200),
   embeddings_enabled: z.boolean(), embedding_model: z.string().min(1).max(200), ollama_url: z.url(), remote_processing_enabled: z.boolean(),
-  identity_auto_merge: z.boolean().default(true) }).strict().refine(
+  identity_auto_merge: z.boolean().default(true), project_auto_assign: z.boolean().default(true) }).strict().refine(
     config => config.extraction !== 'opencode' || /^[^/\s]+\/\S+$/.test(config.extraction_model),
     { message: 'Elegí un modelo de OpenCode con formato proveedor/modelo', path: ['extraction_model'] })
 export class MemoryService {
@@ -40,7 +40,7 @@ export class MemoryService {
     }
     const store = new MemoryStore(db, this.directory)
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode)
-    const operations = new MemoryOperations(store, ai, this.google, this.vault)
+    const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher)
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher)
     this.current = { db, store, ai, operations, runner }
     return this.current

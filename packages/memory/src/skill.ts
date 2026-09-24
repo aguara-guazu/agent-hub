@@ -7,14 +7,16 @@ import { memoryTools } from './operations.js'
  */
 export const MEMORY_SKILL_SLUG = 'memory'
 export const MEMORY_SKILL_DISPLAY_NAME = 'Memoria de proyectos'
-export const MEMORY_SKILL_DESCRIPTION = 'Cómo consultar y recorrer la memoria local de Agent Hub (herramientas memory_*): ubicar el proyecto o la persona, buscar qué se dijo, leer transcripciones y evidencia, seguir relaciones entre reuniones, documentos y personas, citar con fuente y fecha, y guardar lo nuevo. Usar siempre que aparezcan clientes, proyectos, reuniones o personas del equipo, antes de responder de memoria propia.'
+export const MEMORY_SKILL_DESCRIPTION = 'Consultar y actualizar la memoria local de Agent Hub (memory_*). Usar al trabajar en un proyecto o mencionar clientes, reuniones o personas: resolver la carpeta con memory_context, buscar transcripciones y evidencia, citar fuentes, seguir Jira y pendientes, y coordinar agentes mediante notas cortas entre sesiones.'
 
 const groups: [string, string[]][] = [
+  ['Contexto de trabajo, tareas y notas de agentes', ['context', 'list_notes', 'write_note', 'finish_notes', 'list_tasks', 'get_task', 'save_task', 'sync_tasks', 'task_stats']],
   ['Explorar y leer', ['list_entities', 'get_entity', 'search', 'transcript', 'get_evidence', 'list_versions', 'timeline', 'review']],
   ['Escribir y vincular', ['create_entity', 'update_entity', 'import_source', 'link_entities', 'unlink_entities', 'assign_fragment']],
   ['Colecciones y reglas de seguimiento', ['add_record', 'update_record', 'list_records', 'create_rule', 'list_rules', 'update_rule']],
   ['Personas e identidades', ['merge_people', 'infer_identities', 'list_identity_proposals', 'review_identity', 'dedupe_people', 'list_duplicate_proposals', 'review_duplicate']],
-  ['Fuentes, procesamiento y mantenimiento', ['list_connectors', 'save_connector', 'sync_connector', 'google_setup_status', 'import_google_client', 'connect_google', 'repair_google', 'list_jobs', 'processing_status', 'retry_job', 'cancel_job', 'reprocess', 'export_backup', 'delete_entity']],
+  ['Proyectos de reuniones sueltas', ['list_project_suggestions', 'review_project_suggestion', 'infer_projects']],
+  ['Fuentes, procesamiento y mantenimiento', ['list_connectors', 'save_connector', 'sync_connector', 'sync_sources', 'google_setup_status', 'import_google_client', 'connect_google', 'repair_google', 'list_jobs', 'processing_status', 'retry_job', 'cancel_job', 'reprocess', 'export_backup', 'delete_entity']],
 ]
 
 export function renderMemorySkill(tools: { name: string; description: string }[] = memoryTools): string {
@@ -31,6 +33,29 @@ export function renderMemorySkill(tools: { name: string; description: string }[]
 La memoria es la base local del equipo: empresas, proyectos, personas, reuniones con sus transcripciones, documentos, conversaciones, tareas, notas y conocimiento extraído con evidencia. Vive en la computadora de la persona y se consulta con las herramientas del MCP **Memoria de proyectos**, que llegan a través del servidor \`hub\` con nombres \`memory_<operación>\` (por ejemplo \`memory_search\`; según el cliente el nombre completo lleva un prefijo como \`mcp__hub__\` o \`hub__\`).
 
 Usarla siempre que la tarea mencione un cliente, un proyecto, una reunión, una persona, una decisión, un compromiso, una fecha acordada o "qué se dijo". Consultar la memoria antes de responder con conocimiento propio o de pedir el contexto a la persona. Si la memoria no tiene lo que se busca, decirlo explícitamente y nunca inventar reuniones, personas, correos, fechas ni citas.
+
+## Al empezar a trabajar: el proyecto de la carpeta
+
+1. **Primera llamada: \`memory_context\`.** Resuelve a qué proyecto pertenece la carpeta en la que corre el agente (la informa el hub; si no, pasar \`path\` con la carpeta actual), sus tareas abiertas y las notas de otros agentes que están trabajando ahora mismo.
+2. **Buscar primero dentro del proyecto.** Con el \`project.id\` que devuelve, usar \`project_id\` en \`memory_search\`, \`memory_list_entities\` y \`memory_list_tasks\`. Ampliar a toda la memoria sólo si el proyecto no alcanza, y decirlo. Para material que todavía no pertenece a ningún proyecto (reuniones sueltas, notas generales): \`unassigned: true\`.
+3. **Si la carpeta no pertenece a ningún proyecto,** \`projects\` lista los existentes: preguntar a la persona a cuál corresponde y agregar la carpeta con \`memory_update_entity\` (\`data.folders\`, rutas absolutas) o pedirle que lo haga desde el proyecto.
+
+## Notas de agentes: la memoria compartida entre sesiones
+
+Varios agentes (y varias sesiones del mismo) pueden trabajar a la vez en un proyecto. Las notas son el tablero común: quién está haciendo qué, desde cuándo y si terminó.
+
+- Antes de empezar, leer \`working_notes\` de \`memory_context\` o \`memory_list_notes\` (\`project_id\`). Si otro agente está trabajando en lo mismo, no pisarlo: coordinar a través de la persona o elegir otra parte.
+- Al empezar una tarea, dejar una nota corta con \`memory_write_note\` (una o dos oraciones: qué se va a hacer y dónde; \`task_id\` si corresponde a una tarea). Una nota nueva de la misma sesión reemplaza a la anterior. Volver a leer las notas entre pasos largos.
+- Al terminar (o al quedar bloqueado), cerrar con \`memory_finish_notes\` y un \`summary\` de lo que se hizo o de qué falta. Los hooks de Codex, Claude Code, Gemini CLI y OpenCode cierran las notas al terminar el turno cuando están habilitados. En los demás clientes se cierran al finalizar la sesión o por inactividad; el resumen explícito es lo que usan los demás.
+- Las notas son cortas y factuales; nada de credenciales ni contenido sensible.
+
+## Tareas: Jira y pendientes internos
+
+Cada proyecto tiene tareas de dos tipos: el **espejo de Jira** (\`kind: "jira"\`, con el estado tal como está en Jira) y los **pendientes internos** (\`kind: "pending"\`): lo que falta en el código, deuda técnica, compromisos de reuniones o notas que no se registran en Jira.
+
+- **Jira.** El proyecto guarda su clave (\`data.jira_project_key\`, por ejemplo \`POC\`). El hub refleja las consultas y cambios hechos con el MCP de Jira que pasa por él. Las entregas pendientes se guardan en disco y se reintentan después de reiniciar; sólo se repiten lecturas de Jira, nunca escrituras. Configurar también el sitio en \`data.jira_site_url\` si hay varios sitios con la misma clave. Si devuelve un aviso de sincronización incompleta, verificar con \`memory_list_tasks\` y reintentar \`memory_sync_tasks\` con los issues actuales; nunca repetir una escritura exitosa en Jira. Para traer todo el proyecto: \`memory_sync_tasks\` con \`project_id\` (usa el conector de Jira con token) o, sin conector, consultar \`project = CLAVE\` con el MCP de Jira y recorrer todas las páginas. Si el MCP de Jira no pasa por el hub, llamar \`memory_sync_tasks\` con \`issues\` después de cada cambio.
+- **Pendientes.** Registrar con \`memory_save_task\` (\`title\`, \`description\`, \`origin\`: \`code\`, \`meeting\`, \`note\` o \`agent\`, \`code_ref\` con archivo y línea, \`evidence_ids\` si sale de una reunión) cada cosa que queda pendiente y no va a Jira. Actualizar su \`status\` al avanzar y agregar \`note\` con el avance.
+- **Seguimiento.** \`memory_list_tasks\` (\`status: "open"\`) para saber qué falta; \`memory_get_task\` para su historial; \`memory_task_stats\` para la salud del proyecto (abiertas, bloqueadas, sin movimiento, creadas y cerradas por semana).
 
 ## Cómo está organizada
 
@@ -60,7 +85,8 @@ Usarla siempre que la tarea mencione un cliente, un proyecto, una reunión, una 
 6. **Compromisos, pendientes y riesgos.** \`memory_list_entities\` con \`kind: "fact"\` y \`project_id\`, filtrando en la respuesta por \`category\` (\`commitment\`, \`risk\`) y \`review_state\`. Para lo dicho en fuentes aún no extraídas, \`memory_search\` con términos como "quedamos", "para el", "entrego" acotada al proyecto y al período.
 7. **Un documento o referencia** (una propuesta, un NDA, findings). \`memory_list_entities\` con \`kind: "document"\` y \`query\`, o \`memory_search\` con \`kind: "document"\`. Leerlo con \`memory_transcript\`; \`sources[].url\` de \`memory_get_entity\` lleva al original. \`memory_list_versions\` muestra si cambió con el tiempo.
 8. **Todas las menciones de algo, sin omitir ninguna.** Usar \`memory_search\` sin texto (\`query: ""\`) con los filtros del alcance y recorrer \`offset\` hasta cubrir \`total\`; la relevancia de una búsqueda con texto no garantiza exhaustividad. Si el pedido se repetirá, guardar los hallazgos en una colección con evidencia y proponer una regla de seguimiento.
-9. **¿La memoria está al día?** \`memory_processing_status\` y \`memory_list_jobs\` muestran si las fuentes recientes ya se importaron, indexaron y extrajeron; \`memory_list_connectors\` indica la última sincronización y errores. Si falta una reunión reciente, sugerir sincronizar (\`memory_sync_connector\`) en lugar de asumir que no existe.
+9. **¿La memoria está al día?** \`memory_processing_status\` y \`memory_list_jobs\` muestran si las fuentes recientes ya se importaron, indexaron y extrajeron; \`memory_list_connectors\` indica la última sincronización y errores. Si falta una reunión reciente, sincronizar todas las fuentes (\`memory_sync_sources\`) o una (\`memory_sync_connector\`) en lugar de asumir que no existe.
+10. **Reuniones sin proyecto.** El procesamiento en segundo plano asocia sola cada reunión o documento al proyecto que identifica con confianza alta; lo demás queda en \`memory_list_project_suggestions\`. Resolver con \`memory_review_project_suggestion\` sólo con la confirmación de la persona.
 
 ## Cómo responder
 

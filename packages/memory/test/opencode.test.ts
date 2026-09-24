@@ -75,7 +75,8 @@ it.each([
   [{ name: 'APIError', data: { statusCode: 403, isRetryable: false, message: "SECRET OpenCode's free tier can only be used from within OpenCode" } }, 409, 'modelo gratuito'],
   [{ name: 'APIError', data: { statusCode: 401, message: 'SECRET' } }, 409, 'rechazó el acceso'],
   [{ name: 'APIError', data: { statusCode: 402, message: 'SECRET' } }, 409, 'requiere saldo'],
-  [{ name: 'APIError', data: { statusCode: 429, message: 'SECRET' } }, 502, 'límite de uso'],
+  [{ name: 'APIError', data: { statusCode: 429, message: 'SECRET' } }, 503, 'límite de uso'],
+  [{ name: 'UnknownError', data: { message: 'SECRET Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded' } }, 503, 'saturado'],
   [{ name: 'APIError', data: { statusCode: 400, isRetryable: false, message: 'SECRET' } }, 409, 'no pudo generar'],
   [{ name: 'StructuredOutputError', data: { message: 'SECRET' } }, 502, 'salida estructurada'],
 ])('clasifica un error del proveedor sin revelar su cuerpo: %j', async (error, statusCode, message) => {
@@ -86,6 +87,28 @@ it('prueba el modelo con evidencia sintética y salida estructurada', async () =
   setup()
   expect(await runtime.test(model)).toEqual({ model, ok: true })
   expect((await requests()).find(c => c.path.endsWith('/message')).body.parts).toEqual([{ type: 'text', text: JSON.stringify({ text: 'El código de esta prueba es AGENTHUB_OK.' }) }])
+})
+it('reintenta el mismo lote transitorio, informa progreso y conserva el modelo elegido', async () => {
+  const extract = vi.fn().mockRejectedValueOnce(new MemoryError(503, 'Proveedor saturado', true))
+    .mockResolvedValue({ value: { facts: [] }, usage: { model, input_tokens: 1, output_tokens: 1 } })
+  const config = { ...defaultAI, extraction: 'opencode' as const, extraction_model: model, remote_processing_enabled: true }
+  const progress = vi.fn(async () => {})
+  const ai = new MemoryAI(async () => config, new Vault(directory), fetch, { extract } as unknown as OpenCodeRuntime, undefined, undefined, [1])
+    .forJob(config, new AbortController().signal, progress)
+  await ai.extract('Extraer', { text: 'Evidencia' }, z.object({ facts: z.array(z.string()) }))
+  expect(extract).toHaveBeenCalledTimes(2)
+  expect(extract.mock.calls.every(call => call[0] === model)).toBe(true)
+  expect(progress).toHaveBeenCalledWith(expect.objectContaining({ provider_retry: 1 }))
+  expect(progress).toHaveBeenLastCalledWith({ provider_retry: null, provider_error: null, provider_retry_at: null })
+})
+it('cancelar durante el backoff impide otra llamada al proveedor', async () => {
+  const extract = vi.fn().mockRejectedValue(new MemoryError(503, 'Proveedor saturado', true))
+  const config = { ...defaultAI, extraction: 'opencode' as const, extraction_model: model, remote_processing_enabled: true }
+  const controller = new AbortController()
+  const ai = new MemoryAI(async () => config, new Vault(directory), fetch, { extract } as unknown as OpenCodeRuntime)
+    .forJob(config, controller.signal, async () => { controller.abort() })
+  await expect(ai.extract('Extraer', {}, z.object({ facts: z.array(z.string()) }))).rejects.toThrow()
+  expect(extract).toHaveBeenCalledTimes(1)
 })
 it('conserva la configuración anterior si el modelo falla la prueba antes de guardar', async () => {
   const service = new MemoryService(directory, 'http://127.0.0.1/callback')

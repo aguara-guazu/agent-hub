@@ -41,7 +41,7 @@ import * as toml from '@iarna/toml'
 export const HUB_DIRNAME = '.agenthub'
 export const MANIFEST_VERSION = 1
 
-export type RegionKind = 'json_value' | 'json_prefixed_list' | 'toml_table' | 'tree'
+export type RegionKind = 'json_value' | 'json_prefixed_list' | 'json_hooks' | 'toml_table' | 'tree'
 /** `adopt`: un enlace ajeno equivalente pasa al manifiesto sin reescribirse. */
 export type ChangeAction = 'write' | 'symlink' | 'delete' | 'adopt'
 
@@ -189,6 +189,12 @@ export function readRegion(path: string, r: ManagedRegion): unknown {
   }
 
   if (r.kind === 'json_value') return dig(parsed, r.keyPath)
+  if (r.kind === 'json_hooks') {
+    const hooks = dig(parsed, r.keyPath)
+    const mine = Object.fromEntries(Object.entries((hooks && typeof hooks === 'object' ? hooks : {}) as Record<string, unknown>)
+      .flatMap(([event, groups]) => { const own = Array.isArray(groups) ? groups.filter(isHubHook) : []; return own.length ? [[event, own]] : [] }))
+    return Object.keys(mine).length ? mine : null
+  }
 
   const raw = dig(parsed, r.keyPath)
   if (!Array.isArray(raw)) return null
@@ -600,6 +606,32 @@ function perform(change: FileChange, result: ApplyResult): void {
 // --------------------------------------------------------------------------- //
 
 export type PlanOutcome = [FileChange | null, DriftItem[]]
+
+function isHubHook(group: any): boolean {
+  return Array.isArray(group?.hooks) && group.hooks.some((hook: any) => typeof hook?.command === 'string' && hook.command.includes('--agenthub-memory-hook'))
+}
+/** Own only Agent Hub's hook groups; preserve personal hooks and detect edits to ours. */
+export function planJsonHooks(args: PlanJsonArgs): PlanOutcome {
+  const r = region('json_hooks', args.keyPath)
+  let doc: Record<string, unknown>, current: unknown
+  try { doc = loadJsonDoc(args.path); current = readRegion(args.path, r) }
+  catch (error) { return [null, [driftItem(args.path, regionLabel(r), String(error))]] }
+  const desired = args.value as Record<string, unknown[]>
+  const currentDigest = canonicalDigest(current), desiredDigest = canonicalDigest(Object.keys(desired).length ? desired : null)
+  const drift = foreignContent(args.path, r, currentDigest, desiredDigest, args.manifest.digestFor(args.path, r))
+  if (drift) return [null, [drift]]
+  if (currentDigest === desiredDigest) return [null, []]
+  const raw = dig(doc, args.keyPath)
+  const hooks = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
+  const merged: Record<string, unknown> = {}
+  for (const event of new Set([...Object.keys(hooks), ...Object.keys(desired)])) {
+    if (hooks[event] !== undefined && !Array.isArray(hooks[event])) return [null, [driftItem(args.path, event, 'La lista de hooks no es válida')]]
+    merged[event] = [...((hooks[event] ?? []) as unknown[]).filter(g => !isHubHook(g)), ...(desired[event] ?? [])]
+  }
+  setIn(doc, args.keyPath, merged)
+  return [makeChange({ home: args.home, path: args.path, action: 'write', region: r, expectedDigest: currentDigest,
+    baseDigest: fileDigest(args.path), content: dumpJson(doc), mode: 0o600, cliKind: args.cliKind ?? '', summary: 'Eventos de sesión para notas de memoria' }), []]
+}
 
 const UNSET = Symbol('unset')
 

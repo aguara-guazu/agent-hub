@@ -327,7 +327,12 @@ describe('useSetRule', () => {
     await act(async () => {
       resolvePut(jsonResponse({ detail: 'solo admin puede escribir en scope org' }, 403))
     })
-
+    // React Query batches notifications on its scheduler, after the fetch promise settles.
+    await vi.waitFor(async () => {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      expect(textOf(view.container, 'exposed')).toBe('true')
+      expect(view.container.textContent).toContain('No se pudo aplicar el cambio')
+    })
     expect(textOf(view.container, 'exposed')).toBe('true')
     expect(textOf(view.container, 'propagation')).toBe('applied_live')
     expect(view.container.textContent).toContain('No se pudo aplicar el cambio')

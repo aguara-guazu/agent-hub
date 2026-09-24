@@ -3,8 +3,9 @@ import { Link } from 'react-router-dom'
 import { MemoryFrame, PageHeading, ErrorBox, Pager, formatTime, useMemory, useMemoryMutation } from '../lib/memory'
 
 const states: Record<string, string> = { queued: 'En cola', running: 'Procesando', waiting: 'Esperando reintento', completed: 'Completado', failed: 'Falló', cancelled: 'Cancelado' }
-const stages: Record<string, string> = { identity_inference: 'Infiriendo vínculos de hablantes', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
+const stages: Record<string, string> = { identity_inference: 'Infiriendo vínculos de hablantes', project_inference: 'Buscando el proyecto de la fuente', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
 const number = (value: number) => value.toLocaleString('es-AR')
+const projectResults: Record<string, string> = { auto_assigned: 'Proyecto asignado automáticamente con confianza alta', suggested: 'Proyecto sugerido: espera tu decisión en Proyectos', no_project: 'Sin proyecto coincidente: espera tu decisión en Proyectos' }
 
 export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (id: string) => void; onCancel: (id: string) => void }) {
   const p = job.progress ?? {}, active = ['queued', 'running', 'waiting'].includes(job.state)
@@ -21,6 +22,10 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
     <p>{job.error ?? stages[p.stage] ?? 'Esperando al worker'}</p>
     {p.model && ['DeepSeek','Ollama','OpenCode'].includes(mode) && <span className="muted">Modelo: {p.model}</span>}
     {(p.identity_only || job.payload.identity_only) && <p>Resolución de identidades</p>}
+    {(p.projects_only || job.payload.projects_only) && <p>Búsqueda de proyecto</p>}
+    {p.provider_retry && job.state === 'running' && <p className="memory-inline-error">{p.provider_error} Reintento {p.provider_retry}/{p.provider_retries} a las {new Date(p.provider_retry_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}.</p>}
+    {projectResults[p.project_inference] && <p>{projectResults[p.project_inference]}</p>}
+    {p.resumed_batches > 0 && <p>Se retomó desde el lote {p.resumed_batches + 1}: los lotes ya extraídos no se repiten.</p>}
     {p.identity_batches > 0 && <p>Lotes de identidad: {p.identity_batch ?? 0}/{p.identity_batches} · {p.identity_suggestions ?? 0} vínculos sugeridos{job.state === 'running' && p.stage === 'identity_inference' ? ` · Procesando lote ${p.identity_current_batch ?? 1}` : ''}</p>}
     {p.total_batches > 0 && <p>Lotes completados: {p.batch ?? 0}/{p.total_batches}{job.state === 'running' && p.current_batch ? ` · Enviando/procesando lote ${p.current_batch}` : ''}</p>}
     {progress !== null && job.state !== 'completed' && <div className="memory-progress"><progress aria-label={`Avance de ${title}`} value={done} max={total} /><span>{progress}%</span></div>}

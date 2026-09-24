@@ -1,6 +1,7 @@
 import { check, type ImportInput } from '../contracts.js'
 import type { Connector, ConnectorContext } from './types.js'
 import { richText } from './http.js'
+import { normalizeJiraIssue, upsertJiraIssues } from '../tasks.js'
 
 export async function syncJira(connector: Connector, ctx: ConnectorContext): Promise<void> {
   const credentials = ctx.vault.read(connector.id)
@@ -15,7 +16,7 @@ export async function syncJira(connector: Connector, ctx: ConnectorContext): Pro
   do {
     ctx.signal.throwIfAborted()
     const page = await ctx.http.json(`${site.origin}/rest/api/3/search/jql`, headers, { jql, maxResults: 100,
-      fields: ['summary', 'description', 'status', 'assignee', 'reporter', 'updated', 'created', 'duedate', 'project', 'issuelinks', 'labels'], ...(next ? { nextPageToken: next } : {}) })
+      fields: ['summary', 'description', 'status', 'issuetype', 'priority', 'assignee', 'reporter', 'updated', 'created', 'duedate', 'project', 'issuelinks', 'labels'], ...(next ? { nextPageToken: next } : {}) })
     for (const issue of page.issues ?? []) {
       const fields = issue.fields ?? {}, comments: any[] = []
       let start = 0, total = 1
@@ -40,6 +41,8 @@ export async function syncJira(connector: Connector, ctx: ConnectorContext): Pro
         ...(fields.updated ? { occurred_at: new Date(fields.updated).toISOString() } : {}), fragments, participants, project_ids: connector.project_ids,
         metadata: { key: issue.key, status: fields.status?.name ?? null, assignee: fields.assignee ?? null, due_date: fields.duedate ?? null, jira_project: fields.project ?? null,
           issue_links: fields.issuelinks ?? [], labels: fields.labels ?? [] }, original: { issue, comments } }, 'connector:jira')
+      const mirror = normalizeJiraIssue(issue, site.origin)
+      if (mirror) await upsertJiraIssues(ctx.store, [mirror], 'connector:jira')
       imported++
       await ctx.progress({ imported, coverage: 'Issues que coinciden con el JQL y todos sus comentarios accesibles' })
     }

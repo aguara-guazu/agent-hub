@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/daemon",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -18,8 +18,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/gateway": "0.3.7",
-    "@agenthub/shared": "0.3.7",
+    "@agenthub/gateway": "0.4.0",
+    "@agenthub/shared": "0.4.0",
     "@iarna/toml": "2.2.5"
   }
 }

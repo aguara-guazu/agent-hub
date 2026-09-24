@@ -126,4 +126,55 @@ CREATE TABLE entity_embeddings (
   created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(entity_id,model),
   CHECK(vector_dims(embedding)=dimension)
 );
+`, String.raw`
+-- Project work tracking. Jira rows mirror the issue (external_* holds Jira's own values); pending rows are internal debt and follow-ups.
+CREATE TABLE tasks (
+  id uuid PRIMARY KEY, project_id uuid REFERENCES entities ON DELETE CASCADE,
+  kind text NOT NULL CHECK(kind IN ('jira','pending')),
+  title text NOT NULL, description text NOT NULL DEFAULT '',
+  status text NOT NULL CHECK(status IN ('todo','in_progress','blocked','done','dropped')),
+  origin text NOT NULL DEFAULT 'manual',
+  external_key text, external_status text, external_category text, external_url text, external_updated_at timestamptz,
+  issue_type text, priority text, assignee text, code_ref text,
+  source_entity_id uuid REFERENCES entities ON DELETE SET NULL,
+  created_by text NOT NULL, updated_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), closed_at timestamptz,
+  CHECK(kind <> 'jira' OR external_key IS NOT NULL)
+);
+CREATE UNIQUE INDEX tasks_jira_key ON tasks(external_key) WHERE kind='jira';
+CREATE INDEX tasks_project ON tasks(project_id,status,updated_at DESC);
+CREATE TABLE task_evidence (
+  task_id uuid REFERENCES tasks ON DELETE CASCADE, fragment_id uuid REFERENCES fragments ON DELETE CASCADE,
+  PRIMARY KEY(task_id,fragment_id)
+);
+CREATE TABLE task_events (
+  id bigserial PRIMARY KEY, task_id uuid NOT NULL REFERENCES tasks ON DELETE CASCADE,
+  action text NOT NULL, actor text NOT NULL, status_before text, status_after text,
+  detail jsonb NOT NULL DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX task_events_task ON task_events(task_id,created_at);
+CREATE INDEX task_events_created ON task_events(created_at);
+-- One row per gateway process (a CLI session). last_seen_at advances with every memory call made through it.
+CREATE TABLE agent_sessions (
+  id text PRIMARY KEY, agent_id text NOT NULL, agent_label text NOT NULL, cli_kind text NOT NULL DEFAULT '',
+  cwd text, project_id uuid REFERENCES entities ON DELETE SET NULL,
+  started_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz NOT NULL DEFAULT now(), ended_at timestamptz
+);
+CREATE TABLE agent_notes (
+  id uuid PRIMARY KEY, session_id text REFERENCES agent_sessions ON DELETE SET NULL,
+  agent_id text NOT NULL, agent_label text NOT NULL, cli_kind text NOT NULL DEFAULT '',
+  project_id uuid REFERENCES entities ON DELETE CASCADE, task_id uuid REFERENCES tasks ON DELETE SET NULL,
+  text text NOT NULL CHECK(char_length(text) BETWEEN 1 AND 600),
+  state text NOT NULL CHECK(state IN ('working','done','blocked')), finish_reason text,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz
+);
+CREATE INDEX agent_notes_project ON agent_notes(project_id,updated_at DESC);
+CREATE INDEX agent_notes_working ON agent_notes(session_id) WHERE state='working';
+`, String.raw`
+ALTER TABLE tasks ADD COLUMN external_site text NOT NULL DEFAULT '';
+UPDATE tasks t SET external_site=COALESCE(NULLIF(p.data->>'jira_site_url',''),
+  CASE WHEN t.external_url LIKE 'https://%.atlassian.net/%' THEN split_part(t.external_url,'/',1)||'//'||split_part(t.external_url,'/',3) END,'')
+  FROM entities p WHERE t.project_id=p.id AND t.kind='jira';
+DROP INDEX tasks_jira_key;
+CREATE UNIQUE INDEX tasks_jira_key ON tasks(external_site,external_key) WHERE kind='jira';
 `]

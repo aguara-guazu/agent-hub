@@ -6,6 +6,8 @@ import { MemoryFrame, PageHeading, Field, ProjectSelect, Pager, ErrorBox, EmptyM
 import { EntityForm, ImportForm } from './MemoryForms'
 import { MemoryCollection } from './MemoryCollection'
 import { IdentityProposals, IdentityProposalCard, DuplicateProposals, DuplicateProposalCard } from './MemoryIdentity'
+import { ProjectTasks } from './MemoryTasks'
+import { ProjectSuggestions, InferProjectsButton } from './MemoryProjectSuggestions'
 
 /** Keep list filters and project tabs in the history entry so Back restores the same context. */
 function useMemoryView() {
@@ -31,7 +33,8 @@ function Projects() {
   const projects = useMemory<Page<MemoryEntity>>('list_entities', { kind: 'project', query, limit: 24, offset })
   return <><PageHeading title="Proyectos" description="El contexto de cada cliente, conectado y siempre a mano."><button className="btn" onClick={() => setForm('company')}>Nueva empresa</button><button className="btn btn-primary" onClick={() => setForm('project')}>Nuevo proyecto</button></PageHeading>
     <div className="memory-stats">{[['Proyectos', status.data?.counts.project], ['Reuniones', status.data?.counts.meeting], ['Documentos', status.data?.counts.document], ['Personas', status.data?.counts.person]].map(([label, count]) => <div key={label} className="card"><strong>{count ?? 0}</strong><span>{label}</span></div>)}</div>
-    <div className="memory-toolbar"><input className="input" aria-label="Buscar proyectos" placeholder="Buscar un proyecto…" value={query} onChange={e => setQuery(e.target.value)} /><Link to="/memory/sources" className="btn">Conectar fuentes</Link></div>
+    <ProjectSuggestions />
+    <div className="memory-toolbar"><input className="input" aria-label="Buscar proyectos" placeholder="Buscar un proyecto…" value={query} onChange={e => setQuery(e.target.value)} /><Link to="/memory/sources" className="btn">Conectar fuentes</Link><InferProjectsButton /></div>
     <ErrorBox error={projects.error} retry={projects.refetch} />
     {projects.isPending ? <p role="status">Cargando proyectos…</p> : projects.data?.items.length ? <div className="memory-project-grid">{projects.data.items.map(project => <Link key={project.id} className="memory-project-card card" to={entityPath(project)}>
       <div className="spread"><span className="memory-project-icon">P</span><span className="badge badge-accent">{project.data.status ?? 'discovery'}</span></div><h2>{project.title}</h2><p>{project.data.description || 'Agregá fuentes para comenzar a construir el contexto de este proyecto.'}</p><div className="memory-card-footer">Actualizado {formatTime(project.updated_at)} <span>→</span></div>
@@ -67,7 +70,7 @@ function EntityPage({ entityId }: { entityId: string }) {
   const remove = useMemoryMutation('delete_entity', () => navigate('/memory'))
   const reprocess = useMemoryMutation('reprocess'), update = useMemoryMutation('update_entity'), reviewIdentity = useMemoryMutation('review_identity'), reviewDuplicate = useMemoryMutation('review_duplicate')
   const entity: MemoryEntity | undefined = detail.data?.entity
-  const related = useMemory<Page<MemoryEntity>>('list_entities', { project_id: entityId, ...(tab !== 'all' ? { kind: tab } : {}), limit: 100, offset: relatedOffset }, entity?.kind === 'project')
+  const related = useMemory<Page<MemoryEntity>>('list_entities', { project_id: entityId, ...(tab !== 'all' ? { kind: tab } : {}), limit: 100, offset: relatedOffset }, entity?.kind === 'project' && tab !== 'tasks')
   if (detail.isPending) return <p role="status">Abriendo contexto…</p>
   if (detail.error || !entity) return <ErrorBox error={detail.error} retry={detail.refetch} />
   const isProject = entity.kind === 'project'
@@ -77,7 +80,8 @@ function EntityPage({ entityId }: { entityId: string }) {
       {isProject ? <button className="btn btn-primary" onClick={() => setImporting(true)}>Importar fuente</button> : detail.data.sources.length > 0 && <button className="btn" disabled={reprocess.isPending} onClick={() => reprocess.mutate({ entity_id: entityId, force: true })}>Reprocesar</button>}
     </PageHeading>
     <div className="memory-meta"><span className="badge">{entityLabels[entity.kind]}</span>{entity.data.status && <span className="badge badge-accent">{entity.data.status}</span>}<span>{formatTime(entity.data.occurred_at ?? entity.updated_at)}</span>
-      {entity.data.timezone && <span>{entity.data.timezone}</span>}{entity.data.stale && <span className="badge badge-stale">La fuente cambió</span>}</div>
+      {entity.data.timezone && <span>{entity.data.timezone}</span>}{entity.data.stale && <span className="badge badge-stale">La fuente cambió</span>}
+      {isProject && !!entity.data.folders?.length && <span title="Los agentes que trabajan en estas carpetas buscan primero en este proyecto">Carpetas: {entity.data.folders.map((f: string) => <code key={f}>{f}</code>)}</span>}</div>
     {entity.kind === 'fact' && !['identity_match', 'person_duplicate'].includes(entity.data.category) && <div className="card memory-fact"><span className="badge">{entity.data.category ?? 'Nota'}</span><p>{entity.data.text}</p><div className="row"><span className="muted">{entity.data.review_state === 'accepted' ? 'Revisado' : 'Propuesta para revisar'}</span>
       <button className="btn btn-sm" onClick={() => update.mutate({ id: entityId, data: { review_state: 'accepted', stale: false } })}>Marcar revisado</button><button className="btn btn-sm" onClick={() => update.mutate({ id: entityId, data: { review_state: 'rejected', stale: false } })}>Descartar propuesta</button></div></div>}
     {entity.kind === 'fact' && entity.data.category === 'identity_match' && <><IdentityProposalCard proposal={entity} busy={reviewIdentity.isPending} onReview={(id, decision) => reviewIdentity.mutate({id,decision})} /><ErrorBox error={reviewIdentity.error} /></>}
@@ -87,8 +91,8 @@ function EntityPage({ entityId }: { entityId: string }) {
       {!!entity.data.email_candidates?.length && !entity.data.email && <p>Correos disponibles para verificar: {entity.data.email_candidates.join(', ')}</p>}
       {!!entity.data.merged_from?.length && <p>Incluye {entity.data.merged_from.length} {entity.data.merged_from.length === 1 ? 'identidad unificada' : 'identidades unificadas'}. El historial de cada unificación está en la información adicional.</p>}
       {entity.data.merged_into ? <Link className="btn btn-primary btn-sm" to={`/memory/entities/${entity.data.merged_into}`}>Ver identidad vigente</Link> : <><Link className="btn btn-sm" to={`/memory/search?person=${entityId}`}>Ver intervenciones</Link><MergePerson person={entity} /></>}</div>}
-    {isProject && <><div className="memory-project-tabs">{[['all','Línea de tiempo'],['meeting','Reuniones'],['document','Documentos'],['issue','Tareas'],['fact','Decisiones y hallazgos'],['collection','Colecciones']].map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key!)}>{label}</button>)}<button onClick={() => setForm('collection')}>＋ Colección</button></div>
-      <p className="memory-section-note">Estado según las fuentes importadas. Las fechas corresponden al contenido cuando están disponibles.</p><ErrorBox error={related.error} /><div className="card"><EntityRows items={related.data?.items ?? []} /></div>{related.data && <Pager total={related.data.total} offset={relatedOffset} limit={100} setOffset={setRelatedOffset} />}</>}
+    {isProject && <><div className="memory-project-tabs">{[['all','Línea de tiempo'],['meeting','Reuniones'],['document','Documentos'],['tasks','Tareas'],['fact','Decisiones y hallazgos'],['collection','Colecciones']].map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key!)}>{label}</button>)}<button onClick={() => setForm('collection')}>＋ Colección</button></div>
+      {tab === 'tasks' ? <ProjectTasks project={entity} /> : <><p className="memory-section-note">Estado según las fuentes importadas. Las fechas corresponden al contenido cuando están disponibles.</p><ErrorBox error={related.error} /><div className="card"><EntityRows items={related.data?.items ?? []} /></div>{related.data && <Pager total={related.data.total} offset={relatedOffset} limit={100} setOffset={setRelatedOffset} />}</>}</>}
     {entity.kind === 'collection' && <MemoryCollection entity={entity} />}
     {['meeting','document','person'].includes(entity.kind) && <IdentityProposals entityId={entityId} canInfer={entity.kind !== 'person'} />}
     {entity.kind === 'person' && !entity.data.merged_into && <DuplicateProposals entityId={entityId} />}
@@ -141,13 +145,15 @@ function EditEntity({ entity, onClose }: { entity: MemoryEntity; onClose: () => 
   const [description, setDescription] = useState(entity.data.description ?? ''), [email, setEmail] = useState(entity.data.email ?? '')
   const [text, setText] = useState(entity.data.text ?? ''), [status, setStatus] = useState(entity.data.status ?? 'discovery')
   const [remote, setRemote] = useState(entity.data.remote_processing !== false), [identity, setIdentity] = useState(entity.data.identity_status ?? 'unresolved')
+  const [folders, setFolders] = useState<string>((entity.data.folders ?? []).join('\n'))
   const update = useMemoryMutation('update_entity', onClose)
   return <Modal open title="Editar información" onClose={onClose} busy={update.isPending}><form className="memory-form" onSubmit={e => { e.preventDefault(); try { update.mutate({ id: entity.id, title, data: { ...JSON.parse(data), description, remote_processing: remote,
     ...(entity.kind === 'person' ? { email: email || null, identity_status: identity, identity_verified: identity === 'verified' } : {}),
-    ...(entity.kind === 'project' ? { status } : {}), ...(['note','fact'].includes(entity.kind) && text ? { text } : {}) }, expected_updated_at: expectedUpdatedAt }); setError(null) } catch { setError(new Error('Los campos adicionales deben ser JSON válido')) } }}>
+    ...(entity.kind === 'project' ? { status, folders: folders.split('\n').map(f => f.trim()).filter(Boolean) } : {}), ...(['note','fact'].includes(entity.kind) && text ? { text } : {}) }, expected_updated_at: expectedUpdatedAt }); setError(null) } catch { setError(new Error('Los campos adicionales deben ser JSON válido')) } }}>
     <Field label="Nombre"><input value={title} onChange={e => setTitle(e.target.value)} required /></Field>
     <Field label="Descripción"><textarea rows={3} value={description} onChange={e => setDescription(e.target.value)} /></Field>
     {entity.kind === 'project' && <Field label="Etapa"><select value={status} onChange={e => setStatus(e.target.value)}>{['discovery','presales','poc','delivery','support','completed','paused'].map(s => <option key={s}>{s}</option>)}</select></Field>}
+    {entity.kind === 'project' && <Field label="Carpetas de trabajo (una ruta absoluta por línea)"><textarea rows={3} value={folders} onChange={e => setFolders(e.target.value)} placeholder="/Users/nombre/proyectos/cliente-api" /><span className="field-hint">Un agente (Claude Code, Codex, etc.) que trabaja dentro de estas carpetas busca primero en este proyecto y deja sus notas aquí.</span></Field>}
     {entity.kind === 'person' && <><Field label="Email"><input type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field><Field label="Identidad"><select value={identity} onChange={e => setIdentity(e.target.value)}><option value="unresolved">Por verificar</option><option value="verified">Confirmada por mí</option>{identity === 'merged' && <option value="merged">Unificada</option>}</select></Field></>}
     {['note','fact'].includes(entity.kind) && <Field label="Contenido"><textarea rows={5} value={text} onChange={e => setText(e.target.value)} /></Field>}
     {['project','meeting','document','message','issue','note'].includes(entity.kind) && <label className="check"><input type="checkbox" checked={remote} onChange={e => setRemote(e.target.checked)} />Permitir extracción con proveedores remotos si está habilitada en Ajustes</label>}

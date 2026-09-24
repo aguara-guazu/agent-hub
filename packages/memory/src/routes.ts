@@ -8,9 +8,10 @@ import { MemoryService } from './service.js'
 import { memoryTools } from './operations.js'
 import { constantEqual } from './config.js'
 import { check, id, MemoryError, parse } from './contracts.js'
-import { restoreMemory, readBackup } from './backup.js'
+import { restoreMemory, streamBackup } from './backup.js'
 import { globalSearch } from './global-search.js'
 import { WorkerSupervisor } from './supervisor.js'
+import { agentFromMeta } from './agents.js'
 
 export interface MemoryRouteOptions {
   directory: string; baseUrl: string;
@@ -82,7 +83,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   })
   app.get('/api/memory/backups/:id', { preHandler: auth }, async (request, reply) => {
     const backupId = parse(id, (request.params as { id: string }).id)
-    const data = await readBackup((await service.get()).store, backupId)
+    const data = streamBackup((await service.get()).store, backupId)
     return reply.header('Content-Type', 'application/json').header('Content-Disposition', `attachment; filename="agenthub-memory-${backupId}.json"`).send(data)
   })
   app.post('/api/memory/restore', { preHandler: auth, bodyLimit: 128_000_000 }, async request => restoreMemory((await service.get()).store, request.body))
@@ -96,7 +97,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: memoryTools.map(tool => ({ ...tool, inputSchema: tool.inputSchema as { type: 'object' } })) }))
     server.setRequestHandler(CallToolRequestSchema, async request => {
       try {
-        const data = await (await service.get()).operations.call(request.params.name, request.params.arguments, 'mcp')
+        const data = await (await service.get()).operations.call(request.params.name, request.params.arguments, 'mcp', agentFromMeta(request.params._meta))
         return { content: [{ type: 'text', text: JSON.stringify(data) }] }
       } catch (error) { return { isError: true, content: [{ type: 'text', text: error instanceof MemoryError ? error.message : 'La operación de memoria no pudo completarse' }] } }
     })

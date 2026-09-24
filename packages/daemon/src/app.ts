@@ -12,6 +12,8 @@ import { accessSync, constants } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 
 import type { CliKind } from '@agenthub/shared'
+import { buildHeadlessGateway } from '@agenthub/gateway'
+import { planMemoryHooks } from './adapters/memory-hooks.js'
 
 import {
   adapterFor,
@@ -166,6 +168,7 @@ function agentFrom(raw: Record<string, unknown>): AgentInstance {
 
 /** Aplicación del daemon: reúne estado, sincronización y adaptadores. */
 export class DaemonApp {
+  private readonly deliveryRuns = new Map<string, Promise<void>>()
   readonly config: DaemonConfig
   readonly state: DaemonState
   private readonly fetcher: Fetcher | undefined
@@ -504,10 +507,25 @@ export class DaemonApp {
     const [changes, drift] = adapter.planDetailed(snapshot, endpoint, this.home)
 
     if (!opts.apply) {
-      return { ...base, changes, drift, applied: null, skipped: '' }
+      const [hooks, hookDrift] = planMemoryHooks(snapshot, endpoint, this.home)
+      return { ...base, changes: [...changes, ...hooks], drift: [...drift, ...hookDrift], applied: null, skipped: '' }
     }
 
     const applied = applyChanges(changes)
+    // Plan after MCP/deny edits: Claude and Gemini keep hooks in the same settings file.
+    const [hooks, hookDrift] = planMemoryHooks(snapshot, endpoint, this.home)
+    const hookResult = applyChanges(hooks)
+    changes.push(...hooks); drift.push(...hookDrift)
+    applied.written.push(...hookResult.written); applied.removed.push(...hookResult.removed)
+    applied.drift.push(...hookResult.drift); applied.skipped.push(...hookResult.skipped)
+    Object.assign(applied.backups, hookResult.backups)
+    if (!this.deliveryRuns.has(agent.id)) {
+      const delivery = buildHeadlessGateway({ agentInstanceId: agent.id, snapshotPath: this.state.snapshotPath(agent.id), oauthDir: join(this.config.stateDir, 'oauth'), detectContainers: false })
+      const running = delivery.gateway.flushMemory().catch(() => undefined).finally(async () => {
+        delivery.store.stopWatching(); await delivery.pool.close(); this.deliveryRuns.delete(agent.id)
+      })
+      this.deliveryRuns.set(agent.id, running)
+    }
     this.state.recordManaged({
       agentId: agent.id,
       cliKind: agent.cliKind,

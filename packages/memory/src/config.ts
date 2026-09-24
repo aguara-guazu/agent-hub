@@ -13,10 +13,13 @@ export interface AIConfig {
   remote_processing_enabled: boolean
   /** High-confidence identity matches and duplicate verdicts are applied without waiting for review. */
   identity_auto_merge: boolean
+  /** A source without project is linked to the project the model names with high confidence; anything else becomes a suggestion. */
+  project_auto_assign: boolean
 }
 export const defaultAI: AIConfig = {
   extraction: 'disabled', extraction_model: 'deepseek-flash', embeddings_enabled: false,
   embedding_model: 'nomic-embed-text', ollama_url: 'http://127.0.0.1:11434', remote_processing_enabled: false, identity_auto_merge: true,
+  project_auto_assign: true,
 }
 
 /** OpenCode can route any model to a remote endpoint; keep source/project exclusions conservative. */

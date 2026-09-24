@@ -118,6 +118,7 @@ describe('conectores con respuestas representativas de las APIs', () => {
       const index = Number(url.searchParams.get('startAt'))
       return { total: 2, comments: [{ id: String(index), author: { accountId: 'user', displayName: 'Ana' }, body: { type: 'text', text: `Comentario ${index}` } }] }
     })
+    f.ctx.store.db.transaction = async work => work(f.ctx.store.db)
     await syncJira(f.connector, f.ctx)
     expect(f.imported[0].fragments).toHaveLength(3)
     expect(f.imported[0].metadata.status).toBe('En curso')

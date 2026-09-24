@@ -67,6 +67,8 @@ export type ImportInput = z.infer<typeof importInput>
 export const searchInput = z.object({
   query: z.string().trim().max(2000).default(''),
   project_id: id.optional(), person_id: id.optional(),
+  /** Only fragments that belong to no project, for material not yet assigned (loose meetings, general notes). */
+  unassigned: z.boolean().default(false),
   kind: kindSchema.optional(), provider: z.string().max(30).optional(),
   from: instant.optional(), to: instant.optional(),
   mode: z.enum(['hybrid', 'text', 'semantic']).default('hybrid'),
@@ -102,8 +104,9 @@ export interface Fragment {
   speaker_id: string | null; start_time: string | null; end_time: string | null;
   offset_ms: number | null; metadata: Record<string, any>;
 }
+/** `transient` marks provider failures (overload, 5xx, rate limit, timeouts) that are retried with backoff instead of failing the job. */
 export class MemoryError extends Error {
-  constructor(readonly statusCode: number, message: string) { super(message); this.name = 'MemoryError' }
+  constructor(readonly statusCode: number, message: string, readonly transient = false) { super(message); this.name = 'MemoryError' }
 }
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input)

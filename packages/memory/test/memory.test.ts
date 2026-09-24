@@ -405,6 +405,7 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
 
   it('expone progreso antes de esperar al modelo y asocia el trabajo a la fuente y sus resultados', async () => {
     const imported = await store.ingest({ kind: 'meeting', title: 'Prueba observable', external_id: 'progress', text: 'Ana: Entrego el martes.' })
+    await store.update(imported.entity_id, { data: { project_decision: 'none' } })
     const progress: any[] = []
     const extractor = { extract: async (_instructions: string, content: any) => {
       expect(progress.at(-1)).toMatchObject({ stage: 'extraction', current_batch: 1 })
@@ -434,6 +435,7 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
 
   it('descarta hechos con evidencia inventada o formato inválido sin perder el resto del lote', async () => {
     const source = await store.ingest({ kind: 'document', title: 'Fuente', external_id: 'facts', text: 'El cliente solicita una demo.' })
+    await store.update(source.entity_id, { data: { project_decision: 'none' } })
     const fragment = (await store.fragments(source.entity_id)).items[0]!
     const config = { ...defaultAI, extraction: 'ollama' as const, extraction_model: 'fixture' }
     const model = new MemoryAI(async () => config, vault, async () => new Response(JSON.stringify({ message: { content: JSON.stringify({ facts: [
@@ -477,7 +479,9 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     const extract = vi.fn(async (model: string, _system: string, content: any, schema: any, signal: AbortSignal) => {
       expect(signal.aborted).toBe(false)
       const evidence_ids = [content.fragments[0].id]
-      const value = schema.properties.records ? { records: [{ values: { text: 'Solicitan una demo.' }, evidence_ids }] }
+      const value = schema.properties.verdicts ? { verdicts: [{ project_ref: 'none', confidence: 'low', reason: 'No hay proyecto existente.', evidence_ids,
+        suggested_title: 'Demo', suggested_description: '' }] }
+        : schema.properties.records ? { records: [{ values: { text: 'Solicitan una demo.' }, evidence_ids }] }
         : { facts: [{ category: 'finding', text: 'Solicitan una demo.', evidence_ids, project_ids: [] }] }
       return { value, usage: { model, input_tokens: 10, output_tokens: 5 } }
     })
@@ -490,14 +494,15 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     const jobs = await operations.call('list_jobs', { kind: 'process' })
     expect(jobs.items[0]).toMatchObject({ state: 'completed', progress: { provider: 'opencode', model: 'fixture/chat', extracted: 1 } })
     const facts = await store.list({ kind: 'fact' })
-    expect(facts.items[0]!.data).toMatchObject({ category: 'finding', review_state: 'pending', model: 'fixture/chat' })
-    expect((await store.detail(facts.items[0]!.id)).evidence[0]!.entity_id).toBe(source.entity_id)
+    const finding = facts.items.find(f => f.data.category === 'finding')!
+    expect(finding.data).toMatchObject({ category: 'finding', review_state: 'pending', model: 'fixture/chat' })
+    expect((await store.detail(finding.id)).evidence[0]!.entity_id).toBe(source.entity_id)
     expect((await store.records(collection.id)).total).toBe(1)
-    expect(extract).toHaveBeenCalledTimes(2)
+    expect(extract).toHaveBeenCalledTimes(3)
     await store.ingest(input)
     await runner.once(new AbortController().signal) // pending people deduplication
-    expect(extract).toHaveBeenCalledTimes(2)
-    expect((await store.list({ kind: 'fact' })).total).toBe(1)
+    expect(extract).toHaveBeenCalledTimes(3)
+    expect((await store.list({ kind: 'fact' })).items.filter(f => f.data.category === 'finding')).toHaveLength(1)
   })
 
   it.skipIf(!process.env.AGENTHUB_OPENCODE_LIVE_MODEL)('procesa una reunión y una regla con un modelo real de OpenCode en segundo plano', async () => {
@@ -525,7 +530,8 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     const config = { ...defaultAI, extraction: 'opencode' as const, extraction_model: 'fixture/chat', remote_processing_enabled: true }
     const extract = vi.fn().mockRejectedValue(new MemoryError(status, 'Error de modelo verificado'))
     const model = new MemoryAI(async () => config, vault, fetch, { extract } as unknown as OpenCodeRuntime)
-    await store.ingest({ kind: 'meeting', external_id: 'opencode-error', title: 'Prueba', text: 'Una decisión explícita.' })
+    const source = await store.ingest({ kind: 'meeting', external_id: 'opencode-error', title: 'Prueba', text: 'Una decisión explícita.' })
+    await store.update(source.entity_id, { data: { project_decision: 'none' } })
     const runner = new JobRunner(store, model, vault, new GoogleAuth(vault, 'http://127.0.0.1/callback'), async () => config)
     await runner.once(new AbortController().signal)
     expect((await operations.call('list_jobs', { kind: 'process' })).items[0]).toMatchObject({ state: status === 409 ? 'failed' : 'waiting', attempts: 1 })

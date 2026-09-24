@@ -21,6 +21,8 @@ import { DiskPolicyStore, SnapshotView } from './policy.js'
 import { ConnectionPool } from './runtime.js'
 import { OAuthStore } from './oauth.js'
 import { GatewayServer, type ToolCallReporter } from './server.js'
+import { dirname, join } from 'node:path'
+import { MemoryOutbox, integrationDirectory } from './memory-outbox.js'
 
 export interface HeadlessOptions {
   agentInstanceId: string
@@ -103,6 +105,7 @@ export function buildHeadlessGateway(options: HeadlessOptions): { gateway: Gatew
     }).catch(() => undefined)
   } : undefined
   const gateway = new GatewayServer(options.agentInstanceId, store, pool, {
+    outbox: new MemoryOutbox(integrationDirectory(join(dirname(options.snapshotPath), '..'), options.agentInstanceId)),
     ...(reporter ? { reporter } : {}),
     ...(refreshPolicy ? { refreshPolicy } : {}),
     ...(onListed ? { onListed } : {}),

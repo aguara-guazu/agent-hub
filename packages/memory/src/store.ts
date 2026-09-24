@@ -39,29 +39,58 @@ async function attachProjects(sql: Sql, entityId: string, projects: string[]) {
     await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'project') ON CONFLICT(from_id,to_id,type) DO NOTHING", [randomUUID(), entityId, project])
   }
 }
+export const jiraProjectKey = z.string().regex(/^[A-Z][A-Z0-9_]{0,19}$/, 'La clave de Jira usa mayúsculas, números o _, por ejemplo POC')
+export const workFolder = z.string().trim().min(2).max(1000).refine(v => v.startsWith('/') || /^[A-Za-z]:[\\/]/.test(v), 'Cada carpeta debe ser una ruta absoluta')
 function validateData(data: Record<string, any>) {
   if (data.occurred_at != null) parse(instant, data.occurred_at)
   if (data.email != null && data.email !== '') parse(z.email(), data.email)
   if (data.remote_processing !== undefined) parse(z.boolean(), data.remote_processing)
+  if (data.jira_project_key != null && data.jira_project_key !== '') data.jira_project_key = parse(jiraProjectKey, String(data.jira_project_key).trim().toUpperCase())
+  if (data.jira_site_url != null && data.jira_site_url !== '') {
+    const url = new URL(parse(z.url(), data.jira_site_url))
+    check(url.protocol === 'https:' && url.hostname.endsWith('.atlassian.net') && !url.username && !url.password, 'Se requiere un sitio de Jira Cloud (https://empresa.atlassian.net)')
+    data.jira_site_url = url.origin
+  }
+  if (data.folders != null) data.folders = [...new Set(parse(z.array(workFolder).max(20), data.folders).map(f => f.replace(/[\\/]+$/, '') || '/'))]
+}
+
+async function uniqueJiraKey(sql: Sql, projectId: string | null, key: unknown, site: unknown) {
+  if (!key) return
+  await sql.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`jira-project:${key}`])
+  const other = (await sql.query(`SELECT title FROM entities WHERE kind='project' AND data->>'jira_project_key'=$1 AND ($2::uuid IS NULL OR id<>$2)
+    AND ($3::text IS NULL OR NULLIF(data->>'jira_site_url','') IS NULL OR data->>'jira_site_url'=$3)`, [key, projectId, site || null]))[0]
+  check(!other, `La clave de Jira ${key} ya está asignada al proyecto «${other?.title}»`, 409)
+}
+const PROPOSAL_CATEGORIES = ['identity_match', 'person_duplicate', 'project_match']
+/** Facts extracted from a source follow the source into its project; the link records where it came from so unlinking the source removes it. */
+export async function inheritFactProjects(sql: Sql, sourceEntityId: string, projectId: string) {
+  await sql.query(`INSERT INTO links(id,from_id,to_id,type,data) SELECT gen_random_uuid(),d.from_id,$2,'project',jsonb_build_object('inherited_from',$1::text)
+    FROM links d JOIN entities fact ON fact.id=d.from_id AND fact.kind='fact' AND NOT (COALESCE(fact.data->>'category','') = ANY($3::text[]))
+    WHERE d.to_id=$1::uuid AND d.type='derived_from'
+      AND EXISTS(SELECT 1 FROM evidence ev JOIN fragment_projects fp ON fp.fragment_id=ev.fragment_id
+        WHERE ev.entity_id=fact.id AND fp.project_id=$2::uuid)
+    ON CONFLICT(from_id,to_id,type) DO NOTHING`, [sourceEntityId, projectId, PROPOSAL_CATEGORIES])
 }
 
 export class MemoryStore {
   constructor(readonly db: MemoryDatabase, readonly directory: string) {}
 
-  async create(raw: unknown, actor = 'user'): Promise<Entity> {
+  async create(raw: unknown, actor = 'user', transaction?: Sql): Promise<Entity> {
     const input = parse(entityInput, raw)
-    return this.db.transaction(async sql => {
+    const run = async (sql: Sql) => {
       const data = { ...input.data }
       validateData(data)
       if (input.kind === 'collection') { data.fields = parse(fieldsSchema, data.fields ?? []); data.schema_version = 1 }
       if (input.kind === 'project' && data.company_id) await requireEntity(sql, String(data.company_id), 'company')
+      if (input.kind === 'project') await uniqueJiraKey(sql, null, data.jira_project_key, data.jira_site_url)
       const row = (await sql.query<Entity>('INSERT INTO entities(id,kind,title,data) VALUES($1,$2,$3,$4) RETURNING *',
         [randomUUID(), input.kind, input.title, JSON.stringify(data)]))[0]!
       await attachProjects(sql, row.id, input.project_ids)
       if (input.kind === 'project' && data.company_id) await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'company')", [randomUUID(), row.id, data.company_id])
       await audit(sql, row.id, 'created', actor, null, row)
       return row
-    })
+    }
+    return transaction ? run(transaction) : this.db.transaction(run)
   }
 
   async update(entityId: string, raw: unknown, actor = 'user'): Promise<Entity> {
@@ -98,6 +127,7 @@ export class MemoryStore {
         data.schema_version = Number(old.data.schema_version ?? 1) + (hash(fields) === hash(existing) ? 0 : 1)
       }
       if (old.kind === 'project' && data.company_id) await requireEntity(sql, String(data.company_id), 'company')
+      if (old.kind === 'project') await uniqueJiraKey(sql, entityId, data.jira_project_key, data.jira_site_url)
       if (input.title) data.manual_title = true
       if (old.kind === 'person' && input.data && 'email' in input.data) {
         data.manual_email = true
@@ -120,14 +150,17 @@ export class MemoryStore {
     })
   }
 
-  async list(input: { kind?: EntityKind; project_id?: string; query?: string; limit?: number; offset?: number } = {}) {
+  /** `unassigned` keeps sources, notes and facts that belong to no project; projects, companies, people and collections are excluded from that scope. */
+  async list(input: { kind?: EntityKind; project_id?: string; query?: string; unassigned?: boolean; limit?: number; offset?: number } = {}) {
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200), offset = Math.max(input.offset ?? 0, 0)
     if (input.project_id) await requireEntity(this.db, input.project_id, 'project')
-    const params = [input.kind ?? null, input.project_id ?? null, input.query ?? '', limit, offset]
+    const params = [input.kind ?? null, input.project_id ?? null, input.query ?? '', Boolean(input.unassigned), limit, offset]
     const where = `($1::text IS NULL OR e.kind=$1) AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='project'))
-      AND ($3::text='' OR e.title ILIKE '%' || $3 || '%')`
-    const rows = await this.db.query<Entity>(`SELECT e.* FROM entities e WHERE ${where} ORDER BY COALESCE(e.data->>'occurred_at',e.created_at::text) DESC,e.id LIMIT $4 OFFSET $5`, params)
-    const count = (await this.db.query(`SELECT count(*)::int AS total FROM entities e WHERE ${where}`, params.slice(0, 3)))[0]!
+      AND ($3::text='' OR e.title ILIKE '%' || $3 || '%')
+      AND (NOT $4::boolean OR (e.kind IN ('meeting','document','message','issue','note','fact','event')
+        AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project')))`
+    const rows = await this.db.query<Entity>(`SELECT e.* FROM entities e WHERE ${where} ORDER BY COALESCE(e.data->>'occurred_at',e.created_at::text) DESC,e.id LIMIT $5 OFFSET $6`, params)
+    const count = (await this.db.query(`SELECT count(*)::int AS total FROM entities e WHERE ${where}`, params.slice(0, 4)))[0]!
     return { items: rows, total: count.total as number, limit, offset }
   }
 
@@ -142,9 +175,9 @@ export class MemoryStore {
     return { entity, links, sources, evidence, changes }
   }
 
-  async link(raw: unknown, actor = 'user') {
+  async link(raw: unknown, actor = 'user', transaction?: Sql) {
     const input = parse(linkInput, raw)
-    return this.db.transaction(async sql => {
+    const run = async (sql: Sql) => {
       await requireEntity(sql, input.from_id); await requireEntity(sql, input.to_id)
       if (input.type === 'project') await requireEntity(sql, input.to_id, 'project')
       await validateEvidence(sql, input.evidence_ids)
@@ -152,21 +185,30 @@ export class MemoryStore {
         [randomUUID(), input.from_id, input.to_id, input.type, JSON.stringify(input.data)]))[0]!
       for (const fragment of input.evidence_ids) await sql.query('INSERT INTO link_evidence VALUES($1,$2) ON CONFLICT DO NOTHING', [row.id, fragment])
       // A document-level assignment includes previously unassigned fragments only. Explicit segment assignments stay intact.
-      if (input.type === 'project') await sql.query(`INSERT INTO fragment_projects(fragment_id,project_id)
-        SELECT f.id,$2 FROM fragments f JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id
-        WHERE s.entity_id=$1 AND NOT COALESCE((f.metadata->>'explicit_projects')::boolean,false)
-        ON CONFLICT DO NOTHING`, [input.from_id, input.to_id])
+      if (input.type === 'project') {
+        await sql.query(`INSERT INTO fragment_projects(fragment_id,project_id)
+          SELECT f.id,$2 FROM fragments f JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id
+          WHERE s.entity_id=$1 AND NOT COALESCE((f.metadata->>'explicit_projects')::boolean,false)
+          ON CONFLICT DO NOTHING`, [input.from_id, input.to_id])
+        await inheritFactProjects(sql, input.from_id, input.to_id)
+        await sql.query(`UPDATE entities SET data=data || '{"review_state":"superseded"}'::jsonb,updated_at=now()
+          WHERE kind='fact' AND data->>'category'='project_match' AND data->>'source_entity_id'=$1::text AND data->>'review_state'='pending'`, [input.from_id])
+      }
       await audit(sql, input.from_id, 'linked', actor, null, input)
       return row
-    })
+    }
+    return transaction ? run(transaction) : this.db.transaction(run)
   }
 
   async unlink(linkId: string, actor = 'user') {
     return this.db.transaction(async sql => {
       const row = (await sql.query('DELETE FROM links WHERE id=$1 RETURNING *', [parse(id, linkId)]))[0]
       check(row, 'Relación inexistente', 404)
-      if (row.type === 'project') await sql.query(`DELETE FROM fragment_projects fp USING fragments f,versions v,sources s
-        WHERE fp.fragment_id=f.id AND f.version_id=v.id AND v.source_id=s.id AND s.entity_id=$1 AND fp.project_id=$2`, [row.from_id, row.to_id])
+      if (row.type === 'project') {
+        await sql.query(`DELETE FROM fragment_projects fp USING fragments f,versions v,sources s
+          WHERE fp.fragment_id=f.id AND f.version_id=v.id AND v.source_id=s.id AND s.entity_id=$1 AND fp.project_id=$2`, [row.from_id, row.to_id])
+        await sql.query("DELETE FROM links WHERE to_id=$2 AND type='project' AND data->>'inherited_from'=$1::text", [row.from_id, row.to_id])
+      }
       await audit(sql, row.from_id, 'unlinked', actor, row, null)
       return { deleted: true }
     })

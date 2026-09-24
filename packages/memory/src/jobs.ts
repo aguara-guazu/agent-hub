@@ -7,6 +7,7 @@ import { MemoryError } from './contracts.js'
 import { scheduleEntityIndex, indexEntities } from './entity-index.js'
 import { processVersion } from './processing.js'
 import { dedupePeople } from './people-dedupe.js'
+import { sweepNotes } from './agents.js'
 import { ProviderError, ProviderHttp } from './connectors/http.js'
 import type { Connector, ConnectorContext } from './connectors/types.js'
 import { syncGoogle, importGoogleDocument, repairGoogle } from './connectors/google.js'
@@ -28,6 +29,7 @@ export class JobRunner {
         AND (j.state IN ('queued','running','waiting') OR j.updated_at>now()-make_interval(mins=>c.interval_minutes)))`)
     for (const connector of due) await this.store.enqueue('sync', { connector_id: connector.id }, `sync:${connector.id}`)
     await scheduleEntityIndex(this.store, await this.settings())
+    await sweepNotes(this.store.db)
     await this.store.db.query(`INSERT INTO settings(key,value) VALUES('worker',jsonb_build_object('heartbeat',now(),'id',$1::text)) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [this.workerId])
   }
 
@@ -54,14 +56,16 @@ export class JobRunner {
         const settings = await this.settings()
         if (job.payload.index_only) { settings.extraction = 'disabled'; await progress({ index_only: true }) }
         if (job.payload.identity_only) await progress({ identity_only: true })
-        const result = await processVersion(this.store, this.ai.forJob(settings, controller.signal), job.payload.version_id, settings, progress, controller.signal, Boolean(job.payload.force), Boolean(job.payload.identity_only))
+        if (job.payload.projects_only) await progress({ projects_only: true })
+        const result = await processVersion(this.store, this.ai.forJob(settings, controller.signal, progress), job.payload.version_id, settings, progress, controller.signal,
+          Boolean(job.payload.force), Boolean(job.payload.identity_only), { runKey: job.id, projectsOnly: Boolean(job.payload.projects_only) })
         await progress(result)
       } else if (job.kind === 'index_entities') {
         const settings = await this.settings()
-        await progress(await indexEntities(this.store, this.ai.forJob(settings, controller.signal), settings, controller.signal, progress))
+        await progress(await indexEntities(this.store, this.ai.forJob(settings, controller.signal, progress), settings, controller.signal, progress))
       } else if (job.kind === 'dedupe_people') {
         const settings = await this.settings()
-        await progress(await dedupePeople(this.store, this.ai.forJob(settings, controller.signal), settings, progress, controller.signal))
+        await progress(await dedupePeople(this.store, this.ai.forJob(settings, controller.signal, progress), settings, progress, controller.signal))
       } else if (job.kind === 'sync' || job.kind === 'google_document' || job.kind === 'google_repair') {
         const connector = (await this.store.db.query<Connector>('SELECT * FROM connectors WHERE id=$1', [job.payload.connector_id]))[0]
         if (!connector) throw new MemoryError(404, 'El conector ya no existe')
@@ -81,7 +85,9 @@ export class JobRunner {
     } catch (error) {
       const message = error instanceof MemoryError ? error.message : controller.signal.aborted ? 'Trabajo interrumpido; se puede reanudar' : 'No se pudo completar el trabajo; revisá disponibilidad y configuración de la fuente'
       const retry = (controller.signal.aborted || !(error instanceof MemoryError && [404,409,422].includes(error.statusCode))) && job.attempts < job.max_attempts
-      const seconds = error instanceof ProviderError && error.retryAfter > 0 ? error.retryAfter : Math.min(300, 2 ** job.attempts * 5)
+      // An overloaded model provider needs minutes, not seconds: 1, 2, 4 and 8 minutes after the in-request retries.
+      const seconds = error instanceof ProviderError && error.retryAfter > 0 ? error.retryAfter
+        : error instanceof MemoryError && error.transient ? Math.min(1800, 60 * 2 ** Math.max(0, job.attempts - 1)) : Math.min(300, 2 ** job.attempts * 5)
       await this.store.db.query(`UPDATE jobs SET state=$3,error=$4,lease_until=NULL,lease_owner=NULL,available_at=now()+make_interval(secs=>$5),updated_at=now()
         WHERE id=$1 AND lease_owner=$2`, [job.id, this.workerId, retry ? 'waiting' : 'failed', message, seconds]).catch(() => undefined)
       if (job.kind === 'sync') await this.store.db.query('UPDATE connectors SET last_error=$2 WHERE id=$1', [job.payload.connector_id, message]).catch(() => undefined)

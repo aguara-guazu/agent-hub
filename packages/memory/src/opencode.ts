@@ -26,18 +26,33 @@ interface Options {
 const permissions: Record<string, 'deny' | 'ask' | 'allow'> = { '*': 'deny', read: 'ask', glob: 'ask', grep: 'ask',
   bash: 'ask', edit: 'ask', write: 'ask', apply_patch: 'ask', StructuredOutput: 'allow' }
 
+// Upstream failures relayed by OpenCode as UnknownError, e.g. "Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded".
+const transientProviderMessage = /overload|temporar|unavailable|timed? ?out|ECONNRESET|ECONNREFUSED|socket hang up|stream(?:ing)? response failed|rate.?limit|too many requests|try again/i
+
+/** HTTP status from the structured field or, for UnknownError, from the relayed provider message. */
+function providerStatus(error: any): number | undefined {
+  const status = Number(error?.data?.statusCode)
+  if (Number.isInteger(status) && status >= 400 && status < 600) return status
+  const match = typeof error?.data?.message === 'string' ? /\[(\d{3})\]|\bHTTP\s(\d{3})\b|"status(?:Code)?"\s*:\s*(\d{3})/.exec(error.data.message) : null
+  const relayed = Number(match?.[1] ?? match?.[2] ?? match?.[3])
+  return Number.isInteger(relayed) && relayed >= 400 && relayed < 600 ? relayed : undefined
+}
+
 function generationError(error: any): MemoryError {
-  const data = error?.data, status = data?.statusCode
+  const data = error?.data, status = providerStatus(error), message = typeof data?.message === 'string' ? data.message : ''
+  const name = typeof error?.name === 'string' && /^[A-Za-z]{1,60}$/.test(error.name) ? error.name : 'UnknownError'
   // Provider messages may contain prompts, keys or response bodies. Classify, never echo them.
-  if (typeof data?.message === 'string' && /free tier can only be used from within OpenCode/i.test(data.message))
+  if (/free tier can only be used from within OpenCode/i.test(message))
     return new MemoryError(409, 'OpenCode rechazó el acceso al modelo gratuito (403). Actualizá OpenCode y Agent Hub y probá el modelo desde Ajustes. No se reintentará automáticamente.')
-  if (status === 401 || status === 403 || error?.name === 'ProviderAuthError')
+  if (status === 401 || status === 403 || name === 'ProviderAuthError')
     return new MemoryError(409, 'El proveedor rechazó el acceso desde OpenCode. Revisá la conexión de tu cuenta y los permisos del modelo en OpenCode.')
   if (status === 402) return new MemoryError(409, 'El proveedor de OpenCode requiere saldo. Revisá tu cuenta o elegí otro modelo.')
-  if (status === 429) return new MemoryError(502, 'El proveedor de OpenCode alcanzó su límite de uso. El trabajo se reintentará más tarde.')
-  if (error?.name === 'ContextOverflowError') return new MemoryError(422, 'El contenido supera el contexto del modelo de OpenCode. Elegí un modelo con mayor capacidad.')
-  if (error?.name === 'StructuredOutputError') return new MemoryError(502, 'El modelo de OpenCode no completó la salida estructurada. Probá otro modelo si el error persiste.')
-  return new MemoryError(data?.isRetryable === false ? 409 : 502, 'OpenCode no pudo generar la extracción. Revisá la conexión, el acceso al modelo y el saldo del proveedor.')
+  if (status === 429) return new MemoryError(503, 'El proveedor de OpenCode alcanzó su límite de uso (HTTP 429). Se reintentará automáticamente.', true)
+  if (name === 'ContextOverflowError') return new MemoryError(422, 'El contenido supera el contexto del modelo de OpenCode. Elegí un modelo con mayor capacidad.')
+  if (name === 'StructuredOutputError') return new MemoryError(502, 'El modelo de OpenCode no completó la salida estructurada. Probá otro modelo si el error persiste.')
+  if ((status !== undefined && status >= 500) || data?.isRetryable === true || name === 'MessageAbortedError' || transientProviderMessage.test(message))
+    return new MemoryError(503, `El proveedor del modelo en OpenCode no respondió o está saturado${status ? ` (HTTP ${status})` : ''}. Se reintentará automáticamente.`, true)
+  return new MemoryError(data?.isRetryable === false ? 409 : 502, `OpenCode no pudo generar la extracción (${name}${status ? `, HTTP ${status}` : ''}). Revisa la conexión, el acceso al modelo y el saldo del proveedor.`)
 }
 
 function needsTextFormat(error: any): boolean {
@@ -201,6 +216,11 @@ export class OpenCodeRuntime {
     const result = await this.extract(model, 'Extraé el código de la evidencia según el esquema solicitado. No uses herramientas de archivos, comandos ni búsquedas.',
       { text: 'El código de esta prueba es AGENTHUB_OK.' },
       { type: 'object', properties: { code: { type: 'string', enum: ['AGENTHUB_OK'] } }, required: ['code'], additionalProperties: false }, signal)
+      .catch((error: unknown) => {
+        // The interactive check is not retried: say so instead of promising an automatic retry.
+        if (error instanceof MemoryError && error.transient) throw new MemoryError(503, 'El proveedor del modelo no respondió o está saturado en este momento. Vuelve a probar en unos minutos o elige otro modelo.')
+        throw error
+      })
     check(result.value?.code === 'AGENTHUB_OK', 'El modelo respondió, pero no completó correctamente la prueba de extracción.', 502)
     return { model, ok: true }
   }
@@ -277,7 +297,7 @@ export class OpenCodeRuntime {
         // A timed-out HTTP request must not leave model generation running in the background.
         await this.stop(connection)
         if (signal?.aborted) signal.throwIfAborted()
-        throw error instanceof MemoryError ? error : new MemoryError(502, 'Se interrumpió el procesamiento con OpenCode; el trabajo se puede reintentar.')
+        throw error instanceof MemoryError ? error : new MemoryError(503, 'Se interrumpió el procesamiento con OpenCode; el trabajo se puede reintentar.', true)
       } finally {
         signal?.removeEventListener('abort', cancel)
         if (sessionId && !connection.lifetime.signal.aborted) {

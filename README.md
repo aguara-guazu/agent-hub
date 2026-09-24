@@ -282,11 +282,15 @@ El empaquetado usa [electron-builder](https://www.electron.build/) con la config
 El workflow `.github/workflows/release.yml` compila cada plataforma en su propio runner y adjunta los artefactos a la release del tag:
 
 ```bash
-npm version 0.3.0 --no-git-tag-version   # actualiza package.json
-git commit -am "v0.3.0" && git tag v0.3.0 && git push origin main v0.3.0
+# Mantener la misma versión en todos los workspaces, dependencias @agenthub y lockfile.
+# La versión 0.4.0 ya está preparada. Revisar e incluir también los archivos nuevos.
+git add .
+git commit -m "Release 0.4.0"
+git tag v0.4.0
+git push origin main v0.4.0
 ```
 
-Artefactos por release: `AgentHub-arm64.dmg`, `AgentHub-x64.dmg`, `AgentHub-Setup-x64.exe`, `AgentHub-Setup-arm64.exe`, `AgentHub-x64.zip`, `AgentHub-arm64.zip` (Windows portable), `AgentHub-x86_64.AppImage`, `AgentHub-arm64.AppImage`, `AgentHub-amd64.deb` y `AgentHub-arm64.deb`. `workflow_dispatch` corre la misma compilación sin publicar, para probar el pipeline. Publicar el tag es todo lo que hace falta para que las instalaciones existentes se actualicen: el updater (`desktop/src/updater.ts`) lee `releases/latest` de la API de GitHub y baja el artefacto de su plataforma por nombre, así que los nombres de arriba no deben cambiar. `ci.yml` corre lint, typecheck y todas las pruebas en cada push a `main` y en cada pull request.
+Artefactos por release: `AgentHub-arm64.dmg`, `AgentHub-x64.dmg`, `AgentHub-Setup-x64.exe`, `AgentHub-Setup-arm64.exe`, `AgentHub-x64.zip`, `AgentHub-arm64.zip` (Windows portable), `AgentHub-x86_64.AppImage`, `AgentHub-arm64.AppImage`, `AgentHub-amd64.deb` y `AgentHub-arm64.deb`. `workflow_dispatch` corre la misma compilación sin publicar, para probar el pipeline. Publicar el tag es todo lo que hace falta para que las instalaciones existentes se actualicen: el updater (`desktop/src/updater.ts`) lee `releases/latest` de la API de GitHub y baja el artefacto de su plataforma por nombre, así que los nombres de arriba no deben cambiar. `ci.yml` corre lint, typecheck, pruebas y la integración de memoria con PostgreSQL/pgvector en cada push a `main`, pull request y release. El release verifica que el tag coincida con la versión antes de construir instaladores.
 
 Los artefactos no van firmados ni notarizados: eso requiere credenciales de distribuidor (Developer ID de Apple, certificado de firma de código en Windows) que se configurarían como secretos del repositorio.
 
