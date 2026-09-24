@@ -20,7 +20,8 @@ export class MemoryService {
   readonly openCode: OpenCodeRuntime
   private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
-  constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch) {
+  constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
+    private jiraMcp?: import('./tasks.js').JiraTaskReader) {
     this.openCode = new OpenCodeRuntime(directory)
     this.vault = new Vault(directory)
     this.google = new GoogleAuth(this.vault, redirectUrl, fetcher)
@@ -40,7 +41,7 @@ export class MemoryService {
     }
     const store = new MemoryStore(db, this.directory)
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode)
-    const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher)
+    const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp)
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher)
     this.current = { db, store, ai, operations, runner }
     return this.current

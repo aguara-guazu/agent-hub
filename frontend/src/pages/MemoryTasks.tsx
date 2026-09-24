@@ -38,7 +38,7 @@ function JiraSetup({ project }: { project: MemoryEntity }) {
         <Field label="Sitio de Jira (opcional)"><input type="url" value={site} onChange={e => setSite(e.target.value)} placeholder="https://empresa.atlassian.net" /><span className="field-hint">Arma los enlaces y elige el conector si hay varios sitios.</span></Field></div>
       <ErrorBox error={save.error} /><div className="memory-button-wrap"><button className="btn btn-primary btn-sm" disabled={save.isPending}>Guardar</button>{project.data.jira_project_key && <button type="button" className="btn btn-sm" onClick={() => setEditing(false)}>Cancelar</button>}</div>
     </form>}
-    <p className="field-hint">{project.data.jira_synced_at ? `Última sincronización desde el hub: ${formatTime(project.data.jira_synced_at)}. ` : ''}El hub intenta actualizar estas tareas cuando un agente consulta o modifica Jira a través del hub, y le avisa si no puede confirmar la actualización. La sincronización desde aquí usa un conector de Jira con token (Fuentes y ajustes).</p>
+    <p className="field-hint">{project.data.jira_synced_at ? `Última sincronización desde el hub: ${formatTime(project.data.jira_synced_at)}. ` : ''}El hub intenta actualizar estas tareas cuando un agente consulta o modifica Jira a través del hub, y le avisa si no puede confirmar la actualización. Sincroniza con tu cuenta de Atlassian conectada en MCP servers o con un conector Jira de Fuentes y ajustes.</p>
     <ErrorBox error={sync.error} />
   </div>
 }

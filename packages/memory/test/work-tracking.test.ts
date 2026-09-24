@@ -142,6 +142,21 @@ describe.skipIf(!url)('proyectos, tareas y agentes con PostgreSQL real', () => {
     await syncJira(connector as Connector, { store, vault, http, signal: signal(), progress: async () => {} } as ConnectorContext)
     expect((await ops.call('list_tasks', { project_id: p.id })).items[0]).toMatchObject({ external_key: 'APP-1', status: 'done' })
   })
+  it('sin token reutiliza Jira MCP y persiste todas las páginas dentro del proyecto indicado', async () => {
+    const p = await project()
+    const read = vi.fn(async (_request, onPage) => {
+      await onPage([issue('Done')], 'https://example.atlassian.net')
+      await onPage([{ ...issue(), key: 'APP-2' }], 'https://example.atlassian.net')
+    })
+    const withMcp = new MemoryOperations(store, new MemoryAI(async () => defaultAI, vault), undefined, vault, fetch, read)
+    const result = await withMcp.call('sync_tasks', { project_id: p.id }, 'mcp', agent)
+    expect(result).toMatchObject({ received: 2, created: 2, unmatched: [] })
+    expect(read.mock.calls[0]![0]).toEqual({ key: 'APP', site: null, agentId: agent.agent_id })
+    const tasks = await withMcp.call('list_tasks', { project_id: p.id })
+    expect(tasks.total).toBe(2)
+    expect(tasks.items.find((t: any) => t.external_key === 'APP-1')).toMatchObject({ status: 'done', external_status: 'Done' })
+    expect((await store.detail(p.id)).entity.data.jira_synced_at).toBeTruthy()
+  })
   it('separa claves Jira iguales de dos sitios y rechaza una sincronización ambigua', async () => {
     const projects = []
     for (const site of ['a','b']) projects.push(await store.create({ kind:'project',title:site,data:{ jira_project_key:'APP',jira_site_url:`https://${site}.atlassian.net` } }))

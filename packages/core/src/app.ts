@@ -65,8 +65,9 @@ import {
 import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, SkillRow, User } from './types.js'
 import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
-import { FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
+import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
 import { registerMemory, memoryTools, memorySkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
+import { createJiraTaskReader } from './memory-jira.js'
 
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
 const ORG_ROLES = ['owner', 'admin', 'member']
@@ -271,7 +272,10 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const memoryDirectory = process.env.AGENTHUB_MEMORY_DIR || join(dirname(settings.databasePath), 'memory')
     const owner = ensureLocalOwner(store)
     const baseUrl = new URL(settings.oauthRedirectUrl).origin
+    const jiraPool = new ConnectionPool(undefined, { oauthStore, detectContainers: false })
+    fastify.addHook('onClose', async () => { await jiraPool.close() })
     const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
+      jiraMcp: createJiraTaskReader(store, owner.id, jiraPool, oauthStore),
       worker: process.env.AGENTHUB_MEMORY_WORKER !== '0',
       authorize: async request => {
         const user = await currentUser(request)

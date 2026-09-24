@@ -125,6 +125,8 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
 }
 
 interface JiraAccess { origin: string; headers: Record<string, string> }
+export type JiraTaskReader = (request: { key: string; site: string | null; agentId?: string },
+  onPage: (issues: unknown[], site: string) => Promise<void>) => Promise<void>
 /** A Jira connector whose token can read the site; the project's own site wins when several are configured. */
 async function jiraAccess(store: MemoryStore, vault: Vault, site?: string | null): Promise<JiraAccess | null> {
   const connectors = await store.db.query("SELECT id,config FROM connectors WHERE provider='jira' ORDER BY enabled DESC,created_at")
@@ -138,7 +140,7 @@ async function jiraAccess(store: MemoryStore, vault: Vault, site?: string | null
 
 const noAccess = (key: string) => new MemoryError(409, `No hay un conector de Jira con token para este sitio. Consulta los issues con el MCP de Jira (searchJiraIssuesUsingJql con "project = ${key}") y pásalos en issues; el hub también refleja automáticamente cada llamada al MCP de Jira.`)
 
-export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, actor: string, fetcher: typeof fetch = fetch) {
+export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, actor: string, fetcher: typeof fetch = fetch, jiraMcp?: JiraTaskReader, agentId?: string) {
   const input = parse(syncTasksInput, raw)
   if (input.issues) {
     const site = input.site_url ? new URL(input.site_url).origin : undefined
@@ -155,6 +157,19 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
     const key = project.data.jira_project_key
     check(key, `Configura la clave de Jira del proyecto «${project.title}» en su sección de tareas`, 409)
     const access = await jiraAccess(store, vault, project.data.jira_site_url ?? null)
+    if (!access && jiraMcp) {
+      let received = 0
+      await jiraMcp({ key, site: project.data.jira_site_url ?? null, ...(agentId ? { agentId } : {}) }, async (page, site) => {
+        const issues = page.map(issue => normalizeJiraIssue(issue, site))
+        check(issues.every(issue => issue !== null), 'Jira devolvió un issue incompleto; vuelve a sincronizar', 502)
+        const result = await upsertJiraIssues(store, issues as JiraIssue[], `${actor}:jira-sync`, project.id)
+        for (const field of ['received', 'created', 'updated', 'status_changed', 'unchanged'] as const) totals[field] += result[field]
+        totals.unmatched.push(...result.unmatched); received += result.received
+      })
+      totals.projects.push({ id: project.id, title: project.title, key, received, connection: 'mcp' })
+      await store.db.query("UPDATE entities SET data=data || jsonb_build_object('jira_synced_at',now()::text) WHERE id=$1", [project.id])
+      continue
+    }
     if (!access) throw noAccess(key)
     const http = new ProviderHttp(fetcher), issues: JiraIssue[] = []
     let next = ''

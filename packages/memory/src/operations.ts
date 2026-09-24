@@ -47,7 +47,7 @@ const definitions = {
   list_tasks: ['Tareas de un proyecto: el espejo de Jira (estado como está en Jira) y los pendientes internos (deuda, faltantes de código, compromisos de reuniones). Filtrar por kind (jira, pending), status (open, todo, in_progress, blocked, done, dropped) y texto.', listTasksInput],
   get_task: ['Leer una tarea con su historial de estados y notas, la evidencia y las notas de agentes asociadas.', z.object({ id }).strict()],
   save_task: ['Crear o actualizar un pendiente interno (kind pending): lo que falta en el código, deuda técnica o algo dicho en una reunión que no va a Jira. Con id actualiza estado, título o agrega note al historial. En una tarea de Jira sólo acepta note o jira.transition/jira.comment, que se envían a Jira si hay conector con token.', saveTaskInput],
-  sync_tasks: ['Sincronizar el espejo de Jira de los proyectos. Con issues (los objetos que devuelve el MCP de Jira, o {key, summary, status}) los guarda en el proyecto dueño de su clave; sin issues consulta Jira con el conector de token, para project_id o para todos los proyectos con clave. El hub además refleja solo cada llamada al MCP de Jira.', syncTasksInput],
+  sync_tasks: ['Sincronizar el espejo de Jira de los proyectos. Con issues (los objetos que devuelve el MCP de Jira, o {key, summary, status}) los guarda en el proyecto dueño de su clave; sin issues consulta Jira con el conector de token o la cuenta Atlassian del hub, para project_id o para todos los proyectos con clave. El hub además refleja solo cada llamada al MCP de Jira.', syncTasksInput],
   task_stats: ['Estadísticas y salud de las tareas de un proyecto: abiertas, bloqueadas, creadas y cerradas por semana, tiempo de resolución, tareas sin movimiento, por responsable, por origen y actividad de agentes.', taskStatsInput],
   list_notes: ['Leer las notas de trabajo que dejan los agentes (quién, cuándo, qué hizo, si terminó). Revisarlas antes de empezar y entre pasos para no pisar el trabajo de otro agente.', listNotesInput],
   write_note: ['Dejar una nota corta de trabajo para los demás agentes: qué vas a hacer o qué hiciste. Se asocia al proyecto de la carpeta actual; una nota nueva en estado working reemplaza la anterior de la misma sesión. Con id edita una nota propia.', writeNoteInput],
@@ -77,7 +77,8 @@ export const memoryTools = Object.entries(definitions).map(([name, [description,
 export const READ_OPERATIONS = new Set(['context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
-  constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch) {}
+  constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
+    private jiraMcp?: import('./tasks.js').JiraTaskReader) {}
   /** `agent` identifies the calling agent session (from the gateway); it attributes notes and keeps the session alive for the notes board. */
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext): Promise<any> {
     const definition = definitions[operation as keyof typeof definitions]
@@ -91,7 +92,7 @@ export class MemoryOperations {
       case 'list_tasks': return listTasks(store, input)
       case 'get_task': return taskDetail(store, input.id)
       case 'save_task': return saveTask(store, this.requireVault(), input, author, this.fetcher)
-      case 'sync_tasks': return syncTasks(store, this.requireVault(), input, author, this.fetcher)
+      case 'sync_tasks': return syncTasks(store, this.requireVault(), input, author, this.fetcher, this.jiraMcp, agent?.agent_id)
       case 'task_stats': return taskStats(store, input)
       case 'list_notes': return listNotes(store, input)
       case 'write_note': return writeNote(store, input, actor, agent)
