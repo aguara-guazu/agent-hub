@@ -10,8 +10,10 @@ import { CliExtractionRuntime, extractionClis, isExtractionCli, validCliModel } 
 import { JobRunner } from './jobs.js'
 import { check, MemoryError, parse } from './contracts.js'
 import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
+import { reasoningEffortSchema } from './reasoning.js'
 
 export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode', ...extractionClis]), extraction_model: z.string().min(1).max(200),
+  extraction_reasoning_effort: reasoningEffortSchema,
   embeddings_enabled: z.boolean(), embedding_model: z.string().min(1).max(200), ollama_url: z.url(), remote_processing_enabled: z.boolean(),
   identity_auto_merge: z.boolean().default(true), project_auto_assign: z.boolean().default(true) }).strict().refine(
     config => config.extraction !== 'opencode' || /^[^/\s]+\/\S+$/.test(config.extraction_model),
@@ -85,9 +87,9 @@ export class MemoryService {
     localUrl(config.ollama_url)
     check(new URL(config.ollama_url).protocol === 'http:' || new URL(config.ollama_url).protocol === 'https:', 'URL de Ollama inválida')
     if (config.extraction === 'opencode' && config.remote_processing_enabled) {
-      await this.openCode.test(config.extraction_model, signal)
+      await this.openCode.test(config.extraction_model, signal, config.extraction_reasoning_effort)
     }
-    if (isExtractionCli(config.extraction) && config.remote_processing_enabled) await this.cliExtraction.test(config.extraction, config.extraction_model, signal)
+    if (isExtractionCli(config.extraction) && config.remote_processing_enabled) await this.cliExtraction.test(config.extraction, config.extraction_model, signal, config.extraction_reasoning_effort)
     signal?.throwIfAborted()
     const { db } = await this.get()
     await db.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(config)])

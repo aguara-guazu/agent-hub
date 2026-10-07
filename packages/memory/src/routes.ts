@@ -7,6 +7,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { MemoryService } from './service.js'
 import { extractionClis, validCliModel } from './cli-extraction.js'
+import { reasoningEffortSchema } from './reasoning.js'
 import { memoryTools } from './operations.js'
 import { constantEqual } from './config.js'
 import { check, id, MemoryError, parse } from './contracts.js'
@@ -50,10 +51,10 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   })
   app.get('/api/memory/opencode', { preHandler: auth }, () => service.openCode.status())
   app.post('/api/memory/opencode/test', { preHandler: auth }, async (request, reply) => {
-    const { model } = parse(z.object({ model: z.string().min(1).max(200).regex(/^[^/\s]+\/\S+$/) }).strict(), request.body)
+    const { model, reasoning_effort } = parse(z.object({ model: z.string().min(1).max(200).regex(/^[^/\s]+\/\S+$/), reasoning_effort: reasoningEffortSchema }).strict(), request.body)
     const controller = new AbortController(), abort = () => controller.abort()
     reply.raw.once('close', abort)
-    try { return await service.openCode.test(model, controller.signal) }
+    try { return await service.openCode.test(model, controller.signal, reasoning_effort) }
     finally { reply.raw.off('close', abort) }
   })
   app.get('/api/memory/extraction-cli/:provider', { preHandler: auth }, request => {
@@ -62,10 +63,10 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   })
   app.post('/api/memory/extraction-cli/:provider/test', { preHandler: auth }, async (request, reply) => {
     const { provider } = parse(z.object({ provider: z.enum(extractionClis) }), request.params)
-    const { model } = parse(z.object({ model: z.string().refine(validCliModel) }).strict(), request.body)
+    const { model, reasoning_effort } = parse(z.object({ model: z.string().refine(validCliModel), reasoning_effort: reasoningEffortSchema }).strict(), request.body)
     const controller = new AbortController(), abort = () => controller.abort()
     reply.raw.once('close', abort)
-    try { return await service.cliExtraction.test(provider, model, controller.signal) }
+    try { return await service.cliExtraction.test(provider, model, controller.signal, reasoning_effort) }
     finally { reply.raw.off('close', abort) }
   })
   app.put('/api/memory/ai', { preHandler: auth }, async (request, reply) => {

@@ -52,7 +52,7 @@ it('informa que falta OpenCode sin iniciar procesos', async () => {
 })
 it('descubre sólo modelos conectados, reutiliza el servidor y elimina las sesiones temporales', async () => {
   const launch = setup()
-  expect((await runtime.status()).models).toEqual([{ id: model, name: 'Fixture · Chat' }])
+  expect((await runtime.status()).models).toEqual([{ id: model, name: 'Fixture · Chat', reasoning_efforts: ['low', 'high', 'custom'] }])
   const result = await runtime.extract(model, 'instructions', { transcript: 'private transcript', facts: ['evidence'] }, schema)
   expect(result).toEqual({ value: { facts: ['evidence'] }, usage: { model, input_tokens: 15, output_tokens: 5 } })
   expect(launch).toHaveBeenCalledTimes(1)
@@ -87,6 +87,15 @@ it('prueba el modelo con evidencia sintética y salida estructurada', async () =
   setup()
   expect(await runtime.test(model)).toEqual({ model, ok: true })
   expect((await requests()).find(c => c.path.endsWith('/message')).body.parts).toEqual([{ type: 'text', text: JSON.stringify({ text: 'El código de esta prueba es AGENTHUB_OK.' }) }])
+})
+it('envía la variante seleccionada incluso en el fallback de texto y rechaza variantes ajenas al modelo', async () => {
+  setup()
+  await runtime.extract(model, '', { scenario: 'text' }, schema, undefined, 'custom')
+  const messages = (await requests()).filter(c => c.path.endsWith('/message'))
+  expect(messages).toHaveLength(2)
+  expect(messages.every(c => c.body.variant === 'custom')).toBe(true)
+  await expect(runtime.test(model, undefined, 'disabled')).rejects.toThrow('no ofrece esa variante')
+  expect((await requests()).filter(c => c.path.endsWith('/message'))).toHaveLength(2)
 })
 it('reintenta el mismo lote transitorio, informa progreso y conserva el modelo elegido', async () => {
   const extract = vi.fn().mockRejectedValueOnce(new MemoryError(503, 'Proveedor saturado', true))

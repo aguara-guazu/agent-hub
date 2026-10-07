@@ -7,15 +7,15 @@ const log = value => process.stdout.write(JSON.stringify(value) + '\n')
 const record = value => appendFileSync(process.env.FIXTURE_REQUESTS, JSON.stringify(value) + '\n')
 record({ provider, args, cwd: process.cwd(), pid: process.pid })
 if (args.includes('--delete-session')) process.exit(0)
-if (args.includes('--list-models')) { log({ models: [{ model_id: 'fixture', model_name: 'Fixture' }] }); process.exit(0) }
+if (args.includes('--list-models')) { log({ models: [{ model_id: 'fixture', model_name: 'Fixture', supported_effort_levels: ['low', 'high'] }] }); process.exit(0) }
 if (args.includes('app-server') || args.includes('--input-format')) {
   const lines = createInterface({ input: process.stdin })
   lines.on('line', line => {
     const event = JSON.parse(line)
     record({ event })
-    if (provider === 'claude_code') log({ type: 'control_response', response: { request_id: 'models', subtype: 'success', response: { models: [{ value: 'sonnet', resolvedModel: 'fixture', displayName: 'Fixture' }] } } })
+    if (provider === 'claude_code') log({ type: 'control_response', response: { request_id: 'models', subtype: 'success', response: { models: [{ value: 'sonnet', resolvedModel: 'fixture', displayName: 'Fixture', supportsEffort: true, supportedEffortLevels: ['low', 'high'] }] } } })
     else if (event.method === 'initialize') log({ id: event.id, result: {} })
-    else if (event.method === 'model/list') log({ id: event.id, result: { data: [{ model: event.params.cursor ? 'second' : 'fixture', displayName: 'Fixture' }], nextCursor: event.params.cursor ? null : 'next' } })
+    else if (event.method === 'model/list') log({ id: event.id, result: { data: [{ model: event.params.cursor ? 'second' : 'fixture', displayName: 'Fixture', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }], nextCursor: event.params.cursor ? null : 'next' } })
   })
 } else {
   let input = ''

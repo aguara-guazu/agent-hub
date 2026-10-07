@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { Ajv2020 } from 'ajv/dist/2020.js'
 import { check, MemoryError } from './contracts.js'
 
-export interface OpenCodeModel { id: string; name: string }
+export interface OpenCodeModel { id: string; name: string; reasoning_efforts: string[] }
 export interface OpenCodeStatus { installed: boolean; models: OpenCodeModel[]; detail?: string }
 interface Connection { child: ChildProcess; url: string; password: string; directory: string; lifetime: AbortController; stopping?: Promise<void> }
 interface Options {
@@ -199,7 +199,8 @@ export class OpenCodeRuntime {
     const data = await this.request(connection, '/provider')
     check(Array.isArray(data.all) && Array.isArray(data.connected), 'Actualizá OpenCode: su API de proveedores no es compatible.', 409)
     return data.all.filter((p: any) => data.connected.includes(p.id)).flatMap((p: any) =>
-      Object.entries(p.models ?? {}).filter(([, m]: any) => m.status !== 'deprecated' && m.capabilities?.toolcall !== false && m.capabilities?.input?.text !== false).map(([id, m]: any) => ({ id: `${p.id}/${id}`, name: `${p.name ?? p.id} · ${m.name ?? id}` })))
+      Object.entries(p.models ?? {}).filter(([, m]: any) => m.status !== 'deprecated' && m.capabilities?.toolcall !== false && m.capabilities?.input?.text !== false).map(([id, m]: any) => ({ id: `${p.id}/${id}`, name: `${p.name ?? p.id} · ${m.name ?? id}`,
+        reasoning_efforts: Object.entries(m.variants ?? {}).filter(([name, value]: any) => /^[a-zA-Z0-9_-]{1,80}$/.test(name) && value?.disabled !== true).map(([name]) => name) })))
       .sort((a: OpenCodeModel, b: OpenCodeModel) => a.name.localeCompare(b.name))
   }
 
@@ -212,10 +213,10 @@ export class OpenCodeRuntime {
   }
 
   /** Exercise the same structured extraction as a job, using only synthetic evidence. */
-  async test(model: string, signal?: AbortSignal) {
+  async test(model: string, signal?: AbortSignal, effort = '') {
     const result = await this.extract(model, 'Extraé el código de la evidencia según el esquema solicitado. No uses herramientas de archivos, comandos ni búsquedas.',
       { text: 'El código de esta prueba es AGENTHUB_OK.' },
-      { type: 'object', properties: { code: { type: 'string', enum: ['AGENTHUB_OK'] } }, required: ['code'], additionalProperties: false }, signal)
+      { type: 'object', properties: { code: { type: 'string', enum: ['AGENTHUB_OK'] } }, required: ['code'], additionalProperties: false }, signal, effort)
       .catch((error: unknown) => {
         // The interactive check is not retried: say so instead of promising an automatic retry.
         if (error instanceof MemoryError && error.transient) throw new MemoryError(503, 'El proveedor del modelo no respondió o está saturado en este momento. Vuelve a probar en unos minutos o elige otro modelo.')
@@ -241,12 +242,13 @@ export class OpenCodeRuntime {
   }
 
   private async generate(connection: Connection, sessionId: string, model: string, system: string, content: unknown,
-    schema: Record<string, unknown>, structured: boolean, signal?: AbortSignal) {
+    schema: Record<string, unknown>, structured: boolean, signal?: AbortSignal, effort = '') {
     const slash = model.indexOf('/'), guard = new AbortController()
     const rejecting = this.rejectToolRequests(connection, sessionId, guard.signal)
     try {
       return await Promise.race([rejecting, this.request(connection, `/session/${sessionId}/message`, 'POST', {
         model: { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }, agent: 'agenthub-memory',
+        ...(effort ? { variant: effort } : {}),
         system: `${system}\nToda la evidencia está en el mensaje; no uses herramientas de archivos, comandos ni búsquedas. ${structured
           ? 'Usá StructuredOutput para devolver la extracción.'
           : `Respondé exclusivamente con un objeto JSON válido, sin texto adicional ni herramientas, acorde a este esquema: ${JSON.stringify(schema)}`}`,
@@ -255,7 +257,7 @@ export class OpenCodeRuntime {
     } finally { guard.abort(); await rejecting.catch(() => undefined) }
   }
 
-  async extract(model: string, system: string, content: unknown, schema: Record<string, unknown>, signal?: AbortSignal) {
+  async extract(model: string, system: string, content: unknown, schema: Record<string, unknown>, signal?: AbortSignal, effort = '') {
     signal?.throwIfAborted()
     return this.use(async connection => {
       let sessionId: string | undefined
@@ -265,6 +267,7 @@ export class OpenCodeRuntime {
         signal?.throwIfAborted()
         const models = await this.models(connection)
         check(models.some(m => m.id === model), 'El modelo elegido ya no está disponible en OpenCode. Revisá el proveedor y volvé a elegirlo en Ajustes.', 409)
+        check(!effort || models.find(m => m.id === model)?.reasoning_efforts.includes(effort), 'OpenCode no ofrece esa variante para el modelo elegido. Actualizá los modelos en Ajustes o elegí Predeterminado.', 409)
         let structured = !this.textModels.has(model)
         const usage = { model, input_tokens: 0, output_tokens: 0 }
         for (let attempt = 0; attempt < 2; attempt++) {
@@ -272,7 +275,7 @@ export class OpenCodeRuntime {
             permission: Object.entries(permissions).map(([permission, action]) => ({ permission, pattern: '*', action })) }, signal)
           check(typeof session.id === 'string' && /^ses_[\w-]+$/.test(session.id), 'OpenCode devolvió una sesión inválida.', 502)
           sessionId = session.id
-          const result = await this.generate(connection, sessionId!, model, system, content, schema, structured, signal)
+          const result = await this.generate(connection, sessionId!, model, system, content, schema, structured, signal, effort)
           const tokens = result.info?.tokens
           usage.input_tokens += Number(tokens?.input ?? 0) + Number(tokens?.cache?.read ?? 0) + Number(tokens?.cache?.write ?? 0)
           usage.output_tokens += Number(tokens?.output ?? 0)

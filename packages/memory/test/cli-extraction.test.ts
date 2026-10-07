@@ -9,11 +9,12 @@ import { CliExtractionRuntime, extractionClis, type ExtractionCli } from '../src
 import { MemoryAI } from '../src/ai.js'
 import { defaultAI, usesRemoteExtraction, Vault } from '../src/config.js'
 import { aiConfigSchema, MemoryService } from '../src/service.js'
+import { kiroEfforts } from '../src/reasoning.js'
 
 let directory: string, runtime: CliExtractionRuntime, children: ChildProcess[]
 const schema = { type: 'object', properties: { code: { type: 'string' } }, required: ['code'], additionalProperties: false }
-beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'memory-cli-test-')); children = [] })
-afterEach(async () => { await runtime?.close(); for (const child of children) child.kill('SIGKILL'); await rm(directory, { recursive: true, force: true }) })
+beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'memory-cli-test-')); children = []; vi.stubEnv('KIRO_API_KEY', 'fixture-key') })
+afterEach(async () => { vi.unstubAllEnvs(); await runtime?.close(); for (const child of children) child.kill('SIGKILL'); await rm(directory, { recursive: true, force: true }) })
 function setup(requestMs = 3000) {
   const launch = vi.fn((command, args, options) => {
     expect(args.join(' ')).not.toContain('private transcript')
@@ -33,8 +34,55 @@ it.each(extractionClis)('descubre modelos de %s usando su protocolo y limpia los
   setup()
   const status = await runtime.status(provider)
   expect(status).toMatchObject({ installed: true, models: [{ id: 'fixture', name: 'Fixture' }, ...(provider === 'codex_cli' ? [{ id: 'second', name: 'Fixture' }] : [])] })
+  expect(status.models[0]?.reasoning_efforts).toEqual(['low', 'high'])
   expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true)
   expect(await readdir(join(directory, 'cli-extraction'))).toEqual([])
+})
+it.each(extractionClis)('aplica el esfuerzo de %s tanto en la prueba como en los trabajos', async provider => {
+  setup()
+  await runtime.test(provider, 'fixture', undefined, 'high')
+  const config = { ...defaultAI, extraction: provider, extraction_model: 'fixture', extraction_reasoning_effort: 'low', remote_processing_enabled: true }
+  const ai = new MemoryAI(async () => config, new Vault(directory), fetch, undefined, undefined, undefined, undefined, runtime)
+  await ai.extract('', {}, z.object({ code: z.string() }))
+  const calls = (await requests()).filter(c => c.args?.includes('--model'))
+  expect(calls).toHaveLength(2)
+  for (const [index, effort] of ['high', 'low'].entries()) {
+    const args = calls[index].args
+    if (provider === 'codex_cli') expect(args).toContain(`model_reasoning_effort="${effort}"`)
+    else expect(args[args.indexOf('--effort') + 1]).toBe(effort)
+  }
+  await expect(runtime.test(provider, 'fixture', undefined, 'xhigh')).rejects.toThrow('no ofrece ese esfuerzo')
+  expect((await requests()).filter(c => c.args?.includes('--model'))).toHaveLength(2)
+})
+it('requiere la autenticación documentada para Kiro headless antes de iniciar la CLI', async () => {
+  vi.stubEnv('KIRO_API_KEY', '')
+  const launch = setup()
+  await expect(runtime.test('kiro', 'fixture')).rejects.toMatchObject({ statusCode: 409, transient: false })
+  expect(launch).not.toHaveBeenCalled()
+})
+it('sólo ofrece esfuerzos documentados en Kiro si el catálogo no los informa', () => {
+  expect(kiroEfforts('claude-opus-4.6')).toEqual(['low', 'medium', 'high', 'max'])
+  expect(kiroEfforts('claude-sonnet-5')).toContain('xhigh')
+  expect(kiroEfforts('auto')).toEqual([])
+  expect(kiroEfforts('unknown')).toEqual([])
+})
+it('conserva configuraciones antiguas y rechaza valores de esfuerzo malformados', () => {
+  const { extraction_reasoning_effort: _effort, ...oldConfig } = defaultAI
+  expect(aiConfigSchema.parse(oldConfig).extraction_reasoning_effort).toBe('')
+  expect(aiConfigSchema.safeParse({ ...defaultAI, extraction_reasoning_effort: 'high\n-c' }).success).toBe(false)
+})
+it('guarda el esfuerzo únicamente tras verificar la combinación elegida', async () => {
+  const service = new MemoryService(directory, 'http://localhost/callback')
+  const test = vi.spyOn(service.cliExtraction, 'test').mockResolvedValue({ ok: true, model: 'fixture' })
+  const config = { ...defaultAI, extraction: 'codex_cli', extraction_model: 'fixture', extraction_reasoning_effort: 'high', remote_processing_enabled: true }
+  try {
+    await service.saveAI(config)
+    expect(test).toHaveBeenCalledWith('codex_cli', 'fixture', undefined, 'high')
+    expect(await service.aiSettings()).toMatchObject(config)
+    test.mockRejectedValueOnce(new Error('Esfuerzo no admitido'))
+    await expect(service.saveAI({ ...config, extraction_reasoning_effort: 'max' })).rejects.toThrow('Esfuerzo no admitido')
+    expect((await service.aiSettings()).extraction_reasoning_effort).toBe('high')
+  } finally { await service.close() }
 })
 it.each(extractionClis)('extrae JSON con %s, aísla herramientas y no pone evidencia en argumentos', async provider => {
   setup()
@@ -117,7 +165,7 @@ it.each(extractionClis)('no reemplaza la configuración si falla la prueba de %s
   const get = vi.spyOn(service, 'get')
   try {
     await expect(service.saveAI({ ...defaultAI, extraction: provider, extraction_model: 'fixture', remote_processing_enabled: true })).rejects.toThrow('No hay acceso')
-    expect(test).toHaveBeenCalledWith(provider, 'fixture', undefined)
+    expect(test).toHaveBeenCalledWith(provider, 'fixture', undefined, '')
     expect(get).not.toHaveBeenCalled()
   } finally { await service.close() }
 })

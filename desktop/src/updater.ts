@@ -28,6 +28,8 @@ import { promisify } from 'node:util'
 export const DEFAULT_REPO = 'aguara-guazu/agent-hub'
 export const DEFAULT_API_BASE = 'https://api.github.com'
 export const CHECK_TIMEOUT_MS = 8_000
+export const DOWNLOAD_TIMEOUT_MS = 15 * 60_000
+export const DOWNLOAD_IDLE_TIMEOUT_MS = 60_000
 /** Un instalador real pesa más de 80 MB; algo menor es una descarga rota o una página HTML. */
 export const MIN_ASSET_BYTES = 20 * 1024 * 1024
 /** Cada cuánto vuelve a mirar una app que vive en segundo plano. */
@@ -41,6 +43,10 @@ export interface ReleaseInfo {
   page: string
   assets: Array<{ name: string; url: string }>
 }
+
+export interface DownloadProgress { receivedBytes: number; totalBytes: number | null }
+export type UpdateProgress = { state: 'available'; version: string; page: string }
+  | ({ state: 'downloading'; version: string; page: string } & DownloadProgress)
 
 export type UpdateStatus =
   | { state: 'disabled' }
@@ -121,14 +127,15 @@ export async function fetchLatestRelease(options: {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agent-hub-updater' },
       signal: AbortSignal.timeout(options.timeoutMs ?? CHECK_TIMEOUT_MS),
     })
-    if (!response.ok) return null
+    if (response.status === 404) return null
+    if (!response.ok) throw new Error(`GitHub no pudo consultar las actualizaciones (HTTP ${response.status}).`)
     const release = await response.json() as {
       tag_name?: string
       body?: string
       html_url?: string
       assets?: Array<{ name?: string; browser_download_url?: string }>
     }
-    if (!release.tag_name || !/^v?\d+(\.\d+)*/.test(release.tag_name)) return null
+    if (!release.tag_name || !/^v?\d+(\.\d+)*/.test(release.tag_name)) throw new Error('GitHub devolvió información de versión inválida.')
     return {
       version: release.tag_name.replace(/^v/, ''),
       notes: release.body?.trim() ?? '',
@@ -137,39 +144,60 @@ export async function fetchLatestRelease(options: {
         .filter((asset) => asset.name && asset.browser_download_url)
         .map((asset) => ({ name: asset.name!, url: asset.browser_download_url! })),
     }
-  } catch {
-    return null
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('GitHub')) throw error
+    throw new Error('No se pudo consultar GitHub. Revisá la conexión y volvé a intentar.')
   }
 }
 
 /** Baja el artefacto a `target` y rechaza descargas truncadas o que no sean un binario. */
 export async function downloadAsset(url: string, target: string, options: {
   fetchFn?: FetchFn
-  onProgress?: (fraction: number) => void
+  onProgress?: (progress: DownloadProgress) => void
   signal?: AbortSignal
   minBytes?: number
+  timeoutMs?: number
+  idleTimeoutMs?: number
 } = {}): Promise<void> {
   const fetchFn = options.fetchFn ?? fetch
-  const response = await fetchFn(url, { redirect: 'follow', ...(options.signal ? { signal: options.signal } : {}) })
-  if (!response.ok || !response.body) throw new Error(`la descarga falló con HTTP ${response.status}`)
-  const total = Number(response.headers.get('content-length') ?? 0)
-  let received = 0
-  const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
-  source.on('data', (chunk: Buffer) => {
-    received += chunk.length
-    if (total > 0) options.onProgress?.(Math.min(1, received / total))
-  })
-  await pipeline(source, createWriteStream(target))
-  const written = await stat(target)
-  const minBytes = options.minBytes ?? MIN_ASSET_BYTES
-  if (written.size < minBytes) {
-    await rm(target, { force: true })
-    throw new Error(`el archivo descargado pesa ${written.size} bytes; no parece un instalador`)
+  const idle = new AbortController(), timeout = AbortSignal.timeout(options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS)
+  const signal = AbortSignal.any([idle.signal, timeout, ...(options.signal ? [options.signal] : [])])
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const touch = () => {
+    clearTimeout(timer)
+    timer = setTimeout(() => idle.abort(), options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS)
+    timer.unref()
   }
+  try {
+    touch()
+    const response = await fetchFn(url, { redirect: 'follow', signal })
+    if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error(`La descarga falló con HTTP ${response.status}.`) }
+    const length = Number(response.headers.get('content-length') ?? 0)
+    const totalBytes = Number.isFinite(length) && length > 0 ? length : null
+    let receivedBytes = 0
+    options.onProgress?.({ receivedBytes, totalBytes })
+    const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
+    source.on('data', (chunk: Buffer) => {
+      touch()
+      receivedBytes += chunk.length
+      options.onProgress?.({ receivedBytes, totalBytes })
+    })
+    await pipeline(source, createWriteStream(target), { signal })
+    const written = await stat(target)
+    if (totalBytes !== null && written.size !== totalBytes) throw new Error('La descarga quedó incompleta. Volvé a intentar.')
+    if (written.size < (options.minBytes ?? MIN_ASSET_BYTES))
+      throw new Error(`El archivo descargado pesa ${written.size} bytes; no parece un instalador.`)
+  } catch (error) {
+    await rm(target, { force: true }).catch(() => undefined)
+    if (options.signal?.aborted) throw options.signal.reason
+    if (idle.signal.aborted) throw new Error('La descarga se detuvo por falta de datos. Revisá la conexión y volvé a intentar.')
+    if (timeout.aborted) throw new Error('La descarga superó el tiempo máximo. Volvé a intentar.')
+    throw error
+  } finally { clearTimeout(timer) }
 }
 
 const defaultRun: RunFn = async (command, args) => {
-  const { stdout } = await promisify(execFile)(command, [...args])
+  const { stdout } = await promisify(execFile)(command, [...args], { timeout: 120_000 })
   return { stdout: String(stdout) }
 }
 const defaultSpawn: SpawnFn = (command, args) => {
@@ -267,6 +295,9 @@ export interface AutoUpdaterDeps {
   /** Sólo para pruebas: tamaño mínimo aceptado para un artefacto. */
   minAssetBytes?: number
   log?: (line: string) => void
+  onProgress?: (progress: UpdateProgress) => void
+  downloadTimeoutMs?: number
+  downloadIdleTimeoutMs?: number
 }
 
 export class AutoUpdater {
@@ -285,7 +316,8 @@ export class AutoUpdater {
   async check(): Promise<UpdateStatus> {
     if (!this.deps.enabled || this.deps.env.AGENTHUB_NO_AUTO_UPDATE === '1') return { state: 'disabled' }
     if (this.downloading) return this.downloading
-    this.downloading = this.checkOnce().finally(() => { this.downloading = null })
+    this.downloading = this.checkOnce().catch((error: unknown): UpdateStatus => ({ state: 'failed', version: this.deps.currentVersion,
+      error: error instanceof Error ? error.message : 'No se pudo buscar la actualización.' })).finally(() => { this.downloading = null })
     return this.downloading
   }
 
@@ -297,21 +329,28 @@ export class AutoUpdater {
     })
     if (!release) return { state: 'up-to-date', version: this.deps.currentVersion }
     if (compareVersions(release.version, this.deps.currentVersion) <= 0) return { state: 'up-to-date', version: this.deps.currentVersion }
+    this.deps.onProgress?.({ state: 'available', version: release.version, page: release.page })
     const assetName = assetNameFor(this.strategy, this.deps.arch)
     const asset = assetName ? release.assets.find((entry) => entry.name === assetName) : undefined
     if (this.strategy === 'notify' || !asset || !this.canWriteInstall()) {
       return { state: 'available', version: release.version, page: release.page }
     }
+    let directory: string | undefined
     try {
-      const directory = await mkdtemp(join(this.deps.tmpDir ?? tmpdir(), 'agenthub-update-'))
+      directory = await mkdtemp(join(this.deps.tmpDir ?? tmpdir(), 'agenthub-update-'))
       const target = join(directory, basename(asset.name))
       this.log(`[updater] bajando ${asset.name} (v${release.version})`)
+      this.deps.onProgress?.({ state: 'downloading', version: release.version, page: release.page, receivedBytes: 0, totalBytes: null })
       await downloadAsset(asset.url, target, {
         ...(this.deps.fetchFn ? { fetchFn: this.deps.fetchFn } : {}),
         ...(this.deps.minAssetBytes !== undefined ? { minBytes: this.deps.minAssetBytes } : {}),
+        ...(this.deps.downloadTimeoutMs !== undefined ? { timeoutMs: this.deps.downloadTimeoutMs } : {}),
+        ...(this.deps.downloadIdleTimeoutMs !== undefined ? { idleTimeoutMs: this.deps.downloadIdleTimeoutMs } : {}),
+        onProgress: progress => this.deps.onProgress?.({ state: 'downloading', version: release.version, page: release.page, ...progress }),
       })
       return { state: 'downloaded', version: release.version, path: target, strategy: this.strategy }
     } catch (error) {
+      if (directory) await rm(directory, { recursive: true, force: true }).catch(() => undefined)
       return { state: 'failed', version: release.version, error: error instanceof Error ? error.message : String(error) }
     }
   }

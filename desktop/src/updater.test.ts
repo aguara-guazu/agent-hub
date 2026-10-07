@@ -1,10 +1,10 @@
 import { createServer, type Server } from 'node:http'
 import { once } from 'node:events'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { rename, rm } from 'node:fs/promises'
+import { readdir, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AutoUpdater,
   assetNameFor,
@@ -17,6 +17,7 @@ import {
   installDmg,
   installNsis,
   type RunFn,
+  type UpdateProgress,
 } from './updater.js'
 
 const dirs: string[] = []
@@ -79,10 +80,11 @@ describe('consulta de la última release', () => {
     expect(info).toEqual({ version: '0.3.0', notes: 'notas', page: 'https://github.com/aguara-guazu/agent-hub/releases/tag/v0.3.0', assets: [{ name: 'AgentHub-arm64.dmg', url: 'https://downloads.example/AgentHub-arm64.dmg' }] })
   })
 
-  it('sin release, con error HTTP o con un tag raro devuelve null en vez de lanzar', async () => {
+  it('distingue ausencia de releases de una consulta fallida', async () => {
     expect(await fetchLatestRelease({ fetchFn: async () => fakeResponse('{}', { status: 404 }) })).toBeNull()
-    expect(await fetchLatestRelease({ fetchFn: async () => fakeResponse(JSON.stringify({ tag_name: 'nightly' })) })).toBeNull()
-    expect(await fetchLatestRelease({ fetchFn: async () => { throw new Error('sin red') } })).toBeNull()
+    await expect(fetchLatestRelease({ fetchFn: async () => fakeResponse('{}', { status: 403 }) })).rejects.toThrow('HTTP 403')
+    await expect(fetchLatestRelease({ fetchFn: async () => fakeResponse(JSON.stringify({ tag_name: 'nightly' })) })).rejects.toThrow('versión inválida')
+    await expect(fetchLatestRelease({ fetchFn: async () => { throw new Error('sin red') } })).rejects.toThrow('conexión')
   })
 })
 
@@ -99,7 +101,7 @@ describe('descarga', () => {
     const dir = tmp('agenthub-dl-')
     const url = await serve(Buffer.alloc(4096, 1))
     const progress: number[] = []
-    await downloadAsset(url, join(dir, 'a.bin'), { minBytes: 1024, onProgress: (f) => progress.push(f) })
+    await downloadAsset(url, join(dir, 'a.bin'), { minBytes: 1024, onProgress: p => progress.push(p.receivedBytes / p.totalBytes!) })
     expect(statSync(join(dir, 'a.bin')).size).toBe(4096)
     expect(progress.at(-1)).toBe(1)
 
@@ -109,6 +111,41 @@ describe('descarga', () => {
 
     const missing = await serve(Buffer.from('nada'), 404)
     await expect(downloadAsset(missing, join(dir, 'c.bin'), { minBytes: 1 })).rejects.toThrow(/HTTP 404/)
+  })
+
+  it.each([false, true])('corta una conexión detenida y elimina el parcial (con cabeceras: %s)', async headers => {
+    const server = createServer((_request, response) => {
+      if (headers) { response.writeHead(200, { 'Content-Length': '4096' }); response.write(Buffer.alloc(2048)) }
+    }).listen(0, '127.0.0.1')
+    servers.push(server); await once(server, 'listening')
+    const target = join(tmp('agenthub-stalled-'), 'partial.bin')
+    await expect(downloadAsset(`http://127.0.0.1:${(server.address() as { port: number }).port}/asset`, target,
+      { minBytes: 1, idleTimeoutMs: 100 })).rejects.toThrow('falta de datos')
+    expect(existsSync(target)).toBe(false)
+  })
+
+  it('respeta el plazo total aunque el stream no coopere con la señal de fetch', async () => {
+    const target = join(tmp('agenthub-timeout-'), 'partial.bin')
+    await expect(downloadAsset('https://downloads.example/asset', target, { minBytes: 1, timeoutMs: 50, idleTimeoutMs: 1000,
+      fetchFn: async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(1024)) } })),
+    })).rejects.toThrow('tiempo máximo')
+    expect(existsSync(target)).toBe(false)
+  })
+
+  it('rechaza un archivo truncado aunque supere el tamaño mínimo', async () => {
+    const target = join(tmp('agenthub-truncated-'), 'partial.bin')
+    await expect(downloadAsset('https://downloads.example/asset', target, { minBytes: 1,
+      fetchFn: async () => fakeResponse(Buffer.alloc(2048), { headers: { 'Content-Length': '4096' } }),
+    })).rejects.toThrow('incompleta')
+    expect(existsSync(target)).toBe(false)
+  })
+
+  it('informa bytes recibidos aun si el servidor no anuncia el tamaño', async () => {
+    const progress: unknown[] = []
+    await downloadAsset('https://downloads.example/asset', join(tmp('agenthub-unknown-size-'), 'asset'), { minBytes: 1,
+      fetchFn: async () => fakeResponse(Buffer.alloc(2048)), onProgress: value => progress.push(value),
+    })
+    expect(progress.at(-1)).toEqual({ receivedBytes: 2048, totalBytes: null })
   })
 })
 
@@ -201,6 +238,45 @@ describe('orquestación', () => {
     expect(await same.check()).toEqual({ state: 'up-to-date', version: '0.2.0' })
     const none = new AutoUpdater({ ...base, platform: 'darwin', execPath: '/x/Agent Hub.app/Contents/MacOS/Agent Hub', env: {}, fetchFn: async () => fakeResponse('{}', { status: 404 }) })
     expect(await none.check()).toEqual({ state: 'up-to-date', version: '0.2.0' })
+  })
+
+  it('no informa estar al día cuando la consulta de GitHub falla', async () => {
+    const updater = new AutoUpdater({ ...base, platform: 'linux', execPath: '/opt/agent-hub', env: {}, fetchFn: async () => { throw new Error('sin conexión') } })
+    expect(await updater.check()).toMatchObject({ state: 'failed', error: expect.stringContaining('conexión') })
+  })
+
+  it('anuncia la nueva versión antes de terminar la descarga y publica el progreso', async () => {
+    const root = tmp('agenthub-progress-'), bundle = join(root, 'Agent Hub.app')
+    mkdirSync(join(bundle, 'Contents', 'MacOS'), { recursive: true })
+    const progress: UpdateProgress[] = []
+    let finish!: (response: Response) => void
+    const updater = new AutoUpdater({ ...base, platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, tmpDir: root, minAssetBytes: 1,
+      onProgress: value => progress.push(value), fetchFn: async url => url.includes('/releases/latest') ? fakeResponse(release('0.3.0', ['AgentHub-arm64.dmg']))
+        : new Promise<Response>(resolve => { finish = resolve }),
+    })
+    const pending = updater.check()
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    expect(progress[0]).toMatchObject({ state: 'available', version: '0.3.0' })
+    expect(progress[1]).toMatchObject({ state: 'downloading', version: '0.3.0', receivedBytes: 0 })
+    finish(fakeResponse(Buffer.alloc(2048), { headers: { 'Content-Length': '2048' } }))
+    expect(await pending).toMatchObject({ state: 'downloaded' })
+    expect(progress.at(-1)).toMatchObject({ state: 'downloading', receivedBytes: 2048, totalBytes: 2048 })
+  })
+
+  it('permite reintentar después de una descarga detenida y limpia su directorio', async () => {
+    const root = tmp('agenthub-retry-'), bundle = join(root, 'Agent Hub.app')
+    mkdirSync(join(bundle, 'Contents', 'MacOS'), { recursive: true })
+    let attempts = 0
+    const updater = new AutoUpdater({ ...base, platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, tmpDir: root, minAssetBytes: 1,
+      downloadIdleTimeoutMs: 50, fetchFn: async url => {
+        if (url.includes('/releases/latest')) return fakeResponse(release('0.3.0', ['AgentHub-arm64.dmg']))
+        return ++attempts === 1 ? new Response(new ReadableStream()) : fakeResponse(Buffer.alloc(2048))
+      },
+    })
+    expect(await updater.check()).toMatchObject({ state: 'failed', error: expect.stringContaining('falta de datos') })
+    expect((await readdir(root)).filter(f => f.startsWith('agenthub-update-'))).toEqual([])
+    expect(await updater.check()).toMatchObject({ state: 'downloaded' })
+    expect(attempts).toBe(2)
   })
 
   it('sólo avisa cuando la instalación no puede autoinstalar (deb, zip) o falta el artefacto', async () => {

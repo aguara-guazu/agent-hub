@@ -124,3 +124,39 @@ it.each([['claude_code', 'Claude Code'], ['codex_cli', 'Codex'], ['kiro', 'Kiro 
   await change(container.querySelector<HTMLSelectElement>('select')!, 'opencode')
   expect(container.textContent).not.toContain('Modelo verificado')
 })
+
+it.each(['claude_code', 'codex_cli', 'kiro', 'opencode'])('prueba y guarda el esfuerzo de %s; lo reinicia al cambiar de modelo o proveedor', async provider => {
+  const path = provider === 'opencode' ? '/memory/opencode' : `/memory/extraction-cli/${provider}`
+  const mock = installFetch({ handle: call => {
+    if (call.path === '/memory/status') return jsonResponse(status)
+    if (call.path === path) return jsonResponse({ installed: true, models: [
+      { id: 'fixture/chat', name: 'Modelo con esfuerzo', reasoning_efforts: ['low', 'high'] },
+      { id: 'fixture/other', name: 'Modelo sin esfuerzo', reasoning_efforts: [] },
+    ] })
+    if (call.path === `${path}/test`) return jsonResponse({ ok: true, model: 'fixture/chat' })
+    if (call.path === '/memory/ai') return jsonResponse(call.body)
+    if (call.path === '/memory/call') return jsonResponse((call.body as any).operation === 'list_connectors' ? [] : { items: [], total: 0 })
+  } })
+  await mount('settings')
+  const providers = container.querySelector<HTMLSelectElement>('select')!
+  await change(providers, provider)
+  const models = [...container.querySelectorAll('select')].find(s => s.textContent?.includes('Modelo con esfuerzo'))!
+  await change(models, 'fixture/chat')
+  const effort = container.querySelector<HTMLSelectElement>('[aria-label="Esfuerzo de razonamiento"]')!
+  expect([...effort.options].map(o => o.value)).toEqual(['', 'low', 'high'])
+  await change(effort, 'high')
+  await act(async () => { [...container.querySelectorAll('button')].find(b => b.textContent === 'Probar modelo')!.click() }); await tick()
+  expect(mock.lastCall(`${path}/test`, 'POST')?.body).toEqual({ model: 'fixture/chat', reasoning_effort: 'high' })
+  expect(container.textContent).toContain('Modelo verificado')
+  await change(effort, 'low')
+  expect(container.textContent).not.toContain('Modelo verificado')
+  await act(async () => { models.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await tick()
+  expect(mock.lastCall('/memory/ai', 'PUT')?.body).toMatchObject({ extraction_reasoning_effort: 'low' })
+  await change(models, 'fixture/other')
+  expect(effort.value).toBe('')
+  expect([...effort.options].map(o => o.value)).toEqual([''])
+  await change(models, 'fixture/chat'); await change(effort, 'high')
+  await change(providers, 'ollama')
+  await act(async () => { providers.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await tick()
+  expect(mock.lastCall('/memory/ai', 'PUT')?.body).toMatchObject({ extraction_reasoning_effort: '' })
+})

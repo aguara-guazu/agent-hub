@@ -15,7 +15,7 @@ const server = createServer(async (req, res) => {
   if (req.headers.authorization !== `Basic ${Buffer.from(`agenthub:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}`) { res.writeHead(401).end(); return }
   res.setHeader('content-type', 'application/json')
   if (req.url === '/provider') res.end(JSON.stringify({ connected: ['fixture'], all: [
-    { id: 'fixture', name: 'Fixture', models: { 'chat/nested': { name: 'Chat' }, old: { status: 'deprecated' } } },
+    { id: 'fixture', name: 'Fixture', models: { 'chat/nested': { name: 'Chat', variants: { low: {}, high: {}, custom: {}, disabled: { disabled: true } } }, old: { status: 'deprecated' } } },
     { id: 'disconnected', models: { other: {} } },
   ] }))
   else if (req.url === '/session') res.end(JSON.stringify({ id: 'ses_fixture' }))

@@ -29,6 +29,9 @@ export interface TrayViewModel {
   autostartEnabled: boolean
   update?: TrayUpdateState | null
   checkingUpdates?: boolean
+  downloadingUpdate?: { version: string; receivedBytes: number; totalBytes: number | null } | null
+  installingUpdate?: string | null
+  updateError?: string | null
   /** Cliente de escritorio que sigue con una lista de herramientas vieja. */
   clientRestart?: { label: string } | null
 }
@@ -80,16 +83,27 @@ export function buildTrayTemplate(vm: TrayViewModel): TrayItem[] {
 
 function updateItems(vm: TrayViewModel): TrayItem[] {
   const items: TrayItem[] = []
-  if (vm.update?.state === 'ready') {
+  if (vm.installingUpdate) {
+    items.push({ label: `Instalando v${vm.installingUpdate}…`, enabled: false })
+  } else if (vm.downloadingUpdate) {
+    const { version, receivedBytes, totalBytes } = vm.downloadingUpdate
+    const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1)
+    const progress = totalBytes ? `${Math.min(100, Math.floor(receivedBytes / totalBytes * 100))}% · ${mb(receivedBytes)} / ${mb(totalBytes)} MB` : `${mb(receivedBytes)} MB`
+    items.push({ label: `Descargando v${version}… ${progress}`, enabled: false })
+    items.push({ id: 'open-release', label: 'Ver la nueva versión…', type: 'normal' })
+  } else if (vm.update?.state === 'ready') {
     items.push({ id: 'apply-update', label: `Reiniciar para actualizar a v${vm.update.version}`, type: 'normal' })
   } else if (vm.update?.state === 'available') {
     items.push({ id: 'open-release', label: `Nueva versión v${vm.update.version} disponible…`, type: 'normal' })
   }
+  if (vm.updateError) items.push({ label: vm.updateError, enabled: false })
+  const busy = Boolean(vm.checkingUpdates || vm.downloadingUpdate || vm.installingUpdate)
   items.push({
     id: 'check-updates',
-    label: vm.checkingUpdates ? 'Buscando actualizaciones…' : 'Buscar actualizaciones',
+    label: vm.installingUpdate ? 'Actualización en curso…' : vm.downloadingUpdate ? 'Descarga en curso…'
+      : vm.checkingUpdates ? 'Buscando actualizaciones…' : vm.updateError ? 'Reintentar actualización' : 'Buscar actualizaciones',
     type: 'normal',
-    enabled: !vm.checkingUpdates,
+    enabled: !busy,
   })
   return items
 }

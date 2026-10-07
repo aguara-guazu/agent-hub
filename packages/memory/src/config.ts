@@ -8,6 +8,7 @@ import { isExtractionCli, type ExtractionCli } from './cli-extraction.js'
 export interface AIConfig {
   extraction: 'disabled' | 'deepseek' | 'ollama' | 'opencode' | ExtractionCli
   extraction_model: string
+  extraction_reasoning_effort: string
   embeddings_enabled: boolean
   embedding_model: string
   ollama_url: string
@@ -18,7 +19,7 @@ export interface AIConfig {
   project_auto_assign: boolean
 }
 export const defaultAI: AIConfig = {
-  extraction: 'disabled', extraction_model: 'deepseek-flash', embeddings_enabled: false,
+  extraction: 'disabled', extraction_model: 'deepseek-flash', extraction_reasoning_effort: '', embeddings_enabled: false,
   embedding_model: 'nomic-embed-text', ollama_url: 'http://127.0.0.1:11434', remote_processing_enabled: false, identity_auto_merge: true,
   project_auto_assign: true,
 }

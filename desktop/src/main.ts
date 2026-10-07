@@ -10,7 +10,7 @@ import { windowOptions, isAllowedNavigation } from './window.js'
 import { buildTrayTemplate, TRAY_TOOLTIP, type TrayAction } from './tray.js'
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus } from './ipc.js'
-import { AutoUpdater, CHECK_INTERVAL_MS, type UpdateStatus } from './updater.js'
+import { AutoUpdater, CHECK_INTERVAL_MS, type UpdateStatus, type UpdateProgress } from './updater.js'
 import { defaultClientDeps, isClientRunning, restartClient, supportsClientRestart } from './clients.js'
 import { DaemonApp, loadConfig } from '@agenthub/daemon'
 
@@ -40,6 +40,10 @@ let pendingUpdate: Extract<UpdateStatus, { state: 'downloaded' }> | null = null
 /** Hay versión nueva pero esta instalación (zip, .deb, bundle sin permisos) sólo puede avisar. */
 let availableUpdate: { version: string; page: string } | null = null
 let checkingUpdates = false
+let downloadingUpdate: Extract<UpdateProgress, { state: 'downloading' }> | null = null
+let installingUpdate: string | null = null
+let updateError: string | null = null
+let lastDownloadRefresh = 0
 let relaunchAfterQuit = false
 
 /** Forma de `GET /api/local/pending-restarts`, calcada de `packages/core/src/restart.ts`. */
@@ -151,6 +155,16 @@ const updater = new AutoUpdater({
   ...(process.env.AGENTHUB_UPDATE_API ? { apiBase: process.env.AGENTHUB_UPDATE_API } : {}),
   ...(process.env.AGENTHUB_UPDATE_REPO ? { repo: process.env.AGENTHUB_UPDATE_REPO } : {}),
   log: (line) => console.error(line),
+  onProgress: progress => {
+    availableUpdate = { version: progress.version, page: progress.page }
+    if (progress.state === 'downloading') {
+      downloadingUpdate = progress
+      const now = Date.now()
+      if (progress.receivedBytes > 0 && progress.receivedBytes !== progress.totalBytes && now - lastDownloadRefresh < 500) return
+      lastDownloadRefresh = now
+    }
+    refreshTray()
+  },
 })
 
 function notify(title: string, body: string): void {
@@ -167,8 +181,14 @@ function notify(title: string, body: string): void {
  * que se cierre o hasta que la persona lo elija en el menú.
  */
 async function checkForUpdates(reason: 'startup' | 'timer' | 'manual'): Promise<void> {
-  if (checkingUpdates || quitting) return
+  if (checkingUpdates || installingUpdate || quitting) return
+  if (pendingUpdate) {
+    if (reason === 'manual') notify('Actualización lista', `Agent Hub v${pendingUpdate.version}. Elegí «Reiniciar para actualizar» en el menú de la barra.`)
+    return
+  }
   checkingUpdates = true
+  updateError = null
+  downloadingUpdate = null
   refreshTray()
   try {
     const status = await updater.check()
@@ -184,20 +204,25 @@ async function checkForUpdates(reason: 'startup' | 'timer' | 'manual'): Promise<
       availableUpdate = { version: status.version, page: status.page }
       if (reason !== 'timer') notify('Nueva versión disponible', `Agent Hub v${status.version}. Esta instalación no se actualiza sola: abrí la release desde el menú de la barra.`)
     } else if (status.state === 'failed') {
+      updateError = status.error
       console.error(`[updater] v${status.version}: ${status.error}`)
-      if (reason === 'manual') notify('No se pudo descargar la actualización', status.error)
+      if (reason === 'manual') notify('No se pudo completar la actualización', status.error)
     } else if (reason === 'manual') {
       notify('Agent Hub está al día', `Versión ${app.getVersion()}.`)
     }
   } finally {
     checkingUpdates = false
+    downloadingUpdate = null
     refreshTray()
   }
 }
 
 async function applyUpdate(): Promise<void> {
   const update = pendingUpdate
-  if (!update || quitting) return
+  if (!update || installingUpdate || quitting) return
+  installingUpdate = update.version
+  downloadingUpdate = null
+  refreshTray()
   try {
     const outcome = await updater.apply(update)
     relaunchAfterQuit = outcome === 'relaunch'
@@ -206,8 +231,11 @@ async function applyUpdate(): Promise<void> {
   } catch (error) {
     pendingUpdate = null
     const message = error instanceof Error ? error.message : String(error)
+    updateError = message
     console.error('[updater] la instalación falló:', message)
     notify('No se pudo instalar la actualización', message)
+  } finally {
+    installingUpdate = null
     refreshTray()
   }
 }
@@ -328,6 +356,9 @@ function refreshTray(): void {
     autostartEnabled: safeAutostart(),
     update: pendingUpdate ? { version: pendingUpdate.version, state: 'ready' } : availableUpdate ? { version: availableUpdate.version, state: 'available' } : null,
     checkingUpdates,
+    downloadingUpdate,
+    installingUpdate,
+    updateError,
     clientRestart: pendingClientRestart ? { label: 'Reiniciar Claude Desktop (cambios sin cargar)' } : null,
   })
   tray.setContextMenu(Menu.buildFromTemplate(template.map((item): Electron.MenuItemConstructorOptions => {

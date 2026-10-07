@@ -85,12 +85,12 @@ export class MemoryAI {
     this.signal?.throwIfAborted()
     if (isExtractionCli(config.extraction)) {
       check(config.remote_processing_enabled, 'El procesamiento remoto está desactivado', 409)
-      const result = await this.cliExtraction.extract(config.extraction, config.extraction_model, system, content, z.toJSONSchema(schema), this.signal)
+      const result = await this.cliExtraction.extract(config.extraction, config.extraction_model, system, content, z.toJSONSchema(schema), this.signal, config.extraction_reasoning_effort)
       return { value: decode ? decode(result.value) : parse(schema, result.value), usage: result.usage }
     }
     if (config.extraction === 'opencode') {
       check(config.remote_processing_enabled, 'El procesamiento remoto está desactivado', 409)
-      const result = await this.openCode.extract(config.extraction_model, system, content, z.toJSONSchema(schema), this.signal)
+      const result = await this.openCode.extract(config.extraction_model, system, content, z.toJSONSchema(schema), this.signal, config.extraction_reasoning_effort)
       return { value: decode ? decode(result.value) : parse(schema, result.value), usage: result.usage }
     }
     if (config.extraction === 'deepseek') {

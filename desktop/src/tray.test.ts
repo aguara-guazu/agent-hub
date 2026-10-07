@@ -61,4 +61,23 @@ describe('plantilla de tray', () => {
     expect(items[0]?.label).toMatch(/fallo/i)
     expect(items[0]?.enabled).toBe(false)
   })
+
+  it('distingue descargar e instalar de buscar actualizaciones', () => {
+    const base = { coreState: 'running' as const, windowVisible: true, autostartEnabled: false, checkingUpdates: true }
+    const downloading = buildTrayTemplate({ ...base, downloadingUpdate: { version: '0.7.1', receivedBytes: 50 * 1024 * 1024, totalBytes: 100 * 1024 * 1024 } })
+    expect(downloading.some(item => item.label === 'Descargando v0.7.1… 50% · 50.0 / 100.0 MB')).toBe(true)
+    expect(downloading.find(item => item.id === 'check-updates')).toMatchObject({ label: 'Descarga en curso…', enabled: false })
+    expect(actions(downloading)).toContain('open-release')
+    const unknown = buildTrayTemplate({ ...base, downloadingUpdate: { version: '0.7.1', receivedBytes: 1024 * 1024, totalBytes: null } })
+    expect(unknown.some(item => item.label === 'Descargando v0.7.1… 1.0 MB')).toBe(true)
+    const installing = buildTrayTemplate({ ...base, installingUpdate: '0.7.1', update: { state: 'ready', version: '0.7.1' } })
+    expect(installing.some(item => item.label === 'Instalando v0.7.1…')).toBe(true)
+    expect(actions(installing)).not.toContain('apply-update')
+  })
+
+  it('conserva el error visible y habilita el reintento', () => {
+    const items = buildTrayTemplate({ coreState: 'running', windowVisible: true, autostartEnabled: false, updateError: 'La descarga se detuvo.' })
+    expect(items.some(item => item.label === 'La descarga se detuvo.')).toBe(true)
+    expect(items.find(item => item.id === 'check-updates')).toMatchObject({ label: 'Reintentar actualización', enabled: true })
+  })
 })
