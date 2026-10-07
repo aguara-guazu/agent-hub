@@ -255,7 +255,7 @@ describe('memoria con SQLite', () => {
     await inferIdentities(store, mockAI, source, true, 'identity-test', async () => {}, new AbortController().signal)
     const old = (await operations.call('list_identity_proposals', {})).items[0]
     const original = await store.original(meeting.version_id) as any
-    await store.ingest({ ...original, metadata: { revision: 'updated' } })
+    await store.ingest({ ...original, fragments: original.fragments.map((f: any) => ({ ...f, text: `${f.text} Gracias.` })) })
     const current = (await db.query('SELECT s.*,e.title,e.data FROM sources s JOIN entities e ON e.id=s.entity_id WHERE s.id=$1', [source.id]))[0]!
     await inferIdentities(store, mockAI, current, true, 'identity-test', async () => {}, new AbortController().signal)
     const proposals = await operations.call('list_identity_proposals', {})
