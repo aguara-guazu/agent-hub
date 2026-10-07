@@ -6,7 +6,7 @@ import { MemoryDatabase, type Sql } from './database.js'
 import { check, parse, id, instant, entityInput, entityPatch, fieldsSchema, importInput, linkInput, recordInput,
   type Entity, type EntityKind, type Fragment, type ImportInput, type CollectionField } from './contracts.js'
 import { parseTranscript, splitText } from './transcript.js'
-import { unifyByEmail } from './people.js'
+import { isPlaceholderName, unifyByEmail } from './people.js'
 import { effectiveJiraSite, jiraSiteUrl } from './jira-settings.js'
 
 export function canonical(value: unknown): string {
@@ -15,6 +15,8 @@ export function canonical(value: unknown): string {
   return JSON.stringify(value) ?? 'null'
 }
 export function hash(value: unknown): string { return createHash('sha256').update(canonical(value)).digest('hex') }
+/** Version identity of an import: its kind and fragments. Provider payloads (Docs revision IDs, Calendar etags, participant enrichment) change between reads of the same content. */
+function contentKey(input: { kind: string; fragments: unknown[] }): string { return hash({ kind: input.kind, fragments: input.fragments }) }
 export async function requireEntity(sql: Sql, entityId: string, kind?: EntityKind): Promise<Entity> {
   parse(id, entityId)
   const row = (await sql.query<Entity>('SELECT * FROM entities WHERE id=$1', [entityId]))[0]
@@ -241,12 +243,9 @@ export class MemoryStore {
     const parts = input.fragments.length ? input.fragments : input.kind === 'meeting' ? parseTranscript(input.text) : splitText(input.text)
     check(parts.length > 0 || input.kind === 'event', 'El contenido está vacío')
     const normalized = { ...input, fragments: parts }
-    const digest = hash(normalized)
+    const digest = hash(normalized), key = contentKey(normalized)
     const directory = join(this.directory, 'originals')
-    await mkdir(directory, { recursive: true, mode: 0o700 })
     const originalPath = `${digest}.json`
-    // Content-addressed immutable file; orphan files from failed transactions are collected on explicit maintenance.
-    await writeFile(join(directory, originalPath), canonical(normalized), { mode: 0o600, flag: 'wx' }).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error })
     return this.db.transaction(async sql => {
       await validateProjects(sql, input.project_ids)
       let source = (await sql.query('SELECT * FROM sources WHERE provider=$1 AND account=$2 AND external_id=$3', [input.provider, input.account, input.external_id]))[0]
@@ -267,14 +266,21 @@ export class MemoryStore {
       // Identity enrichment must run even when the source text is unchanged.
       const participants = new Map<string, string>()
       for (const person of input.participants) participants.set(person.external_id, await this.resolveParticipant(sql, input, person))
-      const existing = (await sql.query('SELECT id FROM versions WHERE source_id=$1 AND content_hash=$2', [source.id, digest]))[0]
+      // The current version is compared first: older versions with the same content (from provider payload changes) must not become current again.
+      const existing = await this.matchCurrentVersion(sql, source.current_version_id, key)
+        ?? (await sql.query<{ id: string }>(`SELECT id FROM versions WHERE source_id=$1 AND (content_hash=$2 OR metadata->>'content_key'=$3)
+          ORDER BY created_at DESC LIMIT 1`, [source.id, digest, key]))[0]
       if (existing && existing.id === source.current_version_id) {
         await sql.query("UPDATE sources SET synced_at=now(),status='active' WHERE id=$1", [source.id])
         return { entity_id: source.entity_id as string, source_id: source.id as string, version_id: existing.id as string, duplicate: true, fragments: parts.length }
       }
       const versionId: string = existing?.id ?? randomUUID()
       if (!existing) {
-        await sql.query('INSERT INTO versions(id,source_id,content_hash,original_path,metadata) VALUES($1,$2,$3,$4,$5)', [versionId, source.id, digest, originalPath, JSON.stringify(input.metadata)])
+        await mkdir(directory, { recursive: true, mode: 0o700 })
+        // Content-addressed immutable file, written only for a new version; orphan files from failed transactions are collected on explicit maintenance.
+        await writeFile(join(directory, originalPath), canonical(normalized), { mode: 0o600, flag: 'wx' }).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error })
+        await sql.query('INSERT INTO versions(id,source_id,content_hash,original_path,metadata) VALUES($1,$2,$3,$4,$5)',
+          [versionId, source.id, digest, originalPath, JSON.stringify({ ...input.metadata, content_key: key })])
         const corrections = source.current_version_id ? await sql.query(`SELECT f.*,COALESCE((SELECT json_group_array(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS "project_ids:json"
           FROM fragments f WHERE f.version_id=$1 AND (f.metadata->>'manual_assignment') IN (1,'true')`, [source.current_version_id]) : []
         for (const [ordinal, part] of parts.entries()) {
@@ -307,11 +313,33 @@ export class MemoryStore {
       if (source.current_version_id && source.current_version_id !== versionId) {
         await sql.query(`UPDATE entities SET data=jsonb_merge(data,'{"stale":true}') WHERE id IN
           (SELECT ev.entity_id FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id WHERE f.version_id=$1)`, [source.current_version_id])
+        // A version that becomes current again keeps its extraction key, so its facts are not re-extracted: they must stop being stale.
+        if (existing) await sql.query(`UPDATE entities SET data=jsonb_merge(data,'{"stale":false}') WHERE id IN
+          (SELECT ev.entity_id FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id WHERE f.version_id=$1)`, [versionId])
       }
       await audit(sql, source.entity_id, 'imported', actor, { previous_version: source.current_version_id }, { version_id: versionId, fragments: parts.length })
       await this.enqueue('process', { version_id: versionId, ...(indexOnly ? { index_only: true } : {}) }, `process:${versionId}`, sql)
       return { entity_id: source.entity_id as string, source_id: source.id as string, version_id: versionId, duplicate: false, fragments: parts.length }
     })
+  }
+
+  /** Versions stored before content keys get theirs from the original on first comparison, so an unchanged source does not get a new version. */
+  private async matchCurrentVersion(sql: Sql, versionId: string | null, key: string): Promise<{ id: string } | undefined> {
+    if (!versionId) return undefined
+    const row = (await sql.query("SELECT original_path,metadata->>'content_key' AS content_key FROM versions WHERE id=$1", [versionId]))[0]
+    if (!row) return undefined
+    let storedKey: string | undefined = row.content_key ?? undefined
+    if (!storedKey && /^[a-f0-9]{64}\.json$/.test(row.original_path)) {
+      const original = await readFile(join(this.directory, 'originals', row.original_path), 'utf8').catch(error => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+        throw error
+      })
+      if (original !== undefined) {
+        storedKey = contentKey(JSON.parse(original))
+        await sql.query("UPDATE versions SET metadata=json_set(metadata,'$.content_key',$2) WHERE id=$1", [versionId, storedKey])
+      }
+    }
+    return storedKey === key ? { id: versionId } : undefined
   }
 
   async refreshParticipants(input: Pick<ImportInput, 'provider' | 'account'>, participants: ImportInput['participants']) {
@@ -330,12 +358,14 @@ export class MemoryStore {
       // A provider-verified email replaces an AI inference, never a human correction.
       if (!data.manual_email && (!data.email || data.email === person.email?.toLowerCase() || (data.email_source === 'ai_auto_confirmed' && person.email))) Object.assign(data, emailData)
       if (person.identity_verified) { data.identity_verified = true; data.identity_status = 'verified' }
-      if (canonical(data) !== canonical(entity.data) || (!data.manual_title && person.name && entity.title !== person.name)) {
-        await sql.query('UPDATE entities SET title=$2,data=$3,updated_at=now() WHERE id=$1', [entity.id, data.manual_title ? entity.title : person.name || entity.title, JSON.stringify(data)])
+      // A provider read without a display name ("Sin identificar") must not rename a profile that already has one.
+      const name = isPlaceholderName(person.name) && !isPlaceholderName(entity.title) ? entity.title : person.name
+      if (canonical(data) !== canonical(entity.data) || (!data.manual_title && name && entity.title !== name)) {
+        await sql.query('UPDATE entities SET title=$2,data=$3,updated_at=now() WHERE id=$1', [entity.id, data.manual_title ? entity.title : name || entity.title, JSON.stringify(data)])
         await audit(sql, entity.id, 'identity.refreshed', `connector:${input.provider}`, entity.data, data)
       }
       await sql.query('UPDATE identities SET display_name=$4,email=COALESCE($5,email),verified=(verified OR $6) WHERE provider=$1 AND account=$2 AND external_id=$3',
-        [input.provider, input.account, person.external_id, person.name, person.email ?? null, person.identity_verified])
+        [input.provider, input.account, person.external_id, isPlaceholderName(person.name) ? existing.display_name : person.name, person.email ?? null, person.identity_verified])
       if (data.email && data.email !== entity.data.email) return (await unifyByEmail(sql, entity.id, `connector:${input.provider}`, { reason: 'provider_email' })).person_id
       return existing.person_id as string
     }
