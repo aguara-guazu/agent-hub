@@ -69,7 +69,7 @@ async function recordEvent(sql: Sql, taskId: string, action: string, actor: stri
 
 async function projectsByJiraKey(sql: Sql) {
   const { default_site_url } = await getJiraSettings(sql)
-  const rows = await sql.query("SELECT id,title,data->>'jira_project_key' AS key,COALESCE(NULLIF(data->>'jira_site_url',''),$1::text) AS site FROM entities WHERE kind='project' AND COALESCE(data->>'jira_project_key','')<>''",[default_site_url])
+  const rows = await sql.query("SELECT id,title,data->>'jira_project_key' AS key,COALESCE(NULLIF(data->>'jira_site_url',''),$1) AS site FROM entities WHERE kind='project' AND COALESCE(data->>'jira_project_key','')<>''",[default_site_url])
   return rows
 }
 
@@ -81,8 +81,6 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
     const explicitSite = explicit ? await effectiveJiraSite(sql,explicit.data.jira_site_url) : null
     const summary = { received: issues.length, created: 0, updated: 0, status_changed: 0, unchanged: 0, unmatched: [] as string[], tasks: [] as Record<string, unknown>[] }
     for (const issue of [...issues].sort((a, b) => a.key.localeCompare(b.key))) {
-      // Concurrent agent calls may both observe a missing row; serialize before the first insert too.
-      await sql.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`jira-task:${issue.key}`])
       const prefix = issue.key.slice(0, issue.key.lastIndexOf('-'))
       const candidates = byKey.filter(p => p.key === prefix && (!issue.site || !p.site || p.site === issue.site))
       const owner = explicit && (!explicit.data.jira_project_key || explicit.data.jira_project_key === prefix)
@@ -93,11 +91,11 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
       const url = issue.url ?? (owner.site ? `${owner.site}/browse/${encodeURIComponent(issue.key)}` : null)
       const site = issue.site ?? owner.site ?? ''
       const status = mapJiraStatus(issue.status, issue.category)
-      const current = (await sql.query("SELECT * FROM tasks WHERE kind='jira' AND external_key=$1 AND (external_site=$2 OR (external_site='' AND project_id=$3)) FOR UPDATE", [issue.key, site, owner.id]))[0]
+      const current = (await sql.query("SELECT * FROM tasks WHERE kind='jira' AND external_key=$1 AND (external_site=$2 OR (external_site='' AND project_id=$3))", [issue.key, site, owner.id]))[0]
       if (!current) {
         const taskId = randomUUID()
         await sql.query(`INSERT INTO tasks(id,project_id,kind,title,description,status,origin,external_key,external_status,external_category,external_url,external_updated_at,
-          issue_type,priority,assignee,created_by,updated_by,closed_at,external_site) VALUES($1,$2,'jira',$3,$4,$5,'jira',$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,CASE WHEN $5 IN ('done','dropped') THEN now() END,$15)`,
+          issue_type,priority,assignee,created_by,updated_by,closed_at,external_site) VALUES($1,$2,'jira',$3,$4,$5,'jira',$6,$7,$8,$9,ts($10),$11,$12,$13,$14,$14,CASE WHEN $5 IN ('done','dropped') THEN now() END,$15)`,
         [taskId, owner.id, issue.summary, issue.description ?? '', status, issue.key, issue.status, issue.category, url, issue.updated, issue.issue_type, issue.priority, issue.assignee, actor, site])
         await recordEvent(sql, taskId, 'created', actor, null, status, { jira_status: issue.status })
         summary.created++; summary.tasks.push({ id: taskId, key: issue.key, status, project_id: owner.id })
@@ -110,11 +108,11 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
         || (issue.description !== null && current.description !== issue.description) || current.issue_type !== issue.issue_type
         || current.external_category !== issue.category || (url !== null && current.external_url !== url) || current.external_site !== site
       if (!changed) {
-        if (issue.updated) await sql.query('UPDATE tasks SET external_updated_at=$2 WHERE id=$1', [current.id, issue.updated])
+        if (issue.updated) await sql.query('UPDATE tasks SET external_updated_at=ts($2) WHERE id=$1', [current.id, issue.updated])
         summary.unchanged++; continue
       }
-      await sql.query(`UPDATE tasks SET project_id=$2,title=$3,description=CASE WHEN $4::text IS NULL THEN description ELSE $4 END,status=$5,external_status=$6,external_category=$7,
-        external_url=COALESCE($8,external_url),external_updated_at=COALESCE($9,external_updated_at),issue_type=$10,priority=$11,assignee=$12,updated_by=$13,updated_at=now(),
+      await sql.query(`UPDATE tasks SET project_id=$2,title=$3,description=CASE WHEN $4 IS NULL THEN description ELSE $4 END,status=$5,external_status=$6,external_category=$7,
+        external_url=COALESCE($8,external_url),external_updated_at=COALESCE(ts($9),external_updated_at),issue_type=$10,priority=$11,assignee=$12,updated_by=$13,updated_at=now(),
         closed_at=CASE WHEN $5 IN ('done','dropped') THEN COALESCE(closed_at,now()) ELSE NULL END,external_site=$14 WHERE id=$1`,
       [current.id, owner.id, issue.summary, issue.description, status, issue.status, issue.category, url, issue.updated, issue.issue_type, issue.priority, issue.assignee, actor, site])
       if (current.status !== status || current.external_status !== issue.status) {
@@ -171,7 +169,7 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
         totals.unmatched.push(...result.unmatched); received += result.received
       })
       totals.projects.push({ id: project.id, title: project.title, key, received, connection: 'mcp' })
-      await store.db.query("UPDATE entities SET data=data || jsonb_build_object('jira_synced_at',now()::text) WHERE id=$1", [project.id])
+      await store.db.query("UPDATE entities SET data=jsonb_merge(data,json_object('jira_synced_at',now())) WHERE id=$1", [project.id])
       continue
     }
     if (!access) throw noAccess(key)
@@ -190,7 +188,7 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
     for (const field of ['received', 'created', 'updated', 'status_changed', 'unchanged'] as const) totals[field] += result[field]
     totals.unmatched.push(...result.unmatched)
     totals.projects.push({ id: project.id, title: project.title, key, received: result.received })
-    await store.db.query("UPDATE entities SET data=data || jsonb_build_object('jira_synced_at',now()::text) WHERE id=$1", [project.id])
+    await store.db.query("UPDATE entities SET data=jsonb_merge(data,json_object('jira_synced_at',now())) WHERE id=$1", [project.id])
   }
   return totals
 }
@@ -246,10 +244,10 @@ export async function saveTask(store: MemoryStore, vault: Vault, raw: unknown, a
       [randomUUID(), input.project_id ?? null, input.title, input.description ?? '', status, input.origin ?? 'manual', input.code_ref ?? null, input.source_entity_id ?? null, actor]))[0]!
       await recordEvent(sql, task.id, 'created', actor, null, status, input.note ? { note: input.note } : {})
     } else {
-      const before = (await sql.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [input.id]))[0]!
+      const before = (await sql.query('SELECT * FROM tasks WHERE id=$1', [input.id]))[0]!
       const status = input.status ?? before.status
-      task = (await sql.query(`UPDATE tasks SET project_id=CASE WHEN $2::boolean THEN $3 ELSE project_id END,title=COALESCE($4,title),description=COALESCE($5,description),status=$6,
-        origin=COALESCE($7,origin),code_ref=CASE WHEN $8::boolean THEN $9 ELSE code_ref END,source_entity_id=CASE WHEN $10::boolean THEN $11 ELSE source_entity_id END,
+      task = (await sql.query(`UPDATE tasks SET project_id=CASE WHEN $2 THEN $3 ELSE project_id END,title=COALESCE($4,title),description=COALESCE($5,description),status=$6,
+        origin=COALESCE($7,origin),code_ref=CASE WHEN $8 THEN $9 ELSE code_ref END,source_entity_id=CASE WHEN $10 THEN $11 ELSE source_entity_id END,
         updated_by=$12,updated_at=now(),closed_at=CASE WHEN $6 IN ('done','dropped') THEN COALESCE(closed_at,now()) ELSE NULL END WHERE id=$1 RETURNING *`,
       [input.id, input.project_id !== undefined, input.project_id ?? null, input.title ?? null, input.description ?? null, status, input.origin ?? null,
         input.code_ref !== undefined, input.code_ref ?? null, input.source_entity_id !== undefined, input.source_entity_id ?? null, actor]))[0]!
@@ -269,15 +267,15 @@ export async function listTasks(store: MemoryStore, raw: unknown) {
   const input = parse(listTasksInput, raw)
   if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
   const params = [input.project_id ?? null, input.kind ?? null, input.status === 'open' ? OPEN : input.status ? [input.status] : null, input.query ?? '']
-  const where = `($1::uuid IS NULL OR t.project_id=$1) AND ($2::text IS NULL OR t.kind=$2) AND ($3::text[] IS NULL OR t.status=ANY($3))
-    AND ($4::text='' OR t.title ILIKE '%'||$4||'%' OR t.external_key ILIKE $4||'%' OR t.description ILIKE '%'||$4||'%')`
+  const where = `($1 IS NULL OR t.project_id=$1) AND ($2 IS NULL OR t.kind=$2) AND ($3 IS NULL OR t.status IN (SELECT value FROM json_each($3)))
+    AND ($4='' OR ilike(t.title,'%'||$4||'%') OR ilike(t.external_key,$4||'%') OR ilike(t.description,'%'||$4||'%'))`
   const items = await store.db.query(`SELECT t.*,p.title AS project_title,src.title AS source_title,
-    (SELECT count(*)::int FROM task_evidence te WHERE te.task_id=t.id) AS evidence_count,
-    (SELECT jsonb_build_object('action',ev.action,'actor',ev.actor,'detail',ev.detail,'created_at',ev.created_at) FROM task_events ev WHERE ev.task_id=t.id ORDER BY ev.id DESC LIMIT 1) AS last_event
+    (SELECT count(*) FROM task_evidence te WHERE te.task_id=t.id) AS evidence_count,
+    (SELECT json_object('action',ev.action,'actor',ev.actor,'detail',json(ev.detail),'created_at',ev.created_at) FROM task_events ev WHERE ev.task_id=t.id ORDER BY ev.id DESC LIMIT 1) AS "last_event:json"
     FROM tasks t LEFT JOIN entities p ON p.id=t.project_id LEFT JOIN entities src ON src.id=t.source_entity_id WHERE ${where}
     ORDER BY CASE t.status WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,t.updated_at DESC,t.id LIMIT $5 OFFSET $6`, [...params, input.limit, input.offset])
-  const total = (await store.db.query(`SELECT count(*)::int AS total FROM tasks t WHERE ${where}`, params))[0]!.total
-  const counts = await store.db.query(`SELECT kind,status,count(*)::int AS count FROM tasks t WHERE ($1::uuid IS NULL OR t.project_id=$1) GROUP BY kind,status`, [input.project_id ?? null])
+  const total = (await store.db.query(`SELECT count(*) AS total FROM tasks t WHERE ${where}`, params))[0]!.total
+  const counts = await store.db.query(`SELECT kind,status,count(*) AS count FROM tasks t WHERE ($1 IS NULL OR t.project_id=$1) GROUP BY kind,status`, [input.project_id ?? null])
   return { items, total, limit: input.limit, offset: input.offset, counts }
 }
 
@@ -299,25 +297,26 @@ export async function taskStats(store: MemoryStore, raw: unknown) {
   if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
   const scope = [input.project_id ?? null]
   const [byStatus, weekly, leadTime, stale, assignees, origins, agents, recent] = await Promise.all([
-    store.db.query('SELECT kind,status,count(*)::int AS count FROM tasks WHERE ($1::uuid IS NULL OR project_id=$1) GROUP BY kind,status ORDER BY kind,status', scope),
-    store.db.query(`WITH weeks AS (SELECT generate_series(date_trunc('week',now())-make_interval(weeks=>$2-1),date_trunc('week',now()),interval '1 week') AS week)
-      SELECT w.week,
-        (SELECT count(*)::int FROM task_events ev JOIN tasks t ON t.id=ev.task_id WHERE ($1::uuid IS NULL OR t.project_id=$1) AND ev.action='created' AND date_trunc('week',ev.created_at)=w.week) AS created,
-        (SELECT count(*)::int FROM task_events ev JOIN tasks t ON t.id=ev.task_id WHERE ($1::uuid IS NULL OR t.project_id=$1) AND ev.status_after IN ('done','dropped')
-          AND COALESCE(ev.status_before,'') NOT IN ('done','dropped') AND date_trunc('week',ev.created_at)=w.week) AS closed
+    store.db.query('SELECT kind,status,count(*) AS count FROM tasks WHERE ($1 IS NULL OR project_id=$1) GROUP BY kind,status ORDER BY kind,status', scope),
+    // Weeks start on Monday 00:00 UTC; date(x,'weekday 0','-6 days') is the Monday of x's week.
+    store.db.query(`WITH RECURSIVE weeks(week,n) AS (SELECT date('now','weekday 0','-6 days'),1 UNION ALL SELECT date(week,'-7 days'),n+1 FROM weeks WHERE n<$2)
+      SELECT strftime('%Y-%m-%dT%H:%M:%fZ',w.week) AS week,
+        (SELECT count(*) FROM task_events ev JOIN tasks t ON t.id=ev.task_id WHERE ($1 IS NULL OR t.project_id=$1) AND ev.action='created' AND date(ev.created_at,'weekday 0','-6 days')=w.week) AS created,
+        (SELECT count(*) FROM task_events ev JOIN tasks t ON t.id=ev.task_id WHERE ($1 IS NULL OR t.project_id=$1) AND ev.status_after IN ('done','dropped')
+          AND COALESCE(ev.status_before,'') NOT IN ('done','dropped') AND date(ev.created_at,'weekday 0','-6 days')=w.week) AS closed
       FROM weeks w ORDER BY w.week`, [...scope, input.weeks]),
-    store.db.query(`SELECT kind,round(avg(EXTRACT(EPOCH FROM closed_at-created_at))/86400,1)::float8 AS avg_days,count(*)::int AS closed
-      FROM tasks WHERE ($1::uuid IS NULL OR project_id=$1) AND status='done' AND closed_at IS NOT NULL GROUP BY kind`, scope),
-    store.db.query(`SELECT id,kind,title,external_key,status,updated_at,count(*) OVER()::int AS total FROM tasks WHERE ($1::uuid IS NULL OR project_id=$1) AND status=ANY($2)
-      AND updated_at<now()-interval '21 days' ORDER BY updated_at LIMIT 20`, [...scope, OPEN]),
-    store.db.query(`SELECT COALESCE(assignee,'Sin asignar') AS assignee,count(*) FILTER(WHERE status=ANY($2))::int AS open,count(*) FILTER(WHERE status='done')::int AS done
-      FROM tasks WHERE ($1::uuid IS NULL OR project_id=$1) AND kind='jira' GROUP BY 1 ORDER BY 2 DESC,1 LIMIT 20`, [...scope, OPEN]),
-    store.db.query(`SELECT origin,count(*) FILTER(WHERE status=ANY($2))::int AS open,count(*) FILTER(WHERE status='done')::int AS done
-      FROM tasks WHERE ($1::uuid IS NULL OR project_id=$1) AND kind='pending' GROUP BY 1 ORDER BY 2 DESC`, [...scope, OPEN]),
-    store.db.query(`SELECT agent_label,cli_kind,count(*)::int AS notes,max(updated_at) AS last_note FROM agent_notes
-      WHERE ($1::uuid IS NULL OR project_id=$1) AND created_at>now()-interval '30 days' GROUP BY 1,2 ORDER BY 4 DESC LIMIT 20`, scope),
+    store.db.query(`SELECT kind,round(avg(julianday(closed_at)-julianday(created_at)),1) AS avg_days,count(*) AS closed
+      FROM tasks WHERE ($1 IS NULL OR project_id=$1) AND status='done' AND closed_at IS NOT NULL GROUP BY kind`, scope),
+    store.db.query(`SELECT id,kind,title,external_key,status,updated_at,count(*) OVER() AS total FROM tasks WHERE ($1 IS NULL OR project_id=$1) AND status IN (SELECT value FROM json_each($2))
+      AND updated_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-21 days') ORDER BY updated_at LIMIT 20`, [...scope, OPEN]),
+    store.db.query(`SELECT COALESCE(assignee,'Sin asignar') AS assignee,count(*) FILTER(WHERE status IN (SELECT value FROM json_each($2))) AS open,count(*) FILTER(WHERE status='done') AS done
+      FROM tasks WHERE ($1 IS NULL OR project_id=$1) AND kind='jira' GROUP BY 1 ORDER BY 2 DESC,1 LIMIT 20`, [...scope, OPEN]),
+    store.db.query(`SELECT origin,count(*) FILTER(WHERE status IN (SELECT value FROM json_each($2))) AS open,count(*) FILTER(WHERE status='done') AS done
+      FROM tasks WHERE ($1 IS NULL OR project_id=$1) AND kind='pending' GROUP BY 1 ORDER BY 2 DESC`, [...scope, OPEN]),
+    store.db.query(`SELECT agent_label,cli_kind,count(*) AS notes,max(updated_at) AS last_note FROM agent_notes
+      WHERE ($1 IS NULL OR project_id=$1) AND created_at>strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days') GROUP BY 1,2 ORDER BY 4 DESC LIMIT 20`, scope),
     store.db.query(`SELECT ev.action,ev.actor,ev.status_before,ev.status_after,ev.created_at,t.title,t.external_key,t.kind FROM task_events ev JOIN tasks t ON t.id=ev.task_id
-      WHERE ($1::uuid IS NULL OR t.project_id=$1) ORDER BY ev.id DESC LIMIT 30`, scope),
+      WHERE ($1 IS NULL OR t.project_id=$1) ORDER BY ev.id DESC LIMIT 30`, scope),
   ])
   const count = (kind: string | null, statuses: string[]) => byStatus.filter(r => (!kind || r.kind === kind) && statuses.includes(r.status)).reduce((sum, r) => sum + r.count, 0)
   const lastTwoWeeks = weekly.slice(-2)

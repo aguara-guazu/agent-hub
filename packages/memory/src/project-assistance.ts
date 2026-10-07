@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { MemoryAI } from './ai.js'
 import { defaultAI, usesRemoteExtraction } from './config.js'
 import { check, id, instant, parse } from './contracts.js'
+import { queryVector } from './database.js'
 import { requireEntity, type MemoryStore } from './store.js'
 
 export const suggestProjectsInput = z.object({ entity_id: id, query: z.string().trim().max(500).default('') }).strict()
@@ -10,21 +11,21 @@ const normalized = (text: string) => text.normalize('NFD').replace(/\p{M}/gu, ''
 /** Local retrieval only. A preselection is a suggestion, never a persisted association. */
 export async function suggestProjects(store: MemoryStore, ai: MemoryAI, raw: unknown) {
   const input = parse(suggestProjectsInput, raw), source = await requireEntity(store.db, input.entity_id)
-  const snippets = await store.db.query(`SELECT left(f.text,700) AS text FROM sources s JOIN fragments f ON f.version_id=s.current_version_id
+  const snippets = await store.db.query(`SELECT substr(f.text,1,700) AS text FROM sources s JOIN fragments f ON f.version_id=s.current_version_id
     WHERE s.entity_id=$1 AND s.status='active' ORDER BY f.ordinal LIMIT 4`, [source.id])
   const text = input.query || [source.title, ...snippets.map(f => f.text)].join('\n').slice(0,3500)
   const title = normalized(input.query || source.title), content = normalized(text)
   // No recent-project cap: old projects and companies must remain discoverable.
   const projects = await store.db.query(`SELECT p.id,p.title,p.data->>'description' AS description,c.title AS company,
-    p.data->>'jira_project_key' AS jira_key FROM entities p LEFT JOIN entities c ON c.id=(p.data->>'company_id')::uuid WHERE p.kind='project'`)
+    p.data->>'jira_project_key' AS jira_key FROM entities p LEFT JOIN entities c ON c.id=p.data->>'company_id' WHERE p.kind='project'`)
   const semantic = new Map<string, number>(); let semanticStatus = 'unavailable'
   try {
-    const { model, vectors } = await ai.embedQuery(text, AbortSignal.timeout(8000)), vector = vectors[0]!
-    const rows = await store.db.query(`SELECT p.id,max(1-(emb.embedding <=> $1::vector)) AS score FROM entities p
-      JOIN entity_embeddings emb ON emb.entity_id=p.id OR emb.entity_id=(p.data->>'company_id')::uuid
-      JOIN entities indexed ON indexed.id=emb.entity_id
-      WHERE p.kind='project' AND emb.model=$2 AND emb.dimension=$3 AND emb.content_hash=md5(memory_entity_text(indexed.title,indexed.data))
-      GROUP BY p.id`, [JSON.stringify(vector),model,vector.length])
+    const { model, vectors } = await ai.embedQuery(text, AbortSignal.timeout(8000)), query = vectors[0]!
+    const rows = await store.db.query(`SELECT p.id,max(1-vec_distance(emb.embedding,$1)) AS score FROM entities p
+      JOIN entity_embeddings emb ON emb.entity_id IN (p.id,p.data->>'company_id')
+      JOIN entities ix ON ix.id=emb.entity_id
+      WHERE p.kind='project' AND emb.model=$2 AND emb.dimension=$3 AND emb.content_hash=md5(memory_entity_text(ix.title,ix.data))
+      GROUP BY p.id`, [queryVector(query),model,query.length])
     rows.forEach(row => semantic.set(row.id, Number(row.score)))
     semanticStatus = rows.length < projects.length ? 'indexing' : 'ready'
   } catch { /* Exact names and manual search still work without the local embedding provider. */ }
@@ -55,22 +56,22 @@ export async function draftProfile(store: MemoryStore, ai: MemoryAI, raw: unknow
   check(config.extraction !== 'disabled', 'Configura un modelo en Procesamiento y búsqueda para generar el borrador', 409)
   check(!remote || (config.remote_processing_enabled && project.data.remote_processing !== false), 'Este proyecto no permite procesamiento remoto. Usa un modelo local o revisa su configuración.', 409)
   const sources = await store.db.query(`SELECT s.id,s.entity_id,s.current_version_id,e.title,e.data->>'occurred_at' AS occurred_at,
-    (e.title ~* '(assess?ment|discovery|venta|sales|kick.?off|relevamiento|descubrimiento)') AS initial
+    regexp_i(e.title,'(assess?ment|discovery|venta|sales|kick.?off|relevamiento|descubrimiento)') AS "initial:bool"
     FROM sources s JOIN entities e ON e.id=s.entity_id WHERE s.status='active' AND s.current_version_id IS NOT NULL
     AND (EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$1 AND l.type='project')
       OR EXISTS(SELECT 1 FROM fragments f JOIN fragment_projects fp ON fp.fragment_id=f.id WHERE f.version_id=s.current_version_id AND fp.project_id=$1))
-    AND ($2::boolean=false OR (COALESCE(e.data->>'remote_processing','true')<>'false'
-      AND NOT EXISTS(SELECT 1 FROM links l JOIN entities p ON p.id=l.to_id WHERE l.from_id=e.id AND l.type='project' AND p.data->>'remote_processing'='false')))
-    ORDER BY initial DESC,COALESCE(e.data->>'occurred_at',e.created_at::text),e.id`, [project.id,remote])
+    AND ($2=0 OR (NOT COALESCE((e.data->>'remote_processing') IN (0,'false'),0)
+      AND NOT EXISTS(SELECT 1 FROM links l JOIN entities p ON p.id=l.to_id WHERE l.from_id=e.id AND l.type='project' AND (p.data->>'remote_processing') IN (0,'false'))))
+    ORDER BY "initial:bool" DESC,COALESCE(e.data->>'occurred_at',e.created_at),e.id`, [project.id,remote])
   // Keep early discovery and some recent material so a project's current scope can qualify its original intent.
   const chosen = [...new Map([...sources.slice(0,10),...sources.slice(-4)].map(s => [s.id,s])).values()]
   const fragments: Record<string, any>[] = []
   for (const source of chosen) {
-    const rows = await store.db.query(`SELECT f.id,f.version_id,f.ordinal,left(f.text,1000) AS text,p.title AS speaker
+    const rows = await store.db.query(`SELECT f.id,f.version_id,f.ordinal,substr(f.text,1,1000) AS text,p.title AS speaker
       FROM fragments f LEFT JOIN entities p ON p.id=f.speaker_id WHERE f.version_id=$1
       AND (EXISTS(SELECT 1 FROM fragment_projects fp WHERE fp.fragment_id=f.id AND fp.project_id=$2)
         OR (NOT EXISTS(SELECT 1 FROM fragment_projects fp WHERE fp.fragment_id=f.id) AND EXISTS(SELECT 1 FROM links l WHERE l.from_id=$3 AND l.to_id=$2 AND l.type='project')))
-      AND ($4::boolean=false OR NOT EXISTS(SELECT 1 FROM fragment_projects fp JOIN entities p ON p.id=fp.project_id WHERE fp.fragment_id=f.id AND p.data->>'remote_processing'='false'))
+      AND ($4=0 OR NOT EXISTS(SELECT 1 FROM fragment_projects fp JOIN entities p ON p.id=fp.project_id WHERE fp.fragment_id=f.id AND (p.data->>'remote_processing') IN (0,'false')))
       ORDER BY f.ordinal`, [source.current_version_id,project.id,source.entity_id,remote])
     const picks = new Set(rows.slice(0,5))
     for (let i=0;i<7;i++) if (rows.length) picks.add(rows[Math.floor(i*rows.length/7)]!)
@@ -78,15 +79,15 @@ export async function draftProfile(store: MemoryStore, ai: MemoryAI, raw: unknow
   }
   check(fragments.length, 'No hay contenido permitido suficiente en este proyecto para generar un borrador. Asocia primero sus reuniones o documentos.', 409)
   const refs = new Map(fragments.map((f,i) => [`f${i+1}`,f]))
-  const facts = await store.db.query(`SELECT e.data->>'category' AS category,left(e.data->>'text',1500) AS text,e.data->>'review_state' AS review_state
+  const facts = await store.db.query(`SELECT e.data->>'category' AS category,substr(e.data->>'text',1,1500) AS text,e.data->>'review_state' AS review_state
     FROM entities e WHERE e.kind='fact' AND e.data->>'category' IN ('summary','decision','commitment','finding','risk')
-    AND COALESCE(e.data->>'stale','false')<>'true' AND COALESCE(e.data->>'review_state','') NOT IN ('rejected','superseded')
+    AND NOT COALESCE((e.data->>'stale') IN (1,'true'),0) AND COALESCE(e.data->>'review_state','') NOT IN ('rejected','superseded')
     AND EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$1 AND l.type='project')
     AND EXISTS(SELECT 1 FROM evidence ev WHERE ev.entity_id=e.id)
-    AND NOT EXISTS(SELECT 1 FROM evidence ev WHERE ev.entity_id=e.id AND NOT (ev.fragment_id=ANY($2::uuid[])))
-    AND ($3::boolean=false OR (COALESCE(e.data->>'remote_processing','true')<>'false' AND NOT EXISTS(
-      SELECT 1 FROM links l JOIN entities p ON p.id=l.to_id WHERE l.from_id=e.id AND l.type='project' AND p.data->>'remote_processing'='false')))
-    ORDER BY (e.data->>'review_state'='accepted') DESC,e.created_at DESC LIMIT 30`,[project.id,fragments.map(f=>f.id),remote])
+    AND NOT EXISTS(SELECT 1 FROM evidence ev WHERE ev.entity_id=e.id AND ev.fragment_id NOT IN (SELECT value FROM json_each($2)))
+    AND ($3=0 OR (NOT COALESCE((e.data->>'remote_processing') IN (0,'false'),0) AND NOT EXISTS(
+      SELECT 1 FROM links l JOIN entities p ON p.id=l.to_id WHERE l.from_id=e.id AND l.type='project' AND (p.data->>'remote_processing') IN (0,'false'))))
+    ORDER BY (e.data->>'review_state'='accepted') DESC NULLS FIRST,e.created_at DESC LIMIT 30`,[project.id,fragments.map(f=>f.id),remote])
   const result = await ai.forJob(config, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : [])])).extract(
     `Redacta un borrador revisable en español para ${input.kind === 'company' ? 'la EMPRESA CLIENTE, con su nombre y una descripción de su negocio, sus clientes y necesidades tal como los describen sus dueños. No confundas a la consultora/proveedor ni a sus empleados con la empresa cliente' : 'la DESCRIPCIÓN DEL PROYECTO: propósito, problema a resolver, alcance y resultados esperados. Conserva su nombre'}.
     Prioriza las primeras reuniones de assessment, descubrimiento y venta para entender el negocio; usa material posterior para cambios de alcance. No conviertas propuestas en hechos ni inventes sectores, productos o identidades.
@@ -108,14 +109,13 @@ export const saveProjectCompanyInput = z.object({ project_id: id, expected_updat
 export async function saveProjectCompany(store: MemoryStore, raw: unknown, actor: string) {
   const input = parse(saveProjectCompanyInput,raw)
   return store.db.transaction(async sql => {
-    await sql.query('SELECT id FROM entities WHERE id=$1 FOR UPDATE',[input.project_id])
     const project = await requireEntity(sql,input.project_id,'project')
     check(project.updated_at === input.expected_updated_at,'El proyecto cambió; recarga antes de asociar la empresa',409)
     const company = input.company_id ? await requireEntity(sql,input.company_id,'company')
       : await store.create({ kind: 'company', title: input.company!.title, data: { description: input.company!.description } },actor,sql)
     await sql.query("DELETE FROM links WHERE from_id=$1 AND type='company'",[project.id])
     await store.link({ from_id: project.id, to_id: company.id, type: 'company' },actor,sql)
-    await sql.query("UPDATE entities SET data=data || jsonb_build_object('company_id',$2::text),updated_at=clock_timestamp() WHERE id=$1",[project.id,company.id])
+    await sql.query("UPDATE entities SET data=jsonb_merge(data,json_object('company_id',$2)),updated_at=clock_timestamp() WHERE id=$1",[project.id,company.id])
     await sql.query("INSERT INTO changes(entity_id,action,actor,before_value,after_value) VALUES($1,'company.associated',$2,$3,$4)",
       [project.id,actor,JSON.stringify({company_id:project.data.company_id??null}),JSON.stringify({company_id:company.id})])
     return { company, project_id: project.id }

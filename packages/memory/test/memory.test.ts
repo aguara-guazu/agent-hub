@@ -3,7 +3,7 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { MemoryDatabase } from '../src/database.js'
+import { MemoryDatabase, vector } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
 import { OpenCodeRuntime } from '../src/opencode.js'
@@ -21,21 +21,20 @@ import { identityContext, inferIdentities } from '../src/identity-inference.js'
 import { dedupePeople } from '../src/people-dedupe.js'
 import { namesCompatible, namesRelated } from '../src/people.js'
 
-const url = process.env.AGENTHUB_MEMORY_TEST_URL
-describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
+async function resetMemory(db: MemoryDatabase) {
+  const tables = await db.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' AND name NOT LIKE '%_substrings%' AND name<>'schema_versions'")
+  await db.execute(`PRAGMA foreign_keys=OFF; ${tables.map(t => `DELETE FROM "${t.name}";`).join('')} DELETE FROM sqlite_sequence; PRAGMA foreign_keys=ON`)
+}
+describe('memoria con SQLite', () => {
   let db: MemoryDatabase, store: MemoryStore, directory: string, operations: MemoryOperations, ai: MemoryAI, vault: Vault
   beforeAll(async () => {
-    if (!new URL(url!).pathname.endsWith('_test')) throw new Error('Las pruebas requieren una base dedicada terminada en _test')
     directory = await mkdtemp(join(tmpdir(), 'agenthub-memory-test-'))
-    db = new MemoryDatabase(url!); await db.migrate()
+    db = new MemoryDatabase(join(directory, 'memory.sqlite')); await db.migrate()
     store = new MemoryStore(db, directory); vault = new Vault(directory)
     ai = new MemoryAI(async () => defaultAI, vault)
     operations = new MemoryOperations(store, ai)
   })
-  beforeEach(async () => {
-    const tables = await db.query("SELECT tablename FROM pg_tables WHERE schemaname='agenthub_memory' AND tablename<>'schema_versions'")
-    await db.query(`TRUNCATE ${tables.map(t => `"${t.tablename}"`).join(',')} RESTART IDENTITY CASCADE`)
-  })
+  beforeEach(async () => { await resetMemory(db) })
   afterAll(async () => { await db?.close(); if (directory) await rm(directory, { recursive: true, force: true }) })
 
   async function identityFixture(speakerName = 'Anita') {
@@ -75,7 +74,7 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     expect((await store.detail(proposal.data.speaker_id)).entity.data).toMatchObject({ merged_into: known, identity_status: 'merged' })
     expect((await store.detail(known)).entity.data.merged_from).toEqual([proposal.data.speaker_id])
     expect((await operations.call('list_identity_proposals', { state: 'accepted' })).items[0].data).toMatchObject({ applied: 'merged', speaker_id: known })
-    expect((await db.query("SELECT count(*)::int AS n FROM entities WHERE kind='person' AND data->>'merged_into' IS NULL AND data->>'email'='ana@example.com'"))[0]!.n).toBe(1)
+    expect((await db.query("SELECT count(*) AS n FROM entities WHERE kind='person' AND data->>'merged_into' IS NULL AND data->>'email'='ana@example.com'"))[0]!.n).toBe(1)
     await store.refreshParticipants({ provider: 'google', account: 'work' }, [{ external_id: 'users/unresolved', name: 'Anita', email: 'other@example.com', identity_verified: true }])
     expect((await store.fragments(meeting.entity_id)).items[0]!.speaker_email).toBe('ana@example.com')
   })
@@ -116,7 +115,7 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     expect(owners).toHaveLength(1)
     expect((await store.fragments((await store.list({ kind: 'meeting' })).items[0]!.id)).items[0]!.speaker_id).toBe(owners[0]!.person_id)
     await store.refreshParticipants(account, [{ external_id: 'users/c', name: 'Carlos López', email: 'ana@example.com', identity_verified: true }])
-    expect((await db.query("SELECT count(*)::int AS n FROM entities WHERE kind='person' AND data->>'merged_into' IS NULL AND data->>'email'='ana@example.com'"))[0]!.n).toBe(2)
+    expect((await db.query("SELECT count(*) AS n FROM entities WHERE kind='person' AND data->>'merged_into' IS NULL AND data->>'email'='ana@example.com'"))[0]!.n).toBe(2)
     const conflicts = await operations.call('list_duplicate_proposals', {})
     expect(conflicts.total).toBe(1); expect(conflicts.items[0].data).toMatchObject({ basis: 'same_email', verdict: 'conflict' })
     await operations.call('review_duplicate', { id: conflicts.items[0].id, decision: 'rejected' })
@@ -175,10 +174,10 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     await dedupePeople(store, mockAI, { ...config, extraction_model: 'another-model' }, async () => {}, new AbortController().signal)
     expect((await operations.call('list_duplicate_proposals', { state: 'rejected' })).items.some((p: any) => p.id === julian.id)).toBe(true)
     expect((await operations.call('list_duplicate_proposals', {})).items.some((p: any) => p.data.from_name.startsWith('Julián') && p.id !== julian.id)).toBe(false)
-    expect((await db.query("SELECT count(*)::int AS n FROM entities WHERE kind='person' AND data->>'merged_into' IS NULL AND lower(title) LIKE 'rodrigo%'"))[0]!.n).toBe(1)
+    expect((await db.query("SELECT count(*) AS n FROM entities WHERE kind='person' AND data->>'merged_into' IS NULL AND lower(title) LIKE 'rodrigo%'"))[0]!.n).toBe(1)
     // Every absorbed profile points directly at an active one, and nothing else still references it.
-    expect((await db.query("SELECT count(*)::int AS n FROM entities a JOIN entities b ON b.id=(a.data->>'merged_into')::uuid WHERE b.data->>'merged_into' IS NOT NULL"))[0]!.n).toBe(0)
-    expect((await db.query("SELECT count(*)::int AS n FROM fragments f JOIN entities p ON p.id=f.speaker_id WHERE p.data->>'merged_into' IS NOT NULL"))[0]!.n).toBe(0)
+    expect((await db.query("SELECT count(*) AS n FROM entities a JOIN entities b ON b.id=a.data->>'merged_into' WHERE b.data->>'merged_into' IS NOT NULL"))[0]!.n).toBe(0)
+    expect((await db.query("SELECT count(*) AS n FROM fragments f JOIN entities p ON p.id=f.speaker_id WHERE p.data->>'merged_into' IS NOT NULL"))[0]!.n).toBe(0)
   })
 
   it('no unifica automáticamente perfiles con emails verificados distintos ni cuando la unificación automática está apagada', async () => {
@@ -197,7 +196,7 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
     const calls = vi.fn(mockAI.extract as any)
     const on = await dedupePeople(store, { extract: calls } as unknown as MemoryAI, { ...defaultAI, extraction: 'ollama', extraction_model: 'dedupe-test' }, async () => {}, new AbortController().signal)
     expect(on.dedupe_auto_merged).toBe(1); expect(calls).not.toHaveBeenCalled()
-    expect((await db.query("SELECT count(*)::int AS n FROM entities WHERE kind='person' AND data->>'merged_into' IS NULL AND lower(title)='lucas izquierdo'"))[0]!.n).toBe(2)
+    expect((await db.query("SELECT count(*) AS n FROM entities WHERE kind='person' AND data->>'merged_into' IS NULL AND lower(title)='lucas izquierdo'"))[0]!.n).toBe(2)
     expect((await operations.call('list_duplicate_proposals', {})).items.every((p: any) => p.data.blocked === 'different_verified_emails')).toBe(true)
   })
 
@@ -424,7 +423,7 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
   it('aplica filtros de proyecto también a los vecinos semánticos', async () => {
     const demo = await seedDemo(store)
     const fragments = (await store.fragments(demo.meeting)).items
-    for (const f of fragments) await db.query('INSERT INTO embeddings(fragment_id,model,dimension,embedding) VALUES($1,$2,3,$3::vector)', [f.id, 'fixture', '[1,0,0]'])
+    for (const f of fragments) await db.query('INSERT INTO embeddings(fragment_id,model,dimension,embedding) VALUES($1,$2,3,$3)', [f.id, 'fixture', vector([1, 0, 0])])
     const embeddingAI = new MemoryAI(async () => ({ ...defaultAI, embeddings_enabled: true, embedding_model: 'fixture' }), vault,
       async () => new Response(JSON.stringify({ embeddings: [[1,0,0]] }), { status: 200 }) as any)
     const semantic = new MemoryOperations(store, embeddingAI)
@@ -540,7 +539,7 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
 
   it('recupera trabajos con lease vencido y los ejecuta una sola vez', async () => {
     const source = await store.ingest({ kind: 'document', external_id: 'job', title: 'Trabajo', text: 'Texto.' })
-    await db.query("UPDATE jobs SET state='running',lease_owner='old',lease_until=now()-interval '1 minute'")
+    await db.query("UPDATE jobs SET state='running',lease_owner='old',lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute')")
     const runner = new JobRunner(store, ai, vault, new GoogleAuth(vault, 'http://127.0.0.1/callback'), async () => defaultAI)
     await runner.schedule(); await runner.once(new AbortController().signal)
     const job = (await db.query('SELECT * FROM jobs WHERE payload->>\'version_id\'=$1', [source.version_id]))[0]!
@@ -551,13 +550,12 @@ describe.skipIf(!url)('memoria con PostgreSQL y pgvector reales', () => {
   it('exporta y restaura originales, relaciones y vectores sin credenciales', async () => {
     const demo = await seedDemo(store)
     const fragment = (await store.fragments(demo.meeting)).items[0]!
-    await db.query('INSERT INTO embeddings(fragment_id,model,dimension,embedding) VALUES($1,$2,3,$3::vector)', [fragment.id, 'fixture', '[1,0,0]'])
+    await db.query('INSERT INTO embeddings(fragment_id,model,dimension,embedding) VALUES($1,$2,3,$3)', [fragment.id, 'fixture', vector([1, 0, 0])])
     vault.save('deepseek', { api_key: 'private-test-value' })
     const backup = await exportMemory(store), content = await readFile(join(directory, 'backups', `${backup.id}.json`), 'utf8')
     expect(content).not.toContain('private-test-value')
     await expect(restoreMemory(store, JSON.parse(content))).rejects.toThrow('vacía')
-    const tables = await db.query("SELECT tablename FROM pg_tables WHERE schemaname='agenthub_memory' AND tablename<>'schema_versions'")
-    await db.query(`TRUNCATE ${tables.map(t => `"${t.tablename}"`).join(',')} RESTART IDENTITY CASCADE`)
+    await resetMemory(db)
     await restoreMemory(store, JSON.parse(content))
     expect((await store.fragments(demo.meeting)).total).toBe(4)
     expect((await db.query('SELECT * FROM embeddings')).length).toBe(1)

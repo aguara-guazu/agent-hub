@@ -17,8 +17,8 @@ export const PROJECT_SOURCE_KINDS = ['meeting', 'document'] as const
 /** Sources the inference may classify: no project yet, no explicit "leave without project" decision, still current. */
 export async function needsProject(sql: Sql, entityId: string): Promise<boolean> {
   const row = (await sql.query(`SELECT e.kind,e.data->>'project_decision' AS decision,
-    EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project') AS linked,
-    EXISTS(SELECT 1 FROM sources s JOIN fragments f ON f.version_id=s.current_version_id JOIN fragment_projects fp ON fp.fragment_id=f.id WHERE s.entity_id=e.id) AS assigned
+    EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project') AS "linked:bool",
+    EXISTS(SELECT 1 FROM sources s JOIN fragments f ON f.version_id=s.current_version_id JOIN fragment_projects fp ON fp.fragment_id=f.id WHERE s.entity_id=e.id) AS "assigned:bool"
     FROM entities e WHERE e.id=$1`, [entityId]))[0]
   return Boolean(row && (PROJECT_SOURCE_KINDS as readonly string[]).includes(row.kind) && row.decision !== 'none' && !row.linked && !row.assigned)
 }
@@ -27,12 +27,12 @@ export async function needsProject(sql: Sql, entityId: string): Promise<boolean>
 async function projectContext(store: MemoryStore, remote: boolean) {
   const projects = await store.db.query(`SELECT p.id,p.title,p.data->>'description' AS description,p.data->>'status' AS status,
     p.data->>'jira_project_key' AS jira_project_key,c.title AS company,
-    ARRAY(SELECT s.title FROM links l JOIN entities s ON s.id=l.from_id WHERE l.to_id=p.id AND l.type='project' AND s.kind IN ('meeting','document','issue')
-      ORDER BY COALESCE(s.data->>'occurred_at',s.created_at::text) DESC LIMIT 6) AS recent_sources,
-    ARRAY(SELECT person.title FROM links l JOIN links part ON part.from_id=l.from_id AND part.type='participant' JOIN entities person ON person.id=part.to_id
-      WHERE l.to_id=p.id AND l.type='project' GROUP BY person.id,person.title ORDER BY count(*) DESC,person.title LIMIT 15) AS usual_people
-    FROM entities p LEFT JOIN entities c ON c.id=(p.data->>'company_id')::uuid
-    WHERE p.kind='project' AND COALESCE(p.data->>'status','') NOT IN ('completed') AND ($1::boolean=false OR COALESCE(p.data->>'remote_processing','true')<>'false')
+    (SELECT json_group_array(r.title ORDER BY r.sort DESC) FROM (SELECT s.title,COALESCE(s.data->>'occurred_at',s.created_at) AS sort FROM links l JOIN entities s ON s.id=l.from_id
+      WHERE l.to_id=p.id AND l.type='project' AND s.kind IN ('meeting','document','issue') ORDER BY sort DESC LIMIT 6) r) AS "recent_sources:json",
+    (SELECT json_group_array(u.title ORDER BY u.n DESC,u.title) FROM (SELECT person.title,count(*) AS n FROM links l JOIN links part ON part.from_id=l.from_id AND part.type='participant'
+      JOIN entities person ON person.id=part.to_id WHERE l.to_id=p.id AND l.type='project' GROUP BY person.id,person.title ORDER BY n DESC,person.title LIMIT 15) u) AS "usual_people:json"
+    FROM entities p LEFT JOIN entities c ON c.id=p.data->>'company_id'
+    WHERE p.kind='project' AND COALESCE(p.data->>'status','') NOT IN ('completed') AND (NOT $1 OR COALESCE(p.data->>'remote_processing',1) NOT IN (0,'false'))
     ORDER BY p.updated_at DESC LIMIT 150`, [remote])
   return projects
 }
@@ -96,10 +96,9 @@ export async function inferProject(store: MemoryStore, ai: MemoryAI, source: Rec
   const confidence = projectId ? verdict!.confidence : verdict?.confidence ?? 'low'
   const auto = Boolean(projectId && evidence.length > 0 && confidence === 'high' && config.project_auto_assign !== false)
   const proposalId = await store.db.transaction(async sql => {
-    await sql.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`project-inference:${source.entity_id}`])
     check((await sql.query('SELECT current_version_id FROM sources WHERE id=$1', [source.id]))[0]?.current_version_id === source.current_version_id, 'La fuente cambió; vuelve a inferir su proyecto', 409)
     if (!await needsProject(sql, source.entity_id)) return null
-    await sql.query("UPDATE entities SET data=data || jsonb_build_object('review_state','superseded'),updated_at=now() WHERE kind='fact' AND data->>'category'='project_match' AND data->>'source_entity_id'=$1 AND data->>'review_state'='pending'", [source.entity_id])
+    await sql.query("UPDATE entities SET data=jsonb_merge(data,json_object('review_state','superseded')),updated_at=now() WHERE kind='fact' AND data->>'category'='project_match' AND data->>'source_entity_id'=$1 AND data->>'review_state'='pending'", [source.entity_id])
     const factId = randomUUID(), candidate = projectId ? projects.find(p => p.id === projectId) : undefined
     const text = candidate ? `${source.title} → ${candidate.title}` : `${source.title} no tiene proyecto`
     await sql.query("INSERT INTO entities(id,kind,title,data) VALUES($1,'fact',$2,$3)", [factId, text.slice(0, 500), JSON.stringify({
@@ -113,7 +112,7 @@ export async function inferProject(store: MemoryStore, ai: MemoryAI, source: Rec
     if (auto) await assignSourceToProject(store, source.entity_id, projectId!, 'ai:auto', { proposal_id: factId, confidence, auto: true }, sql)
     return factId
   })
-  await store.db.query("UPDATE versions SET metadata=metadata || jsonb_build_object('project_inference_key',$2::text) WHERE id=$1", [source.current_version_id, key])
+  await store.db.query("UPDATE versions SET metadata=jsonb_merge(metadata,json_object('project_inference_key',$2)) WHERE id=$1", [source.current_version_id, key])
   totals.project_inference = !proposalId ? 'skipped' : auto ? 'auto_assigned' : projectId ? 'suggested' : 'no_project'
   await progress({ ...totals })
   return { ...totals, project_id: auto ? projectId : null }
@@ -138,10 +137,10 @@ async function assignSourceToProject(store: MemoryStore, entityId: string, proje
 async function keepExtractionKey(sql: Sql, entityId: string) {
   const version = (await sql.query("SELECT v.id,v.metadata->>'extraction_key' AS key FROM sources s JOIN versions v ON v.id=s.current_version_id WHERE s.entity_id=$1", [entityId]))[0]
   if (!version?.key) return
-  const fragments = await sql.query(`SELECT f.id,f.speaker_id,COALESCE((SELECT jsonb_agg(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS project_ids
+  const fragments = await sql.query(`SELECT f.id,f.speaker_id,(SELECT json_group_array(fp.project_id ORDER BY fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id) AS "project_ids:json"
     FROM fragments f WHERE f.version_id=$1 ORDER BY ordinal`, [version.id])
   const next = String(version.key).replace(/[^:]+$/, extractionHash(fragments))
-  await sql.query("UPDATE versions SET metadata=metadata || jsonb_build_object('extraction_key',$2::text) WHERE id=$1", [version.id, next])
+  await sql.query("UPDATE versions SET metadata=jsonb_merge(metadata,json_object('extraction_key',$2)) WHERE id=$1", [version.id, next])
 }
 export function extractionHash(fragments: Record<string, any>[]) {
   return hash(fragments.map(f => ({ id: f.id, projects: f.project_ids, speaker: f.speaker_id })))
@@ -156,7 +155,6 @@ export const projectSuggestionReview = z.discriminatedUnion('decision', [
 export async function reviewProjectSuggestion(store: MemoryStore, raw: unknown, actor: string) {
   const input = parse(projectSuggestionReview, raw)
   return store.db.transaction(async sql => {
-    await sql.query('SELECT id FROM entities WHERE id=$1 FOR UPDATE', [input.id])
     const proposal = await requireEntity(sql, input.id, 'fact'), p = proposal.data
     check(p.category === 'project_match', 'La propuesta no corresponde a un proyecto')
     check(p.review_state === 'pending', 'La propuesta ya fue revisada', 409)
@@ -169,8 +167,8 @@ export async function reviewProjectSuggestion(store: MemoryStore, raw: unknown, 
       projectId = project.id
     } else if (input.decision === 'assign') projectId = input.project_id
     if (projectId) await assignSourceToProject(store, sourceId, projectId, actor, { proposal_id: proposal.id }, sql)
-    else await sql.query("UPDATE entities SET data=data || '{\"project_decision\":\"none\"}'::jsonb,updated_at=now() WHERE id=$1", [sourceId])
-    await sql.query("UPDATE entities SET data=data || jsonb_build_object('review_state',$2::text,'reviewed_by',$3::text,'applied',$4::text,'project_id',$5::text),updated_at=now() WHERE id=$1",
+    else await sql.query("UPDATE entities SET data=jsonb_merge(data,'{\"project_decision\":\"none\"}'),updated_at=now() WHERE id=$1", [sourceId])
+    await sql.query("UPDATE entities SET data=jsonb_merge(data,json_object('review_state',$2,'reviewed_by',$3,'applied',$4,'project_id',$5)),updated_at=now() WHERE id=$1",
       [proposal.id, projectId ? 'accepted' : 'rejected', actor, input.decision, projectId])
     await sql.query("INSERT INTO changes(entity_id,action,actor,after_value) VALUES($1,'project.reviewed',$2,$3)", [sourceId, actor, JSON.stringify({ proposal_id: proposal.id, decision: input.decision, project_id: projectId })])
     return { reviewed: true, decision: input.decision, project_id: projectId, source_entity_id: sourceId }
@@ -181,15 +179,15 @@ export async function reviewProjectSuggestion(store: MemoryStore, raw: unknown, 
 export async function listProjectSuggestions(store: MemoryStore, input: { state: string; limit: number; offset: number }) {
   const where = `e.kind='fact' AND e.data->>'category'='project_match' AND e.data->>'review_state'=$1`
   const items = await store.db.query(`SELECT e.*,src.title AS source_title,src.kind AS source_kind,src.data->>'occurred_at' AS occurred_at,
-    (SELECT COALESCE(jsonb_agg(jsonb_build_object('id',p.id,'title',p.title,'email',p.data->>'email') ORDER BY p.title),'[]') FROM links l JOIN entities p ON p.id=l.to_id
-      WHERE l.from_id=src.id AND l.type='participant') AS participants,
-    (SELECT COALESCE(jsonb_agg(jsonb_build_object('id',f.id,'category',f.data->>'category','text',f.data->>'text') ORDER BY f.created_at),'[]') FROM (
-      SELECT f.* FROM links d JOIN entities f ON f.id=d.from_id AND f.kind='fact' WHERE d.to_id=src.id AND d.type='derived_from'
-        AND f.data->>'category' IN ('summary','decision','commitment','finding','risk') ORDER BY f.created_at LIMIT 8) f) AS facts,
-    (SELECT count(*)::int FROM links d JOIN entities f ON f.id=d.from_id AND f.kind='fact' WHERE d.to_id=src.id AND d.type='derived_from'
+    (SELECT json_group_array(json_object('id',p.id,'title',p.title,'email',p.data->>'email') ORDER BY p.title) FROM links l JOIN entities p ON p.id=l.to_id
+      WHERE l.from_id=src.id AND l.type='participant') AS "participants:json",
+    (SELECT json_group_array(json_object('id',f.id,'category',f.data->>'category','text',f.data->>'text') ORDER BY f.created_at) FROM (
+      SELECT f.id,f.data,f.created_at FROM links d JOIN entities f ON f.id=d.from_id AND f.kind='fact' WHERE d.to_id=src.id AND d.type='derived_from'
+        AND f.data->>'category' IN ('summary','decision','commitment','finding','risk') ORDER BY f.created_at LIMIT 8) f) AS "facts:json",
+    (SELECT count(*) FROM links d JOIN entities f ON f.id=d.from_id AND f.kind='fact' WHERE d.to_id=src.id AND d.type='derived_from'
       AND f.data->>'category' IN ('summary','decision','commitment','finding','risk')) AS fact_count
-    FROM entities e JOIN entities src ON src.id=(e.data->>'source_entity_id')::uuid WHERE ${where}
-    ORDER BY COALESCE(src.data->>'occurred_at',src.created_at::text) DESC,e.id LIMIT $2 OFFSET $3`, [input.state, input.limit, input.offset])
-  const total = (await store.db.query(`SELECT count(*)::int AS total FROM entities e JOIN entities src ON src.id=(e.data->>'source_entity_id')::uuid WHERE ${where}`, [input.state]))[0]!.total
+    FROM entities e JOIN entities src ON src.id=e.data->>'source_entity_id' WHERE ${where}
+    ORDER BY COALESCE(src.data->>'occurred_at',src.created_at) DESC,e.id LIMIT $2 OFFSET $3`, [input.state, input.limit, input.offset])
+  const total = (await store.db.query(`SELECT count(*) AS total FROM entities e JOIN entities src ON src.id=e.data->>'source_entity_id' WHERE ${where}`, [input.state]))[0]!.total
   return { items, total, limit: input.limit, offset: input.offset }
 }

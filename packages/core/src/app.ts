@@ -309,8 +309,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       { key: 'google_setup_skill', skill: googleSetupSkill },
     ]
     const registerMemorySkill = () => { for (const entry of factorySkills) applyFactorySkill(store, owner, entry.key, entry.skill) }
-    if (process.env.AGENTHUB_MEMORY_DATABASE_URL || memory.service.vault.has('database')) registerCatalog()
-    fastify.addHook('onResponse', async request => { if (request.url === '/api/memory/database' && request.method === 'PUT' && memory.service.vault.has('database')) registerCatalog() })
+    registerCatalog()
   }
 
   function ownedMachine(user: User, machineId: string): Machine {

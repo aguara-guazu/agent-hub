@@ -8,6 +8,7 @@ import { GoogleAuth } from './google-auth.js'
 import { OpenCodeRuntime } from './opencode.js'
 import { JobRunner } from './jobs.js'
 import { check, MemoryError, parse } from './contracts.js'
+import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
 
 export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode']), extraction_model: z.string().min(1).max(200),
   embeddings_enabled: z.boolean(), embedding_model: z.string().min(1).max(200), ollama_url: z.url(), remote_processing_enabled: z.boolean(),
@@ -32,12 +33,14 @@ export class MemoryService {
     return this.initializing
   }
   private async initialize() {
-    const url = process.env.AGENTHUB_MEMORY_DATABASE_URL || this.vault.read('database')?.url
-    if (!url) throw new MemoryError(503, 'Prepará PostgreSQL desde Ajustes de memoria o con npm run memory:up')
-    const db = new MemoryDatabase(url)
+    if (needsMigration(this.directory, this.vault)) {
+      const migration = migrationState(this.directory)
+      throw new MemoryError(503, migration?.state === 'failed' ? `La migración de la memoria está pendiente: ${migration.error}` : 'La memoria se está migrando a su nuevo formato')
+    }
+    const db = new MemoryDatabase(databaseFile(this.directory))
     try { await db.migrate() } catch {
       await db.close().catch(() => undefined)
-      throw new MemoryError(503, 'No se pudo conectar con PostgreSQL y pgvector. Revisá que el servicio local esté iniciado')
+      throw new MemoryError(503, 'No se pudo abrir la base de memoria local')
     }
     const store = new MemoryStore(db, this.directory)
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode)
@@ -47,20 +50,23 @@ export class MemoryService {
     return this.current
   }
   async status() {
-    const configuration = { database_configured: Boolean(process.env.AGENTHUB_MEMORY_DATABASE_URL || this.vault.has('database')),
-      google_client_configured: this.vault.has('google-client'), deepseek_configured: this.vault.has('deepseek'), google_redirect_url: this.google.redirectUrl }
+    const configuration = { database_configured: true, google_client_configured: this.vault.has('google-client'),
+      deepseek_configured: this.vault.has('deepseek'), google_redirect_url: this.google.redirectUrl }
+    if (needsMigration(this.directory, this.vault)) {
+      const migration = migrationState(this.directory)
+      return { ready: false, state: migration?.state === 'failed' ? 'migration_pending' as const : 'migrating' as const, ...configuration, counts: {}, pending_jobs: 0,
+        ai: defaultAI, migration, detail: migration?.state === 'failed' ? migration.error : 'La memoria se está migrando a su nuevo formato' }
+    }
     try {
       const { db } = await this.get()
-      const counts = await db.query('SELECT kind,count(*)::int AS count FROM entities GROUP BY kind')
+      const counts = await db.query('SELECT kind,count(*) AS count FROM entities GROUP BY kind')
       const worker = (await db.query("SELECT value FROM settings WHERE key='worker'"))[0]?.value ?? null
-      const [sources] = await db.query('SELECT count(*)::int AS count,max(synced_at) AS last_import FROM sources')
-      const [pending] = await db.query("SELECT count(*)::int AS count FROM jobs WHERE state IN ('queued','running','waiting')")
+      const [sources] = await db.query('SELECT count(*) AS count,max(synced_at) AS last_import FROM sources')
+      const [pending] = await db.query("SELECT count(*) AS count FROM jobs WHERE state IN ('queued','running','waiting')")
       return { ready: true, state: 'ready' as const, ...configuration, counts: Object.fromEntries(counts.map(r => [r.kind, r.count])), sources, pending_jobs: pending?.count ?? 0,
         worker, ai: await this.aiSettings() }
     } catch (error) {
-      // `unavailable`: hay una base configurada que no responde; la consola no debe tratarla como memoria nueva.
-      const state = configuration.database_configured ? 'unavailable' as const : 'unconfigured' as const
-      return { ready: false, state, ...configuration, counts: {}, pending_jobs: 0, ai: defaultAI,
+      return { ready: false, state: 'unavailable' as const, ...configuration, counts: {}, pending_jobs: 0, ai: defaultAI,
         detail: error instanceof MemoryError ? error.message : 'La memoria local no está disponible' }
     }
   }
@@ -81,15 +87,4 @@ export class MemoryService {
     return config
   }
   async close() { const current = this.current; this.current = null; await this.openCode.close(); if (current) await current.db.close() }
-  async saveDatabase(url: string) {
-    const parsed = new URL(url)
-    check(['postgres:', 'postgresql:'].includes(parsed.protocol), 'Se requiere una URL de PostgreSQL')
-    localUrl(url)
-    const probe = new MemoryDatabase(url)
-    try { await probe.migrate() } catch { throw new MemoryError(503, 'No se pudo conectar con esa base local o instalar pgvector') }
-    finally { await probe.close() }
-    this.vault.save('database', { url })
-    await this.close()
-    return { configured: true }
-  }
 }

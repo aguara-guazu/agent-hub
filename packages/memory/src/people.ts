@@ -50,8 +50,8 @@ export async function resolveCanonical(sql: Sql, personId: string): Promise<Enti
  */
 export async function choosePrimary(sql: Sql, people: Entity[], newcomer?: string): Promise<Entity> {
   const ids = people.map(p => p.id)
-  const identities = await sql.query('SELECT person_id,external_id,verified FROM identities WHERE person_id=ANY($1::uuid[])', [ids])
-  const fragments = new Map((await sql.query('SELECT speaker_id,count(*)::int AS n FROM fragments WHERE speaker_id=ANY($1::uuid[]) GROUP BY 1', [ids])).map(r => [r.speaker_id, r.n as number]))
+  const identities = await sql.query('SELECT person_id,external_id,verified FROM identities WHERE person_id IN (SELECT value FROM json_each($1))', [ids])
+  const fragments = new Map((await sql.query('SELECT speaker_id,count(*) AS n FROM fragments WHERE speaker_id IN (SELECT value FROM json_each($1)) GROUP BY 1', [ids])).map(r => [r.speaker_id, r.n as number]))
   const score = (p: Entity) => {
     const own = identities.filter(i => i.person_id === p.id)
     return (own.some(i => /^users\//.test(i.external_id)) ? 8 : 0) + (String(p.data.email_source ?? '').startsWith('google_people:') ? 4 : 0)
@@ -62,7 +62,6 @@ export async function choosePrimary(sql: Sql, people: Entity[], newcomer?: strin
 
 export async function mergePeople(sql: Sql, fromId: string, intoId: string, actor: string, reason = 'manual') {
   check(fromId !== intoId, 'Elegí dos personas distintas')
-  await sql.query('SELECT id FROM entities WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE', [[fromId, intoId]])
   const source = await requireEntity(sql, fromId, 'person'), target = await requireEntity(sql, intoId, 'person')
   check(!source.data.merged_into, 'La persona ya fue unificada con otra identidad', 409)
   check(!target.data.merged_into, 'La persona destino ya fue unificada; elegí la identidad vigente', 409)
@@ -76,7 +75,7 @@ export async function mergePeople(sql: Sql, fromId: string, intoId: string, acto
   }
   await sql.query('DELETE FROM links WHERE from_id=$1 OR to_id=$1', [fromId])
   // Collection rows of type entity keep pointing at a living profile.
-  await sql.query(`UPDATE collection_records SET values=replace(values::text,$1,$2)::jsonb,updated_at=now() WHERE values::text LIKE '%' || $1 || '%'`, [`"${fromId}"`, `"${intoId}"`])
+  await sql.query(`UPDATE collection_records SET "values"=replace("values",$1,$2),updated_at=now() WHERE instr("values",$1)>0`, [`"${fromId}"`, `"${intoId}"`])
   const data: Record<string, any> = { ...target.data }
   if (!data.email && source.data.email) Object.assign(data, { email: source.data.email, email_status: source.data.email_status ?? 'verified', email_source: source.data.email_source ?? null, manual_email: Boolean(source.data.manual_email) })
   const candidates = new Set<string>([...(data.email_candidates ?? []), ...(source.data.email_candidates ?? [])].filter(c => typeof c === 'string'))
@@ -87,16 +86,16 @@ export async function mergePeople(sql: Sql, fromId: string, intoId: string, acto
   data.merged_from = [...new Set<string>([...(data.merged_from ?? []), fromId, ...(source.data.merged_from ?? [])])]
   const title = isPlaceholderName(target.title) && !isPlaceholderName(source.title) ? source.title : target.title
   await sql.query('UPDATE entities SET title=$2,data=$3,updated_at=now() WHERE id=$1', [intoId, title, JSON.stringify(data)])
-  await sql.query(`UPDATE entities SET data=data || jsonb_build_object('merged_into',$2::text,'identity_status','merged','merged_at',now(),'merge_reason',$3::text,'merged_by',$4::text),updated_at=now() WHERE id=$1`, [fromId, intoId, reason, actor])
+  await sql.query(`UPDATE entities SET data=jsonb_merge(data,json_object('merged_into',$2,'identity_status','merged','merged_at',now(),'merge_reason',$3,'merged_by',$4)),updated_at=now() WHERE id=$1`, [fromId, intoId, reason, actor])
   // Profiles absorbed earlier by `from` point straight at the survivor, so no reader has to walk a chain.
-  await sql.query(`UPDATE entities SET data=data || jsonb_build_object('merged_into',$2::text),updated_at=now() WHERE kind='person' AND data->>'merged_into'=$1`, [fromId, intoId])
+  await sql.query(`UPDATE entities SET data=jsonb_merge(data,json_object('merged_into',$2)),updated_at=now() WHERE kind='person' AND data->>'merged_into'=$1`, [fromId, intoId])
   await repointIdentityProposals(sql, fromId, intoId, data.email)
-  await sql.query(`UPDATE entities SET data=data || jsonb_build_object('review_state','accepted','reviewed_by',$3::text,'applied','merged'),updated_at=now()
+  await sql.query(`UPDATE entities SET data=jsonb_merge(data,json_object('review_state','accepted','reviewed_by',$3,'applied','merged')),updated_at=now()
     WHERE kind='fact' AND data->>'category'='person_duplicate' AND data->>'review_state'='pending'
     AND ((data->>'from_id'=$1 AND data->>'into_id'=$2) OR (data->>'from_id'=$2 AND data->>'into_id'=$1))`, [fromId, intoId, actor])
-  for (const column of ['from_id', 'into_id']) await sql.query(`UPDATE entities SET data=data || jsonb_build_object($3::text,$2::text),updated_at=now()
+  for (const column of ['from_id', 'into_id']) await sql.query(`UPDATE entities SET data=jsonb_merge(data,json_object($3,$2)),updated_at=now()
     WHERE kind='fact' AND data->>'category'='person_duplicate' AND data->>'review_state'='pending' AND data->>$3=$1`, [fromId, intoId, column])
-  await sql.query(`UPDATE entities SET data=data || '{"review_state":"accepted","reviewed_by":"system:merge","applied":"merged"}'::jsonb,updated_at=now()
+  await sql.query(`UPDATE entities SET data=jsonb_merge(data,'{"review_state":"accepted","reviewed_by":"system:merge","applied":"merged"}'),updated_at=now()
     WHERE kind='fact' AND data->>'category'='person_duplicate' AND data->>'review_state'='pending' AND data->>'from_id'=data->>'into_id'`)
   const detail = { from_id: fromId, from_title: source.title, from_email: source.data.email ?? null, into_id: intoId, into_title: title, reason }
   await sql.query("INSERT INTO changes(entity_id,action,actor,before_value,after_value) VALUES($1,'person.merged',$2,$3,$4)", [intoId, actor, JSON.stringify({ from_id: fromId, from_title: source.title }), JSON.stringify(detail)])
@@ -106,19 +105,19 @@ export async function mergePeople(sql: Sql, fromId: string, intoId: string, acto
 
 /** Proposals about an absorbed speaker now describe the surviving profile; if it already has an email they are settled. */
 export async function repointIdentityProposals(sql: Sql, fromId: string, intoId: string, email: unknown) {
-  await sql.query(`UPDATE entities SET data=data || jsonb_build_object('speaker_id',$2::text,'original_speaker_id',COALESCE(data->>'original_speaker_id',$1::text)),updated_at=now()
+  await sql.query(`UPDATE entities SET data=jsonb_merge(data,json_object('speaker_id',$2,'original_speaker_id',COALESCE(data->>'original_speaker_id',$1))),updated_at=now()
     WHERE kind='fact' AND data->>'category'='identity_match' AND data->>'speaker_id'=$1`, [fromId, intoId])
-  if (typeof email === 'string' && email) await sql.query(`UPDATE entities SET data=data || jsonb_build_object('review_state',CASE WHEN lower(data->'candidate'->>'email')=$2 THEN 'accepted' ELSE 'rejected' END,'reviewed_by','system:merge','applied','merged'),updated_at=now()
+  if (typeof email === 'string' && email) await sql.query(`UPDATE entities SET data=jsonb_merge(data,json_object('review_state',CASE WHEN lower(data->'candidate'->>'email')=$2 THEN 'accepted' ELSE 'rejected' END,'reviewed_by','system:merge','applied','merged')),updated_at=now()
     WHERE kind='fact' AND data->>'category'='identity_match' AND data->>'speaker_id'=$1 AND data->>'review_state'='pending'`, [intoId, email.toLowerCase()])
 }
 /** Settles proposals overtaken by events: the speaker was merged elsewhere, or already carries the proposed email. */
 export async function settleIdentityProposals(sql: Sql): Promise<number> {
-  const rows = await sql.query(`SELECT DISTINCT s.id AS from_id FROM entities p JOIN entities s ON s.id=(p.data->>'speaker_id')::uuid
+  const rows = await sql.query(`SELECT DISTINCT s.id AS from_id FROM entities p JOIN entities s ON s.id=p.data->>'speaker_id'
     WHERE p.kind='fact' AND p.data->>'category'='identity_match' AND p.data->>'review_state'='pending' AND s.data->>'merged_into' IS NOT NULL`)
   for (const row of rows) { const into = await resolveCanonical(sql, row.from_id); await repointIdentityProposals(sql, row.from_id, into.id, into.data.email) }
-  const settled = await sql.query(`UPDATE entities p SET data=p.data || '{"review_state":"accepted","reviewed_by":"system:settled","applied":"already_had_email"}'::jsonb,updated_at=now()
-    FROM entities s WHERE p.kind='fact' AND p.data->>'category'='identity_match' AND p.data->>'review_state'='pending'
-    AND s.id=(p.data->>'speaker_id')::uuid AND lower(s.data->>'email')=lower(p.data->'candidate'->>'email') RETURNING p.id`)
+  const settled = await sql.query(`UPDATE entities SET data=jsonb_merge(data,'{"review_state":"accepted","reviewed_by":"system:settled","applied":"already_had_email"}'),updated_at=now()
+    WHERE kind='fact' AND data->>'category'='identity_match' AND data->>'review_state'='pending'
+    AND EXISTS(SELECT 1 FROM entities s WHERE s.id=entities.data->>'speaker_id' AND lower(s.data->>'email')=lower(entities.data->'candidate'->>'email')) RETURNING id`)
   return rows.length + settled.length
 }
 
@@ -152,7 +151,7 @@ export async function unifyByEmail(sql: Sql, personId: string, actor: string, op
   const email = typeof person.data.email === 'string' ? person.data.email.toLowerCase() : ''
   if (!email || person.data.merged_into) return { person_id: personId, merged: [] as string[], conflicts: [] as string[] }
   const group = await sql.query<Entity>(`SELECT * FROM entities WHERE kind='person' AND lower(data->>'email')=$1 AND data->>'merged_into' IS NULL
-    AND COALESCE(data->>'email_status','') <> 'inferred' ORDER BY id FOR UPDATE`, [email])
+    AND COALESCE(data->>'email_status','') <> 'inferred' ORDER BY id`, [email])
   if (group.length < 2) return { person_id: personId, merged: [] as string[], conflicts: [] as string[] }
   const primary = await choosePrimary(sql, group, personId), merged: string[] = [], conflicts: string[] = []
   for (const other of group) {

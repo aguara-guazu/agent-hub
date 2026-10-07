@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { MemoryStore } from './store.js'
+import { vector as toVector } from './database.js'
 import { hash, requireEntity, validateEvidence, validateProjects } from './store.js'
 import { fieldsSchema, parse, check, MemoryError } from './contracts.js'
 import { lenientItems, type MemoryAI } from './ai.js'
@@ -25,7 +26,7 @@ export interface ProcessOptions {
 }
 
 const fragmentQuery = `SELECT f.id,f.text,f.speaker_id,f.start_time,f.end_time,f.offset_ms,f.ordinal,
-  COALESCE((SELECT jsonb_agg(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS project_ids,
+  COALESCE((SELECT json_group_array(fp.project_id ORDER BY fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS "project_ids:json",
   p.title AS speaker_name,p.data->>'email' AS speaker_email FROM fragments f LEFT JOIN entities p ON p.id=f.speaker_id WHERE version_id=$1 ORDER BY ordinal`
 
 export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId: string, config: AIConfig,
@@ -33,7 +34,7 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
   const source = (await store.db.query(`SELECT s.*,e.title,e.kind,e.data FROM sources s JOIN entities e ON e.id=s.entity_id WHERE s.current_version_id=$1 AND s.status='active'`, [versionId]))[0]
   if (!source) return { skipped: 'historical_version' }
   let fragments = await store.db.query(fragmentQuery, [versionId])
-  const protectedProjects = await store.db.query(`SELECT id FROM entities WHERE kind='project' AND data->>'remote_processing'='false'
+  const protectedProjects = await store.db.query(`SELECT id FROM entities WHERE kind='project' AND (data->>'remote_processing') IN (0,'false')
     AND (id IN(SELECT to_id FROM links WHERE from_id=$1 AND type='project')
       OR id IN(SELECT fp.project_id FROM fragment_projects fp JOIN fragments f ON f.id=fp.fragment_id WHERE f.version_id=$2))`, [source.entity_id, versionId])
   const allowedRemote = source.data.remote_processing !== false && protectedProjects.length === 0
@@ -47,7 +48,7 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
     return { stage: 'complete', ...inferred, extraction: extractionState }
   }
   if (config.embeddings_enabled && !identityOnly) {
-    const existing = new Set((await store.db.query('SELECT fragment_id FROM embeddings WHERE model=$1 AND fragment_id=ANY($2::uuid[])', [config.embedding_model, fragments.map(f => f.id)])).map(r => r.fragment_id))
+    const existing = new Set((await store.db.query('SELECT fragment_id FROM embeddings WHERE model=$1 AND fragment_id IN (SELECT value FROM json_each($2))', [config.embedding_model, fragments.map(f => f.id)])).map(r => r.fragment_id))
     const pending = fragments.filter(f => force || !existing.has(f.id))
     for (let offset = 0; offset < pending.length; offset += 8) {
       signal.throwIfAborted()
@@ -56,8 +57,8 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
       const result = await ai.embed(batch.map(f => f.text))
       signal.throwIfAborted()
       await store.db.transaction(async sql => {
-        for (const [index, vector] of result.vectors.entries()) await sql.query(`INSERT INTO embeddings(fragment_id,model,dimension,embedding) VALUES($1,$2,$3,$4::vector)
-          ON CONFLICT(fragment_id,model) DO UPDATE SET dimension=excluded.dimension,embedding=excluded.embedding,created_at=now()`, [batch[index]!.id, result.model, vector.length, JSON.stringify(vector)])
+        for (const [index, vector] of result.vectors.entries()) await sql.query(`INSERT INTO embeddings(fragment_id,model,dimension,embedding) VALUES($1,$2,$3,$4)
+          ON CONFLICT(fragment_id,model) DO UPDATE SET dimension=excluded.dimension,embedding=excluded.embedding,created_at=now()`, [batch[index]!.id, result.model, vector.length, toVector(vector)])
       })
       embeddings += batch.length
       await progress({ stage: 'embeddings', embeddings, total_fragments: fragments.length })
@@ -88,10 +89,10 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
     if (inferred.project_inference === 'auto_assigned') fragments = await store.db.query(fragmentQuery, [versionId])
   }
   const processingKey = `${config.extraction}:${config.extraction_model}:v1:${extractionHash(fragments)}`
-  const processed = (await store.db.query("SELECT metadata->>'extraction_key' AS key,metadata->'extraction_progress' AS progress FROM versions WHERE id=$1", [versionId]))[0]
+  const processed = (await store.db.query(`SELECT metadata->>'extraction_key' AS key,metadata->'extraction_progress' AS "progress:json" FROM versions WHERE id=$1`, [versionId]))[0]
   if (extractionAllowed && (force || processed?.key !== processingKey)) {
     dedupeNeeded = true
-    const projects = await store.db.query("SELECT id,title FROM entities WHERE kind='project' AND ($1::boolean=false OR COALESCE(data->>'remote_processing','true')<>'false') ORDER BY title LIMIT 500", [usesRemoteExtraction(config)])
+    const projects = await store.db.query("SELECT id,title FROM entities WHERE kind='project' AND ($1=0 OR COALESCE(data->>'remote_processing','true') NOT IN (0,'false')) ORDER BY title LIMIT 500", [usesRemoteExtraction(config)])
     const planned = batches(fragments)
     // A retry of the same run skips batches already committed instead of extracting (and duplicating) them again.
     const progressKey = force ? `${processingKey}:${options.runKey ?? 'forced'}` : processingKey
@@ -125,21 +126,21 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
           for (const fragmentId of new Set(fact.evidence_ids)) await sql.query('INSERT INTO evidence VALUES($1,$2)', [factId, fragmentId])
           await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'derived_from')", [randomUUID(), factId, source.entity_id])
           // The fact belongs to the projects of its evidence; the model's own associations stay proposals and never reassign fragments.
-          await sql.query(`INSERT INTO links(id,from_id,to_id,type,data) SELECT gen_random_uuid(),$1,fp.project_id,'project',jsonb_build_object('inherited_from',$2::text)
-            FROM (SELECT DISTINCT project_id FROM fragment_projects WHERE fragment_id=ANY($3::uuid[])) fp ON CONFLICT(from_id,to_id,type) DO NOTHING`, [factId, source.entity_id, fact.evidence_ids])
+          await sql.query(`INSERT INTO links(id,from_id,to_id,type,data) SELECT gen_random_uuid(),$1,fp.project_id,'project',json_object('inherited_from',$2)
+            FROM (SELECT DISTINCT project_id FROM fragment_projects WHERE fragment_id IN (SELECT value FROM json_each($3))) fp WHERE true ON CONFLICT(from_id,to_id,type) DO NOTHING`, [factId, source.entity_id, fact.evidence_ids])
           for (const project of new Set(fact.project_ids)) await sql.query("INSERT INTO links(id,from_id,to_id,type,data) VALUES($1,$2,$3,'project','{\"proposed\":true}') ON CONFLICT(from_id,to_id,type) DO NOTHING", [randomUUID(), factId, project])
           extracted++
         }
-        await sql.query(`UPDATE versions SET metadata=metadata || jsonb_build_object('extraction_progress',jsonb_build_object('key',$2::text,'batches',
-          COALESCE(CASE WHEN metadata->'extraction_progress'->>'key'=$2 THEN metadata->'extraction_progress'->'batches' END,'[]'::jsonb) || to_jsonb($3::text))) WHERE id=$1`, [versionId, progressKey, batchKey])
+        await sql.query(`UPDATE versions SET metadata=json_set(metadata,'$.extraction_progress',json_object('key',$2,'batches',
+          json_insert(COALESCE(CASE WHEN metadata->'extraction_progress'->>'key'=$2 THEN metadata->'extraction_progress'->'batches' END,'[]'),'$[#]',$3))) WHERE id=$1`, [versionId, progressKey, batchKey])
       })
       processedFragments += batch.length
       await progress({ stage: 'extraction', batch: batchNumber + 1, processed_fragments: processedFragments, extracted, extraction_rejected: extractionRejected, embeddings, input_tokens: inputTokens, output_tokens: outputTokens, model: result.usage.model })
     }
-    await store.db.query("UPDATE versions SET metadata=(metadata - 'extraction_progress') || jsonb_build_object('extraction_key',$2::text) WHERE id=$1", [versionId, processingKey])
+    await store.db.query("UPDATE versions SET metadata=json_set(json_remove(metadata,'$.extraction_progress'),'$.extraction_key',$2) WHERE id=$1", [versionId, processingKey])
   }
   if (extractionAllowed) {
-    const rules = await store.db.query('SELECT * FROM rules WHERE enabled=true ORDER BY created_at')
+    const rules = await store.db.query('SELECT * FROM rules WHERE enabled=1 ORDER BY created_at')
     for (const rule of rules) await runRule(store, ai, rule, versionId, fragments, signal)
   }
   // New speakers or fresh identity results can create duplicates across sources; one queued pass covers every version processed since.

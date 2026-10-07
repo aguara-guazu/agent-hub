@@ -16,8 +16,11 @@ import { ProviderHttp } from '../src/connectors/http.js'
 import { getJiraSettings, saveJiraSettings } from '../src/jira-settings.js'
 import type { ConnectorContext, Connector } from '../src/connectors/types.js'
 
-const url = process.env.AGENTHUB_MEMORY_TEST_URL
-describe.skipIf(!url)('proyectos, tareas y agentes con PostgreSQL real', () => {
+async function resetMemory(db: MemoryDatabase) {
+  const tables = await db.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' AND name NOT LIKE '%_substrings%' AND name<>'schema_versions'")
+  await db.execute(`PRAGMA foreign_keys=OFF; ${tables.map(t => `DELETE FROM "${t.name}";`).join('')} DELETE FROM sqlite_sequence; PRAGMA foreign_keys=ON`)
+}
+describe('proyectos, tareas y agentes con SQLite', () => {
   let db: MemoryDatabase, store: MemoryStore, directory: string, ops: MemoryOperations, vault: Vault
   const config = { ...defaultAI, extraction: 'ollama' as const, extraction_model: 'fixture' }
   const signal = () => new AbortController().signal
@@ -25,16 +28,12 @@ describe.skipIf(!url)('proyectos, tareas y agentes con PostgreSQL real', () => {
   const issue = (status = 'To Do', updated = '2026-01-01T00:00:00Z') => ({ key: 'APP-1', fields: { summary: 'Implementar API', updated,
     status: { name: status, statusCategory: { key: status === 'Done' ? 'done' : 'new' } }, issuetype: { name: 'Task' } } })
   beforeAll(async () => {
-    if (!new URL(url!).pathname.endsWith('_test')) throw new Error('Se requiere una base de pruebas')
     directory = await mkdtemp(join(tmpdir(), 'memory-work-test-'))
-    db = new MemoryDatabase(url!); await db.migrate()
+    db = new MemoryDatabase(join(directory, 'memory.sqlite')); await db.migrate()
     store = new MemoryStore(db, directory); vault = new Vault(directory)
     ops = new MemoryOperations(store, new MemoryAI(async () => defaultAI, vault), undefined, vault)
   })
-  beforeEach(async () => {
-    const tables = await db.query("SELECT tablename FROM pg_tables WHERE schemaname='agenthub_memory' AND tablename<>'schema_versions'")
-    await db.query(`TRUNCATE ${tables.map(t => `"${t.tablename}"`).join(',')} RESTART IDENTITY CASCADE`)
-  })
+  beforeEach(async () => { await resetMemory(db) })
   afterAll(async () => { await db?.close(); if (directory) await rm(directory, { recursive: true, force: true }) })
   async function project() { return store.create({ kind: 'project', title: 'API', data: { folders: ['/work/api'], jira_project_key: 'APP' } }) }
   it('hereda el sitio Jira global en la consulta MCP y conserva las excepciones de cada proyecto',async () => {
@@ -204,10 +203,10 @@ describe.skipIf(!url)('proyectos, tareas y agentes con PostgreSQL real', () => {
     await project()
     const first = await ops.call('write_note',{text:'Turno uno'},'mcp',agent)
     const cutoff = new Date().toISOString()
-    await db.query("UPDATE agent_notes SET updated_at=now()-interval '1 second' WHERE id=$1",[first.id])
+    await db.query("UPDATE agent_notes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 second') WHERE id=$1",[first.id])
     await ops.call('finish_notes',{reason:'turn_end',before:cutoff},'mcp',agent)
     const second = await ops.call('write_note',{text:'Turno dos'},'mcp',agent)
-    await db.query("UPDATE agent_notes SET updated_at=$2::timestamptz+interval '1 second' WHERE id=$1",[second.id,cutoff])
+    await db.query("UPDATE agent_notes SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ',$2,'+1 second') WHERE id=$1",[second.id,cutoff])
     const other = await ops.call('write_note',{text:'Otro agente'},'mcp',{...agent,session_id:'other-agent-session'})
     await ops.call('finish_notes',{reason:'turn_end',before:cutoff},'mcp',agent)
     const notes = (await ops.call('list_notes',{})).items
@@ -230,15 +229,13 @@ describe.skipIf(!url)('proyectos, tareas y agentes con PostgreSQL real', () => {
   it('cuenta todas las tareas sin movimiento y restaura tareas y notas desde backup', async () => {
     const p = await project()
     for (let i = 0; i < 23; i++) await ops.call('save_task', { project_id: p.id, title: `Pendiente ${i}`, origin: 'code' })
-    await db.query("UPDATE tasks SET updated_at=now()-interval '30 days'")
+    await db.query("UPDATE tasks SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')")
     const stats = await ops.call('task_stats', { project_id: p.id })
     expect(stats.summary.stale_open).toBe(23); expect(stats.stale).toHaveLength(20)
     await ops.call('write_note', { text: 'Revisando pendientes' }, 'mcp', agent)
     const backup = await exportMemory(store)
     const data = JSON.parse(await readBackup(store, backup.id))
-    await db.query('TRUNCATE entities CASCADE')
-    await db.query('TRUNCATE agent_sessions CASCADE')
-    await db.query('TRUNCATE changes')
+    await db.execute('DELETE FROM entities; DELETE FROM agent_notes; DELETE FROM agent_sessions; DELETE FROM changes')
     await restoreMemory(store, data)
     expect((await ops.call('list_tasks', { project_id: p.id })).total).toBe(23)
     expect((await ops.call('list_notes', { project_id: p.id })).total).toBe(1)
@@ -247,9 +244,9 @@ describe.skipIf(!url)('proyectos, tareas y agentes con PostgreSQL real', () => {
   it('sincronizar ahora adelanta reintentos y encola sólo fuentes activas', async () => {
     const active = await ops.call('save_connector', { provider: 'google', name: 'Activa', enabled: true, config: {} })
     await ops.call('save_connector', { provider: 'google', name: 'Pausada', enabled: false, config: {} })
-    await db.query("UPDATE jobs SET state='waiting',available_at=now()+interval '1 hour' WHERE kind='sync'")
+    await db.query("UPDATE jobs SET state='waiting',available_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 hour') WHERE kind='sync'")
     expect((await ops.call('sync_sources', {})).queued).toBe(1)
-    const jobs = await db.query("SELECT *,available_at<=now() AS ready FROM jobs WHERE kind='sync'")
+    const jobs = await db.query(`SELECT *,available_at<=now() AS "ready:bool" FROM jobs WHERE kind='sync'`)
     expect(jobs).toHaveLength(1); expect(jobs[0]).toMatchObject({ payload: { connector_id: active.id }, ready: true })
   })
 })

@@ -10,11 +10,10 @@ import { ensureLocalOwner } from '../src/local.js'
 import { computeSnapshot } from '../src/policy/resolver.js'
 import { createAccessToken } from '../src/security.js'
 
-describe.skipIf(!process.env.AGENTHUB_MEMORY_TEST_URL)('memoria HTTP y gateway MCP', () => {
+describe('memoria HTTP y gateway MCP', () => {
   let app: CoreApp, directory: string, token: string, owner: ReturnType<typeof ensureLocalOwner>
   beforeEach(async () => {
     directory = mkdtempSync(join(tmpdir(), 'memory-core-'))
-    vi.stubEnv('AGENTHUB_MEMORY_DATABASE_URL', process.env.AGENTHUB_MEMORY_TEST_URL!)
     vi.stubEnv('AGENTHUB_MEMORY_DIR', join(directory, 'memory'))
     vi.stubEnv('AGENTHUB_MEMORY_WORKER', '0')
     app = buildApp({ settings: { localMode: true, starterCatalog: false, databasePath: join(directory, 'hub.db') } })

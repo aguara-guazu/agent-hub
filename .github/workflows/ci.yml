@@ -9,6 +9,9 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22.18.0, 24]
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -20,11 +23,13 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U agenthub -d agenthub_memory_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      AGENTHUB_MEMORY_TEST_URL: postgres://agenthub:test-only@localhost:5432/agenthub_memory_test
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
       - name: Validate release version
@@ -34,7 +39,3 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:e2e
-      - name: Memory integration tests with PostgreSQL
-        run: npx vitest run packages/memory/test packages/core/test/memory.test.ts --no-file-parallelism
-        env:
-          AGENTHUB_MEMORY_TEST_URL: postgres://agenthub:test-only@localhost:5432/agenthub_memory_test

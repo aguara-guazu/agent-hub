@@ -1,180 +1,216 @@
+// SQLite schema. Equivalent to PostgreSQL schema version 4 (see legacy-postgres.ts for the import).
+// Conventions: ids are TEXT uuids; timestamps are ISO-8601 UTC TEXT ('YYYY-MM-DDTHH:MM:SS.sssZ') so they
+// compare as strings; JSON/BOOLEAN declared types drive result conversion in database-engine.ts.
+// `entities` and `fragments` carry an INTEGER PRIMARY KEY `rid` because FTS5 maps rows by rowid and
+// VACUUM may renumber implicit rowids. Schema objects use only built-in SQL so external tools can open the file.
+const NOW = `(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
+const ENTITY_TEXT = (row: string) => `${row}.title || char(10) || COALESCE(${row}.data->>'description','') || char(10) || COALESCE(${row}.data->>'text','')
+  || char(10) || COALESCE(${row}.data->>'email','') || char(10) || COALESCE(${row}.data->>'category','') || char(10) || COALESCE(${row}.data->>'status','')`
+
 export const migrations = [String.raw`
 CREATE TABLE entities (
-  id uuid PRIMARY KEY, kind text NOT NULL CHECK(kind IN ('company','project','person','meeting','event','document','message','issue','note','collection','fact')),
-  title text NOT NULL, data jsonb NOT NULL DEFAULT '{}',
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+  rid INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL CHECK(kind IN ('company','project','person','meeting','event','document','message','issue','note','collection','fact')),
+  title TEXT NOT NULL, data JSON NOT NULL DEFAULT '{}',
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
 CREATE INDEX entities_kind ON entities(kind, updated_at DESC);
-CREATE INDEX entities_data ON entities USING gin(data);
+CREATE TABLE connectors (
+  id TEXT PRIMARY KEY, provider TEXT NOT NULL, name TEXT NOT NULL,
+  config JSON NOT NULL DEFAULT '{}', project_ids JSON NOT NULL DEFAULT '[]',
+  enabled BOOLEAN NOT NULL DEFAULT 0, interval_minutes INTEGER NOT NULL DEFAULT 30,
+  cursor JSON NOT NULL DEFAULT '{}', last_success_at TIMESTAMP, last_error TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
 CREATE TABLE sources (
-  id uuid PRIMARY KEY, entity_id uuid NOT NULL UNIQUE REFERENCES entities ON DELETE CASCADE,
-  provider text NOT NULL, account text NOT NULL, external_id text NOT NULL,
-  connector_id uuid, url text, current_version_id uuid,
-  status text NOT NULL DEFAULT 'active', synced_at timestamptz NOT NULL DEFAULT now(),
+  id TEXT PRIMARY KEY, entity_id TEXT NOT NULL UNIQUE REFERENCES entities(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL, account TEXT NOT NULL, external_id TEXT NOT NULL,
+  connector_id TEXT REFERENCES connectors(id) ON DELETE SET NULL, url TEXT,
+  current_version_id TEXT REFERENCES versions(id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED,
+  status TEXT NOT NULL DEFAULT 'active', synced_at TIMESTAMP NOT NULL DEFAULT ${NOW},
   UNIQUE(provider,account,external_id)
 );
 CREATE TABLE versions (
-  id uuid PRIMARY KEY, source_id uuid NOT NULL REFERENCES sources ON DELETE CASCADE,
-  content_hash text NOT NULL, original_path text NOT NULL,
-  metadata jsonb NOT NULL DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now(),
+  id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  content_hash TEXT NOT NULL, original_path TEXT NOT NULL,
+  metadata JSON NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT ${NOW},
   UNIQUE(source_id,content_hash)
 );
-ALTER TABLE sources ADD CONSTRAINT source_current_version FOREIGN KEY(current_version_id) REFERENCES versions ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
 CREATE TABLE identities (
-  provider text NOT NULL, account text NOT NULL, external_id text NOT NULL,
-  person_id uuid NOT NULL REFERENCES entities ON DELETE CASCADE,
-  display_name text NOT NULL, email text, verified boolean NOT NULL DEFAULT false,
+  provider TEXT NOT NULL, account TEXT NOT NULL, external_id TEXT NOT NULL,
+  person_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  display_name TEXT NOT NULL, email TEXT, verified BOOLEAN NOT NULL DEFAULT 0,
   PRIMARY KEY(provider,account,external_id)
 );
+CREATE INDEX identities_person ON identities(person_id);
 CREATE TABLE fragments (
-  id uuid PRIMARY KEY, version_id uuid NOT NULL REFERENCES versions ON DELETE CASCADE,
-  ordinal integer NOT NULL, text text NOT NULL, speaker_id uuid REFERENCES entities ON DELETE SET NULL,
-  start_time timestamptz, end_time timestamptz, offset_ms bigint,
-  metadata jsonb NOT NULL DEFAULT '{}',
-  search_text tsvector GENERATED ALWAYS AS(to_tsvector('simple',text)) STORED,
+  rid INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE,
+  version_id TEXT NOT NULL REFERENCES versions(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL, text TEXT NOT NULL, speaker_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+  start_time TIMESTAMP, end_time TIMESTAMP, offset_ms INTEGER,
+  metadata JSON NOT NULL DEFAULT '{}',
   UNIQUE(version_id,ordinal)
 );
-CREATE INDEX fragments_version ON fragments(version_id, ordinal);
 CREATE INDEX fragments_speaker ON fragments(speaker_id,start_time);
-CREATE INDEX fragments_fts ON fragments USING gin(search_text);
 CREATE TABLE fragment_projects (
-  fragment_id uuid REFERENCES fragments ON DELETE CASCADE,
-  project_id uuid REFERENCES entities ON DELETE CASCADE,
+  fragment_id TEXT REFERENCES fragments(id) ON DELETE CASCADE,
+  project_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
   PRIMARY KEY(fragment_id,project_id)
 );
 CREATE INDEX fragment_projects_project ON fragment_projects(project_id,fragment_id);
 CREATE TABLE links (
-  id uuid PRIMARY KEY, from_id uuid NOT NULL REFERENCES entities ON DELETE CASCADE,
-  to_id uuid NOT NULL REFERENCES entities ON DELETE CASCADE, type text NOT NULL,
-  data jsonb NOT NULL DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now(),
+  id TEXT PRIMARY KEY, from_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  to_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, type TEXT NOT NULL,
+  data JSON NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT ${NOW},
   UNIQUE(from_id,to_id,type), CHECK(from_id <> to_id)
 );
 CREATE INDEX links_to ON links(to_id,type);
 CREATE TABLE evidence (
-  entity_id uuid REFERENCES entities ON DELETE CASCADE,
-  fragment_id uuid REFERENCES fragments ON DELETE CASCADE,
+  entity_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
+  fragment_id TEXT REFERENCES fragments(id) ON DELETE CASCADE,
   PRIMARY KEY(entity_id,fragment_id)
 );
+CREATE INDEX evidence_fragment ON evidence(fragment_id);
 CREATE TABLE link_evidence (
-  link_id uuid REFERENCES links ON DELETE CASCADE, fragment_id uuid REFERENCES fragments ON DELETE CASCADE,
+  link_id TEXT REFERENCES links(id) ON DELETE CASCADE, fragment_id TEXT REFERENCES fragments(id) ON DELETE CASCADE,
   PRIMARY KEY(link_id,fragment_id)
 );
 CREATE TABLE embeddings (
-  fragment_id uuid REFERENCES fragments ON DELETE CASCADE,
-  model text NOT NULL, dimension integer NOT NULL, embedding vector NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(fragment_id,model),
-  CHECK(vector_dims(embedding)=dimension)
+  fragment_id TEXT REFERENCES fragments(id) ON DELETE CASCADE,
+  model TEXT NOT NULL, dimension INTEGER NOT NULL, embedding BLOB NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, PRIMARY KEY(fragment_id,model),
+  CHECK(length(embedding)=dimension*4)
+);
+CREATE TABLE entity_embeddings (
+  entity_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
+  model TEXT NOT NULL, dimension INTEGER NOT NULL, embedding BLOB NOT NULL, content_hash TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, PRIMARY KEY(entity_id,model),
+  CHECK(length(embedding)=dimension*4)
 );
 CREATE TABLE collection_records (
-  id uuid PRIMARY KEY, collection_id uuid NOT NULL REFERENCES entities ON DELETE CASCADE,
-  values jsonb NOT NULL, schema_version integer NOT NULL,
-  idempotency_key text, origin text NOT NULL DEFAULT 'manual',
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+  id TEXT PRIMARY KEY, collection_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  "values" JSON NOT NULL, schema_version INTEGER NOT NULL,
+  idempotency_key TEXT, origin TEXT NOT NULL DEFAULT 'manual',
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW},
   UNIQUE(collection_id,idempotency_key)
 );
-CREATE INDEX collection_records_values ON collection_records USING gin(values);
 CREATE TABLE record_evidence (
-  record_id uuid REFERENCES collection_records ON DELETE CASCADE,
-  fragment_id uuid REFERENCES fragments ON DELETE CASCADE,
+  record_id TEXT REFERENCES collection_records(id) ON DELETE CASCADE,
+  fragment_id TEXT REFERENCES fragments(id) ON DELETE CASCADE,
   PRIMARY KEY(record_id,fragment_id)
 );
 CREATE TABLE rules (
-  id uuid PRIMARY KEY, collection_id uuid NOT NULL REFERENCES entities ON DELETE CASCADE,
-  name text NOT NULL, instructions text NOT NULL, project_ids uuid[] NOT NULL DEFAULT '{}',
-  person_id uuid REFERENCES entities ON DELETE SET NULL,
-  enabled boolean NOT NULL DEFAULT true, revision integer NOT NULL DEFAULT 1,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+  id TEXT PRIMARY KEY, collection_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, instructions TEXT NOT NULL, project_ids JSON NOT NULL DEFAULT '[]',
+  person_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+  enabled BOOLEAN NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
 CREATE TABLE rule_runs (
-  rule_id uuid REFERENCES rules ON DELETE CASCADE, revision integer NOT NULL,
-  version_id uuid REFERENCES versions ON DELETE CASCADE,
-  completed_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(rule_id,revision,version_id)
+  rule_id TEXT REFERENCES rules(id) ON DELETE CASCADE, revision INTEGER NOT NULL,
+  version_id TEXT REFERENCES versions(id) ON DELETE CASCADE,
+  completed_at TIMESTAMP NOT NULL DEFAULT ${NOW}, PRIMARY KEY(rule_id,revision,version_id)
 );
-CREATE TABLE connectors (
-  id uuid PRIMARY KEY, provider text NOT NULL, name text NOT NULL,
-  config jsonb NOT NULL DEFAULT '{}', project_ids uuid[] NOT NULL DEFAULT '{}',
-  enabled boolean NOT NULL DEFAULT false, interval_minutes integer NOT NULL DEFAULT 30,
-  cursor jsonb NOT NULL DEFAULT '{}', last_success_at timestamptz, last_error text,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
-);
-ALTER TABLE sources ADD CONSTRAINT source_connector FOREIGN KEY(connector_id) REFERENCES connectors ON DELETE SET NULL;
 CREATE TABLE jobs (
-  id uuid PRIMARY KEY, kind text NOT NULL, payload jsonb NOT NULL DEFAULT '{}',
-  dedupe_key text NOT NULL, state text NOT NULL DEFAULT 'queued',
-  attempts integer NOT NULL DEFAULT 0, max_attempts integer NOT NULL DEFAULT 5,
-  available_at timestamptz NOT NULL DEFAULT now(), lease_until timestamptz, lease_owner text,
-  progress jsonb NOT NULL DEFAULT '{}', error text,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload JSON NOT NULL DEFAULT '{}',
+  dedupe_key TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued',
+  attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 5,
+  available_at TIMESTAMP NOT NULL DEFAULT ${NOW}, lease_until TIMESTAMP, lease_owner TEXT,
+  progress JSON NOT NULL DEFAULT '{}', error TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
 CREATE UNIQUE INDEX jobs_active_dedupe ON jobs(dedupe_key) WHERE state IN ('queued','running','waiting');
 CREATE INDEX jobs_ready ON jobs(state,available_at);
-CREATE TABLE settings (key text PRIMARY KEY, value jsonb NOT NULL);
+CREATE INDEX jobs_dedupe ON jobs(dedupe_key,state);
+CREATE INDEX jobs_version ON jobs(payload->>'version_id');
+CREATE TABLE settings (key TEXT PRIMARY KEY, value JSON NOT NULL);
 CREATE TABLE changes (
-  id bigserial PRIMARY KEY, entity_id uuid, action text NOT NULL, actor text NOT NULL,
-  before_value jsonb, after_value jsonb, created_at timestamptz NOT NULL DEFAULT now()
+  id INTEGER PRIMARY KEY AUTOINCREMENT, entity_id TEXT, action TEXT NOT NULL, actor TEXT NOT NULL,
+  before_value JSON, after_value JSON, created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
-`, String.raw`
--- Entity metadata is searchable even when it has no imported source (projects, facts, people…).
-CREATE FUNCTION memory_entity_text(title text, data jsonb) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-  SELECT title || E'\n' || COALESCE(data->>'description','') || E'\n' || COALESCE(data->>'text','') || E'\n'
-    || COALESCE(data->>'email','') || E'\n' || COALESCE(data->>'category','') || E'\n' || COALESCE(data->>'status','')
-$$;
-CREATE INDEX entities_search ON entities USING gin(to_tsvector('simple',memory_entity_text(title,data)));
-CREATE TABLE entity_embeddings (
-  entity_id uuid REFERENCES entities ON DELETE CASCADE,
-  model text NOT NULL, dimension integer NOT NULL, embedding vector NOT NULL, content_hash text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(entity_id,model),
-  CHECK(vector_dims(embedding)=dimension)
-);
-`, String.raw`
--- Project work tracking. Jira rows mirror the issue (external_* holds Jira's own values); pending rows are internal debt and follow-ups.
+CREATE INDEX changes_entity ON changes(entity_id, id DESC);
 CREATE TABLE tasks (
-  id uuid PRIMARY KEY, project_id uuid REFERENCES entities ON DELETE CASCADE,
-  kind text NOT NULL CHECK(kind IN ('jira','pending')),
-  title text NOT NULL, description text NOT NULL DEFAULT '',
-  status text NOT NULL CHECK(status IN ('todo','in_progress','blocked','done','dropped')),
-  origin text NOT NULL DEFAULT 'manual',
-  external_key text, external_status text, external_category text, external_url text, external_updated_at timestamptz,
-  issue_type text, priority text, assignee text, code_ref text,
-  source_entity_id uuid REFERENCES entities ON DELETE SET NULL,
-  created_by text NOT NULL, updated_by text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), closed_at timestamptz,
+  id TEXT PRIMARY KEY, project_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('jira','pending')),
+  title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK(status IN ('todo','in_progress','blocked','done','dropped')),
+  origin TEXT NOT NULL DEFAULT 'manual',
+  external_key TEXT, external_status TEXT, external_category TEXT, external_url TEXT, external_updated_at TIMESTAMP,
+  issue_type TEXT, priority TEXT, assignee TEXT, code_ref TEXT,
+  source_entity_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+  created_by TEXT NOT NULL, updated_by TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}, closed_at TIMESTAMP,
+  external_site TEXT NOT NULL DEFAULT '',
   CHECK(kind <> 'jira' OR external_key IS NOT NULL)
 );
-CREATE UNIQUE INDEX tasks_jira_key ON tasks(external_key) WHERE kind='jira';
+CREATE UNIQUE INDEX tasks_jira_key ON tasks(external_site,external_key) WHERE kind='jira';
 CREATE INDEX tasks_project ON tasks(project_id,status,updated_at DESC);
 CREATE TABLE task_evidence (
-  task_id uuid REFERENCES tasks ON DELETE CASCADE, fragment_id uuid REFERENCES fragments ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE, fragment_id TEXT REFERENCES fragments(id) ON DELETE CASCADE,
   PRIMARY KEY(task_id,fragment_id)
 );
 CREATE TABLE task_events (
-  id bigserial PRIMARY KEY, task_id uuid NOT NULL REFERENCES tasks ON DELETE CASCADE,
-  action text NOT NULL, actor text NOT NULL, status_before text, status_after text,
-  detail jsonb NOT NULL DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now()
+  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  action TEXT NOT NULL, actor TEXT NOT NULL, status_before TEXT, status_after TEXT,
+  detail JSON NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
 CREATE INDEX task_events_task ON task_events(task_id,created_at);
 CREATE INDEX task_events_created ON task_events(created_at);
--- One row per gateway process (a CLI session). last_seen_at advances with every memory call made through it.
 CREATE TABLE agent_sessions (
-  id text PRIMARY KEY, agent_id text NOT NULL, agent_label text NOT NULL, cli_kind text NOT NULL DEFAULT '',
-  cwd text, project_id uuid REFERENCES entities ON DELETE SET NULL,
-  started_at timestamptz NOT NULL DEFAULT now(), last_seen_at timestamptz NOT NULL DEFAULT now(), ended_at timestamptz
+  id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, agent_label TEXT NOT NULL, cli_kind TEXT NOT NULL DEFAULT '',
+  cwd TEXT, project_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+  started_at TIMESTAMP NOT NULL DEFAULT ${NOW}, last_seen_at TIMESTAMP NOT NULL DEFAULT ${NOW}, ended_at TIMESTAMP
 );
 CREATE TABLE agent_notes (
-  id uuid PRIMARY KEY, session_id text REFERENCES agent_sessions ON DELETE SET NULL,
-  agent_id text NOT NULL, agent_label text NOT NULL, cli_kind text NOT NULL DEFAULT '',
-  project_id uuid REFERENCES entities ON DELETE CASCADE, task_id uuid REFERENCES tasks ON DELETE SET NULL,
-  text text NOT NULL CHECK(char_length(text) BETWEEN 1 AND 600),
-  state text NOT NULL CHECK(state IN ('working','done','blocked')), finish_reason text,
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz
+  id TEXT PRIMARY KEY, session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
+  agent_id TEXT NOT NULL, agent_label TEXT NOT NULL, cli_kind TEXT NOT NULL DEFAULT '',
+  project_id TEXT REFERENCES entities(id) ON DELETE CASCADE, task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  text TEXT NOT NULL CHECK(length(text) BETWEEN 1 AND 600),
+  state TEXT NOT NULL CHECK(state IN ('working','done','blocked')), finish_reason TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}, finished_at TIMESTAMP
 );
 CREATE INDEX agent_notes_project ON agent_notes(project_id,updated_at DESC);
 CREATE INDEX agent_notes_working ON agent_notes(session_id) WHERE state='working';
+
+-- Full text: PostgreSQL used to_tsvector('simple', …); unicode61 also folds accents ("reunion" finds "reunión").
+CREATE VIRTUAL TABLE fragments_fts USING fts5(text, content='fragments', content_rowid='rid', tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER fragments_fts_insert AFTER INSERT ON fragments BEGIN
+  INSERT INTO fragments_fts(rowid,text) VALUES(new.rid,new.text);
+END;
+CREATE TRIGGER fragments_fts_delete AFTER DELETE ON fragments BEGIN
+  INSERT INTO fragments_fts(fragments_fts,rowid,text) VALUES('delete',old.rid,old.text);
+END;
+CREATE TRIGGER fragments_fts_update AFTER UPDATE OF text ON fragments BEGIN
+  INSERT INTO fragments_fts(fragments_fts,rowid,text) VALUES('delete',old.rid,old.text);
+  INSERT INTO fragments_fts(rowid,text) VALUES(new.rid,new.text);
+END;
+CREATE VIRTUAL TABLE entities_fts USING fts5(text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER entities_fts_insert AFTER INSERT ON entities BEGIN
+  INSERT INTO entities_fts(rowid,text) VALUES(new.rid,${ENTITY_TEXT('new')});
+END;
+CREATE TRIGGER entities_fts_delete AFTER DELETE ON entities BEGIN
+  DELETE FROM entities_fts WHERE rowid=old.rid;
+END;
+CREATE TRIGGER entities_fts_update AFTER UPDATE OF title,data ON entities BEGIN
+  DELETE FROM entities_fts WHERE rowid=old.rid;
+  INSERT INTO entities_fts(rowid,text) VALUES(new.rid,${ENTITY_TEXT('new')});
+END;
 `, String.raw`
-ALTER TABLE tasks ADD COLUMN external_site text NOT NULL DEFAULT '';
-UPDATE tasks t SET external_site=COALESCE(NULLIF(p.data->>'jira_site_url',''),
-  CASE WHEN t.external_url LIKE 'https://%.atlassian.net/%' THEN split_part(t.external_url,'/',1)||'//'||split_part(t.external_url,'/',3) END,'')
-  FROM entities p WHERE t.project_id=p.id AND t.kind='jira';
-DROP INDEX tasks_jira_key;
-CREATE UNIQUE INDEX tasks_jira_key ON tasks(external_site,external_key) WHERE kind='jira';
+-- Search starts from matching fragments; resolve their current source without scanning all sources.
+CREATE INDEX sources_current_version ON sources(current_version_id);
+`, String.raw`
+-- Case-fold before indexing so substring candidates use the same Unicode lower() as ILIKE.
+-- Contentless storage avoids duplicating transcript text. Residual ILIKE checks preserve wildcards.
+CREATE VIRTUAL TABLE fragments_substrings USING fts5(text, content='', contentless_delete=1, tokenize='trigram case_sensitive 1');
+INSERT INTO fragments_substrings(rowid,text) SELECT rid,lower(text) FROM fragments;
+CREATE TRIGGER fragments_substrings_insert AFTER INSERT ON fragments BEGIN
+  INSERT INTO fragments_substrings(rowid,text) VALUES(new.rid,lower(new.text));
+END;
+CREATE TRIGGER fragments_substrings_delete AFTER DELETE ON fragments BEGIN
+  DELETE FROM fragments_substrings WHERE rowid=old.rid;
+END;
+CREATE TRIGGER fragments_substrings_update AFTER UPDATE OF text ON fragments BEGIN
+  DELETE FROM fragments_substrings WHERE rowid=old.rid;
+  INSERT INTO fragments_substrings(rowid,text) VALUES(new.rid,lower(new.text));
+END;
 `]

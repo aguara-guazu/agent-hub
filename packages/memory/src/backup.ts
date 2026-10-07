@@ -6,12 +6,15 @@ import { z } from 'zod'
 import type { MemoryStore } from './store.js'
 import { canonical, hash } from './store.js'
 import { check, parse, id } from './contracts.js'
+import { storageConverter, vectorValues } from './database.js'
 
 const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identities', 'fragments', 'fragment_projects', 'links', 'evidence', 'link_evidence',
   'embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'changes'] as const
 // Added by schema version 3; backups taken before it restore without them.
 const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes'] as const
 const tables = [...requiredTables, ...laterTables] as const
+/** Data-model version of agenthub-memory-v1 (tables and columns of PostgreSQL schema 4); backups from 1–4 restore. */
+const BACKUP_SCHEMA_VERSION = 4
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -25,28 +28,24 @@ async function exportOriginals(store: MemoryStore) {
   const file = await open(temp, 'wx', 0o600)
   try {
     // A real memory can contain gigabytes of vectors. Keep one cursor batch in memory,
-    // while the same repeatable-read snapshot and originals lock cover the whole export.
+    // while the same read snapshot and originals lock cover the whole export.
     await store.db.transaction(async sql => {
-      const schema = (await sql.query('SELECT max(version) AS version FROM schema_versions'))[0]!.version
-      await file.writeFile(`{"format":"agenthub-memory-v1","schema_version":${schema},"exported_at":${JSON.stringify(exportedAt)},"tables":{`)
+      await file.writeFile(`{"format":"agenthub-memory-v1","schema_version":${BACKUP_SCHEMA_VERSION},"exported_at":${JSON.stringify(exportedAt)},"tables":{`)
       for (const [index, table] of tables.entries()) {
         await file.writeFile(`${index ? ',' : ''}${JSON.stringify(table)}:[`)
-        await sql.query(`DECLARE backup_rows NO SCROLL CURSOR FOR SELECT * FROM ${table}`)
         let first = true
-        for (;;) {
-          const rows = await sql.query('FETCH 128 FROM backup_rows')
-          if (!rows.length) break
-          for (const row of rows) { await file.writeFile(`${first ? '' : ','}${JSON.stringify(row)}`); first = false }
+        for await (const rows of sql.batches(`SELECT * FROM ${table}`)) {
+          for (const row of rows) {
+            // Vectors keep the pgvector text form so backups stay interchangeable with earlier versions.
+            if (row.embedding instanceof Uint8Array) row.embedding = `[${vectorValues(row.embedding).join(',')}]`
+            await file.writeFile(`${first ? '' : ','}${JSON.stringify(row)}`); first = false
+          }
         }
-        await sql.query('CLOSE backup_rows')
         await file.writeFile(']')
       }
       await file.writeFile('},"originals":{')
-      await sql.query('DECLARE backup_rows NO SCROLL CURSOR FOR SELECT DISTINCT original_path,content_hash FROM versions')
       let first = true
-      for (;;) {
-        const versions = await sql.query('FETCH 128 FROM backup_rows')
-        if (!versions.length) break
+      for await (const versions of sql.batches('SELECT DISTINCT original_path,content_hash FROM versions')) {
         for (const version of versions) {
           check(/^[a-f0-9]{64}\.json$/.test(version.original_path), 'Ruta de original inválida')
           const original = await readFile(join(store.directory, 'originals', version.original_path), 'utf8')
@@ -54,9 +53,8 @@ async function exportOriginals(store: MemoryStore) {
           await file.writeFile(`${first ? '' : ','}${JSON.stringify(version.original_path)}:${JSON.stringify(original)}`); first = false
         }
       }
-      await sql.query('CLOSE backup_rows')
       await file.writeFile('}}')
-    }, 'ISOLATION LEVEL REPEATABLE READ READ ONLY')
+    }, 'read')
     await file.sync(); await file.close(); await rename(temp, path)
     return { id: backupId, exported_at: exportedAt, download_url: `/api/memory/backups/${backupId}`, includes_credentials: false }
   } catch (error) { await file.close().catch(() => undefined); await rm(temp, { force: true }); throw error }
@@ -72,35 +70,31 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
   const backup = parse(backupSchema, raw)
   check(Object.keys(backup.tables).every(table => (tables as readonly string[]).includes(table)), 'El respaldo contiene tablas desconocidas')
   for (const table of requiredTables) check(Array.isArray(backup.tables[table]), `Falta la tabla ${table}`)
-  const schemas = await store.db.query('SELECT max(version)::int AS version FROM schema_versions')
-  check(backup.schema_version >= 1 && backup.schema_version <= schemas[0]!.version, 'El respaldo requiere una versión de esquema compatible')
+  check(backup.schema_version >= 1 && backup.schema_version <= BACKUP_SCHEMA_VERSION, 'El respaldo requiere una versión de esquema compatible')
   for (const version of backup.tables.versions ?? []) {
     const path = String(version.original_path), original = backup.originals[path]
     check(/^[a-f0-9]{64}\.json$/.test(path) && original !== undefined, 'El respaldo tiene un original faltante o inválido')
     check(hash(JSON.parse(original)) === version.content_hash, 'El respaldo tiene un original alterado')
   }
   await store.db.transaction(async sql => {
-    await sql.query(`LOCK TABLE ${tables.join(',')} IN ACCESS EXCLUSIVE MODE`)
     check(!(await sql.query('SELECT id FROM entities LIMIT 1')).length, 'La restauración requiere una memoria vacía para preservar los datos existentes', 409)
-    await sql.query('SET CONSTRAINTS ALL DEFERRED')
-    const columns = await sql.query('SELECT table_name,column_name,is_generated FROM information_schema.columns WHERE table_schema=\'agenthub_memory\'')
+    await sql.query('PRAGMA defer_foreign_keys=ON')
     for (const table of tables) {
-      const allowed = columns.filter(c => c.table_name === table && c.is_generated === 'NEVER').map(c => c.column_name as string)
-      for (const row of backup.tables[table] ?? []) {
-        const keys = Object.keys(row).filter(k => k !== 'search_text')
-        check(keys.every(k => allowed.includes(k)), 'El respaldo contiene columnas desconocidas')
-        // Connectors need their own authorization after restore; credentials never travel in a backup.
-        if (table === 'connectors') row.enabled = false
-        await sql.query(`INSERT INTO ${table}(${keys.map(k => `"${k}"`).join(',')}) VALUES(${keys.map((_, i) => `$${i + 1}`).join(',')})`, keys.map(k => row[k]))
-      }
+      const columns = await sql.query<{ name: string; type: string }>(`SELECT name,type FROM pragma_table_info('${table}') WHERE name<>'rid'`)
+      const rows = backup.tables[table] ?? []
+      const keys = [...new Set(rows.flatMap(row => Object.keys(row)))].filter(k => k !== 'search_text')
+      check(keys.every(k => columns.some(c => c.name === k)), 'El respaldo contiene columnas desconocidas')
+      if (!rows.length) continue
+      const converters = keys.map(k => storageConverter(columns.find(c => c.name === k)!.type))
+      const insert = `INSERT INTO ${table}(${keys.map(k => `"${k}"`).join(',')}) VALUES(${keys.map((_, i) => `$${i + 1}`).join(',')})`
+      // Connectors need their own authorization after restore; credentials never travel in a backup.
+      await sql.many(insert, rows.map(row => keys.map((k, i) => converters[i]!(table === 'connectors' && k === 'enabled' ? false : row[k]))))
     }
     await mkdir(join(store.directory, 'originals'), { recursive: true, mode: 0o700 })
     for (const version of backup.tables.versions ?? []) {
       const path = String(version.original_path)
       await writeFile(join(store.directory, 'originals', path), backup.originals[path]!, { mode: 0o600 })
     }
-    await sql.query("SELECT setval(pg_get_serial_sequence('changes','id'),COALESCE((SELECT max(id) FROM changes),1),(SELECT count(*)>0 FROM changes))")
-    await sql.query("SELECT setval(pg_get_serial_sequence('task_events','id'),COALESCE((SELECT max(id) FROM task_events),1),(SELECT count(*)>0 FROM task_events))")
   })
   return { restored: true, entities: backup.tables.entities!.length, credentials_required: true }
 }
@@ -116,7 +110,7 @@ export async function deleteEntity(store: MemoryStore, entityId: string) {
 async function deleteEntityRows(store: MemoryStore, entityId: string) {
   parse(id, entityId)
   return store.db.transaction(async sql => {
-    const before = (await sql.query('SELECT * FROM entities WHERE id=$1 FOR UPDATE', [entityId]))[0]
+    const before = (await sql.query('SELECT * FROM entities WHERE id=$1', [entityId]))[0]
     check(before, 'Entidad inexistente', 404)
     // Remove derived facts if any of their supporting fragments is being erased, rather than leaving ungrounded assertions.
     await sql.query(`DELETE FROM entities WHERE kind='fact' AND id IN(SELECT ev.entity_id FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id
@@ -125,7 +119,7 @@ async function deleteEntityRows(store: MemoryStore, entityId: string) {
       JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE s.entity_id=$1)`, [entityId])
     const originals = await sql.query('SELECT v.original_path FROM versions v JOIN sources s ON s.id=v.source_id WHERE s.entity_id=$1', [entityId])
     await sql.query('DELETE FROM entities WHERE id=$1', [entityId])
-    await sql.query("UPDATE entities SET data=data - 'company_id' WHERE data->>'company_id'=$1", [entityId])
+    await sql.query("UPDATE entities SET data=json_remove(data,'$.company_id') WHERE data->>'company_id'=$1", [entityId])
     await sql.query('DELETE FROM changes WHERE entity_id=$1', [entityId])
     // Content-addressed originals are only removed if no remaining source version references the file.
     const removed: string[] = []

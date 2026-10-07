@@ -23,31 +23,31 @@ export class JobRunner {
   async schedule(): Promise<void> {
     await this.store.db.query(`UPDATE jobs SET state='queued',lease_until=NULL,lease_owner=NULL,available_at=now(),updated_at=now()
       WHERE state='running' AND lease_until<now()`)
-    const due = await this.store.db.query<Connector>(`SELECT c.* FROM connectors c WHERE c.enabled=true
-      AND (c.last_success_at IS NULL OR c.last_success_at<now()-make_interval(mins=>c.interval_minutes))
-      AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='sync' AND j.payload->>'connector_id'=c.id::text
-        AND (j.state IN ('queued','running','waiting') OR j.updated_at>now()-make_interval(mins=>c.interval_minutes)))`)
+    const due = await this.store.db.query<Connector>(`SELECT c.* FROM connectors c WHERE c.enabled=1
+      AND (c.last_success_at IS NULL OR c.last_success_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-'||c.interval_minutes||' minutes'))
+      AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='sync' AND j.payload->>'connector_id'=c.id
+        AND (j.state IN ('queued','running','waiting') OR j.updated_at>strftime('%Y-%m-%dT%H:%M:%fZ','now','-'||c.interval_minutes||' minutes')))`)
     for (const connector of due) await this.store.enqueue('sync', { connector_id: connector.id }, `sync:${connector.id}`)
     await scheduleEntityIndex(this.store, await this.settings())
     await sweepNotes(this.store.db)
-    await this.store.db.query(`INSERT INTO settings(key,value) VALUES('worker',jsonb_build_object('heartbeat',now(),'id',$1::text)) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [this.workerId])
+    await this.store.db.query(`INSERT INTO settings(key,value) VALUES('worker',json_object('heartbeat',now(),'id',$1)) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [this.workerId])
   }
 
   async once(signal: AbortSignal): Promise<boolean> {
-    const job = (await this.store.db.query(`UPDATE jobs SET state='running',lease_owner=$1,lease_until=now()+interval '3 minutes',attempts=attempts+1,updated_at=now()
-      WHERE id=(SELECT id FROM jobs WHERE state IN ('queued','waiting') AND available_at<=now() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`, [this.workerId]))[0]
+    const job = (await this.store.db.query(`UPDATE jobs SET state='running',lease_owner=$1,lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','+3 minutes'),attempts=attempts+1,updated_at=now()
+      WHERE id=(SELECT id FROM jobs WHERE state IN ('queued','waiting') AND available_at<=now() ORDER BY created_at LIMIT 1) RETURNING *`, [this.workerId]))[0]
     if (!job) return false
     const controller = new AbortController()
     const abort = () => controller.abort(signal.reason)
     signal.addEventListener('abort', abort, { once: true })
     if (signal.aborted) abort()
     const heartbeat = setInterval(() => {
-      void this.store.db.query("UPDATE settings SET value=jsonb_build_object('heartbeat',now(),'id',$1::text) WHERE key='worker'", [this.workerId]).catch(() => undefined)
-      void this.store.db.query("UPDATE jobs SET lease_until=now()+interval '3 minutes' WHERE id=$1 AND lease_owner=$2 AND state='running' RETURNING id", [job.id, this.workerId])
+      void this.store.db.query("UPDATE settings SET value=json_object('heartbeat',now(),'id',$1) WHERE key='worker'", [this.workerId]).catch(() => undefined)
+      void this.store.db.query("UPDATE jobs SET lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','+3 minutes') WHERE id=$1 AND lease_owner=$2 AND state='running' RETURNING id", [job.id, this.workerId])
         .then(rows => { if (!rows.length) controller.abort() }).catch(() => controller.abort())
     }, 30_000)
     const progress = async (value: Record<string, unknown>) => {
-      const rows = await this.store.db.query("UPDATE jobs SET progress=progress || $3::jsonb,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND state='running' RETURNING id", [job.id, this.workerId, JSON.stringify(value)])
+      const rows = await this.store.db.query("UPDATE jobs SET progress=jsonb_merge(progress,$3),updated_at=now() WHERE id=$1 AND lease_owner=$2 AND state='running' RETURNING id", [job.id, this.workerId, JSON.stringify(value)])
       if (!rows.length) { controller.abort(); controller.signal.throwIfAborted() }
     }
     try {
@@ -88,7 +88,7 @@ export class JobRunner {
       // An overloaded model provider needs minutes, not seconds: 1, 2, 4 and 8 minutes after the in-request retries.
       const seconds = error instanceof ProviderError && error.retryAfter > 0 ? error.retryAfter
         : error instanceof MemoryError && error.transient ? Math.min(1800, 60 * 2 ** Math.max(0, job.attempts - 1)) : Math.min(300, 2 ** job.attempts * 5)
-      await this.store.db.query(`UPDATE jobs SET state=$3,error=$4,lease_until=NULL,lease_owner=NULL,available_at=now()+make_interval(secs=>$5),updated_at=now()
+      await this.store.db.query(`UPDATE jobs SET state=$3,error=$4,lease_until=NULL,lease_owner=NULL,available_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||$5||' seconds'),updated_at=now()
         WHERE id=$1 AND lease_owner=$2`, [job.id, this.workerId, retry ? 'waiting' : 'failed', message, seconds]).catch(() => undefined)
       if (job.kind === 'sync') await this.store.db.query('UPDATE connectors SET last_error=$2 WHERE id=$1', [job.payload.connector_id, message]).catch(() => undefined)
     } finally { clearInterval(heartbeat); signal.removeEventListener('abort', abort) }

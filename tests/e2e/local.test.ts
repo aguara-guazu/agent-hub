@@ -124,15 +124,19 @@ describe('hub local TypeScript completo', () => {
     })
     const client = new Client({ name: 'e2e', version: '1.0.0' })
     await client.connect(transport)
-    expect((await client.listTools()).tools).toEqual([])
+    // The local memory is exposed from the first start; the pipeline below is measured on top of it.
+    const memoryTools = (await client.listTools()).tools
+    expect(memoryTools.length).toBeGreaterThan(0)
+    expect(memoryTools.every(t => t.name.startsWith('memory_'))).toBe(true)
+    const baseline = (await api('/local/overview')).clients[0] as { server_count: number; skill_count: number }
     const synchronizer = new DaemonApp(loadConfig({home, stateDir:state, controlPlaneUrl:base, local:true}), {maxAttempts:1})
     const server = await api('/catalog/servers', 'POST', {slug:'notes', display_name:'Notes', transport:'stdio', command:process.execPath, args:[join(ROOT,'testdata/dist/mcp_servers/notesServer.js')], requires_host_access:true})
     const probe = await api(`/catalog/servers/${server.id}/probe`, 'POST')
     expect(probe.last_probe_error).toBe('')
     expect(probe.tools).toHaveLength(2)
     await synchronizer.syncOnce({apply:true})
-    expect((await client.listTools()).tools).toHaveLength(2)
-    const name = (await client.listTools()).tools.find(t=>t.name.endsWith('list_notes'))!.name
+    expect((await client.listTools()).tools).toHaveLength(memoryTools.length + 2)
+    const name = (await client.listTools()).tools.find(t=>t.name.startsWith('notes_') && t.name.endsWith('list_notes'))!.name
     expect((await client.callTool({name, arguments:{}})).isError).not.toBe(true)
     const skill = await api('/catalog/skills','POST',{slug:'e2e-skill', display_name:'E2E', description:'Disposable local test', body:'Read only.'})
     await synchronizer.syncOnce({apply:true})
@@ -140,7 +144,7 @@ describe('hub local TypeScript completo', () => {
     for (const state of ['off','on','off','on']) {
       await api('/policy/rules','PUT',{scope:'user',resource_type:'mcp_server',resource_id:server.id,state,reset_clients:true})
       // Deliberately do not run the daemon: a saved OFF already governs new calls.
-      expect((await client.listTools()).tools).toHaveLength(state==='on'?2:0)
+      expect((await client.listTools()).tools).toHaveLength(memoryTools.length + (state==='on'?2:0))
       expect(Boolean((await client.callTool({name,arguments:{}})).isError)).toBe(state==='off')
       await synchronizer.syncOnce({apply:true})
     }
@@ -155,7 +159,7 @@ describe('hub local TypeScript completo', () => {
     await synchronizer.syncOnce({apply:true})
     const overview = await api('/local/overview')
     expect(overview.clients).toHaveLength(4)
-    expect(overview.clients.every((c:any)=>c.synchronized && c.server_count===1 && c.skill_count===1)).toBe(true)
+    expect(overview.clients.every((c:any)=>c.synchronized && c.server_count===baseline.server_count+1 && c.skill_count===baseline.skill_count+1)).toBe(true)
     const codex = overview.clients.find((c:any)=>c.cli_kind==='codex_cli')
     await api('/policy/rules','PUT',{scope:'client',scope_id:codex.id,resource_type:'skill',resource_id:skill.id,state:'off'})
     await synchronizer.syncOnce({apply:true})
@@ -165,7 +169,7 @@ describe('hub local TypeScript completo', () => {
     // Global control explicitly clears existing per-client overrides.
     await api('/policy/rules','PUT',{scope:'client',scope_id:agents[0]!.id,resource_type:'mcp_server',resource_id:server.id,state:'on'})
     await api('/policy/rules','PUT',{scope:'user',resource_type:'mcp_server',resource_id:server.id,state:'off',reset_clients:true})
-    expect((await client.listTools()).tools).toHaveLength(0)
+    expect((await client.listTools()).tools).toHaveLength(memoryTools.length)
     const logs = await api('/audit/tool-calls')
     expect(logs.some((l:any)=>l.decision==='allow')).toBe(true)
     expect(logs.some((l:any)=>l.decision==='deny')).toBe(true)

@@ -34,7 +34,7 @@ export async function syncGoogle(connector: Connector, ctx: ConnectorContext): P
         const externalId = `calendar:${calendar}:${event.id}`
         if (event.status === 'cancelled') {
           // A cancelled calendar event never deletes a conference or its transcript.
-          await store.db.query(`UPDATE entities SET data=data || '{"status":"cancelled"}'::jsonb,updated_at=now()
+          await store.db.query(`UPDATE entities SET data=jsonb_merge(data,'{"status":"cancelled"}'),updated_at=now()
             WHERE id IN(SELECT entity_id FROM sources WHERE provider='google' AND account=$1 AND external_id=$2)`, [connector.id, externalId])
           continue
         }
@@ -96,7 +96,7 @@ export async function syncGoogle(connector: Connector, ctx: ConnectorContext): P
       }
       const matched = await store.db.query(`SELECT e.* FROM entities e JOIN sources s ON s.entity_id=e.id WHERE s.account=$1 AND e.kind='event'
         AND e.data->'conference_data'->>'conferenceId'=$2
-        AND abs(EXTRACT(EPOCH FROM ((e.data->'scheduled_start'->>'dateTime')::timestamptz-$3::timestamptz)))<21600`,
+        AND abs(unixepoch(e.data->'scheduled_start'->>'dateTime','subsec')-unixepoch($3,'subsec'))<21600`,
         [connector.id, meetingCode, conference.startTime])
       const event = matched.length === 1 ? matched[0] : undefined
       const attendeeEmails = (event?.data.attendees ?? []).map((a: any) => a.email).filter(Boolean)
@@ -134,14 +134,14 @@ export async function importGoogleDocument(connector: Connector, ctx: ConnectorC
   }
   // Resolve only within meetings actually linked to this document or its calendar event.
   const meetings = await ctx.store.db.query(`SELECT DISTINCT m.id,m.data FROM entities m WHERE m.kind='meeting' AND (
-    m.id=$1::uuid OR m.data->'document_ids' ? $2 OR
-    EXISTS(SELECT 1 FROM links l WHERE l.from_id=m.id AND l.to_id=$1::uuid AND l.type='calendar_event') OR
+    m.id=$1 OR EXISTS(SELECT 1 FROM json_each(m.data,'$.document_ids') WHERE value=$2) OR
+    EXISTS(SELECT 1 FROM links l WHERE l.from_id=m.id AND l.to_id=$1 AND l.type='calendar_event') OR
     EXISTS(SELECT 1 FROM links l JOIN sources s ON s.entity_id=l.from_id WHERE l.to_id=m.id AND l.type='meeting_document' AND s.account=$3 AND s.external_id=$4))`,
     [relatedId ?? null, documentId, connector.id, `docs:${documentId}`])
   const roster = meetings.length ? await ctx.store.db.query(`SELECT DISTINCT p.id AS person_id,p.title AS name,i.external_id,i.verified AS identity_verified,
     p.data->>'email' AS email,p.data->>'email_status' AS email_status,p.data->>'email_source' AS email_source
     FROM links l JOIN entities p ON p.id=l.to_id JOIN identities i ON i.person_id=p.id
-    WHERE l.from_id=ANY($1::uuid[]) AND l.type='participant' AND i.provider='google' AND i.account=$2`, [meetings.map(m => m.id), connector.id]) : []
+    WHERE l.from_id IN (SELECT value FROM json_each($1)) AND l.type='participant' AND i.provider='google' AND i.account=$2`, [meetings.map(m => m.id), connector.id]) : []
   const participants = roster.map(p => Object.fromEntries(Object.entries(p).filter(([, value]) => value !== null))) as ImportInput['participants']
   const parsed = parseGoogleDocument({ ...document, documentId }, participants)
   const { fragments } = parsed

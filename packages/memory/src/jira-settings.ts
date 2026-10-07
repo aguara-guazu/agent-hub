@@ -18,10 +18,9 @@ export async function effectiveJiraSite(sql: Sql, projectSite: unknown): Promise
 export async function saveJiraSettings(db: MemoryDatabase, raw: unknown) {
   const settings = parse(jiraSettingsInput,raw)
   return db.transaction(async sql => {
-    // Shared with project configuration: default changes cannot introduce duplicate ownership.
-    await sql.query("SELECT pg_advisory_xact_lock(hashtextextended('jira-sites',0))")
+    // Write transactions serialize across processes, so project changes cannot interleave with this check.
     const projects = await sql.query(`SELECT title,data->>'jira_project_key' AS key,
-      COALESCE(NULLIF(data->>'jira_site_url',''),$1::text) AS site FROM entities
+      COALESCE(NULLIF(data->>'jira_site_url',''),$1) AS site FROM entities
       WHERE kind='project' AND COALESCE(data->>'jira_project_key','')<>''`,[settings.default_site_url])
     const seen = new Map<string,typeof projects>()
     for (const project of projects) {

@@ -18,6 +18,10 @@ function open(databasePath: string, starterCatalog: boolean): CoreApp {
   apps.push(app)
   return app
 }
+// The local memory registers its own MCP server on every local start; these tests cover the starter catalog only.
+function starterServers(app: CoreApp, ownerId: string) {
+  return app.store.serversOfUser(ownerId).filter((s) => s.slug !== 'memory')
+}
 function freshDb(): string {
   const dir = mkdtempSync(join(tmpdir(), 'agenthub-starter-'))
   dirs.push(dir)
@@ -40,7 +44,7 @@ describe('catálogo inicial', () => {
     const db = freshDb()
     const app = open(db, true)
     const owner = ensureLocalOwner(app.store)
-    const servers = app.store.serversOfUser(owner.id)
+    const servers = starterServers(app, owner.id)
     expect(servers.map((s) => s.slug).sort()).toEqual([...STARTER_SERVERS.map((s) => s.slug)].sort())
     for (const server of servers) {
       expect(server.transport).toBe('http')
@@ -61,7 +65,7 @@ describe('catálogo inicial', () => {
     apps.splice(apps.indexOf(first), 1)
 
     const second = open(db, true)
-    const slugs = second.store.serversOfUser(owner.id).map((s) => s.slug)
+    const slugs = starterServers(second, owner.id).map((s) => s.slug)
     expect(slugs).not.toContain('notion')
     expect(slugs).toHaveLength(STARTER_SERVERS.length - 1)
   })
@@ -70,7 +74,7 @@ describe('catálogo inicial', () => {
     const db = freshDb()
     const disabled = open(db, false)
     const owner = ensureLocalOwner(disabled.store)
-    expect(disabled.store.serversOfUser(owner.id)).toEqual([])
+    expect(starterServers(disabled, owner.id)).toEqual([])
     disabled.store.insertServer({
       user_id: owner.id, slug: 'notion', display_name: 'Mi Notion', description: '', transport: 'http', command: '', args: [], env: {}, cwd: '',
       url: 'https://mcp.notion.com/mcp', headers: {}, secret_refs: {}, requires_host_access: false, container_image: '', allow_hosts: [], allow_ports: [], read_mounts: [], write_mounts: [],

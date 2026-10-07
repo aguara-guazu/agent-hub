@@ -17,21 +17,21 @@ type Candidate = { id: string; email: string; names: string[]; origins: { kind: 
 
 /** Only known emails are selectable. The model returns candidate IDs, never email strings. */
 export async function identityContext(store: MemoryStore, source: Record<string, any>, remote: boolean) {
-  const permitted = `(NOT $2::boolean OR (COALESCE(e.data->>'remote_processing','true')<>'false'
-    AND NOT EXISTS(SELECT 1 FROM links p JOIN entities project ON project.id=p.to_id WHERE p.from_id=e.id AND p.type='project' AND project.data->>'remote_processing'='false')
+  const permitted = `(NOT $2 OR (COALESCE(e.data->>'remote_processing',1) NOT IN (0,'false')
+    AND NOT EXISTS(SELECT 1 FROM links p JOIN entities project ON project.id=p.to_id WHERE p.from_id=e.id AND p.type='project' AND project.data->>'remote_processing' IN (0,'false'))
     AND NOT EXISTS(SELECT 1 FROM sources ps JOIN fragments pf ON pf.version_id=ps.current_version_id JOIN fragment_projects fp ON fp.fragment_id=pf.id
-      JOIN entities project ON project.id=fp.project_id WHERE ps.entity_id=e.id AND project.data->>'remote_processing'='false')))`
+      JOIN entities project ON project.id=fp.project_id WHERE ps.entity_id=e.id AND project.data->>'remote_processing' IN (0,'false'))))`
   const related = await store.db.query(`WITH RECURSIVE context(id,depth) AS (
-    SELECT $1::uuid,0 UNION SELECT CASE WHEN l.from_id=c.id THEN l.to_id ELSE l.from_id END,c.depth+1
+    SELECT $1,0 UNION SELECT CASE WHEN l.from_id=c.id THEN l.to_id ELSE l.from_id END,c.depth+1
     FROM context c JOIN links l ON (l.from_id=c.id OR l.to_id=c.id) AND l.type IN ('calendar_event','meeting_document') WHERE c.depth<3)
     SELECT DISTINCT e.id,e.kind,e.title,e.data FROM context c JOIN entities e ON e.id=c.id WHERE ${permitted} ORDER BY e.id LIMIT 100`, [source.entity_id, remote])
   const people = await store.db.query(`SELECT DISTINCT e.id,e.title,e.data FROM entities e WHERE e.kind='person' AND e.data->>'merged_into' IS NULL AND ${permitted}
-    AND (NOT $2::boolean OR NOT EXISTS(SELECT 1 FROM links membership JOIN entities meeting ON meeting.id=membership.from_id
-      WHERE membership.to_id=e.id AND membership.type='participant' AND (meeting.data->>'remote_processing'='false'
-        OR EXISTS(SELECT 1 FROM links pl JOIN entities project ON project.id=pl.to_id WHERE pl.from_id=meeting.id AND pl.type='project' AND project.data->>'remote_processing'='false')
+    AND (NOT $2 OR NOT EXISTS(SELECT 1 FROM links membership JOIN entities meeting ON meeting.id=membership.from_id
+      WHERE membership.to_id=e.id AND membership.type='participant' AND (meeting.data->>'remote_processing' IN (0,'false')
+        OR EXISTS(SELECT 1 FROM links pl JOIN entities project ON project.id=pl.to_id WHERE pl.from_id=meeting.id AND pl.type='project' AND project.data->>'remote_processing' IN (0,'false'))
         OR EXISTS(SELECT 1 FROM sources ps JOIN fragments pf ON pf.version_id=ps.current_version_id JOIN fragment_projects fp ON fp.fragment_id=pf.id
-          JOIN entities project ON project.id=fp.project_id WHERE ps.entity_id=meeting.id AND project.data->>'remote_processing'='false'))))
-    AND (EXISTS(SELECT 1 FROM links l WHERE l.from_id=ANY($1::uuid[]) AND l.to_id=e.id AND l.type='participant')
+          JOIN entities project ON project.id=fp.project_id WHERE ps.entity_id=meeting.id AND project.data->>'remote_processing' IN (0,'false')))))
+    AND (EXISTS(SELECT 1 FROM links l WHERE l.from_id IN (SELECT value FROM json_each($1)) AND l.to_id=e.id AND l.type='participant')
       OR EXISTS(SELECT 1 FROM identities i WHERE i.person_id=e.id AND i.provider=$3 AND i.account=$4)) ORDER BY e.id LIMIT 500`,
     [related.map(r => r.id), remote, source.provider, source.account])
   const candidates = new Map<string, Candidate>()
@@ -45,7 +45,7 @@ export async function identityContext(store: MemoryStore, source: Record<string,
   for (const p of people) if (p.data.email_status !== 'inferred') add(p.data.email, p.title, 'known_person', p.id)
   for (const event of related.filter(r => r.kind === 'event')) for (const a of event.data.attendees ?? []) add(a.email, a.displayName ?? '', 'calendar_invitee', event.id)
   const speakers = await store.db.query(`SELECT DISTINCT p.id,p.title,p.data FROM fragments f JOIN entities p ON p.id=f.speaker_id
-    WHERE f.version_id=$1 AND NULLIF(p.data->>'email','') IS NULL AND p.data->>'merged_into' IS NULL AND COALESCE(p.data->>'manual_email','false')<>'true' ORDER BY p.id`, [source.current_version_id])
+    WHERE f.version_id=$1 AND NULLIF(p.data->>'email','') IS NULL AND p.data->>'merged_into' IS NULL AND COALESCE(p.data->>'manual_email',0) NOT IN (1,'true') ORDER BY p.id`, [source.current_version_id])
   const fragments = await store.db.query('SELECT id,text,speaker_id,ordinal FROM fragments WHERE version_id=$1 ORDER BY ordinal', [source.current_version_id])
   return { speakers, candidates: [...candidates.values()].sort((a, b) => a.email.localeCompare(b.email)), fragments,
     meetings: related.map(r => ({ id: r.id, title: r.title, kind: r.kind })) }
@@ -107,8 +107,7 @@ export async function inferIdentities(store: MemoryStore, ai: MemoryAI, source: 
     }
     totals.identity_input_tokens += result.usage.input_tokens; totals.identity_output_tokens += result.usage.output_tokens
     await store.db.transaction(async sql => {
-      // Serialize proposal writes and check source freshness after the network call.
-      await sql.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`identity-inference:${source.entity_id}`])
+      // Check source freshness after the network call.
       check((await sql.query('SELECT current_version_id FROM sources WHERE id=$1', [source.id]))[0]?.current_version_id === source.current_version_id, 'La fuente cambió; volvé a inferir sus identidades', 409)
       for (const match of valid) {
         const person = await requireEntity(sql, match.speaker_id, 'person')
@@ -138,7 +137,7 @@ export async function inferIdentities(store: MemoryStore, ai: MemoryAI, source: 
     })
     await progress({ identity_batch: Math.floor(i / 8) + 1, ...totals })
   }
-  if (!totals.identity_rejected) await store.db.query("UPDATE versions SET metadata=metadata || jsonb_build_object('identity_inference_key',$2::text) WHERE id=$1", [source.current_version_id, key])
+  if (!totals.identity_rejected) await store.db.query("UPDATE versions SET metadata=jsonb_merge(metadata,json_object('identity_inference_key',$2)) WHERE id=$1", [source.current_version_id, key])
   return totals
 }
 
@@ -152,7 +151,7 @@ export async function autoApplyIdentity(sql: Sql, proposalId: string): Promise<b
   } catch (error) {
     await sql.query('ROLLBACK TO SAVEPOINT identity_auto_apply')
     if (!(error instanceof MemoryError)) throw error
-    await sql.query("UPDATE entities SET data=data || jsonb_build_object('auto_apply_blocked',$2::text),updated_at=now() WHERE id=$1", [proposalId, error.message])
+    await sql.query("UPDATE entities SET data=jsonb_merge(data,json_object('auto_apply_blocked',$2)),updated_at=now() WHERE id=$1", [proposalId, error.message])
     return false
   }
 }
@@ -176,7 +175,6 @@ async function candidateStillExists(sql: Sql, origins: { kind: string; entity_id
  * so a confirmation never leaves two active people with the same verified email.
  */
 export async function applyIdentityDecision(sql: Sql, proposalId: string, decision: 'accepted' | 'rejected', actor: string, automatic: boolean) {
-  await sql.query('SELECT id FROM entities WHERE id=$1 FOR UPDATE', [proposalId])
   const proposal = await requireEntity(sql, proposalId, 'fact'), p = proposal.data
   check(p.category === 'identity_match', 'La propuesta no corresponde a una identidad')
   if (p.review_state === decision) return { reviewed: true, person_id: p.speaker_id as string }
@@ -185,7 +183,6 @@ export async function applyIdentityDecision(sql: Sql, proposalId: string, decisi
   if (decision === 'accepted') {
     check(!p.stale, 'La evidencia cambió; revisá la versión actual antes de confirmar', 409)
     check((await sql.query('SELECT 1 FROM sources WHERE current_version_id=$1', [p.source_version])).length, 'La propuesta corresponde a una versión histórica', 409)
-    await sql.query('SELECT id FROM entities WHERE id=$1 FOR UPDATE', [p.speaker_id])
     const person = await requireEntity(sql, p.speaker_id, 'person'), email = parse(z.email(), p.candidate.email).toLowerCase()
     check(!person.data.merged_into && (!person.data.email || person.data.email === email) && !person.data.manual_email, 'La identidad fue corregida; recargá antes de aplicar otra propuesta', 409)
     check((await sql.query('SELECT 1 FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id WHERE ev.entity_id=$1 AND f.speaker_id=$2', [proposalId, person.id])).length, 'El hablante de la evidencia fue corregido; la propuesta debe revisarse', 409)
@@ -201,7 +198,7 @@ export async function applyIdentityDecision(sql: Sql, proposalId: string, decisi
     if (unified.person_id !== person.id) { personId = unified.person_id; mergedInto = unified.person_id }
   }
   const applied = decision === 'accepted' ? (mergedInto ? 'merged' : 'email') : null
-  await sql.query("UPDATE entities SET data=data || jsonb_build_object('review_state',$2::text,'reviewed_by',$3::text,'applied',$4::text),updated_at=now() WHERE id=$1", [proposalId, decision, actor, applied])
+  await sql.query("UPDATE entities SET data=jsonb_merge(data,json_object('review_state',$2,'reviewed_by',$3,'applied',$4)),updated_at=now() WHERE id=$1", [proposalId, decision, actor, applied])
   await sql.query("INSERT INTO changes(entity_id,action,actor,after_value) VALUES($1,'identity.reviewed',$2,$3)", [proposalId, actor, JSON.stringify({ decision, automatic, applied, merged_into: mergedInto })])
   return { reviewed: true, person_id: personId, ...(mergedInto ? { merged_into: mergedInto } : {}) }
 }

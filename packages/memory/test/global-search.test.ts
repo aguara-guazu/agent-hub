@@ -13,8 +13,11 @@ import { JobRunner } from '../src/jobs.js'
 import { GoogleAuth } from '../src/google-auth.js'
 import { deleteEntity, exportMemory, restoreMemory } from '../src/backup.js'
 
-const url = process.env.AGENTHUB_MEMORY_TEST_URL
-describe.skipIf(!url)('búsqueda global e índice local con PostgreSQL y pgvector', () => {
+async function resetMemory(db: MemoryDatabase) {
+  const tables = await db.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' AND name NOT LIKE '%_substrings%' AND name<>'schema_versions'")
+  await db.execute(`PRAGMA foreign_keys=OFF; ${tables.map(t => `DELETE FROM "${t.name}";`).join('')} DELETE FROM sqlite_sequence; PRAGMA foreign_keys=ON`)
+}
+describe('búsqueda global e índice local con SQLite', () => {
   let db: MemoryDatabase, store: MemoryStore, directory: string, vault: Vault, ai: MemoryAI, config: AIConfig
   const calls: { model: string; input: string[] }[] = []
   const signal = () => new AbortController().signal
@@ -23,13 +26,11 @@ describe.skipIf(!url)('búsqueda global e índice local con PostgreSQL y pgvecto
     return new Response(JSON.stringify({ embeddings: body.input.map((text: string) => /arquitectura|microservicios|distribuid/i.test(text) ? [1,0,0] : [0,1,0]) }))
   }
   beforeAll(async () => {
-    if (!new URL(url!).pathname.endsWith('_test')) throw new Error('Se requiere una base dedicada de pruebas')
     directory = await mkdtemp(join(tmpdir(), 'agenthub-search-test-'))
-    db = new MemoryDatabase(url!); await db.migrate(); store = new MemoryStore(db, directory); vault = new Vault(directory)
+    db = new MemoryDatabase(join(directory, 'memory.sqlite')); await db.migrate(); store = new MemoryStore(db, directory); vault = new Vault(directory)
   })
   beforeEach(async () => {
-    const tables = await db.query("SELECT tablename FROM pg_tables WHERE schemaname='agenthub_memory' AND tablename<>'schema_versions'")
-    await db.query(`TRUNCATE ${tables.map(t => `"${t.tablename}"`).join(',')} RESTART IDENTITY CASCADE`)
+    await resetMemory(db)
     config = { ...defaultAI, embeddings_enabled: true, embedding_model: 'fixture' }
     calls.length = 0; ai = new MemoryAI(async () => ({ ...config }), vault, fetcher)
   })
@@ -95,7 +96,7 @@ describe.skipIf(!url)('búsqueda global e índice local con PostgreSQL y pgvecto
       await store.update(note.id, { data: { text: 'Ventas' } }); return fetcher(url, init)
     })
     await indexEntities(store, concurrent, config, signal(), async () => {})
-    expect((await db.query('SELECT content_hash=md5(memory_entity_text(title,data)) AS current FROM entity_embeddings JOIN entities ON id=entity_id'))[0]!.current).toBe(false)
+    expect((await db.query('SELECT content_hash=md5(memory_entity_text(title,data)) AS "current:bool" FROM entity_embeddings JOIN entities ON id=entity_id'))[0]!.current).toBe(false)
     await index()
     expect((await globalSearch(db, ai, { query: 'ventas' })).semantic_status).toBe('ready')
     await deleteEntity(store, note.id)
@@ -130,7 +131,7 @@ describe.skipIf(!url)('búsqueda global e índice local con PostgreSQL y pgvecto
     await db.query("UPDATE jobs SET state='failed'")
     await scheduleEntityIndex(store, config)
     expect((await db.query('SELECT * FROM jobs'))).toHaveLength(1)
-    await db.query("UPDATE jobs SET updated_at=now()-interval '6 minutes'")
+    await db.query("UPDATE jobs SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-6 minutes')")
     await scheduleEntityIndex(store, config)
     expect((await db.query('SELECT * FROM jobs'))).toHaveLength(2)
     const controller = new AbortController(); controller.abort()
@@ -147,7 +148,7 @@ describe.skipIf(!url)('búsqueda global e índice local con PostgreSQL y pgvecto
     const backup = await exportMemory(store), content = JSON.parse(await readFile(join(directory, 'backups', `${backup.id}.json`), 'utf8'))
     expect(content.tables.entity_embeddings).toBeUndefined()
     content.schema_version = 1
-    await db.query('TRUNCATE entities, changes CASCADE')
+    await db.execute('DELETE FROM entities; DELETE FROM changes')
     await restoreMemory(store, content)
     expect((await store.detail(note.id)).entity.title).toBe('Microservicios')
     expect(await db.query('SELECT * FROM entity_embeddings')).toEqual([])

@@ -19,11 +19,11 @@ interface Profile { entity: Entity; identity_kinds: string[]; fragments_total: n
 interface Pair { a: Profile; b: Profile; signals: { both_speak_in_same_transcript: boolean; appear_in_linked_sources: boolean; same_normalized_name: boolean }; key: string }
 
 // Remote providers only see people and fragments whose sources and projects allow remote processing.
-const sourcePermitted = (alias: string, remote: string) => `(NOT ${remote}::boolean OR (COALESCE(${alias}.data->>'remote_processing','true')<>'false'
-  AND NOT EXISTS(SELECT 1 FROM links pl JOIN entities project ON project.id=pl.to_id WHERE pl.from_id=${alias}.id AND pl.type='project' AND project.data->>'remote_processing'='false')
+const sourcePermitted = (alias: string, remote: string) => `(NOT ${remote} OR (COALESCE(${alias}.data->>'remote_processing',1) NOT IN (0,'false')
+  AND NOT EXISTS(SELECT 1 FROM links pl JOIN entities project ON project.id=pl.to_id WHERE pl.from_id=${alias}.id AND pl.type='project' AND project.data->>'remote_processing' IN (0,'false'))
   AND NOT EXISTS(SELECT 1 FROM sources ps JOIN fragments pf ON pf.version_id=ps.current_version_id JOIN fragment_projects fp ON fp.fragment_id=pf.id
-    JOIN entities project ON project.id=fp.project_id WHERE ps.entity_id=${alias}.id AND project.data->>'remote_processing'='false')))`
-const personPermitted = (alias: string, remote: string) => `(NOT ${remote}::boolean OR (COALESCE(${alias}.data->>'remote_processing','true')<>'false'
+    JOIN entities project ON project.id=fp.project_id WHERE ps.entity_id=${alias}.id AND project.data->>'remote_processing' IN (0,'false'))))`
+const personPermitted = (alias: string, remote: string) => `(NOT ${remote} OR (COALESCE(${alias}.data->>'remote_processing',1) NOT IN (0,'false')
   AND NOT EXISTS(SELECT 1 FROM links membership JOIN entities meeting ON meeting.id=membership.from_id WHERE membership.to_id=${alias}.id AND membership.type='participant' AND NOT ${sourcePermitted('meeting', remote)})))`
 
 function identityKind(externalId: string): string {
@@ -43,19 +43,19 @@ function emailSourceKind(data: Record<string, any>): string {
 
 async function loadProfile(sql: Sql, entity: Entity, remote: boolean): Promise<Profile> {
   const identities = await sql.query('SELECT external_id FROM identities WHERE person_id=$1', [entity.id])
-  const [count] = await sql.query('SELECT count(*)::int AS n FROM fragments WHERE speaker_id=$1', [entity.id])
+  const [count] = await sql.query('SELECT count(*) AS n FROM fragments WHERE speaker_id=$1', [entity.id])
   const meetings = await sql.query(`SELECT DISTINCT e.id,e.title,e.kind,e.data->>'occurred_at' AS occurred_at FROM links l JOIN entities e ON e.id=l.from_id
     WHERE l.to_id=$1 AND l.type='participant' AND ${sourcePermitted('e', '$2')} ORDER BY 4 DESC NULLS LAST,e.id LIMIT 6`, [entity.id, remote])
   const samples = await sql.query<Sample>(`SELECT f.id,f.text,e.title AS source_title,e.data->>'occurred_at' AS occurred_at FROM fragments f JOIN versions v ON v.id=f.version_id
     JOIN sources s ON s.id=v.source_id AND s.current_version_id=v.id JOIN entities e ON e.id=s.entity_id
-    WHERE f.speaker_id=$1 AND ${sourcePermitted('e', '$2')} AND NOT EXISTS(SELECT 1 FROM fragment_projects fp JOIN entities project ON project.id=fp.project_id WHERE $2::boolean AND fp.fragment_id=f.id AND project.data->>'remote_processing'='false')
-    ORDER BY (f.text ~* '(soy |me llamo|mi nombre|habla |speaking|this is )') DESC,length(f.text) DESC,f.id LIMIT 5`, [entity.id, remote])
+    WHERE f.speaker_id=$1 AND ${sourcePermitted('e', '$2')} AND NOT EXISTS(SELECT 1 FROM fragment_projects fp JOIN entities project ON project.id=fp.project_id WHERE $2 AND fp.fragment_id=f.id AND project.data->>'remote_processing' IN (0,'false'))
+    ORDER BY regexp_i(f.text,'(soy |me llamo|mi nombre|habla |speaking|this is )') DESC,length(f.text) DESC,f.id LIMIT 5`, [entity.id, remote])
   return { entity, identity_kinds: [...new Set(identities.map(i => identityKind(i.external_id)))].sort(), fragments_total: count?.n ?? 0,
     meetings: meetings.map(m => ({ title: m.title, kind: m.kind, occurred_at: m.occurred_at })), samples: samples.map(s => ({ ...s, text: s.text.slice(0, 320) })) }
 }
 
 async function identityKinds(sql: Sql, ids: string[]): Promise<Map<string, string[]>> {
-  const rows = await sql.query('SELECT person_id,external_id FROM identities WHERE person_id=ANY($1::uuid[])', [ids])
+  const rows = await sql.query('SELECT person_id,external_id FROM identities WHERE person_id IN (SELECT value FROM json_each($1))', [ids])
   return new Map(ids.map(id => [id, [...new Set(rows.filter(r => r.person_id === id).map(r => identityKind(r.external_id)))].sort()]))
 }
 /** Identical full names (two or more tokens) where one side is only a document label without email: a medium "same" from the model is enough. */
@@ -84,18 +84,17 @@ async function reevaluatePending(store: MemoryStore, config: AIConfig): Promise<
     AND data->>'basis'='ai' AND data->>'verdict'='same' AND data->>'confidence' IN ('high','medium') ORDER BY created_at`)
   let merged = 0
   for (const row of pending) await store.db.transaction(async sql => {
-    await sql.query('SELECT id FROM entities WHERE id=$1 FOR UPDATE', [row.id])
     const proposal = await requireEntity(sql, row.id, 'fact')
     if (proposal.data.review_state !== 'pending') return
     const a = await requireEntity(sql, proposal.data.from_id, 'person'), b = await requireEntity(sql, proposal.data.into_id, 'person')
     if (a.data.merged_into || b.data.merged_into) return
     const decision = await decideMerge(sql, a, b, proposal.data.confidence, config)
     if (!decision.rule) {
-      if ((decision.blocked ?? null) !== (proposal.data.blocked ?? null)) await sql.query("UPDATE entities SET data=(data - 'blocked') || $2::jsonb,updated_at=now() WHERE id=$1", [row.id, JSON.stringify(decision.blocked ? { blocked: decision.blocked } : {})])
+      if ((decision.blocked ?? null) !== (proposal.data.blocked ?? null)) await sql.query("UPDATE entities SET data=jsonb_merge(json_remove(data,'$.blocked'),$2),updated_at=now() WHERE id=$1", [row.id, JSON.stringify(decision.blocked ? { blocked: decision.blocked } : {})])
       return
     }
     await mergePeople(sql, decision.from.id, decision.into.id, 'ai:auto', 'ai_high_confidence')
-    await sql.query(`UPDATE entities SET data=(data - 'blocked') || jsonb_build_object('review_state','accepted','reviewed_by','ai:auto','applied','merged','applied_rule',$2::text,'from_id',$3::text,'into_id',$4::text,'from_name',$5::text,'into_name',$6::text),updated_at=now() WHERE id=$1`,
+    await sql.query(`UPDATE entities SET data=jsonb_merge(json_remove(data,'$.blocked'),json_object('review_state','accepted','reviewed_by','ai:auto','applied','merged','applied_rule',$2,'from_id',$3,'into_id',$4,'from_name',$5,'into_name',$6)),updated_at=now() WHERE id=$1`,
       [row.id, decision.rule, decision.from.id, decision.into.id, decision.from.title, decision.into.title])
     merged++
   })
@@ -150,8 +149,8 @@ export async function dedupePeople(store: MemoryStore, ai: MemoryAI, config: AIC
     dedupe_batches: 0, dedupe_batch: 0, dedupe_auto_merged: 0, dedupe_proposals: 0, dedupe_different: 0, dedupe_rejected: 0, input_tokens: 0, output_tokens: 0 }
   await progress({ stage: 'dedupe_people', provider: config.extraction, model: config.extraction_model, source_title: 'Personas de la memoria', ...totals })
   await store.db.transaction(sql => settleIdentityProposals(sql))
-  const groups = await store.db.query(`SELECT lower(data->>'email') AS email,array_agg(id ORDER BY id) AS ids FROM entities WHERE kind='person' AND NULLIF(data->>'email','') IS NOT NULL
-    AND data->>'merged_into' IS NULL AND COALESCE(data->>'email_status','')<>'inferred' GROUP BY 1 HAVING count(*)>1`)
+  const groups = await store.db.query(`SELECT lower(data->>'email') AS email,json_group_array(id ORDER BY id) AS "ids:json" FROM entities WHERE kind='person' AND NULLIF(data->>'email','') IS NOT NULL
+    AND data->>'merged_into' IS NULL AND COALESCE(data->>'email_status','')<>'inferred' GROUP BY lower(data->>'email') HAVING count(*)>1`)
   for (const group of groups) {
     signal.throwIfAborted()
     const result = await store.db.transaction(sql => unifyByEmail(sql, group.ids[0], 'system:dedupe', { reason: 'same_verified_email' }))
@@ -159,8 +158,8 @@ export async function dedupePeople(store: MemoryStore, ai: MemoryAI, config: AIC
   }
   await progress(totals)
   if (config.identity_auto_merge) {
-    const pending = await store.db.query(`SELECT e.id FROM entities e JOIN sources s ON s.current_version_id::text=e.data->>'source_version' WHERE e.kind='fact' AND e.data->>'category'='identity_match'
-      AND e.data->>'review_state'='pending' AND e.data->>'confidence'='high' AND COALESCE(e.data->>'stale','false')<>'true' AND e.data->>'auto_apply_blocked' IS NULL ORDER BY e.created_at`)
+    const pending = await store.db.query(`SELECT e.id FROM entities e JOIN sources s ON s.current_version_id=e.data->>'source_version' WHERE e.kind='fact' AND e.data->>'category'='identity_match'
+      AND e.data->>'review_state'='pending' AND e.data->>'confidence'='high' AND COALESCE(e.data->>'stale',0) NOT IN (1,'true') AND e.data->>'auto_apply_blocked' IS NULL ORDER BY e.created_at`)
     for (const row of pending) { signal.throwIfAborted(); if (await store.db.transaction(sql => autoApplyIdentity(sql, row.id))) totals.dedupe_identities_applied++ }
     await progress(totals)
   }
@@ -212,7 +211,6 @@ export async function dedupePeople(store: MemoryStore, ai: MemoryAI, config: AIC
       const evidence = verdict.evidence_ids.map(ref => fragmentRefs.get(ref)?.id).filter((id): id is string => Boolean(id) && allowed.has(id!))
       const reason = verdict.reason.replace(/\b([pf]\d+)\b/g, ref => personRefs.get(ref)?.title ?? (fragmentRefs.has(ref) ? `una intervención en ${fragmentRefs.get(ref)!.source_title}` : ref))
       await store.db.transaction(async sql => {
-        await sql.query('SELECT id FROM entities WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE', [[pair.a.entity.id, pair.b.entity.id]])
         const a = await requireEntity(sql, pair.a.entity.id, 'person'), b = await requireEntity(sql, pair.b.entity.id, 'person')
         if (a.data.merged_into || b.data.merged_into) return
         const decision = await decideMerge(sql, a, b, verdict.confidence, config, pair.signals.both_speak_in_same_transcript)

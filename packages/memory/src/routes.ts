@@ -13,6 +13,7 @@ import { restoreMemory, streamBackup } from './backup.js'
 import { globalSearch } from './global-search.js'
 import { WorkerSupervisor } from './supervisor.js'
 import { agentFromMeta } from './agents.js'
+import { requestMigrationRetry } from './legacy-postgres.js'
 
 export interface MemoryRouteOptions {
   directory: string; baseUrl: string;
@@ -36,11 +37,9 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     try { return await (await service.get()).operations.call(input.operation, input.input, actor.id, undefined, controller.signal) }
     finally { reply.raw.off('close', abort) }
   })
-  app.put('/api/memory/database', { preHandler: auth }, async request => {
-    const input = parse(z.object({ url: z.string().min(1).max(2000) }).strict(), request.body)
-    const result = await service.saveDatabase(input.url)
-    if (options.worker) { await worker.stop(); worker.start() }
-    return result
+  app.post('/api/memory/migration/retry', { preHandler: auth }, async () => {
+    requestMigrationRetry(options.directory)
+    return service.status()
   })
   app.post('/api/memory/search', { preHandler: auth }, async (request, reply) => {
     const controller = new AbortController(), abort = () => controller.abort()

@@ -2,19 +2,21 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MemoryDatabase } from '../src/database.js'
+import { MemoryDatabase, vector } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import type { MemoryAI } from '../src/ai.js'
 import { defaultAI } from '../src/config.js'
 import { draftProfile, saveProjectCompany, suggestProjects } from '../src/project-assistance.js'
 
-const url=process.env.AGENTHUB_MEMORY_TEST_URL
-describe.skipIf(!url)('asistencia contextual con PostgreSQL',() => {
+async function resetMemory(db: MemoryDatabase) {
+  const tables = await db.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' AND name NOT LIKE '%_substrings%' AND name<>'schema_versions'")
+  await db.execute(`PRAGMA foreign_keys=OFF; ${tables.map(t => `DELETE FROM "${t.name}";`).join('')} DELETE FROM sqlite_sequence; PRAGMA foreign_keys=ON`)
+}
+describe('asistencia contextual con SQLite',() => {
   let db:MemoryDatabase,store:MemoryStore,directory:string
-  beforeAll(async() => { if(!new URL(url!).pathname.endsWith('_test')) throw new Error('Base de pruebas requerida')
-    directory=await mkdtemp(join(tmpdir(),'assistance-test-'));db=new MemoryDatabase(url!);await db.migrate();store=new MemoryStore(db,directory) })
-  beforeEach(async() => { const tables=await db.query("SELECT tablename FROM pg_tables WHERE schemaname='agenthub_memory' AND tablename<>'schema_versions'")
-    await db.query(`TRUNCATE ${tables.map(t=>`"${t.tablename}"`).join(',')} RESTART IDENTITY CASCADE`)
+  beforeAll(async() => {
+    directory=await mkdtemp(join(tmpdir(),'assistance-test-'));db=new MemoryDatabase(join(directory,'memory.sqlite'));await db.migrate();store=new MemoryStore(db,directory) })
+  beforeEach(async() => { await resetMemory(db)
     await db.query("INSERT INTO settings(key,value) VALUES('ai',$1)",[JSON.stringify({...defaultAI,extraction:'ollama'})]) })
   afterAll(async() => {await db?.close();if(directory)await rm(directory,{recursive:true,force:true})})
   const localOnly={embedQuery:vi.fn(async()=>{throw new Error('Ollama offline')})} as unknown as MemoryAI
@@ -26,7 +28,7 @@ describe.skipIf(!url)('asistencia contextual con PostgreSQL',() => {
   }
   it('encuentra un proyecto antiguo entre más de 200 por el nombre de su empresa sin embeddings',async() => {
     const company=await store.create({kind:'company',title:'Órbita SA'}),p=await project('Plataforma comercial',{company_id:company.id})
-    await db.query("INSERT INTO entities(id,kind,title,data) SELECT gen_random_uuid(),'project','Otro '||i,'{}' FROM generate_series(1,220) i")
+    await db.query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<220) INSERT INTO entities(id,kind,title,data) SELECT gen_random_uuid(),'project','Otro '||i,'{}' FROM n")
     const meeting=await store.ingest({kind:'meeting',title:'Orbita SA — Assessment',text:'Presentación del negocio.',external_id:'source'})
     const result=await suggestProjects(store,localOnly,{entity_id:meeting.entity_id})
     expect(result.selected_id).toBe(p.id);expect(result.semantic_status).toBe('unavailable')
@@ -41,7 +43,7 @@ describe.skipIf(!url)('asistencia contextual con PostgreSQL',() => {
   it('usa vectores vigentes para encontrar significado aunque el nombre no aparezca',async() => {
     const p=await project('Plataforma de restaurantes')
     await db.query(`INSERT INTO entity_embeddings(entity_id,model,dimension,embedding,content_hash)
-      SELECT id,'test',3,'[1,0,0]'::vector,md5(memory_entity_text(title,data)) FROM entities WHERE id=$1`,[p.id])
+      SELECT id,'test',3,$2,md5(memory_entity_text(title,data)) FROM entities WHERE id=$1`,[p.id,vector([1,0,0])])
     const s=await store.ingest({kind:'document',title:'Gestión de pedidos gastronómicos',text:'Propuesta comercial',external_id:'s'})
     const ai={embedQuery:async()=>({model:'test',vectors:[[1,0,0]]})} as unknown as MemoryAI
     expect((await suggestProjects(store,ai,{entity_id:s.entity_id})).selected_id).toBe(p.id)

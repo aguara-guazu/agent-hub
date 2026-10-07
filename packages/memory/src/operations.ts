@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { check, parse, id, jsonObject, entityInput, entityPatch, kindSchema, importInput, linkInput, searchInput, recordInput, ruleInput, connectorInput, instant } from './contracts.js'
-import { MemoryStore, requireEntity, validateProjects } from './store.js'
+import { MemoryStore, canonical, requireEntity, validateProjects } from './store.js'
 import { searchMemory, citation } from './search.js'
 import type { MemoryAI } from './ai.js'
 import { exportMemory, deleteEntity } from './backup.js'
@@ -109,7 +109,7 @@ export class MemoryOperations {
       case 'infer_projects': {
         if (input.entity_id) await requireEntity(db, input.entity_id)
         const rows = await db.query(`SELECT s.current_version_id FROM sources s JOIN entities e ON e.id=s.entity_id WHERE s.status='active' AND s.current_version_id IS NOT NULL
-          AND ($1::uuid IS NULL OR s.entity_id=$1) AND e.kind=ANY($2) AND COALESCE(e.data->>'project_decision','')<>'none'
+          AND ($1 IS NULL OR s.entity_id=$1) AND e.kind IN (SELECT value FROM json_each($2)) AND COALESCE(e.data->>'project_decision','')<>'none'
           AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project')`, [input.entity_id ?? null, PROJECT_SOURCE_KINDS])
         for (const row of rows) await store.enqueue('process', { version_id: row.current_version_id, projects_only: true }, `projects:${row.current_version_id}`)
         return { queued: rows.length }
@@ -158,7 +158,7 @@ export class MemoryOperations {
         if (input.enabled) await this.call('reprocess', {}, actor)
         return rule
       }
-      case 'list_rules': return db.query('SELECT r.*,(SELECT count(*)::int FROM rule_runs rr WHERE rr.rule_id=r.id AND rr.revision=r.revision) AS processed_versions FROM rules r ORDER BY created_at DESC')
+      case 'list_rules': return db.query('SELECT r.*,(SELECT count(*) FROM rule_runs rr WHERE rr.rule_id=r.id AND rr.revision=r.revision) AS processed_versions FROM rules r ORDER BY created_at DESC')
       case 'update_rule': {
         const old = (await db.query('SELECT * FROM rules WHERE id=$1', [input.id]))[0]
         check(old, 'Regla inexistente', 404)
@@ -173,7 +173,6 @@ export class MemoryOperations {
       }
       case 'review_identity': return reviewIdentity(store, input.id, input.decision, actor)
       case 'review_duplicate': return db.transaction(async sql => {
-        await sql.query('SELECT id FROM entities WHERE id=$1 FOR UPDATE', [input.id])
         const proposal = await requireEntity(sql, input.id, 'fact'), p = proposal.data
         check(p.category === 'person_duplicate', 'La propuesta no corresponde a un duplicado')
         if (p.review_state === input.decision) return { reviewed: true, person_id: p.into_id }
@@ -184,30 +183,30 @@ export class MemoryOperations {
           check(!from.data.merged_into, 'Uno de los perfiles ya fue unificado; recargá la propuesta', 409)
           personId = (await mergePeople(sql, from.id, into.id, actor, 'duplicate_confirmed')).person_id
         }
-        await sql.query("UPDATE entities SET data=data || jsonb_build_object('review_state',$2::text,'reviewed_by',$3::text,'applied',$4::text),updated_at=now() WHERE id=$1", [input.id, input.decision, actor, input.decision === 'accepted' ? 'merged' : null])
+        await sql.query("UPDATE entities SET data=jsonb_merge(data,json_object('review_state',$2,'reviewed_by',$3,'applied',$4)),updated_at=now() WHERE id=$1", [input.id, input.decision, actor, input.decision === 'accepted' ? 'merged' : null])
         await sql.query("INSERT INTO changes(entity_id,action,actor,after_value) VALUES($1,'duplicate.reviewed',$2,$3)", [input.id, actor, JSON.stringify({ decision: input.decision })])
         return { reviewed: true, person_id: personId }
       })
       case 'list_duplicate_proposals': {
         const where = `e.kind='fact' AND e.data->>'category'='person_duplicate' AND e.data->>'review_state'=$1
-          AND ($2::uuid IS NULL OR e.data->>'from_id'=$2::text OR e.data->>'into_id'=$2::text)`
+          AND ($2 IS NULL OR e.data->>'from_id'=$2 OR e.data->>'into_id'=$2)`
         return { items: await db.query(`SELECT e.* FROM entities e WHERE ${where} ORDER BY CASE e.data->>'confidence' WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,e.created_at DESC LIMIT $3 OFFSET $4`, [input.state,input.entity_id ?? null,input.limit,input.offset]),
-          total: (await db.query(`SELECT count(*)::int AS total FROM entities e WHERE ${where}`, [input.state,input.entity_id ?? null]))[0]!.total }
+          total: (await db.query(`SELECT count(*) AS total FROM entities e WHERE ${where}`, [input.state,input.entity_id ?? null]))[0]!.total }
       }
       case 'dedupe_people': return store.enqueue('dedupe_people', {}, 'dedupe:people')
       case 'list_identity_proposals': {
         const where = `e.kind='fact' AND e.data->>'category'='identity_match' AND e.data->>'review_state'=$1
-          AND ($2::uuid IS NULL OR e.data->>'speaker_id'=$2::text OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='derived_from'))`
+          AND ($2 IS NULL OR e.data->>'speaker_id'=$2 OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='derived_from'))`
         return { items: await db.query(`SELECT e.* FROM entities e WHERE ${where} ORDER BY e.created_at DESC LIMIT $3 OFFSET $4`, [input.state,input.entity_id ?? null,input.limit,input.offset]),
-          total: (await db.query(`SELECT count(*)::int AS total FROM entities e WHERE ${where}`, [input.state,input.entity_id ?? null]))[0]!.total }
+          total: (await db.query(`SELECT count(*) AS total FROM entities e WHERE ${where}`, [input.state,input.entity_id ?? null]))[0]!.total }
       }
       case 'infer_identities':
       case 'reprocess': {
         if (input.entity_id) await requireEntity(db, input.entity_id)
         const identityOnly = operation === 'infer_identities'
-        const rows = await db.query(`SELECT s.current_version_id FROM sources s JOIN entities e ON e.id=s.entity_id WHERE s.status='active' AND s.current_version_id IS NOT NULL AND ($1::uuid IS NULL OR s.entity_id=$1)
-          AND (NOT $2::boolean OR (e.kind IN ('meeting','document') AND EXISTS(SELECT 1 FROM fragments f JOIN entities p ON p.id=f.speaker_id
-            WHERE f.version_id=s.current_version_id AND NULLIF(p.data->>'email','') IS NULL AND COALESCE(p.data->>'manual_email','false')<>'true')))`, [input.entity_id ?? null, identityOnly])
+        const rows = await db.query(`SELECT s.current_version_id FROM sources s JOIN entities e ON e.id=s.entity_id WHERE s.status='active' AND s.current_version_id IS NOT NULL AND ($1 IS NULL OR s.entity_id=$1)
+          AND (NOT $2 OR (e.kind IN ('meeting','document') AND EXISTS(SELECT 1 FROM fragments f JOIN entities p ON p.id=f.speaker_id
+            WHERE f.version_id=s.current_version_id AND NULLIF(p.data->>'email','') IS NULL AND NOT COALESCE((p.data->>'manual_email') IN (1,'true'),0))))`, [input.entity_id ?? null, identityOnly])
         for (const row of rows) await store.enqueue('process', { version_id: row.current_version_id, ...(identityOnly ? { identity_only: true } : { force: input.force }) }, `${identityOnly ? 'identities' : 'process'}:${row.current_version_id}`)
         return { queued: rows.length }
       }
@@ -217,14 +216,16 @@ export class MemoryOperations {
         this.validateConnectorConfig(input.provider, input.config)
         await validateProjects(db, input.project_ids)
         const connectorId = input.id ?? randomUUID()
+        let sameConfig = false
         if (input.id) {
-          const current = (await db.query('SELECT provider FROM connectors WHERE id=$1', [input.id]))[0]
+          const current = (await db.query('SELECT provider,config FROM connectors WHERE id=$1', [input.id]))[0]
           check(current && current.provider === input.provider, 'Conector inexistente o proveedor distinto', 404)
+          sameConfig = canonical(current.config) === canonical(input.config)
         }
         return (await db.query(`INSERT INTO connectors(id,provider,name,config,project_ids,enabled,interval_minutes) VALUES($1,$2,$3,$4,$5,$6,$7)
           ON CONFLICT(id) DO UPDATE SET name=excluded.name,config=excluded.config,project_ids=excluded.project_ids,enabled=excluded.enabled,
-          interval_minutes=excluded.interval_minutes,cursor=CASE WHEN connectors.config=excluded.config THEN connectors.cursor ELSE '{}'::jsonb END,updated_at=now() RETURNING *`,
-          [connectorId, input.provider, input.name, JSON.stringify(input.config), input.project_ids, input.enabled, input.interval_minutes]))[0]
+          interval_minutes=excluded.interval_minutes,cursor=CASE WHEN $8 THEN connectors.cursor ELSE '{}' END,updated_at=now() RETURNING *`,
+          [connectorId, input.provider, input.name, JSON.stringify(input.config), input.project_ids, input.enabled, input.interval_minutes, sameConfig]))[0]
       }
       case 'sync_connector':
       case 'repair_google': {
@@ -257,18 +258,19 @@ export class MemoryOperations {
         return { authorization_url: google.start(input.id), expires_in_seconds: 600 }
       }
       case 'list_jobs': {
-        const where = `($1::text IS NULL OR j.kind=ANY(string_to_array($1,','))) AND ($2::text IS NULL OR j.state=$2 OR ($2='active' AND j.state IN ('queued','running','waiting')))`
-        return { items: await db.query(`SELECT j.*,COALESCE(e.id::text,j.progress->>'entity_id') AS entity_id,
-          COALESCE(e.title,j.progress->>'source_title',c.name) AS source_title,c.name AS connector_name,s.entity_id IS NOT NULL AND s.current_version_id=v.id AS current_version
-          FROM jobs j LEFT JOIN versions v ON v.id::text=j.payload->>'version_id' LEFT JOIN sources s ON s.id=v.source_id
-          LEFT JOIN entities e ON e.id=s.entity_id LEFT JOIN connectors c ON c.id::text=j.payload->>'connector_id'
-          WHERE ${where} ORDER BY CASE j.state WHEN 'running' THEN 0 WHEN 'waiting' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END,j.created_at DESC LIMIT $3 OFFSET $4`, [input.kind ?? null,input.state ?? null,input.limit,input.offset]),
-        total: (await db.query(`SELECT count(*)::int AS total FROM jobs j WHERE ${where}`, [input.kind ?? null,input.state ?? null]))[0]!.total }
+        const where = `($1 IS NULL OR j.kind IN (SELECT value FROM json_each($1))) AND ($2 IS NULL OR j.state=$2 OR ($2='active' AND j.state IN ('queued','running','waiting')))`
+        const kinds = input.kind ? input.kind.split(',') : null
+        return { items: await db.query(`SELECT j.*,COALESCE(e.id,j.progress->>'entity_id') AS entity_id,
+          COALESCE(e.title,j.progress->>'source_title',c.name) AS source_title,c.name AS connector_name,s.entity_id IS NOT NULL AND s.current_version_id=v.id AS "current_version:bool"
+          FROM jobs j LEFT JOIN versions v ON v.id=j.payload->>'version_id' LEFT JOIN sources s ON s.id=v.source_id
+          LEFT JOIN entities e ON e.id=s.entity_id LEFT JOIN connectors c ON c.id=j.payload->>'connector_id'
+          WHERE ${where} ORDER BY CASE j.state WHEN 'running' THEN 0 WHEN 'waiting' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END,j.created_at DESC LIMIT $3 OFFSET $4`, [kinds,input.state ?? null,input.limit,input.offset]),
+        total: (await db.query(`SELECT count(*) AS total FROM jobs j WHERE ${where}`, [kinds,input.state ?? null]))[0]!.total }
       }
       case 'processing_status': {
-        const states = await db.query("SELECT state,count(*)::int AS count FROM jobs WHERE kind='process' GROUP BY state")
-        const [usage] = await db.query("SELECT COALESCE(sum((progress->>'input_tokens')::bigint),0)::float8 AS input_tokens,COALESCE(sum((progress->>'output_tokens')::bigint),0)::float8 AS output_tokens FROM jobs WHERE kind='process'")
-        const [coverage] = await db.query(`SELECT count(*)::int AS sources,count(*) FILTER(WHERE v.metadata ? 'extraction_key')::int AS extracted
+        const states = await db.query("SELECT state,count(*) AS count FROM jobs WHERE kind='process' GROUP BY state")
+        const [usage] = await db.query("SELECT CAST(COALESCE(sum(CAST(progress->>'input_tokens' AS INTEGER)),0) AS REAL) AS input_tokens,CAST(COALESCE(sum(CAST(progress->>'output_tokens' AS INTEGER)),0) AS REAL) AS output_tokens FROM jobs WHERE kind='process'")
+        const [coverage] = await db.query(`SELECT count(*) AS sources,count(*) FILTER(WHERE json_type(v.metadata,'$.extraction_key') IS NOT NULL) AS extracted
           FROM sources s JOIN versions v ON v.id=s.current_version_id WHERE s.status='active'`)
         return { states: Object.fromEntries(states.map(r => [r.state,r.count])), usage, coverage }
       }
@@ -277,7 +279,7 @@ export class MemoryOperations {
         check(rows[0], 'El trabajo no está disponible para reintentar', 409); return rows[0]
       }
       case 'cancel_job': return db.query("UPDATE jobs SET state='cancelled',lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND state IN ('queued','running','waiting') RETURNING id,state", [input.id])
-      case 'review': return { items: await db.query(`SELECT e.* FROM entities e WHERE (e.kind='fact' AND (e.data->>'review_state'='pending' OR e.data->>'stale'='true'))
+      case 'review': return { items: await db.query(`SELECT e.* FROM entities e WHERE (e.kind='fact' AND (e.data->>'review_state'='pending' OR (e.data->>'stale') IN (1,'true')))
         OR (e.kind='person' AND e.data->>'merged_into' IS NULL AND (COALESCE(e.data->>'identity_status','unresolved')='unresolved' OR NULLIF(e.data->>'email','') IS NULL))
         OR (e.kind IN ('meeting','document','message','issue','note') AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project'))
         ORDER BY e.updated_at DESC LIMIT $1 OFFSET $2`, [input.limit, input.offset]) }

@@ -30,7 +30,7 @@ async function audit(sql: Sql, entityId: string, action: string, actor: string, 
 }
 export async function validateEvidence(sql: Sql, ids: string[]): Promise<void> {
   if (!ids.length) return
-  const rows = await sql.query('SELECT id FROM fragments WHERE id=ANY($1::uuid[])', [ids])
+  const rows = await sql.query('SELECT id FROM fragments WHERE id IN (SELECT value FROM json_each($1))', [ids])
   check(rows.length === new Set(ids).size, 'La evidencia debe referenciar fragmentos existentes')
 }
 async function attachProjects(sql: Sql, entityId: string, projects: string[]) {
@@ -55,22 +55,20 @@ function validateData(data: Record<string, any>) {
 
 async function uniqueJiraKey(sql: Sql, projectId: string | null, key: unknown, site: unknown) {
   if (!key) return
-  await sql.query("SELECT pg_advisory_xact_lock(hashtextextended('jira-sites',0))")
-  await sql.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`jira-project:${key}`])
   const defaultSite = await effectiveJiraSite(sql,null)
-  const other = (await sql.query(`SELECT title FROM entities WHERE kind='project' AND data->>'jira_project_key'=$1 AND ($2::uuid IS NULL OR id<>$2)
-    AND ($3::text IS NULL OR COALESCE(NULLIF(data->>'jira_site_url',''),$4::text) IS NULL
-      OR COALESCE(NULLIF(data->>'jira_site_url',''),$4::text)=$3)`, [key, projectId, site || defaultSite,defaultSite]))[0]
+  const other = (await sql.query(`SELECT title FROM entities WHERE kind='project' AND data->>'jira_project_key'=$1 AND ($2 IS NULL OR id<>$2)
+    AND ($3 IS NULL OR COALESCE(NULLIF(data->>'jira_site_url',''),$4) IS NULL
+      OR COALESCE(NULLIF(data->>'jira_site_url',''),$4)=$3)`, [key, projectId, site || defaultSite,defaultSite]))[0]
   check(!other, `La clave de Jira ${key} ya está asignada al proyecto «${other?.title}»`, 409)
 }
 const PROPOSAL_CATEGORIES = ['identity_match', 'person_duplicate', 'project_match']
 /** Facts extracted from a source follow the source into its project; the link records where it came from so unlinking the source removes it. */
 export async function inheritFactProjects(sql: Sql, sourceEntityId: string, projectId: string) {
-  await sql.query(`INSERT INTO links(id,from_id,to_id,type,data) SELECT gen_random_uuid(),d.from_id,$2,'project',jsonb_build_object('inherited_from',$1::text)
-    FROM links d JOIN entities fact ON fact.id=d.from_id AND fact.kind='fact' AND NOT (COALESCE(fact.data->>'category','') = ANY($3::text[]))
-    WHERE d.to_id=$1::uuid AND d.type='derived_from'
+  await sql.query(`INSERT INTO links(id,from_id,to_id,type,data) SELECT gen_random_uuid(),d.from_id,$2,'project',json_object('inherited_from',$1)
+    FROM links d JOIN entities fact ON fact.id=d.from_id AND fact.kind='fact' AND COALESCE(fact.data->>'category','') NOT IN (SELECT value FROM json_each($3))
+    WHERE d.to_id=$1 AND d.type='derived_from'
       AND EXISTS(SELECT 1 FROM evidence ev JOIN fragment_projects fp ON fp.fragment_id=ev.fragment_id
-        WHERE ev.entity_id=fact.id AND fp.project_id=$2::uuid)
+        WHERE ev.entity_id=fact.id AND fp.project_id=$2)
     ON CONFLICT(from_id,to_id,type) DO NOTHING`, [sourceEntityId, projectId, PROPOSAL_CATEGORIES])
 }
 
@@ -113,7 +111,6 @@ export class MemoryStore {
   private async updateRow(entityId: string, raw: unknown, actor: string): Promise<Entity> {
     const input = parse(entityPatch, raw)
     return this.db.transaction(async sql => {
-      await sql.query('SELECT id FROM entities WHERE id=$1 FOR UPDATE', [parse(id, entityId)])
       const old = await requireEntity(sql, entityId)
       if (input.expected_updated_at) check(old.updated_at === input.expected_updated_at, 'La entidad cambió; recargá antes de guardar', 409)
       const data = { ...old.data, ...input.data }
@@ -157,22 +154,22 @@ export class MemoryStore {
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200), offset = Math.max(input.offset ?? 0, 0)
     if (input.project_id) await requireEntity(this.db, input.project_id, 'project')
     const params = [input.kind ?? null, input.project_id ?? null, input.query ?? '', Boolean(input.unassigned), limit, offset]
-    const where = `($1::text IS NULL OR e.kind=$1) AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='project'))
-      AND ($3::text='' OR e.title ILIKE '%' || $3 || '%' OR (e.kind='project' AND EXISTS(
-        SELECT 1 FROM entities company WHERE company.id=(e.data->>'company_id')::uuid AND company.title ILIKE '%' || $3 || '%')))
-      AND (NOT $4::boolean OR (e.kind IN ('meeting','document','message','issue','note','fact','event')
+    const where = `($1 IS NULL OR e.kind=$1) AND ($2 IS NULL OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='project'))
+      AND ($3='' OR ilike(e.title,'%' || $3 || '%') OR (e.kind='project' AND EXISTS(
+        SELECT 1 FROM entities company WHERE company.id=e.data->>'company_id' AND ilike(company.title,'%' || $3 || '%'))))
+      AND (NOT $4 OR (e.kind IN ('meeting','document','message','issue','note','fact','event')
         AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project')))`
-    const rows = await this.db.query<Entity>(`SELECT e.* FROM entities e WHERE ${where} ORDER BY COALESCE(e.data->>'occurred_at',e.created_at::text) DESC,e.id LIMIT $5 OFFSET $6`, params)
-    const count = (await this.db.query(`SELECT count(*)::int AS total FROM entities e WHERE ${where}`, params.slice(0, 4)))[0]!
+    const rows = await this.db.query<Entity>(`SELECT e.* FROM entities e WHERE ${where} ORDER BY COALESCE(e.data->>'occurred_at',e.created_at) DESC,e.id LIMIT $5 OFFSET $6`, params)
+    const count = (await this.db.query(`SELECT count(*) AS total FROM entities e WHERE ${where}`, params.slice(0, 4)))[0]!
     return { items: rows, total: count.total as number, limit, offset }
   }
 
   async detail(entityId: string) {
     const entity = await requireEntity(this.db, entityId)
     const [links, sources, evidence, changes] = await Promise.all([
-      this.db.query(`SELECT l.*,row_to_json(e) AS entity FROM links l JOIN entities e ON e.id=CASE WHEN l.from_id=$1 THEN l.to_id ELSE l.from_id END WHERE l.from_id=$1 OR l.to_id=$1 ORDER BY l.created_at DESC LIMIT 300`, [entityId]),
-      this.db.query('SELECT s.*,(SELECT count(*)::int FROM versions v WHERE v.source_id=s.id) AS version_count FROM sources s WHERE entity_id=$1', [entityId]),
-      this.db.query(`SELECT f.*,s.entity_id,s.url,s.current_version_id,(s.current_version_id=f.version_id) AS current FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE ev.entity_id=$1 ORDER BY f.ordinal`, [entityId]),
+      this.db.query(`SELECT l.*,json_object('id',e.id,'kind',e.kind,'title',e.title,'data',json(e.data),'created_at',e.created_at,'updated_at',e.updated_at) AS "entity:json" FROM links l JOIN entities e ON e.id=CASE WHEN l.from_id=$1 THEN l.to_id ELSE l.from_id END WHERE l.from_id=$1 OR l.to_id=$1 ORDER BY l.created_at DESC LIMIT 300`, [entityId]),
+      this.db.query('SELECT s.*,(SELECT count(*) FROM versions v WHERE v.source_id=s.id) AS version_count FROM sources s WHERE entity_id=$1', [entityId]),
+      this.db.query(`SELECT f.*,s.entity_id,s.url,s.current_version_id,(s.current_version_id=f.version_id) AS "current:bool" FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE ev.entity_id=$1 ORDER BY f.ordinal`, [entityId]),
       this.db.query('SELECT id,action,actor,created_at FROM changes WHERE entity_id=$1 ORDER BY id DESC LIMIT 30', [entityId]),
     ])
     return { entity, links, sources, evidence, changes }
@@ -191,11 +188,11 @@ export class MemoryStore {
       if (input.type === 'project') {
         await sql.query(`INSERT INTO fragment_projects(fragment_id,project_id)
           SELECT f.id,$2 FROM fragments f JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id
-          WHERE s.entity_id=$1 AND NOT COALESCE((f.metadata->>'explicit_projects')::boolean,false)
+          WHERE s.entity_id=$1 AND NOT COALESCE((f.metadata->>'explicit_projects') IN (1,'true'),0)
           ON CONFLICT DO NOTHING`, [input.from_id, input.to_id])
         await inheritFactProjects(sql, input.from_id, input.to_id)
-        await sql.query(`UPDATE entities SET data=data || '{"review_state":"superseded"}'::jsonb,updated_at=now()
-          WHERE kind='fact' AND data->>'category'='project_match' AND data->>'source_entity_id'=$1::text AND data->>'review_state'='pending'`, [input.from_id])
+        await sql.query(`UPDATE entities SET data=jsonb_merge(data,'{"review_state":"superseded"}'),updated_at=now()
+          WHERE kind='fact' AND data->>'category'='project_match' AND data->>'source_entity_id'=$1 AND data->>'review_state'='pending'`, [input.from_id])
       }
       await audit(sql, input.from_id, 'linked', actor, null, input)
       return row
@@ -208,9 +205,9 @@ export class MemoryStore {
       const row = (await sql.query('DELETE FROM links WHERE id=$1 RETURNING *', [parse(id, linkId)]))[0]
       check(row, 'Relación inexistente', 404)
       if (row.type === 'project') {
-        await sql.query(`DELETE FROM fragment_projects fp USING fragments f,versions v,sources s
-          WHERE fp.fragment_id=f.id AND f.version_id=v.id AND v.source_id=s.id AND s.entity_id=$1 AND fp.project_id=$2`, [row.from_id, row.to_id])
-        await sql.query("DELETE FROM links WHERE to_id=$2 AND type='project' AND data->>'inherited_from'=$1::text", [row.from_id, row.to_id])
+        await sql.query(`DELETE FROM fragment_projects WHERE project_id=$2 AND fragment_id IN
+          (SELECT f.id FROM fragments f JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE s.entity_id=$1)`, [row.from_id, row.to_id])
+        await sql.query("DELETE FROM links WHERE to_id=$2 AND type='project' AND data->>'inherited_from'=$1", [row.from_id, row.to_id])
       }
       await audit(sql, row.from_id, 'unlinked', actor, row, null)
       return { deleted: true }
@@ -219,13 +216,13 @@ export class MemoryStore {
 
   async assignFragment(fragmentId: string, projects: string[], personId?: string | null, actor = 'user') {
     return this.db.transaction(async sql => {
-      const before = (await sql.query<Fragment>('SELECT * FROM fragments WHERE id=$1 FOR UPDATE', [parse(id, fragmentId)]))[0]
+      const before = (await sql.query<Fragment>('SELECT * FROM fragments WHERE id=$1', [parse(id, fragmentId)]))[0]
       check(before, 'Fragmento inexistente', 404)
       await validateProjects(sql, projects)
       if (personId) await requireEntity(sql, personId, 'person')
       await sql.query('DELETE FROM fragment_projects WHERE fragment_id=$1', [fragmentId])
       for (const project of new Set(projects)) await sql.query('INSERT INTO fragment_projects VALUES($1,$2)', [fragmentId, project])
-      await sql.query(`UPDATE fragments SET speaker_id=$2,metadata=metadata || '{"explicit_projects":true,"manual_assignment":true}'::jsonb WHERE id=$1`, [fragmentId, personId === undefined ? before.speaker_id : personId])
+      await sql.query(`UPDATE fragments SET speaker_id=$2,metadata=jsonb_merge(metadata,'{"explicit_projects":true,"manual_assignment":true}') WHERE id=$1`, [fragmentId, personId === undefined ? before.speaker_id : personId])
       const source = (await sql.query('SELECT s.entity_id FROM sources s JOIN versions v ON v.source_id=s.id WHERE v.id=$1', [before.version_id]))[0]!
       await attachProjects(sql, source.entity_id, projects)
       await audit(sql, source.entity_id, 'fragment.assigned', actor, before, { fragment_id: fragmentId, projects, person_id: personId })
@@ -251,9 +248,8 @@ export class MemoryStore {
     // Content-addressed immutable file; orphan files from failed transactions are collected on explicit maintenance.
     await writeFile(join(directory, originalPath), canonical(normalized), { mode: 0o600, flag: 'wx' }).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error })
     return this.db.transaction(async sql => {
-      await sql.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`${input.provider}:${input.account}:${input.external_id}`])
       await validateProjects(sql, input.project_ids)
-      let source = (await sql.query('SELECT * FROM sources WHERE provider=$1 AND account=$2 AND external_id=$3 FOR UPDATE', [input.provider, input.account, input.external_id]))[0]
+      let source = (await sql.query('SELECT * FROM sources WHERE provider=$1 AND account=$2 AND external_id=$3', [input.provider, input.account, input.external_id]))[0]
       const entityData = { ...input.metadata, occurred_at: input.occurred_at ?? null, timezone: input.timezone ?? null, provider: input.provider }
       if (!source) {
         const entityId = randomUUID(), sourceId = randomUUID()
@@ -263,8 +259,8 @@ export class MemoryStore {
       } else {
         const entity = await requireEntity(sql, source.entity_id)
         check(entity.kind === input.kind, 'El ID externo ya pertenece a otro tipo de fuente', 409)
-        await sql.query(`UPDATE entities SET title=CASE WHEN data->>'manual_title'='true' THEN title ELSE $2 END,
-          data=data || $3::jsonb,updated_at=clock_timestamp() WHERE id=$1`, [source.entity_id, input.title, JSON.stringify(entityData)])
+        await sql.query(`UPDATE entities SET title=CASE WHEN (data->>'manual_title') IN (1,'true') THEN title ELSE $2 END,
+          data=jsonb_merge(data,$3),updated_at=clock_timestamp() WHERE id=$1`, [source.entity_id, input.title, JSON.stringify(entityData)])
       }
       await attachProjects(sql, source.entity_id, input.project_ids)
       const inheritedProjects = (await sql.query("SELECT to_id FROM links WHERE from_id=$1 AND type='project'", [source.entity_id])).map(row => row.to_id as string)
@@ -279,8 +275,8 @@ export class MemoryStore {
       const versionId: string = existing?.id ?? randomUUID()
       if (!existing) {
         await sql.query('INSERT INTO versions(id,source_id,content_hash,original_path,metadata) VALUES($1,$2,$3,$4,$5)', [versionId, source.id, digest, originalPath, JSON.stringify(input.metadata)])
-        const corrections = source.current_version_id ? await sql.query(`SELECT f.*,COALESCE((SELECT jsonb_agg(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS project_ids
-          FROM fragments f WHERE f.version_id=$1 AND f.metadata->>'manual_assignment'='true'`, [source.current_version_id]) : []
+        const corrections = source.current_version_id ? await sql.query(`SELECT f.*,COALESCE((SELECT json_group_array(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS "project_ids:json"
+          FROM fragments f WHERE f.version_id=$1 AND (f.metadata->>'manual_assignment') IN (1,'true')`, [source.current_version_id]) : []
         for (const [ordinal, part] of parts.entries()) {
           let speakerId = part.speaker ? participants.get(part.speaker) : undefined
           if (part.speaker && !speakerId) {
@@ -299,7 +295,7 @@ export class MemoryStore {
           const explicit = Boolean(correction) || part.project_ids !== undefined
           const projects: string[] = correction?.project_ids ?? part.project_ids ?? inheritedProjects
           await validateProjects(sql, projects)
-          await sql.query('INSERT INTO fragments(id,version_id,ordinal,text,speaker_id,start_time,end_time,offset_ms,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          await sql.query('INSERT INTO fragments(id,version_id,ordinal,text,speaker_id,start_time,end_time,offset_ms,metadata) VALUES($1,$2,$3,$4,$5,ts($6),ts($7),$8,$9)',
             [fragmentId, versionId, ordinal, part.text, speakerId ?? null, part.start_time ?? null, part.end_time ?? null, part.offset_ms ?? null,
               JSON.stringify({ ...part.metadata, external_id: part.external_id ?? null, explicit_projects: explicit, speaker_label: part.speaker ?? null, ...(correction ? { manual_assignment: true, corrected_from: correction.id } : {}) })])
           for (const project of new Set(projects)) await sql.query('INSERT INTO fragment_projects VALUES($1,$2)', [fragmentId, project])
@@ -309,7 +305,7 @@ export class MemoryStore {
       }
       await sql.query("UPDATE sources SET current_version_id=$2,url=COALESCE($3,url),status='active',synced_at=now() WHERE id=$1", [source.id, versionId, input.url ?? null])
       if (source.current_version_id && source.current_version_id !== versionId) {
-        await sql.query(`UPDATE entities SET data=data || '{"stale":true}'::jsonb WHERE id IN
+        await sql.query(`UPDATE entities SET data=jsonb_merge(data,'{"stale":true}') WHERE id IN
           (SELECT ev.entity_id FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id WHERE f.version_id=$1)`, [source.current_version_id])
       }
       await audit(sql, source.entity_id, 'imported', actor, { previous_version: source.current_version_id }, { version_id: versionId, fragments: parts.length })
@@ -325,7 +321,6 @@ export class MemoryStore {
   }
 
   private async resolveParticipant(sql: Sql, input: Pick<ImportInput, 'provider' | 'account'>, person: ImportInput['participants'][number]): Promise<string> {
-    await sql.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`identity:${input.provider}:${input.account}:${person.external_id}`])
     const existing = (await sql.query('SELECT * FROM identities WHERE provider=$1 AND account=$2 AND external_id=$3', [input.provider, input.account, person.external_id]))[0]
     const emailData = { email: person.email?.toLowerCase() ?? null, email_status: person.email ? 'verified' : person.email_status ?? 'missing',
       email_source: person.email_source ?? null, email_candidates: person.email_candidates ?? [] }
@@ -339,7 +334,7 @@ export class MemoryStore {
         await sql.query('UPDATE entities SET title=$2,data=$3,updated_at=now() WHERE id=$1', [entity.id, data.manual_title ? entity.title : person.name || entity.title, JSON.stringify(data)])
         await audit(sql, entity.id, 'identity.refreshed', `connector:${input.provider}`, entity.data, data)
       }
-      await sql.query('UPDATE identities SET display_name=$4,email=COALESCE($5,email),verified=verified OR $6 WHERE provider=$1 AND account=$2 AND external_id=$3',
+      await sql.query('UPDATE identities SET display_name=$4,email=COALESCE($5,email),verified=(verified OR $6) WHERE provider=$1 AND account=$2 AND external_id=$3',
         [input.provider, input.account, person.external_id, person.name, person.email ?? null, person.identity_verified])
       if (data.email && data.email !== entity.data.email) return (await unifyByEmail(sql, entity.id, `connector:${input.provider}`, { reason: 'provider_email' })).person_id
       return existing.person_id as string
@@ -358,17 +353,17 @@ export class MemoryStore {
   async fragments(entityId: string, opts: { version_id?: string; person_id?: string; project_id?: string; limit?: number; offset?: number } = {}) {
     await requireEntity(this.db, entityId)
     const limit = Math.min(Math.max(opts.limit ?? 100, 1), 200), offset = Math.max(opts.offset ?? 0, 0)
-    const where = `s.entity_id=$1 AND f.version_id=COALESCE($2::uuid,s.current_version_id)
-      AND ($3::uuid IS NULL OR f.speaker_id=$3)
-      AND ($4::uuid IS NULL OR EXISTS(SELECT 1 FROM fragment_projects fp WHERE fp.fragment_id=f.id AND fp.project_id=$4))`
+    const where = `s.entity_id=$1 AND f.version_id=COALESCE($2,s.current_version_id)
+      AND ($3 IS NULL OR f.speaker_id=$3)
+      AND ($4 IS NULL OR EXISTS(SELECT 1 FROM fragment_projects fp WHERE fp.fragment_id=f.id AND fp.project_id=$4))`
     const params = [entityId, opts.version_id ?? null, opts.person_id ?? null, opts.project_id ?? null]
     const items = await this.db.query(`SELECT f.*,p.title AS speaker_name,p.data->>'email' AS speaker_email,p.data->>'email_status' AS speaker_email_status,
-      COALESCE((SELECT jsonb_agg(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS project_ids,
-      s.entity_id,s.url,(s.current_version_id=f.version_id) AS current FROM fragments f JOIN versions v ON v.id=f.version_id
+      COALESCE((SELECT json_group_array(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS "project_ids:json",
+      s.entity_id,s.url,(s.current_version_id=f.version_id) AS "current:bool" FROM fragments f JOIN versions v ON v.id=f.version_id
       JOIN sources s ON s.id=v.source_id LEFT JOIN entities p ON p.id=f.speaker_id WHERE ${where} ORDER BY f.ordinal LIMIT $5 OFFSET $6`, [...params, limit, offset])
-    const total = (await this.db.query(`SELECT count(*)::int AS total FROM fragments f JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE ${where}`, params))[0]!.total
-    const speakers = await this.db.query(`SELECT p.id,p.title,p.data->>'email' AS email,p.data->>'email_status' AS email_status,count(*)::int AS fragments
-      FROM fragments f JOIN sources s ON s.entity_id=$1 AND f.version_id=COALESCE($2::uuid,s.current_version_id)
+    const total = (await this.db.query(`SELECT count(*) AS total FROM fragments f JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE ${where}`, params))[0]!.total
+    const speakers = await this.db.query(`SELECT p.id,p.title,p.data->>'email' AS email,p.data->>'email_status' AS email_status,count(*) AS fragments
+      FROM fragments f JOIN sources s ON s.entity_id=$1 AND f.version_id=COALESCE($2,s.current_version_id)
       JOIN entities p ON p.id=f.speaker_id GROUP BY p.id ORDER BY p.title`, [entityId, opts.version_id ?? null])
     return { items, total, limit, offset, speakers }
   }
@@ -387,7 +382,7 @@ export class MemoryStore {
       const fields = parse(fieldsSchema, collection.data.fields)
       await this.validateValues(sql, fields, input.values)
       await validateEvidence(sql, input.evidence_ids)
-      const row = (await sql.query(`INSERT INTO collection_records(id,collection_id,values,schema_version,idempotency_key,origin)
+      const row = (await sql.query(`INSERT INTO collection_records(id,collection_id,"values",schema_version,idempotency_key,origin)
         VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(collection_id,idempotency_key) DO UPDATE SET idempotency_key=excluded.idempotency_key RETURNING *`,
         [randomUUID(), collectionId, JSON.stringify(input.values), collection.data.schema_version ?? 1, input.idempotency_key ?? null, origin]))[0]!
       for (const ev of new Set(input.evidence_ids)) await sql.query('INSERT INTO record_evidence VALUES($1,$2) ON CONFLICT DO NOTHING', [row.id, ev])
@@ -399,7 +394,7 @@ export class MemoryStore {
   async updateRecord(recordId: string, raw: unknown) {
     const input = parse(recordInput, raw)
     return this.db.transaction(async sql => {
-      const row = (await sql.query('SELECT * FROM collection_records WHERE id=$1 FOR UPDATE', [parse(id, recordId)]))[0]
+      const row = (await sql.query('SELECT * FROM collection_records WHERE id=$1', [parse(id, recordId)]))[0]
       check(row, 'Registro inexistente', 404)
       const collection = await requireEntity(sql, row.collection_id, 'collection')
       await this.validateValues(sql, parse(fieldsSchema, collection.data.fields), input.values)
@@ -407,7 +402,7 @@ export class MemoryStore {
       await sql.query('DELETE FROM record_evidence WHERE record_id=$1', [recordId])
       for (const ev of new Set(input.evidence_ids)) await sql.query('INSERT INTO record_evidence VALUES($1,$2)', [recordId, ev])
       await audit(sql, collection.id, 'record.updated', 'user', row.values, input.values)
-      return (await sql.query("UPDATE collection_records SET values=$2,origin='manual',updated_at=clock_timestamp() WHERE id=$1 RETURNING *", [recordId, JSON.stringify(input.values)]))[0]
+      return (await sql.query(`UPDATE collection_records SET "values"=$2,origin='manual',updated_at=clock_timestamp() WHERE id=$1 RETURNING *`, [recordId, JSON.stringify(input.values)]))[0]
     })
   }
 
@@ -428,10 +423,10 @@ export class MemoryStore {
   async records(collectionId: string, limit = 100, offset = 0, filter: Record<string, unknown> = {}) {
     await requireEntity(this.db, collectionId, 'collection')
     const params = [collectionId, JSON.stringify(filter)]
-    const items = await this.db.query(`SELECT r.*,COALESCE((SELECT jsonb_agg(re.fragment_id) FROM record_evidence re WHERE re.record_id=r.id),'[]') AS evidence_ids,
-      EXISTS(SELECT 1 FROM record_evidence re JOIN fragments f ON f.id=re.fragment_id JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE re.record_id=r.id AND s.current_version_id<>v.id) AS stale
-      FROM collection_records r WHERE collection_id=$1 AND values @> $2::jsonb ORDER BY created_at DESC,id LIMIT $3 OFFSET $4`, [...params, Math.min(limit, 200), offset])
-    const total = (await this.db.query('SELECT count(*)::int AS total FROM collection_records WHERE collection_id=$1 AND values @> $2::jsonb', params))[0]!.total
+    const items = await this.db.query(`SELECT r.*,COALESCE((SELECT json_group_array(re.fragment_id) FROM record_evidence re WHERE re.record_id=r.id),'[]') AS "evidence_ids:json",
+      EXISTS(SELECT 1 FROM record_evidence re JOIN fragments f ON f.id=re.fragment_id JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE re.record_id=r.id AND s.current_version_id<>v.id) AS "stale:bool"
+      FROM collection_records r WHERE collection_id=$1 AND jsonb_contains(r."values",$2) ORDER BY created_at DESC,id LIMIT $3 OFFSET $4`, [...params, Math.min(limit, 200), offset])
+    const total = (await this.db.query(`SELECT count(*) AS total FROM collection_records WHERE collection_id=$1 AND jsonb_contains("values",$2)`, params))[0]!.total
     return { items, total, limit, offset }
   }
 

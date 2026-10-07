@@ -76,7 +76,7 @@ Empaqueta, cierra la app si está corriendo, la copia a `/Applications`, corrige
 
 ## Desarrollo
 
-Requisitos: Node.js 22.12 o superior y npm.
+Requisitos: Node.js 22.18 o posterior de la rama 22, o Node.js 24 o superior, y npm.
 
 ```bash
 npm ci
@@ -101,7 +101,9 @@ make dev
 
 El hub incorpora proyectos, empresas, personas, reuniones, documentos, conversaciones y tareas. **Proyectos** muestra el contexto de cada cliente; **Memoria** permite explorar, buscar, seguir citas hasta la intervención original y administrar fuentes. Las colecciones permiten crear tablas con columnas tipadas y reglas persistentes de extracción.
 
-La memoria usa PostgreSQL 17 con pgvector y conserva versiones de los originales en disco. El SQLite del hub mantiene su catálogo y sus políticas. El MCP **Memoria de proyectos** se registra al configurar la base y sus herramientas pasan por los mismos permisos del gateway.
+La memoria usa SQLite en `memory/memory.sqlite` y conserva versiones de los originales en `memory/originals`. Las consultas corren en hilos dedicados, con WAL para permitir lecturas durante las escrituras. El catálogo y las políticas del hub permanecen en su propia base SQLite. El MCP **Memoria de proyectos** se registra automáticamente y sus herramientas pasan por los mismos permisos del gateway.
+
+Al actualizar una instalación con PostgreSQL, el worker copia el esquema compatible (versiones 1–4), verifica tablas, conteos, referencias e integridad y activa SQLite sólo cuando la copia termina correctamente. El clúster anterior y sus credenciales se conservan; el servicio administrado se detiene al terminar. Si la migración falla, Fuentes y ajustes muestra el motivo y permite reintentar. Volver a una release con PostgreSQL no incorpora los cambios realizados después en SQLite.
 
 Para probar con datos ficticios y abrir la UI en el navegador:
 
@@ -109,7 +111,7 @@ Para probar con datos ficticios y abrir la UI en el navegador:
 npm run memory:dev
 ```
 
-Requiere Docker con el motor iniciado, o PostgreSQL y pgvector instalados. Se puede elegir `-- --backend native` o `-- --backend docker`. La demostración guarda su estado en `.agenthub/memory-development`, usa la UI en `127.0.0.1:8876` y no ejecuta el daemon que modifica configuraciones de clientes. PostgreSQL usa `54349` para una demostración nueva, `54339` para pruebas y `54329` para la memoria normal; una instalación existente conserva su puerto.
+No requiere Docker ni un servidor de base de datos. La demostración guarda su estado en `.agenthub/memory-development`, usa la UI en `127.0.0.1:8876` y no ejecuta el daemon que modifica configuraciones de clientes.
 
 Para preparar la memoria de la aplicación de escritorio:
 
@@ -118,7 +120,7 @@ npm run memory:up
 npm run dev
 ```
 
-`memory:up` guarda la configuración en el directorio de estado de Agent Hub. También admite `--dir`, `--port` y `--backend`. Para un directorio personalizado, configurá `AGENTHUB_MEMORY_DIR` al iniciar el hub. El worker reanuda trabajos e inicia el servicio administrado junto con el core; el inicio al login depende del autostart existente del hub y, con Docker, del motor Docker. `memory:down` detiene PostgreSQL sin borrar datos; cerrá antes el hub que lo supervisa.
+`memory:up` prepara SQLite en el directorio de estado de Agent Hub y admite `--dir`. Para un directorio personalizado, configurá `AGENTHUB_MEMORY_DIR` al iniciar el hub. Si hay una migración pendiente desde PostgreSQL, iniciá la aplicación para que su worker la complete. El worker reanuda trabajos junto con el core; el inicio al login depende del autostart del hub. `memory:down` sólo sirve para detener un PostgreSQL administrado de una instalación anterior; SQLite no necesita detener un servidor.
 
 En **Memoria → Fuentes y ajustes** se configuran Google (Calendar, Meet y Docs/Drive), Notion, Slack y Jira Cloud, sus credenciales y su alcance. Google usa OAuth con un cliente de escritorio propio. Habilitá también **People API** para obtener emails por el identificador del participante de Meet; OAuth solicita lectura de contactos, otros contactos y directorio. Si Google ya estaba conectado, reconectalo para conceder esos permisos y usá **Actualizar hablantes y emails** para reparar lo importado. Las credenciales se guardan en archivos privados y no se exportan en los respaldos. Los conectores leen las fuentes; los cambios de la memoria permanecen locales.
 
@@ -149,7 +151,17 @@ npm run test:memory
 npm run memory:dev -- --smoke
 ```
 
-La primera usa una base dedicada terminada en `_test`. La segunda recorre la UI con Playwright, API y PostgreSQL reales; guarda capturas locales y elimina las entidades que crea. Si falta Chromium: `npm exec --workspace @agenthub/frontend -- playwright install chromium`. Las pruebas de conectores usan respuestas simuladas; la verificación contra cuentas reales requiere sus credenciales.
+La primera usa archivos SQLite temporales. La segunda recorre la UI con Playwright, API y SQLite reales; guarda capturas locales y elimina las entidades que crea. Si falta Chromium: `npm exec --workspace @agenthub/frontend -- playwright install chromium`. Las pruebas de Google ejecutan el almacenamiento real con respuestas HTTP simuladas; la verificación contra cuentas reales requiere sus credenciales.
+
+La suite de migración se habilita con `AGENTHUB_MEMORY_TEST_URL`, una conexión a PostgreSQL con pgvector y permiso para crear bases de pruebas. Cada caso crea y elimina una base con nombre aleatorio; no modifica la base indicada en la URL. CI ejecuta esta suite para los cuatro esquemas históricos, además de las pruebas SQLite, tanto en Node 22.18 como en Node 24.
+
+Para medir búsquedas sin modificar la memoria de entrada:
+
+```bash
+npm run benchmark:memory -- --database /ruta/a/memory.sqlite --runs 5
+```
+
+El benchmark crea y elimina una copia privada, calienta las consultas y reporta sus medianas. Usa un vector ya guardado para separar el tiempo de la base del tiempo de Ollama o de la red. El índice de subcadenas acelera las búsquedas dentro de palabras; se construye una vez al actualizar una base existente y se mantiene con cada importación.
 
 ## Comandos headless
 
@@ -283,14 +295,14 @@ El workflow `.github/workflows/release.yml` compila cada plataforma en su propio
 
 ```bash
 # Mantener la misma versión en todos los workspaces, dependencias @agenthub y lockfile.
-# La versión 0.5.0 ya está preparada. Revisar e incluir también los archivos nuevos.
+# La versión 0.6.0 ya está preparada. Revisar e incluir también los archivos nuevos.
 git add .
-git commit -m "Release 0.5.0"
-git tag v0.5.0
-git push origin main v0.5.0
+git commit -m "Release 0.6.0"
+git tag v0.6.0
+git push origin main v0.6.0
 ```
 
-Artefactos por release: `AgentHub-arm64.dmg`, `AgentHub-x64.dmg`, `AgentHub-Setup-x64.exe`, `AgentHub-Setup-arm64.exe`, `AgentHub-x64.zip`, `AgentHub-arm64.zip` (Windows portable), `AgentHub-x86_64.AppImage`, `AgentHub-arm64.AppImage`, `AgentHub-amd64.deb` y `AgentHub-arm64.deb`. `workflow_dispatch` corre la misma compilación sin publicar, para probar el pipeline. Publicar el tag es todo lo que hace falta para que las instalaciones existentes se actualicen: el updater (`desktop/src/updater.ts`) lee `releases/latest` de la API de GitHub y baja el artefacto de su plataforma por nombre, así que los nombres de arriba no deben cambiar. `ci.yml` corre lint, typecheck, pruebas y la integración de memoria con PostgreSQL/pgvector en cada push a `main`, pull request y release. El release verifica que el tag coincida con la versión antes de construir instaladores.
+Artefactos por release: `AgentHub-arm64.dmg`, `AgentHub-x64.dmg`, `AgentHub-Setup-x64.exe`, `AgentHub-Setup-arm64.exe`, `AgentHub-x64.zip`, `AgentHub-arm64.zip` (Windows portable), `AgentHub-x86_64.AppImage`, `AgentHub-arm64.AppImage`, `AgentHub-amd64.deb` y `AgentHub-arm64.deb`. `workflow_dispatch` corre la misma compilación sin publicar, para probar el pipeline. Publicar el tag es todo lo que hace falta para que las instalaciones existentes se actualicen: el updater (`desktop/src/updater.ts`) lee `releases/latest` de la API de GitHub y baja el artefacto de su plataforma por nombre, así que los nombres de arriba no deben cambiar. `ci.yml` corre lint, typecheck, pruebas y la memoria con SQLite y la migración desde PostgreSQL/pgvector en cada push a `main`, pull request y release. El release verifica que el tag coincida con la versión antes de construir instaladores.
 
 Los artefactos no van firmados ni notarizados: eso requiere credenciales de distribuidor (Developer ID de Apple, certificado de firma de código en Windows) que se configurarían como secretos del repositorio.
 

@@ -4,23 +4,24 @@ import { Link } from 'react-router-dom'
 import { Modal } from '../components/Modal'
 import { api } from '../lib/api'
 import { useToast } from '../components/Toast'
-import { Field, ProjectSelect, ErrorBox, MemoryFrame, PageHeading, Pager, formatTime, useMemory, useMemoryMutation, useMemoryStatus } from '../lib/memory'
+import { Field, ProjectSelect, ErrorBox, MemoryFrame, MemoryMigration, PageHeading, Pager, formatTime, useMemory, useMemoryMutation, useMemoryStatus } from '../lib/memory'
 import { OpenCodeExtraction } from './OpenCodeExtraction'
 import { MemoryJobCard } from './MemoryProcessing'
 import { JiraSettings } from './JiraSettings'
 
+const STORAGE_BADGES: Record<string, [string, string]> = { ready: ['badge-on', 'Conectado'], migrating: ['badge-stale', 'Migrando'],
+  migration_pending: ['badge-off', 'Migración pendiente'], unavailable: ['badge-off', 'No disponible'] }
 export function MemorySettings() { return <MemoryFrame setup><Settings /></MemoryFrame> }
 function Settings() {
   const status = useMemoryStatus(), cache = useQueryClient(), toast = useToast()
   const connectors = useMemory<any[]>('list_connectors', {}, status.data?.ready === true)
-  const [connectorForm, setConnectorForm] = useState<any>(null), [credentials, setCredentials] = useState<any>(null), [dbUrl, setDbUrl] = useState('')
+  const [connectorForm, setConnectorForm] = useState<any>(null), [credentials, setCredentials] = useState<any>(null)
   const [jobsOffset, setJobsOffset] = useState(0)
   const jobs = useMemory<any>('list_jobs', { limit: 20, offset: jobsOffset }, status.data?.ready === true)
   const sync = useMemoryMutation('sync_connector'), retry = useMemoryMutation('retry_job'), cancel = useMemoryMutation('cancel_job'), updateConnector = useMemoryMutation('save_connector')
   const repair = useMemoryMutation('repair_google', () => toast.success('Reparación encolada'))
   const [ai, setAI] = useState<any>(null)
   useEffect(() => { if (status.data?.ready && status.data.ai && !ai) setAI(status.data.ai) }, [status.data, ai])
-  const saveDatabase = useMutation({ mutationFn: () => api.put('/memory/database', { url: dbUrl }), onSuccess: () => { setDbUrl(''); void cache.invalidateQueries({ queryKey: ['memory-status'] }); toast.success('Base de memoria conectada') }, onError: e => toast.error('No se pudo conectar', e.message) })
   const saveAI = useMutation({ mutationFn: () => api.put('/memory/ai', ai), onSuccess: () => { void status.refetch(); toast.success('Procesamiento configurado') }, onError: e => toast.error('No se guardó', e.message) })
   const reprocess = useMemoryMutation('reprocess', () => toast.success('Procesamiento encolado')), dedupe = useMemoryMutation('dedupe_people', () => toast.success('Búsqueda de duplicados encolada'))
   const oauth = useMutation({ mutationFn: (id: string) => api.post<{ authorization_url: string }>(`/memory/connectors/${id}/google/start`), onSuccess: result => window.open(result.authorization_url, '_blank', 'noopener,noreferrer'), onError: e => toast.error('No se pudo iniciar Google', e.message) })
@@ -33,11 +34,10 @@ function Settings() {
   const restore = useMutation({ mutationFn: (body: unknown) => api.post('/memory/restore', body), onSuccess: () => { void cache.invalidateQueries(); toast.success('Memoria restaurada') }, onError: e => toast.error('No se restauró', e.message) })
   const workerActive = status.data?.worker?.heartbeat && Date.now() - Date.parse(status.data.worker.heartbeat) < 60_000
   return <><PageHeading title="Fuentes y ajustes" description="Elegí qué incorporar, controlá el procesamiento y revisá la cobertura." />
-    <section className="card memory-panel"><div className="spread"><h2>Almacenamiento local</h2><span className={`badge ${status.data?.ready ? 'badge-on' : status.data?.state === 'unavailable' ? 'badge-off' : 'badge-stale'}`}>{status.data?.ready ? 'Conectado' : status.data?.state === 'unavailable' ? 'No disponible' : 'Por configurar'}</span></div>
-      <p>La memoria y sus originales se guardan en esta computadora. El hub reanuda la sincronización al iniciar sesión.</p>
-      {status.data?.state === 'unavailable' && <div className="hub-notice error" role="alert"><div><p>La base configurada no responde. Los datos siguen guardados; no hace falta preparar ni conectar otra base.</p><p>{status.data.detail}</p></div></div>}
-      {!status.data?.ready && status.data?.state !== 'unavailable' && <div className="memory-callout"><p>{status.data?.detail}</p><p>En desarrollo, <code>npm run memory:up</code> prepara PostgreSQL con Docker o con una instalación local.</p></div>}
-      <details><summary>Conectar una base PostgreSQL existente</summary><form className="memory-form" onSubmit={e => { e.preventDefault(); saveDatabase.mutate() }}><Field label="URL de la base local"><input type="password" autoComplete="off" value={dbUrl} onChange={e => setDbUrl(e.target.value)} placeholder="postgresql://usuario:contraseña@127.0.0.1:54329/agenthub_memory" required /></Field><ErrorBox error={saveDatabase.error} /><button className="btn" disabled={saveDatabase.isPending}>Conectar base</button></form></details>
+    <section className="card memory-panel"><div className="spread"><h2>Almacenamiento local</h2><span className={`badge ${STORAGE_BADGES[status.data?.state ?? '']?.[0] ?? 'badge-stale'}`}>{STORAGE_BADGES[status.data?.state ?? '']?.[1] ?? 'Conectando'}</span></div>
+      <p>La memoria y sus originales se guardan en esta computadora, en un único archivo SQLite (<code>memory/memory.sqlite</code>) más la carpeta de originales. El hub reanuda la sincronización al iniciar sesión.</p>
+      {(status.data?.state === 'migrating' || status.data?.state === 'migration_pending') && <MemoryMigration status={status.data} />}
+      {status.data?.state === 'unavailable' && <div className="hub-notice error" role="alert"><div><p>La base local no responde. Los datos siguen guardados en esta computadora.</p><p>{status.data.detail}</p></div></div>}
       <div className="memory-meta"><span>Procesamiento en segundo plano: {workerActive ? 'activo' : 'esperando servicio'}</span><span>{status.data?.pending_jobs ?? 0} trabajos pendientes</span></div>
     </section>
     <section className="memory-section"><div className="spread"><h2>Fuentes conectadas</h2><button className="btn btn-primary" disabled={!status.data?.ready} onClick={() => setConnectorForm({ provider: 'google', name: '', config: {}, project_ids: [], enabled: false, interval_minutes: 30 })}>Agregar fuente</button></div><ErrorBox error={connectors.error} />

@@ -30,7 +30,7 @@ function normalizePath(path: string) { return path.replace(/\\/g, '/').replace(/
 export async function projectForPath(sql: Sql, path: string | null | undefined) {
   if (!path) return null
   const target = normalizePath(path)
-  const projects = await sql.query("SELECT id,title,data FROM entities WHERE kind='project' AND jsonb_typeof(data->'folders')='array' AND jsonb_array_length(data->'folders')>0")
+  const projects = await sql.query("SELECT id,title,data FROM entities WHERE kind='project' AND json_type(data,'$.folders')='array' AND json_array_length(data,'$.folders')>0")
   let best: { project: Record<string, any>; folder: string } | null = null
   for (const project of projects) for (const raw of project.data.folders as string[]) {
     const folder = normalizePath(raw)
@@ -52,10 +52,11 @@ export async function touchSession(store: MemoryStore, agent: AgentContext) {
 
 /** Working notes whose session ended or went quiet are closed; the reason keeps the difference visible. */
 export async function sweepNotes(sql: Sql) {
-  await sql.query(`UPDATE agent_notes n SET state='done',finish_reason=CASE WHEN s.ended_at IS NOT NULL THEN 'session_end' ELSE 'inactive' END,finished_at=now()
-    FROM agent_notes n2 LEFT JOIN agent_sessions s ON s.id=n2.session_id
-    WHERE n.id=n2.id AND n.state='working' AND n.updated_at<now()-make_interval(mins=>$1)
-      AND (s.id IS NULL OR s.ended_at IS NOT NULL OR s.last_seen_at<now()-make_interval(mins=>$1))`, [NOTE_INACTIVITY_MINUTES])
+  await sql.query(`UPDATE agent_notes SET state='done',finished_at=now(),
+      finish_reason=CASE WHEN (SELECT s.ended_at FROM agent_sessions s WHERE s.id=agent_notes.session_id) IS NOT NULL THEN 'session_end' ELSE 'inactive' END
+    WHERE state='working' AND updated_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-'||$1||' minutes')
+      AND NOT EXISTS(SELECT 1 FROM agent_sessions s WHERE s.id=agent_notes.session_id AND s.ended_at IS NULL
+        AND s.last_seen_at>=strftime('%Y-%m-%dT%H:%M:%fZ','now','-'||$1||' minutes'))`, [NOTE_INACTIVITY_MINUTES])
 }
 
 export const writeNoteInput = z.object({ id: id.optional(), text: z.string().trim().min(1).max(600),
@@ -83,7 +84,7 @@ export async function writeNote(store: MemoryStore, raw: unknown, actor: string,
   const who = author(agent, actor)
   return store.db.transaction(async sql => {
     if (input.id) {
-      const note = (await sql.query('SELECT * FROM agent_notes WHERE id=$1 FOR UPDATE', [input.id]))[0]
+      const note = (await sql.query('SELECT * FROM agent_notes WHERE id=$1', [input.id]))[0]
       check(note, 'Nota inexistente', 404)
       check(!agent || note.session_id === agent.session_id, 'Sólo la sesión que escribió la nota puede editarla; deja una nota nueva', 403)
       const state = input.state ?? note.state
@@ -94,7 +95,7 @@ export async function writeNote(store: MemoryStore, raw: unknown, actor: string,
     }
     const state = input.state ?? 'working'
     if (state === 'working' && who.session_id) await sql.query(`UPDATE agent_notes SET state='done',finish_reason='superseded',finished_at=now(),updated_at=now()
-      WHERE session_id=$1 AND state='working' AND project_id IS NOT DISTINCT FROM $2`, [who.session_id, projectId])
+      WHERE session_id=$1 AND state='working' AND project_id IS $2`, [who.session_id, projectId])
     return (await sql.query(`INSERT INTO agent_notes(id,session_id,agent_id,agent_label,cli_kind,project_id,task_id,text,state,finish_reason,finished_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,CASE WHEN $9='working' THEN NULL ELSE 'explicit' END,CASE WHEN $9='working' THEN NULL ELSE now() END) RETURNING *`,
     [randomUUID(), who.session_id, who.agent_id, who.agent_label, who.cli_kind, projectId, input.task_id ?? null, input.text, state]))[0]
@@ -104,11 +105,11 @@ export async function writeNote(store: MemoryStore, raw: unknown, actor: string,
 export async function finishNotes(store: MemoryStore, raw: unknown, agent?: AgentContext) {
   const input = parse(finishNotesInput, raw)
   check(agent, 'Cerrar notas requiere la sesión de un agente; desde el hub edita la nota', 409)
-  if (input.reason === 'session_end') await store.db.query('UPDATE agent_sessions SET ended_at=now() WHERE id=$1 AND ($2::timestamptz IS NULL OR last_seen_at<=$2)', [agent.session_id, input.before ?? null])
+  if (input.reason === 'session_end') await store.db.query('UPDATE agent_sessions SET ended_at=now() WHERE id=$1 AND ($2 IS NULL OR last_seen_at<=ts($2))', [agent.session_id, input.before ?? null])
   else if (input.reason === 'explicit') await touchSession(store, agent)
   return store.db.transaction(async sql => {
     const closed = await sql.query(`UPDATE agent_notes SET state=$2,finish_reason=$3,finished_at=now(),updated_at=now(),text=COALESCE($4,text)
-      WHERE session_id=$1 AND state='working' AND ($5::timestamptz IS NULL OR updated_at<=$5) RETURNING id,project_id`, [agent.session_id, input.state, input.reason, input.summary ?? null, input.before ?? null])
+      WHERE session_id=$1 AND state='working' AND ($5 IS NULL OR updated_at<=ts($5)) RETURNING id,project_id`, [agent.session_id, input.state, input.reason, input.summary ?? null, input.before ?? null])
     return { closed: closed.length, notes: closed }
   })
 }
@@ -118,13 +119,13 @@ export async function listNotes(store: MemoryStore, raw: unknown) {
   if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
   await sweepNotes(store.db)
   const params = [input.project_id ?? null, input.scope, input.include_finished]
-  const where = `(($1::uuid IS NOT NULL AND n.project_id=$1) OR ($1::uuid IS NULL AND ($2='all' OR ($2='unassigned' AND n.project_id IS NULL))))
-    AND ($3::boolean OR n.state<>'done')`
+  const where = `(($1 IS NOT NULL AND n.project_id=$1) OR ($1 IS NULL AND ($2='all' OR ($2='unassigned' AND n.project_id IS NULL))))
+    AND ($3 OR n.state<>'done')`
   const items = await store.db.query(`SELECT n.*,p.title AS project_title,t.title AS task_title,t.external_key AS task_key,
-    s.last_seen_at,s.ended_at,(n.state='working') AS active FROM agent_notes n LEFT JOIN entities p ON p.id=n.project_id
+    s.last_seen_at,s.ended_at,(n.state='working') AS "active:bool" FROM agent_notes n LEFT JOIN entities p ON p.id=n.project_id
     LEFT JOIN tasks t ON t.id=n.task_id LEFT JOIN agent_sessions s ON s.id=n.session_id WHERE ${where}
     ORDER BY (n.state='working') DESC,n.updated_at DESC,n.id LIMIT $4 OFFSET $5`, [...params, input.limit, input.offset])
-  const total = (await store.db.query(`SELECT count(*)::int AS total FROM agent_notes n WHERE ${where}`, params))[0]!.total
+  const total = (await store.db.query(`SELECT count(*) AS total FROM agent_notes n WHERE ${where}`, params))[0]!.total
   return { items, total, limit: input.limit, offset: input.offset, inactivity_minutes: NOTE_INACTIVITY_MINUTES }
 }
 
@@ -142,9 +143,9 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
   const [tasks, working, recent, candidates] = await Promise.all([
     store.db.query(`SELECT id,kind,title,status,external_key,external_status,assignee,updated_at FROM tasks WHERE project_id=$1 AND status IN ('todo','in_progress','blocked')
       ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END,updated_at DESC LIMIT 15`, scope),
-    store.db.query(`SELECT id,agent_label,cli_kind,text,task_id,updated_at,session_id FROM agent_notes WHERE state='working' AND project_id IS NOT DISTINCT FROM $1 ORDER BY updated_at DESC LIMIT 20`, scope),
-    store.db.query(`SELECT id,agent_label,text,state,finish_reason,updated_at FROM agent_notes WHERE state<>'working' AND project_id IS NOT DISTINCT FROM $1 ORDER BY updated_at DESC LIMIT 10`, scope),
-    match ? Promise.resolve([]) : store.db.query("SELECT id,title,data->'folders' AS folders,data->>'jira_project_key' AS jira_project_key FROM entities WHERE kind='project' ORDER BY updated_at DESC LIMIT 30"),
+    store.db.query(`SELECT id,agent_label,cli_kind,text,task_id,updated_at,session_id FROM agent_notes WHERE state='working' AND project_id IS $1 ORDER BY updated_at DESC LIMIT 20`, scope),
+    store.db.query(`SELECT id,agent_label,text,state,finish_reason,updated_at FROM agent_notes WHERE state<>'working' AND project_id IS $1 ORDER BY updated_at DESC LIMIT 10`, scope),
+    match ? Promise.resolve([]) : store.db.query("SELECT id,title,data->'folders' AS \"folders:json\",data->>'jira_project_key' AS jira_project_key FROM entities WHERE kind='project' ORDER BY updated_at DESC LIMIT 30"),
   ])
   return {
     agent: agent ? { ...agent, label: agentLabel(agent) } : null, path,
