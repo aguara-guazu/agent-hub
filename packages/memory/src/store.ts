@@ -105,7 +105,7 @@ export class MemoryStore {
       const text = parse(z.string().trim().min(1).max(5_000_000), input.data!.text)
       const next = parse(importInput, { ...original, title: input.title ?? original.title, text, fragments: [], metadata: { ...original.metadata, ...input.data } })
       await this.updateRow(entityId, input, actor)
-      await this.ingestOriginal(next, actor)
+      await this.ingestWithinOriginals(next, actor)
       return requireEntity(this.db, entityId)
     })
   }
@@ -156,7 +156,7 @@ export class MemoryStore {
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200), offset = Math.max(input.offset ?? 0, 0)
     if (input.project_id) await requireEntity(this.db, input.project_id, 'project')
     const params = [input.kind ?? null, input.project_id ?? null, input.query ?? '', Boolean(input.unassigned), limit, offset]
-    const where = `($1 IS NULL OR e.kind=$1) AND ($2 IS NULL OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='project'))
+    const where = `e.data->>'memory_state' IS NOT 'archived' AND ($1 IS NULL OR e.kind=$1) AND ($2 IS NULL OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='project'))
       AND ($3='' OR ilike(e.title,'%' || $3 || '%') OR (e.kind='project' AND EXISTS(
         SELECT 1 FROM entities company WHERE company.id=e.data->>'company_id' AND ilike(company.title,'%' || $3 || '%'))))
       AND (NOT $4 OR (e.kind IN ('meeting','document','message','issue','note','fact','event')
@@ -235,10 +235,11 @@ export class MemoryStore {
   }
 
   async ingest(raw: unknown, actor = 'user', indexOnly = false) {
-    return this.db.withOriginals(() => this.ingestOriginal(raw, actor, indexOnly))
+    return this.db.withOriginals(() => this.ingestWithinOriginals(raw, actor, indexOnly))
   }
 
-  private async ingestOriginal(raw: unknown, actor: string, indexOnly = false) {
+  /** Internal compound writes must already hold db.withOriginals before entering a transaction. */
+  async ingestWithinOriginals(raw: unknown, actor: string, indexOnly = false) {
     const input = parse(importInput, raw)
     const parts = input.fragments.length ? input.fragments : input.kind === 'meeting' ? parseTranscript(input.text) : splitText(input.text)
     check(parts.length > 0 || input.kind === 'event', 'El contenido está vacío')

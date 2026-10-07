@@ -1,3 +1,5 @@
+import { NativeEmbeddings } from './native-embeddings.js'
+import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { type AIConfig, type Vault, localUrl } from './config.js'
@@ -17,7 +19,7 @@ export class MemoryAI {
     if (!config.embeddings_enabled) throw new MemoryError(409, 'Los embeddings locales todavía no están configurados')
     const key = JSON.stringify([config.ollama_url, config.embedding_model, text]), cached = this.queryVectors.get(key)
     if (cached && cached.expires > Date.now()) return cached.result
-    const result = await this.forJob(config, signal ?? new AbortController().signal).embed([text])
+    const result = await this.forJob(config, signal ?? new AbortController().signal).embed([text], undefined, true)
     if (this.queryVectors.size >= 50) this.queryVectors.delete(this.queryVectors.keys().next().value!)
     this.queryVectors.set(key, { result, expires: Date.now() + 60_000 })
     return result
@@ -25,15 +27,20 @@ export class MemoryAI {
   constructor(private readonly settings: () => Promise<AIConfig>, private readonly vault: Vault, private readonly fetcher: typeof fetch = fetch,
     private readonly openCode = new OpenCodeRuntime(vault.directory), private readonly signal?: AbortSignal,
     private readonly report?: AIProgress, private readonly retryDelays: readonly number[] = TRANSIENT_RETRY_DELAYS_MS,
-    private readonly cliExtraction = new CliExtractionRuntime(vault.directory)) {}
+    private readonly cliExtraction = new CliExtractionRuntime(vault.directory, { kiroApiKey: () => vault.read<{ api_key: string }>('kiro')?.api_key }),
+    private readonly nativeEmbeddings = new NativeEmbeddings(vault.directory)) {}
   /** Pin provider/privacy settings, cancellation and progress reporting for the entire job, including identities and rules. */
   forJob(config: AIConfig, signal: AbortSignal, report?: AIProgress): MemoryAI {
-    return new MemoryAI(async () => config, this.vault, this.fetcher, this.openCode, signal, report, this.retryDelays, this.cliExtraction)
+    return new MemoryAI(async () => config, this.vault, this.fetcher, this.openCode, signal, report, this.retryDelays, this.cliExtraction, this.nativeEmbeddings)
   }
   private requestSignal() { return AbortSignal.any([AbortSignal.timeout(120_000), ...(this.signal ? [this.signal] : [])]) }
-  async embed(texts: string[], signal?: AbortSignal): Promise<{ model: string; vectors: number[][] }> {
+  async embed(texts: string[], signal?: AbortSignal, query = false): Promise<{ model: string; vectors: number[][] }> {
     const config = await this.settings()
     if (!config.embeddings_enabled) throw new MemoryError(409, 'Los embeddings locales todavía no están configurados')
+    if (config.embedding_model === NATIVE_EMBEDDING_MODEL) {
+      const cancellation = AbortSignal.any([...(signal ? [signal] : []), ...(this.signal ? [this.signal] : [])])
+      return { model: config.embedding_model, vectors: await this.nativeEmbeddings.embed(texts, query, cancellation) }
+    }
     const response = await this.fetcher(`${localUrl(config.ollama_url)}/api/embed`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: config.embedding_model, input: texts, truncate: false }), signal: signal ? AbortSignal.any([this.requestSignal(), signal]) : this.requestSignal(),

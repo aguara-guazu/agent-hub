@@ -1,3 +1,4 @@
+import { tidyMemory } from './memory-maintenance.js'
 import { randomUUID } from 'node:crypto'
 import type { MemoryStore } from './store.js'
 import type { MemoryAI } from './ai.js'
@@ -63,6 +64,8 @@ export class JobRunner {
       } else if (job.kind === 'index_entities') {
         const settings = await this.settings()
         await progress(await indexEntities(this.store, this.ai.forJob(settings, controller.signal, progress), settings, controller.signal, progress))
+      } else if (job.kind === 'tidy_memory') {
+        await progress(await tidyMemory(this.store, await this.settings(), job.payload, controller.signal, progress))
       } else if (job.kind === 'dedupe_people') {
         const settings = await this.settings()
         await progress(await dedupePeople(this.store, this.ai.forJob(settings, controller.signal, progress), settings, progress, controller.signal))

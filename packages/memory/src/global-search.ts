@@ -62,9 +62,9 @@ export async function globalSearch(db: MemoryDatabase, ai: MemoryAI, raw: unknow
           AND (v.entity_id IS NULL OR v.content_hash=(SELECT md5(memory_entity_text(e.title,e.data)) FROM entities e WHERE e.id=v.entity_id))
           AND v.key IN (SELECT key FROM corpus)
         ORDER BY v.distance,v.key LIMIT 200`, [...params,queryVector(vectors[0]!),model,vectors[0]!.length])
-      const coverageQuery = db.query(`SELECT (SELECT count(*) FROM entities WHERE data->>'merged_into' IS NULL) AS entities,
+      const coverageQuery = db.query(`SELECT (SELECT count(*) FROM entities WHERE data->>'merged_into' IS NULL AND data->>'memory_state' IS NOT 'archived') AS entities,
         (SELECT count(*) FROM entity_embeddings emb JOIN entities e ON e.id=emb.entity_id WHERE emb.model=$1
-          AND emb.content_hash=md5(memory_entity_text(e.title,e.data)) AND e.data->>'merged_into' IS NULL) AS indexed_entities,
+          AND emb.content_hash=md5(memory_entity_text(e.title,e.data)) AND e.data->>'merged_into' IS NULL AND e.data->>'memory_state' IS NOT 'archived') AS indexed_entities,
         (SELECT count(*) FROM fragments f JOIN sources s ON s.current_version_id=f.version_id AND s.status='active') AS fragments,
         (SELECT count(*) FROM embeddings emb JOIN fragments f ON f.id=emb.fragment_id JOIN sources s ON s.current_version_id=f.version_id AND s.status='active' WHERE emb.model=$1) AS indexed_fragments`, [model])
       const [semantic, coverageRows] = await Promise.all([semanticQuery, coverageQuery])

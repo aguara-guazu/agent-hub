@@ -15,7 +15,7 @@ let directory: string, runtime: CliExtractionRuntime, children: ChildProcess[]
 const schema = { type: 'object', properties: { code: { type: 'string' } }, required: ['code'], additionalProperties: false }
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'memory-cli-test-')); children = []; vi.stubEnv('KIRO_API_KEY', 'fixture-key') })
 afterEach(async () => { vi.unstubAllEnvs(); await runtime?.close(); for (const child of children) child.kill('SIGKILL'); await rm(directory, { recursive: true, force: true }) })
-function setup(requestMs = 3000) {
+function setup(requestMs = 3000, kiroApiKey?: () => string | undefined) {
   const launch = vi.fn((command, args, options) => {
     expect(args.join(' ')).not.toContain('private transcript')
     expect(options.shell).toBeUndefined()
@@ -25,7 +25,7 @@ function setup(requestMs = 3000) {
     children.push(child)
     return child
   })
-  runtime = new CliExtractionRuntime(directory, { executable: provider => provider, launch, requestMs, discoveryMs: 3000 })
+  runtime = new CliExtractionRuntime(directory, { executable: provider => provider, launch, requestMs, discoveryMs: 3000, kiroApiKey })
   return launch
 }
 async function requests() { return (await readFile(join(directory, 'requests'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)) }
@@ -59,6 +59,25 @@ it('requiere la autenticación documentada para Kiro headless antes de iniciar l
   const launch = setup()
   await expect(runtime.test('kiro', 'fixture')).rejects.toMatchObject({ statusCode: 409, transient: false })
   expect(launch).not.toHaveBeenCalled()
+})
+it('recarga la clave local sin reiniciar y sólo la entrega al entorno del proceso Kiro', async () => {
+  vi.stubEnv('KIRO_API_KEY', 'ksk_old_environment')
+  const vault = new Vault(directory), workerVault = new Vault(directory)
+  const launch = setup(3000, () => workerVault.read<{ api_key: string }>('kiro')?.api_key)
+  for (const key of ['ksk_saved_first', 'ksk_saved_replacement']) {
+    vault.save('kiro', { api_key: key })
+    await runtime.test('kiro', 'fixture')
+    const call = launch.mock.calls.findLast(c => c[1].includes('--model'))!
+    expect(call[2].env.KIRO_API_KEY).toBe(key)
+    expect(call[1].join(' ')).not.toContain(key)
+    expect(await readFile(join(directory, 'requests'), 'utf8')).not.toContain(key)
+    await runtime.test('codex_cli', 'fixture')
+    expect(launch.mock.calls.at(-1)![2].env.KIRO_API_KEY).toBeUndefined()
+  }
+  vault.delete('kiro'); vi.stubEnv('KIRO_API_KEY', '')
+  const calls = launch.mock.calls.length
+  await expect(runtime.test('kiro', 'fixture')).rejects.toMatchObject({ statusCode: 409 })
+  expect(launch.mock.calls).toHaveLength(calls)
 })
 it('sólo ofrece esfuerzos documentados en Kiro si el catálogo no los informa', () => {
   expect(kiroEfforts('claude-opus-4.6')).toEqual(['low', 'medium', 'high', 'max'])

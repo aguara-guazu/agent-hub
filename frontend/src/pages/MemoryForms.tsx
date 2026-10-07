@@ -34,11 +34,19 @@ export function EntityForm({ kind, open, onClose, projectId }: { kind: string; o
 export function ImportForm({ open, onClose, projectId }: { open: boolean; onClose: () => void; projectId?: string }) {
   const navigate = useNavigate(), [title, setTitle] = useState(''), [text, setText] = useState(''), [externalId, setExternalId] = useState('')
   const [kind, setKind] = useState('meeting'), [projects, setProjects] = useState(projectId ? [projectId] : []), [occurredAt, setOccurredAt] = useState('')
+  const [attachment, setAttachment] = useState<{ filename: string; data_base64: string } | null>(null)
   const [json, setJson] = useState<unknown>(null), [fileError, setFileError] = useState<Error | null>(null)
   const ingest = useMemoryMutation<any>('import_source', result => { onClose(); navigate(`/memory/entities/${result.entity_id}`) })
+  const ingestFile = useMemoryMutation<any>('import_file', result => { onClose(); navigate(`/memory/entities/${result.entity_id}`) })
   async function load(file?: File) {
     if (!file) return
     try {
+      if (!/\.(txt|md|vtt|srt|json)$/i.test(file.name)) {
+        if (file.size > 25_000_000) throw new Error('El archivo supera 25 MB; dividilo en archivos más pequeños')
+        const encoded = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]!); reader.onerror = () => reject(new Error('No se pudo leer el archivo')); reader.readAsDataURL(file) })
+        setAttachment({ filename: file.name, data_base64: encoded }); setJson(null); setText(''); setTitle(file.name); setExternalId(''); setFileError(null); return
+      }
+      setAttachment(null)
       if (file.size > 5_000_000) throw new Error('El archivo supera 5 MB; dividilo por reunión o documento')
       const content = await file.text()
       setTitle(file.name.replace(/\.[^.]+$/, '')); setExternalId(`file:${file.name}`); setFileError(null)
@@ -46,19 +54,20 @@ export function ImportForm({ open, onClose, projectId }: { open: boolean; onClos
       else { setJson(null); setText(content) }
     } catch (error) { setFileError(error instanceof Error ? error : new Error('No se pudo leer el archivo')) }
   }
-  return <Modal open={open} onClose={onClose} title="Incorporar una fuente" busy={ingest.isPending} width={800}>
+  return <Modal open={open} onClose={onClose} title="Incorporar una fuente" busy={ingest.isPending || ingestFile.isPending} width={800}>
     <form className="memory-form" onSubmit={e => { e.preventDefault(); if (fileError) return
+      if (attachment) { ingestFile.mutate({ ...attachment, title, description: text, project_ids: projects, ...(externalId.trim() ? { external_id: externalId.trim() } : {}), ...(occurredAt ? { occurred_at: new Date(occurredAt).toISOString() } : {}) }); return }
       ingest.mutate(json ?? { kind, title, text, external_id: externalId.trim() || `manual:${crypto.randomUUID()}`, project_ids: projects,
         ...(occurredAt ? { occurred_at: new Date(occurredAt).toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } : {}) }) }}>
-      <div className="memory-drop"><strong>Transcripción, documento o fuente estructurada</strong><p>TXT, Markdown, VTT, SRT o JSON. La copia original se conserva en esta computadora.</p>
-        <input aria-label="Archivo para importar" type="file" accept=".txt,.md,.vtt,.srt,.json" onChange={e => void load(e.target.files?.[0])} /></div>
+      <div className="memory-drop"><strong>Texto, captura, audio o archivo</strong><p>TXT, Markdown, VTT, SRT y JSON como texto; imágenes, audio, video, PDF y otros archivos como adjuntos de hasta 25 MB. El original se conserva en esta computadora.</p>
+        <input aria-label="Archivo para importar" type="file" onChange={e => void load(e.target.files?.[0])} /></div>
       {json !== null ? <p className="memory-callout">Se importará el objeto JSON completo. Sus participantes, proyectos e intervenciones se validan antes de guardar.</p> : <>
         <div className="memory-form-grid"><Field label="Título"><input value={title} onChange={e => setTitle(e.target.value)} required /></Field><Field label="Tipo de fuente"><select value={kind} onChange={e => setKind(e.target.value)}><option value="meeting">Reunión</option><option value="document">Documento</option><option value="note">Nota</option></select></Field></div>
         <div className="memory-form-grid"><Field label="Fecha y hora de la reunión"><input type="datetime-local" value={occurredAt} onChange={e => setOccurredAt(e.target.value)} /></Field><Field label="Identificador de origen"><input value={externalId} onChange={e => setExternalId(e.target.value)} placeholder="Ej.: reunion-interna-2026-09-11" /><span className="field-hint">Reutilizalo para importar una versión actualizada.</span></Field></div>
         <ProjectSelect value={projects} onChange={setProjects} />
       </>}
-      <Field label={json !== null ? 'Vista previa del JSON' : 'Contenido'}><textarea rows={12} value={text} readOnly={json !== null} onChange={e => setText(e.target.value)} placeholder={'00:02 Ana: Ya validamos la integración.\n00:04 Martín: Revisamos los resultados el martes.'} required /></Field>
-      <ErrorBox error={fileError ?? ingest.error} /><div className="memory-form-actions"><button type="button" className="btn" onClick={onClose}>Cancelar</button><button className="btn btn-primary" disabled={ingest.isPending || !!fileError}>Importar fuente</button></div>
+      <Field label={attachment ? 'Descripción del archivo (para buscarlo después)' : json !== null ? 'Vista previa del JSON' : 'Contenido'}><textarea rows={12} value={text} readOnly={json !== null} onChange={e => setText(e.target.value)} placeholder={attachment ? 'Qué muestra, por qué importa y a qué tarea pertenece…' : '00:02 Ana: Ya validamos la integración.\n00:04 Martín: Revisamos los resultados el martes.'} required={!attachment} /></Field>
+      <ErrorBox error={fileError ?? ingest.error ?? ingestFile.error} /><div className="memory-form-actions"><button type="button" className="btn" onClick={onClose}>Cancelar</button><button className="btn btn-primary" disabled={ingest.isPending || ingestFile.isPending || !!fileError}>Importar fuente</button></div>
     </form>
   </Modal>
 }

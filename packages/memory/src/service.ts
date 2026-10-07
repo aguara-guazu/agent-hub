@@ -1,3 +1,5 @@
+import { NativeEmbeddings } from './native-embeddings.js'
+import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { z } from 'zod'
 import { MemoryDatabase } from './database.js'
 import { Vault, defaultAI, localUrl, type AIConfig } from './config.js'
@@ -21,6 +23,7 @@ export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepsee
     config => !isExtractionCli(config.extraction) || validCliModel(config.extraction_model),
     { message: 'Elegí un nombre de modelo válido para la CLI', path: ['extraction_model'] })
 export class MemoryService {
+  readonly nativeEmbeddings: NativeEmbeddings
   readonly vault: Vault
   readonly google: GoogleAuth
   readonly openCode: OpenCodeRuntime
@@ -29,9 +32,10 @@ export class MemoryService {
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader) {
+    this.nativeEmbeddings = new NativeEmbeddings(directory)
     this.openCode = new OpenCodeRuntime(directory)
-    this.cliExtraction = new CliExtractionRuntime(directory)
     this.vault = new Vault(directory)
+    this.cliExtraction = new CliExtractionRuntime(directory, { kiroApiKey: () => this.vault.read<{ api_key: string }>('kiro')?.api_key })
     this.google = new GoogleAuth(this.vault, redirectUrl, fetcher)
   }
   async get() {
@@ -50,7 +54,7 @@ export class MemoryService {
       throw new MemoryError(503, 'No se pudo abrir la base de memoria local')
     }
     const store = new MemoryStore(db, this.directory)
-    const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction)
+    const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp)
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher)
     this.current = { db, store, ai, operations, runner }
@@ -84,6 +88,7 @@ export class MemoryService {
   }
   async saveAI(raw: unknown, signal?: AbortSignal) {
     const config = parse(aiConfigSchema, raw)
+    if (config.embeddings_enabled && config.embedding_model === NATIVE_EMBEDDING_MODEL) check(this.nativeEmbeddings.installed(), 'Descargá EmbeddingGemma 2 antes de habilitarlo', 409)
     localUrl(config.ollama_url)
     check(new URL(config.ollama_url).protocol === 'http:' || new URL(config.ollama_url).protocol === 'https:', 'URL de Ollama inválida')
     if (config.extraction === 'opencode' && config.remote_processing_enabled) {
@@ -95,5 +100,5 @@ export class MemoryService {
     await db.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(config)])
     return config
   }
-  async close() { const current = this.current; this.current = null; await this.cliExtraction.close(); await this.openCode.close(); if (current) await current.db.close() }
+  async close() { const current = this.current; this.current = null; await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); if (current) await current.db.close() }
 }

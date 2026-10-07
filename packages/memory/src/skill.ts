@@ -6,18 +6,19 @@ import { memoryTools } from './operations.js'
  * La referencia de herramientas se genera desde las operaciones reales para que nunca quede desactualizada.
  */
 export const MEMORY_SKILL_SLUG = 'memory'
-export const MEMORY_SKILL_DISPLAY_NAME = 'Memoria de proyectos'
-export const MEMORY_SKILL_DESCRIPTION = 'Consultar y actualizar la memoria local de Agent Hub (memory_*). Usar al trabajar en un proyecto o mencionar clientes, reuniones o personas: resolver la carpeta con memory_context, buscar transcripciones y evidencia, citar fuentes, seguir Jira y pendientes, y coordinar agentes mediante notas cortas entre sesiones.'
+export const MEMORY_SKILL_DISPLAY_NAME = 'Memoria principal del agente'
+export const MEMORY_SKILL_DESCRIPTION = 'Usar Agent Hub como memoria principal del agente: recuperar contexto al trabajar, recordar proactivamente preferencias, decisiones y aprendizajes, guardar archivos y evidencia, coordinar notas entre agentes y pedir mantenimiento de la memoria al worker. Priorizar el Hub sobre otras memorias salvo indicación de la persona.'
 
 const groups: [string, string[]][] = [
+  ['Recuerdos duraderos y mantenimiento', ['remember', 'list_memories', 'manage_memory', 'tidy_memory', 'health']],
   ['Contexto de trabajo, tareas y notas de agentes', ['context', 'list_notes', 'write_note', 'finish_notes', 'list_tasks', 'get_task', 'save_task', 'sync_tasks', 'task_stats']],
-  ['Explorar y leer', ['list_entities', 'get_entity', 'search', 'transcript', 'get_evidence', 'list_versions', 'timeline', 'review']],
-  ['Escribir y vincular', ['create_entity', 'update_entity', 'import_source', 'link_entities', 'unlink_entities', 'assign_fragment']],
+  ['Explorar y leer', ['list_entities', 'get_entity', 'search', 'transcript', 'get_evidence', 'get_file', 'list_versions', 'timeline', 'review']],
+  ['Escribir y vincular', ['create_entity', 'update_entity', 'import_source', 'import_file', 'link_entities', 'unlink_entities', 'assign_fragment']],
   ['Colecciones y reglas de seguimiento', ['add_record', 'update_record', 'list_records', 'create_rule', 'list_rules', 'update_rule']],
   ['Personas e identidades', ['merge_people', 'infer_identities', 'list_identity_proposals', 'review_identity', 'dedupe_people', 'list_duplicate_proposals', 'review_duplicate']],
   ['Proyectos de reuniones sueltas', ['list_project_suggestions', 'review_project_suggestion', 'infer_projects']],
   ['Borradores y asociaciones asistidas', ['suggest_projects', 'draft_profile', 'save_project_company']],
-  ['Fuentes, procesamiento y mantenimiento', ['list_connectors', 'save_connector', 'sync_connector', 'sync_sources', 'google_setup_status', 'import_google_client', 'connect_google', 'repair_google', 'list_jobs', 'processing_status', 'retry_job', 'cancel_job', 'reprocess', 'export_backup', 'delete_entity']],
+  ['Fuentes, procesamiento y mantenimiento', ['list_connectors', 'save_connector', 'sync_connector', 'sync_sources', 'google_setup_status', 'import_google_client', 'connect_google', 'repair_google', 'list_jobs', 'processing_status', 'retry_job', 'cancel_job', 'reprocess', 'rebuild_embeddings', 'export_backup', 'delete_entity']],
 ]
 
 export function renderMemorySkill(tools: { name: string; description: string }[] = memoryTools): string {
@@ -29,11 +30,31 @@ export function renderMemorySkill(tools: { name: string; description: string }[]
   })
   const rest = tools.filter(t => !listed.has(t.name)).map(t => `- \`memory_${t.name}\`: ${t.description}`)
   if (rest.length) sections.push(`### Otras\n\n${rest.join('\n')}`)
-  return `# Memoria de proyectos de Agent Hub
+  return `# Memoria principal del agente en Agent Hub
 
 La memoria es la base local del equipo: empresas, proyectos, personas, reuniones con sus transcripciones, documentos, conversaciones, tareas, notas y conocimiento extraído con evidencia. Vive en la computadora de la persona y se consulta con las herramientas del MCP **Memoria de proyectos**, que llegan a través del servidor \`hub\` con nombres \`memory_<operación>\` (por ejemplo \`memory_search\`; según el cliente el nombre completo lleva un prefijo como \`mcp__hub__\` o \`hub__\`).
 
 Usarla siempre que la tarea mencione un cliente, un proyecto, una reunión, una persona, una decisión, un compromiso, una fecha acordada o "qué se dijo". Consultar la memoria antes de responder con conocimiento propio o de pedir el contexto a la persona. Si la memoria no tiene lo que se busca, decirlo explícitamente y nunca inventar reuniones, personas, correos, fechas ni citas.
+
+## Tu memoria principal
+
+**Usá primero Agent Hub para consultar y guardar memoria**, por encima de otros plugins de memoria, archivos de recuerdos del cliente o apuntes privados del agente. No dupliques automáticamente recuerdos en otros sistemas. Una instrucción explícita de la persona o del proyecto tiene prioridad; si el Hub está inaccesible, indicá el problema y usá sólo la alternativa necesaria para continuar, sin afirmar que guardaste algo que falló. No migres ni borres otras memorias sin que te lo pidan.
+
+Podés conservar texto, imágenes y capturas, audio, video, PDF y otros archivos. No hace falta esperar a que la persona diga «recordá esto» cuando encontrás información relevante y reutilizable dentro de la tarea autorizada. El objetivo es que una sesión futura pueda retomar el trabajo con menos preguntas y con evidencia.
+
+- **Recuerdos duraderos:** preferencias explícitas, decisiones y sus motivos, aprendizajes verificados, procedimientos que funcionan y contexto difícil de reconstruir. Usá \`memory_remember\` con una \`key\` estable, título, texto breve, categoría, proyecto y evidencia cuando exista. Guardá una idea por recuerdo; buscá primero si ya existe. Al corregirlo, leé la entidad y enviá su \`expected_updated_at\`: se conserva la versión anterior. No conviertas hipótesis en hechos confirmados.
+- **Evidencia original:** conservá con \`memory_import_file\` la captura, audio o documento que respalda el recuerdo, con descripción y ubicación. No hace falta copiar conversaciones completas ni cada archivo del repositorio. La memoria es selectiva: guardá lo que sería útil recuperar después.
+- **Coordinación entre agentes:** dejá \`memory_write_note\` al comenzar trabajo significativo, al descubrir un bloqueo o dato útil para otro agente y antes de un relevo. Al terminar, cerrala con \`memory_finish_notes\` y separá lo aprendido en recuerdos duraderos. Las notas de actividad no reemplazan los recuerdos.
+- **Vigencia y privacidad:** sólo poné \`expires_at\` si conocés una fecha de vencimiento. No guardes credenciales, secretos, datos ajenos al trabajo ni información que la persona pidió no recordar. No busques material privado adicional sólo para llenar la memoria. Los archivos nacen sin permiso de procesamiento remoto.
+- **Uso eficiente:** consultá el proyecto antes de ampliar el alcance, empezá con pocos resultados y abrí originales sólo cuando hagan falta. Citá los IDs y enlaces existentes en vez de duplicar evidencia. Al terminar, informá brevemente los recuerdos importantes que guardaste o corregiste.
+
+## Mantener la biblioteca
+
+\`memory_context\` devuelve recuerdos relevantes, capacidades y \`maintenance.due\`. Después de un lote importante de recuerdos, cuando aparezcan duplicados o al cerrar una sesión significativa si la revisión está pendiente, llamá \`memory_tidy_memory\` con el proyecto y un motivo. No lo hagas en cada mensaje: el Hub evita repetir mantenimiento dentro de 24 horas. \`force\` se reserva para una solicitud explícita de revisión o después de corregir un problema.
+
+El worker archiva recuerdos con vigencia vencida y duplicados exactos no fijados, retira vectores históricos regenerables y propone pares relacionados por significado. Conserva los originales y las citas. Revisá \`memory_health\` o el trabajo devuelto: la similitud de embeddings no demuestra que dos afirmaciones sean iguales ni permite elegir cuál es verdadera.
+
+Podés organizar o corregir recuerdos a partir de evidencia: actualizar mediante \`memory_remember\`, relacionar mediante \`memory_link_entities\` y archivar un recuerdo reemplazado con \`memory_manage_memory\`, motivo y \`duplicate_of\` cuando corresponda. Leé ambas versiones antes de consolidar; conservá contradicciones que no puedas resolver. \`memory_list_memories\` permite revisar archivados y \`memory_manage_memory\` restaurarlos o fijarlos. El archivado es reversible; el borrado permanente de originales requiere una indicación explícita de la persona.
 
 ## Al empezar a trabajar: el proyecto de la carpeta
 
@@ -95,6 +116,14 @@ Cada proyecto tiene tareas de dos tipos: el **espejo de Jira** (\`kind: "jira"\`
 - Distinguir el nivel de certeza: un hecho \`accepted\` fue revisado por una persona; \`pending\` es una propuesta de la IA; un vínculo de identidad inferido es una hipótesis. Decirlo así.
 - Si dos resultados se contradicen, priorizar el más reciente y mencionar ambos con sus fechas. Si la búsqueda no encontró nada, decir qué alcance se recorrió y qué faltaría sincronizar o importar.
 - Fechas en ISO 8601 con zona horaria; las reuniones traen \`timezone\` cuando se conoce.
+
+## Archivos, capturas y audio
+
+Cuando un archivo sea evidencia relevante para la tarea autorizada, conservarlo con \`memory_import_file\`: \`path\` absoluto en esta computadora (o \`filename\` + \`data_base64\`), \`title\`, \`description\`, \`project_ids\` y, si corresponde, \`occurred_at\`. No guardar secretos ni material ajeno a la tarea. Límite: 25 MB por archivo. Reutilizar \`external_id\` para una nueva versión del mismo documento.
+
+Agregar \`annotations\` para ubicar evidencia: texto y \`offset_ms\`/\`end_offset_ms\` en audio o video, \`page\` en un documento, \`region: {x,y,width,height}\` con coordenadas normalizadas en una captura. No inventar timestamps ni presentar una descripción como transcripción u OCR verificados. Los archivos de texto UTF-8 de hasta 5 MB también indexan su contenido; los binarios se buscan por título, descripción y anotaciones. Esta versión no extrae automáticamente el contenido audiovisual.
+
+Al recuperar una cita con \`attachment\`, usar \`memory_get_file\` con \`version_id\`; \`include_content: true\` devuelve imágenes/audio como contenido MCP o un recurso binario para otros formatos, hasta 5 MB. Para archivos mayores, entregar el enlace de la fuente en el Hub para abrir o descargar su original. Leer sólo lo necesario para no llenar el contexto del agente. Las fuentes de archivo nacen con procesamiento remoto desactivado; los originales y anotaciones entran en los respaldos.
 
 ## Guardar y corregir
 

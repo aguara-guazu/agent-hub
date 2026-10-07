@@ -1,13 +1,14 @@
+import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import type { MemoryStore } from './store.js'
 import { vector as toVector } from './database.js'
 import type { MemoryAI } from './ai.js'
 import type { AIConfig } from './config.js'
 
-const pending = `e.data->>'merged_into' IS NULL AND NOT EXISTS(SELECT 1 FROM entity_embeddings emb
+const pending = `e.data->>'memory_state' IS NOT 'archived' AND e.data->>'merged_into' IS NULL AND NOT EXISTS(SELECT 1 FROM entity_embeddings emb
   WHERE emb.entity_id=e.id AND emb.model=$1 AND emb.content_hash=md5(memory_entity_text(e.title,e.data)))`
 // Hashing every entity's text costs ~0.3 s per 50k rows in the JS UDF. Between full checks only entities
 // updated after their embedding are hashed; the periodic full check covers writes that keep updated_at.
-const pendingSinceEmbedding = `e.data->>'merged_into' IS NULL AND NOT EXISTS(SELECT 1 FROM entity_embeddings emb
+const pendingSinceEmbedding = `e.data->>'memory_state' IS NOT 'archived' AND e.data->>'merged_into' IS NULL AND NOT EXISTS(SELECT 1 FROM entity_embeddings emb
   WHERE emb.entity_id=e.id AND emb.model=$1 AND (emb.created_at>=e.updated_at OR emb.content_hash=md5(memory_entity_text(e.title,e.data))))`
 const FULL_CHECK_MS = 10 * 60_000
 let lastFullCheck = 0
@@ -40,7 +41,7 @@ export async function indexEntities(store: MemoryStore, ai: MemoryAI, config: AI
   const rows = await store.db.query(`SELECT e.id,substr(memory_entity_text(e.title,e.data),1,6000) AS text,
     md5(memory_entity_text(e.title,e.data)) AS hash FROM entities e WHERE ${pending} ORDER BY e.updated_at,e.id LIMIT 64`, [config.embedding_model])
   let indexed = 0
-  await progress({ source_title: 'Índice de búsqueda local', provider: 'ollama', model: config.embedding_model, stage: 'embeddings', embedding_total: rows.length })
+  await progress({ source_title: 'Índice de búsqueda local', provider: config.embedding_model === NATIVE_EMBEDDING_MODEL ? 'EmbeddingGemma 2' : 'ollama', model: config.embedding_model, stage: 'embeddings', embedding_total: rows.length })
   for (let offset = 0; offset < rows.length; offset += 8) {
     signal.throwIfAborted()
     const batch = rows.slice(offset, offset + 8), result = await ai.embed(batch.map(r => r.text), signal)

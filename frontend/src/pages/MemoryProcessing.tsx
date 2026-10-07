@@ -4,7 +4,7 @@ import { MemoryFrame, PageHeading, ErrorBox, Pager, formatTime, useMemory, useMe
 
 const providers: Record<string, string> = { deepseek: 'DeepSeek', ollama: 'Ollama', opencode: 'OpenCode', claude_code: 'Claude Code', codex_cli: 'Codex', kiro: 'Kiro CLI' }
 const states: Record<string, string> = { queued: 'En cola', running: 'Procesando', waiting: 'Esperando reintento', completed: 'Completado', failed: 'Falló', cancelled: 'Cancelado' }
-const stages: Record<string, string> = { identity_inference: 'Infiriendo vínculos de hablantes', project_inference: 'Buscando el proyecto de la fuente', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
+const stages: Record<string, string> = { memory_maintenance: 'Organizando recuerdos y revisando el índice', identity_inference: 'Infiriendo vínculos de hablantes', project_inference: 'Buscando el proyecto de la fuente', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
 const number = (value: number) => value.toLocaleString('es-AR')
 const projectResults: Record<string, string> = { auto_assigned: 'Proyecto asignado automáticamente con confianza alta', suggested: 'Proyecto sugerido: espera tu decisión en Proyectos', no_project: 'Sin proyecto coincidente: espera tu decisión en Proyectos' }
 
@@ -14,9 +14,9 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
   const done = p.stage === 'identity_inference' ? p.identity_batch ?? 0 : p.stage === 'dedupe_people' ? p.dedupe_batch ?? 0 : p.stage === 'extraction' ? p.batch ?? 0 : p.embeddings ?? 0
   const progress = total > 0 ? Math.min(100, Math.floor(done / total * 100)) : null
   const elapsed = p.started_at ? Math.max(0, Math.floor(((p.finished_at ? Date.parse(p.finished_at) : active ? Date.now() : Date.parse(job.updated_at)) - Date.parse(p.started_at)) / 1000)) : null
-  const title = job.kind === 'index_entities' ? 'Índice de búsqueda local' : job.kind === 'dedupe_people' ? 'Unificación de personas duplicadas' : job.source_title ?? p.source_title ?? (job.kind === 'sync' ? 'Sincronización de fuente' : job.kind === 'google_repair' ? 'Reparación de identidades' : job.kind === 'google_document' ? 'Importación de documento' : 'Fuente ya eliminada')
+  const title = job.kind === 'tidy_memory' ? 'Organización de la memoria' : job.kind === 'index_entities' ? 'Índice de búsqueda local' : job.kind === 'dedupe_people' ? 'Unificación de personas duplicadas' : job.source_title ?? p.source_title ?? (job.kind === 'sync' ? 'Sincronización de fuente' : job.kind === 'google_repair' ? 'Reparación de identidades' : job.kind === 'google_document' ? 'Importación de documento' : 'Fuente ya eliminada')
   const deepseek = p.provider ? p.provider === 'deepseek' : p.model?.startsWith('deepseek') && p.extraction !== 'not_configured'
-  const mode = job.kind === 'index_entities' || p.index_only || job.payload.index_only ? 'Sólo índice local' : deepseek ? 'DeepSeek' : providers[p.provider] ? providers[p.provider]! : job.kind === 'process' ? p.provider === 'disabled' ? 'Procesamiento local' : 'Por iniciar' : 'Google / fuente'
+  const mode = job.kind === 'tidy_memory' ? 'Mantenimiento local' : job.kind === 'index_entities' || p.index_only || job.payload.index_only ? 'Sólo índice local' : deepseek ? 'DeepSeek' : providers[p.provider] ? providers[p.provider]! : job.kind === 'process' ? p.provider === 'disabled' ? 'Procesamiento local' : 'Por iniciar' : 'Google / fuente'
   return <article className="memory-processing-card card">
     <div className="spread"><span className="badge">{mode}</span><span className={`badge ${job.state === 'completed' ? 'badge-on' : job.state === 'failed' ? 'badge-off' : 'badge-stale'}`}>{states[job.state] ?? job.state}</span></div>
     <h3>{job.entity_id ? <Link to={`/memory/entities/${job.entity_id}${job.payload.version_id ? `?version=${job.payload.version_id}` : ''}`}>{title}</Link> : title}</h3>
@@ -31,6 +31,8 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
     {p.total_batches > 0 && <p>Lotes completados: {p.batch ?? 0}/{p.total_batches}{job.state === 'running' && p.current_batch ? ` · Enviando/procesando lote ${p.current_batch}` : ''}</p>}
     {progress !== null && job.state !== 'completed' && <div className="memory-progress"><progress aria-label={`Avance de ${title}`} value={done} max={total} /><span>{progress}%</span></div>}
     {p.processed_fragments !== undefined && <p>Fragmentos: {number(p.processed_fragments)}/{number(p.total_fragments ?? 0)}</p>}
+    {p.memories_reviewed !== undefined && <p>Recuerdos revisados: {p.memories_reviewed}/{p.memories_total ?? p.memories_reviewed} · Archivados: {p.memories_archived ?? 0} · Duplicados exactos: {p.memory_duplicates ?? 0} · Vectores históricos retirados: {p.historical_vectors_removed ?? 0}</p>}
+    {p.related_memories?.length > 0 && <details><summary>{p.related_memories.length} pares de recuerdos relacionados para revisar</summary>{p.related_memories.map((pair: any) => <p key={`${pair.first_id}:${pair.second_id}`}><Link to={`/memory/entities/${pair.first_id}`}>{pair.first_title}</Link> · <Link to={`/memory/entities/${pair.second_id}`}>{pair.second_title}</Link></p>)}</details>}
     {p.identities_total !== undefined && <p>Identidades: {p.identities_completed ?? 0}/{p.identities_total} · Emails resueltos: {p.emails_resolved ?? 0}</p>}
     {p.documents_total !== undefined && <p>Documentos: {p.documents_completed ?? 0}/{p.documents_total}</p>}
     {p.dedupe_email_groups !== undefined && <p>Emails compartidos: {p.dedupe_email_merged ?? 0} perfiles unificados · {p.dedupe_email_conflicts ?? 0} conflictos · {p.dedupe_identities_applied ?? 0} inferencias de confianza alta aplicadas</p>}
@@ -50,7 +52,7 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
 export function MemoryProcessing() { return <MemoryFrame><Processing /></MemoryFrame> }
 function Processing() {
   const [state, setState] = useState(''), [offset, setOffset] = useState(0)
-  const jobs = useMemory<any>('list_jobs', { kind: 'process,dedupe_people,index_entities', ...(state ? { state } : {}), limit: 20, offset })
+  const jobs = useMemory<any>('list_jobs', { kind: 'process,dedupe_people,index_entities,tidy_memory', ...(state ? { state } : {}), limit: 20, offset })
   const overview = useMemory<any>('processing_status')
   const retry = useMemoryMutation('retry_job'), cancel = useMemoryMutation('cancel_job')
   const counts = overview.data?.states ?? {}, coverage = overview.data?.coverage

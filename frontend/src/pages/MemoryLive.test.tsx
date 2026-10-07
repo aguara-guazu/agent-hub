@@ -31,6 +31,53 @@ async function mount(page: 'project' | 'global' | 'settings') {
 }
 async function change(select: HTMLSelectElement, value: string) { await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) }); await tick() }
 
+it('Guardar queda grisado sin cambios, se habilita al editar y vuelve a grisado al guardar', async () => {
+  let persisted = { ...ai, extraction: 'opencode', extraction_model: 'fixture/a', extraction_reasoning_effort: '' }
+  const mock = installFetch({ handle: call => {
+    if (call.path === '/memory/status') return jsonResponse({ ...status, ai: persisted })
+    if (call.path === '/memory/opencode') return jsonResponse({ installed: true, models: ['a', 'b'].map(id => ({ id: `fixture/${id}`, name: `Modelo ${id}`, reasoning_efforts: ['low', 'high'] })) })
+    if (call.path === '/memory/ai') { persisted = call.body as typeof persisted; return jsonResponse(persisted) }
+    if (call.path === '/memory/call') return jsonResponse((call.body as any).operation === 'list_connectors' ? [] : { items: [], total: 0 })
+  } })
+  await mount('settings')
+  const save = () => [...container.querySelectorAll('button')].find(b => b.textContent === 'Guardar')!
+  const models = [...container.querySelectorAll('select')].find(s => s.textContent?.includes('Modelo a'))!
+  expect(container.textContent).not.toContain('Actualizar modelos')
+  expect(save().disabled).toBe(true)
+  await change(models, 'fixture/b'); expect(save().disabled).toBe(false)
+  await change(models, 'fixture/a'); expect(save().disabled).toBe(true)
+  await change(container.querySelector('[aria-label="Esfuerzo de razonamiento"]')!, 'high')
+  expect(save().disabled).toBe(false)
+  await act(async () => save().click()); await tick(); await tick()
+  expect(mock.lastCall('/memory/ai', 'PUT')?.body).toMatchObject({ extraction_model: 'fixture/a', extraction_reasoning_effort: 'high' })
+  expect(save().disabled).toBe(true)
+  expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Guardar configuración')!.disabled).toBe(true)
+})
+
+it('un guardado fallido permite reintentar y uno en curso conserva cambios posteriores', async () => {
+  let persisted = { ...ai, extraction: 'opencode', extraction_model: 'fixture/a', extraction_reasoning_effort: '' }
+  let respond: ((response: Response) => void) | undefined, submitted: typeof persisted
+  installFetch({ handle: call => {
+    if (call.path === '/memory/status') return jsonResponse({ ...status, ai: persisted })
+    if (call.path === '/memory/opencode') return jsonResponse({ installed: true, models: ['a', 'b', 'c'].map(id => ({ id: `fixture/${id}`, name: `Modelo ${id}` })) })
+    if (call.path === '/memory/ai') { submitted = call.body as typeof persisted; return new Promise<Response>(resolve => { respond = resolve }) }
+    if (call.path === '/memory/call') return jsonResponse((call.body as any).operation === 'list_connectors' ? [] : { items: [], total: 0 })
+  } })
+  await mount('settings')
+  const save = () => [...container.querySelectorAll('button')].find(b => b.textContent === 'Guardar')!
+  const models = [...container.querySelectorAll('select')].find(s => s.textContent?.includes('Modelo a'))!
+  await change(models, 'fixture/b'); await act(async () => save().click()); await tick()
+  expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Guardando…')!.disabled).toBe(true)
+  await act(async () => respond!(jsonResponse({ detail: 'No se pudo guardar' }, 500))); await tick()
+  expect(save().disabled).toBe(false)
+  await act(async () => save().click()); await tick()
+  await change(models, 'fixture/c')
+  persisted = submitted!
+  await act(async () => respond!(jsonResponse(persisted))); await tick(); await tick()
+  expect(models.value).toBe('fixture/c')
+  expect(save().disabled).toBe(false)
+})
+
 it.each(['project', 'global'] as const)('muestra escrituras externas sin salir de la vista %s ni perder su filtro', async page => {
   let externalWrite = false
   const mock = installFetch({ handle: call => {

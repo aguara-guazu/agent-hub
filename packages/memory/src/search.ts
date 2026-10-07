@@ -13,7 +13,7 @@ export async function searchMemory(db: MemoryDatabase, ai: MemoryAI, raw: unknow
   let semantic: Record<string, any>[] = [], semanticStatus = input.mode === 'text' || !input.query ? 'not_requested' : 'unavailable'
   if (input.query && input.mode !== 'text') {
     try {
-      const { model, vectors } = await ai.embed([input.query])
+      const { model, vectors } = await ai.embedQuery(input.query)
       const vector = vectors[0]!
       semantic = await db.query(`SELECT f.id,vec_distance(emb.embedding,$8) AS distance ${currentJoins}
         JOIN embeddings emb ON emb.fragment_id=f.id AND emb.model=$9 AND emb.dimension=$10
@@ -80,5 +80,5 @@ function filterSql(input: SearchInput) {
   }
 }
 export function citation(row: Record<string, any>) {
-  return { ...row, local_url: `/#/memory/entities/${row.entity_id}?version=${row.version_id}&fragment=${row.id}` }
+  return { ...row, ...(row.metadata?.attachment ? { attachment: { ...row.metadata.attachment, download_url: `/api/memory/files/${row.version_id}` }, media_position: { offset_ms: row.offset_ms, end_offset_ms: row.metadata.end_offset_ms, page: row.metadata.page, region: row.metadata.region } } : {}), local_url: `/#/memory/entities/${row.entity_id}?version=${row.version_id}&fragment=${row.id}` }
 }

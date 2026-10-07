@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
@@ -36,6 +36,31 @@ describe('memoria HTTP y gateway MCP', () => {
     expect(invalid.statusCode).toBe(422)
     const credentialDenied = await app.fastify.inject({ method: 'POST', url: '/api/memory/mcp', headers: { authorization: `Bearer ${token}` }, payload: {} })
     expect(credentialDenied.statusCode).toBe(401)
+  })
+  it('guarda, reemplaza y elimina la clave de Kiro sin exponerla a respuestas ni sesiones anónimas', async () => {
+    vi.stubEnv('KIRO_API_KEY', '')
+    const url = '/api/memory/credentials/kiro', headers = { authorization: `Bearer ${token}` }
+    for (const method of ['GET', 'PUT', 'DELETE'] as const)
+      expect((await app.fastify.inject({ method, url, ...(method === 'PUT' ? { payload: { api_key: 'private-key' } } : {}) })).statusCode).toBe(401)
+    expect((await app.fastify.inject({ method: 'GET', url, headers })).json()).toEqual({ configured: false, stored: false })
+    for (const api_key of ['ksk_private_first', 'ksk_private_replacement']) {
+      const saved = await app.fastify.inject({ method: 'PUT', url, headers, payload: { api_key: ` ${api_key} ` } })
+      expect(saved.statusCode).toBe(200); expect(saved.body).not.toContain(api_key)
+      const status = await app.fastify.inject({ method: 'GET', url, headers })
+      expect(status.json()).toEqual({ configured: true, stored: true })
+      expect(status.headers['cache-control']).toBe('no-store'); expect(status.body).not.toContain(api_key)
+      const path = join(directory, 'memory/secrets/kiro.json')
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ api_key })
+      if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600)
+      expect((await app.fastify.inject({ method: 'GET', url: '/api/memory/status', headers })).body).not.toContain(api_key)
+    }
+    expect((await app.fastify.inject({ method: 'PUT', url, headers, payload: { api_key: '  ' } })).statusCode).toBe(422)
+    expect((await app.fastify.inject({ method: 'DELETE', url, headers })).statusCode).toBe(204)
+    expect(existsSync(join(directory, 'memory/secrets/kiro.json'))).toBe(false)
+    vi.stubEnv('KIRO_API_KEY', 'ksk_environment_secret')
+    const status = await app.fastify.inject({ method: 'GET', url, headers })
+    expect(status.json()).toEqual({ configured: true, stored: false })
+    expect(status.body).not.toContain('ksk_environment_secret')
   })
   it('instala la skill de memoria de fábrica para todos los clientes, la actualiza con la app y respeta ediciones y borrados', async () => {
     const skills = await app.fastify.inject({ method: 'GET', url: '/api/catalog/skills', headers: { authorization: `Bearer ${token}` } })
@@ -84,6 +109,17 @@ describe('memoria HTTP y gateway MCP', () => {
       expect(result.isError, JSON.stringify(result)).not.toBe(true)
       const data = JSON.parse((result.content as { text: string }[])[0]!.text)
       expect(data.kind).toBe('project')
+      const imported = await client.callTool({ name: tools.find(t => t.name.endsWith('import_file'))!.name,
+        arguments: { title: 'Captura del proyecto', filename: 'capture.png', data_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jv1sAAAAASUVORK5CYII=', project_ids: [data.id] } })
+      expect(imported.isError, JSON.stringify(imported)).not.toBe(true)
+      const file = JSON.parse((imported.content as { text: string }[])[0]!.text)
+      const image = await client.callTool({ name: tools.find(t => t.name.endsWith('get_file'))!.name, arguments: { version_id: file.version_id, include_content: true } })
+      expect(image.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image', mimeType: 'image/png' })]))
+      expect((await app.fastify.inject({ method: 'GET', url: file.download_url })).statusCode).toBe(401)
+      const download = await app.fastify.inject({ method: 'GET', url: file.download_url, headers: { authorization: `Bearer ${token}` } })
+      expect(download.statusCode).toBe(200); expect(download.headers['content-type']).toBe('image/png')
+      expect(download.headers['content-disposition']).toContain('attachment;')
+      expect(download.rawPayload.subarray(0, 8)).toEqual(Buffer.from([137,80,78,71,13,10,26,10]))
       const tool = app.store.toolsOfServer(server.id).find(t => t.name === 'create_entity')!
       const disabled = await app.fastify.inject({ method: 'PUT', url: '/api/policy/rules', headers: { authorization: `Bearer ${token}` }, payload: { scope: 'user', resource_type: 'mcp_tool', resource_id: tool.id, state: 'off' } })
       expect(disabled.statusCode).toBe(204)

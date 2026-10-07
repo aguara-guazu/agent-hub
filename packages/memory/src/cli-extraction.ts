@@ -15,6 +15,8 @@ export function isExtractionCli(value: string): value is ExtractionCli { return 
 export interface CliModel { id: string; name: string; reasoning_efforts: string[] }
 export interface CliStatus { installed: boolean; models: CliModel[]; detail?: string }
 interface Options {
+  /** Resolved locally for each launch, including in an already-running worker. */
+  kiroApiKey?: () => string | undefined
   executable?: (provider: ExtractionCli) => string | undefined
   launch?: (command: string, args: string[], options: SpawnOptions) => ChildProcess
   requestMs?: number
@@ -67,6 +69,7 @@ export class CliExtractionRuntime {
   private operations = new Set<Promise<unknown>>()
   private closing = false
   constructor(private directory: string, private options: Options = {}) {}
+  private kiroApiKey(): string | undefined { return (this.options.kiroApiKey?.() || process.env.KIRO_API_KEY)?.trim() || undefined }
   async close() {
     this.closing = true
     for (const controller of this.active) controller.abort()
@@ -96,6 +99,12 @@ export class CliExtractionRuntime {
     this.active.add(lifetime)
     const combined = AbortSignal.any([lifetime.signal, AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
     const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1' }
+    // Only the Kiro child receives this secret, never argv, stdin, output or other CLIs.
+    delete (env as NodeJS.ProcessEnv).KIRO_API_KEY
+    if (provider === 'kiro') {
+      const apiKey = this.kiroApiKey()
+      if (apiKey) (env as NodeJS.ProcessEnv).KIRO_API_KEY = apiKey
+    }
     // Session markers from a parent assistant are not authentication and must not attach a new run to it.
     for (const key of ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE']) delete (env as NodeJS.ProcessEnv)[key]
     if (provider === 'claude_code' && args.includes('--effort')) delete (env as NodeJS.ProcessEnv).CLAUDE_CODE_EFFORT_LEVEL
@@ -213,7 +222,7 @@ export class CliExtractionRuntime {
     signal?.throwIfAborted()
     // Kiro documents API-key authentication as a requirement of headless mode.
     // A successful subscription login on some CLI versions is not permission to bypass it.
-    if (provider === 'kiro') check(process.env.KIRO_API_KEY?.trim(), 'Kiro CLI requiere KIRO_API_KEY para el procesamiento en segundo plano según su documentación oficial. Configurá una API key de Kiro en el entorno de Agent Hub.', 409)
+    if (provider === 'kiro') check(this.kiroApiKey(), 'Kiro CLI requiere una API key para procesar en segundo plano. Agregala en Memoria → Fuentes y ajustes → Kiro CLI → API key de Kiro.', 409)
     if (effort) {
       const cached = this.catalogs.get(provider)
       const models = cached && Date.now() - cached.at < 60_000 ? cached.models : (await this.status(provider)).models

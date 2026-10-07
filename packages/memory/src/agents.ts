@@ -1,3 +1,4 @@
+import { maintenanceStatus } from './memory-maintenance.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { check, id, parse } from './contracts.js'
@@ -147,7 +148,16 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
     store.db.query(`SELECT id,agent_label,text,state,finish_reason,updated_at FROM agent_notes WHERE state<>'working' AND project_id IS $1 ORDER BY updated_at DESC LIMIT 10`, scope),
     match ? Promise.resolve([]) : store.db.query("SELECT id,title,data->'folders' AS \"folders:json\",data->>'jira_project_key' AS jira_project_key FROM entities WHERE kind='project' ORDER BY updated_at DESC LIMIT 30"),
   ])
+  const memories = await store.db.query(`SELECT id,title,substr(data->>'text',1,1200) AS text,data->>'memory_category' AS category,
+    data->>'memory_confidence' AS confidence,data->>'memory_expires_at' AS expires_at,
+    data->>'memory_pinned' AS pinned,updated_at FROM entities WHERE data->>'agent_memory' IN (1,'true')
+      AND COALESCE(data->>'memory_state','active')='active' AND (data->>'memory_project_id' IS NULL OR data->>'memory_project_id' IS $1)
+      ORDER BY (data->>'memory_pinned') IN (1,'true') DESC,CAST(data->>'memory_importance' AS INTEGER) DESC,updated_at DESC LIMIT 8`, scope)
+  const maintenance = await maintenanceStatus(store, match?.id)
   return {
+    memories, maintenance: { due: maintenance.due, last_run: maintenance.last?.finished_at ?? null, active: maintenance.active ? { id: maintenance.active.id, state: maintenance.active.state } : null },
+    memory_capabilities: { primary_memory: true, remember: 'memory_remember', files: 'memory_import_file', retrieve_file: 'memory_get_file', tidy: 'memory_tidy_memory',
+      formats: ['text','images','screenshots','audio','video','PDF','other files'], max_file_mb: 25, binary_search: 'title, description and annotations', automatic_ocr_or_transcription: false },
     agent: agent ? { ...agent, label: agentLabel(agent) } : null, path,
     project: project ? { id: project.id, title: project.title, folder: match!.folder, status: project.data.status ?? null, description: project.data.description ?? null,
       jira_project_key: project.data.jira_project_key ?? null, jira_site_url: project.data.jira_site_url ?? null } : null,

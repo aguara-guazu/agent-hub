@@ -1,5 +1,6 @@
+import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { mkdirSync, writeFileSync, renameSync, existsSync, chmodSync } from 'node:fs'
+import { mkdirSync, writeFileSync, renameSync, existsSync, chmodSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { SecretResolver } from '@agenthub/gateway'
 import { check } from './contracts.js'
@@ -20,7 +21,7 @@ export interface AIConfig {
 }
 export const defaultAI: AIConfig = {
   extraction: 'disabled', extraction_model: 'deepseek-flash', extraction_reasoning_effort: '', embeddings_enabled: false,
-  embedding_model: 'nomic-embed-text', ollama_url: 'http://127.0.0.1:11434', remote_processing_enabled: false, identity_auto_merge: true,
+  embedding_model: NATIVE_EMBEDDING_MODEL, ollama_url: 'http://127.0.0.1:11434', remote_processing_enabled: false, identity_auto_merge: true,
   project_auto_assign: true,
 }
 
@@ -38,6 +39,7 @@ export class Vault {
     return join(this.directory, 'secrets', `${key}.json`)
   }
   has(key: string): boolean { return existsSync(this.path(key)) }
+  delete(key: string): void { rmSync(this.path(key), { force: true }) }
   read<T = Record<string, any>>(key: string): T | null {
     const path = this.path(key)
     if (!existsSync(path)) return null

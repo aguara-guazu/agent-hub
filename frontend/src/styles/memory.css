@@ -179,3 +179,18 @@
 .memory-meta code { margin-left: 6px; font-size: 11px; }
 @media(max-width:1000px) { .memory-stats, .memory-stats-8 { grid-template-columns: repeat(2,1fr); }.memory-filter-grid { grid-template-columns: repeat(2,1fr); }.memory-row-date { display: none; }.memory-column-input { grid-template-columns: 1fr 1fr; }.memory-utterance { gap: 16px; }.memory-utterance-meta { width: 115px; } }
 @media(max-width:650px) { .memory-form-grid { grid-template-columns: 1fr; }.memory-utterance { flex-direction: column; }.memory-utterance-meta { width: auto; flex-direction: row; flex-wrap: wrap; }.memory-section > .spread { flex-wrap: wrap; }.memory-evidence .spread { flex-direction: column; gap: 8px; }.memory-kind { min-width: auto; }.memory-entity-row { padding: 14px; gap: 10px; } }
+.kiro-credentials { margin: 16px 0 24px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.kiro-key-form { padding: 20px; }
+.kiro-key-form h3 { margin: 0; }
+.kiro-key-form .spread { gap: 12px; flex-wrap: wrap; }
+.kiro-guide { padding: 16px 20px; border-top: 1px solid var(--border); }
+.kiro-guide summary, .kiro-guide-photos summary { cursor: pointer; font-weight: 600; }
+.kiro-guide ol { padding-left: 22px; }
+.kiro-guide li { margin: 8px 0; line-height: 1.6; }
+.kiro-guide-photos { margin-top: 16px; }
+.kiro-guide figure { margin: 16px 0 20px; }
+.kiro-guide img { display: block; width: 100%; max-width: 760px; border: 1px solid var(--border); border-radius: 8px; }
+.kiro-guide figcaption { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+.memory-attachment-image, .memory-callout video { display: block; max-width: 100%; max-height: 560px; margin-top: 16px; object-fit: contain; }
+.memory-callout audio { display: block; width: 100%; margin-top: 16px; }
