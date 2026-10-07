@@ -23,6 +23,8 @@ function which(name) {
   try { return execFileSync(process.platform === 'win32' ? 'where' : 'which', [name], { encoding: 'utf8' }).trim().split('\n')[0] }
   catch { return null }
 }
+// Sin locale en el entorno, postgres/initdb en macOS abortan al arrancar ("postmaster became multithreaded").
+const POSTGRES_ENV = { LC_ALL: 'C' }
 function run(command, args, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: 'inherit', env: { ...process.env, ...env }, cwd: root })
@@ -47,9 +49,9 @@ async function prepare() {
     const pgCtl = which('pg_ctl'), initdb = which('initdb')
     if (!pgCtl || !initdb) throw new Error('Instalá PostgreSQL 17 y pgvector, o usá Docker')
     const data = join(directory, 'postgres')
-    if (!existsSync(join(data, 'PG_VERSION'))) await run(initdb, ['-D', data, '-U', 'agenthub', '-A', 'scram-sha-256', '--pwfile', passwordPath, '--encoding=UTF8', '--locale=C'])
+    if (!existsSync(join(data, 'PG_VERSION'))) await run(initdb, ['-D', data, '-U', 'agenthub', '-A', 'scram-sha-256', '--pwfile', passwordPath, '--encoding=UTF8', '--locale=C'], POSTGRES_ENV)
     try { execFileSync(pgCtl, ['-D', data, 'status'], { stdio: 'ignore' }) }
-    catch { await run(pgCtl, ['-D', data, '-l', join(directory, 'postgres.log'), '-o', `-p ${port} -h 127.0.0.1 -c unix_socket_directories=''`, '-w', 'start']) }
+    catch { await run(pgCtl, ['-D', data, '-l', join(directory, 'postgres.log'), '-o', `-p ${port} -h 127.0.0.1 -c unix_socket_directories=''`, '-w', 'start'], POSTGRES_ENV) }
     writeFileSync(runtimePath, JSON.stringify({ backend, pg_ctl: pgCtl, port }), { mode: 0o600 })
   } else throw new Error('Backend desconocido')
   const adminUrl = `postgresql://agenthub:${encodeURIComponent(password)}@127.0.0.1:${port}/postgres`
@@ -74,7 +76,7 @@ if (command === 'down') {
   const path = join(directory, 'runtime.json')
   if (!existsSync(path)) throw new Error('No hay un servicio administrado en ese directorio')
   const runtime = JSON.parse(readFileSync(path, 'utf8'))
-  if (runtime.backend === 'native') await run(runtime.pg_ctl, ['-D', join(directory, 'postgres'), '-m', 'fast', '-w', 'stop'])
+  if (runtime.backend === 'native') await run(runtime.pg_ctl, ['-D', join(directory, 'postgres'), '-m', 'fast', '-w', 'stop'], POSTGRES_ENV)
   else await run(runtime.docker, ['compose', '-f', runtime.compose, '-p', runtime.project ?? 'agenthub-memory', 'stop'], { AGENTHUB_MEMORY_DIR: directory, AGENTHUB_MEMORY_PORT: String(runtime.port) })
 } else {
   const url = await prepare()

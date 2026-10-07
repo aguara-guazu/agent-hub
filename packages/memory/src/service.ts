@@ -55,10 +55,12 @@ export class MemoryService {
       const worker = (await db.query("SELECT value FROM settings WHERE key='worker'"))[0]?.value ?? null
       const [sources] = await db.query('SELECT count(*)::int AS count,max(synced_at) AS last_import FROM sources')
       const [pending] = await db.query("SELECT count(*)::int AS count FROM jobs WHERE state IN ('queued','running','waiting')")
-      return { ready: true, ...configuration, counts: Object.fromEntries(counts.map(r => [r.kind, r.count])), sources, pending_jobs: pending?.count ?? 0,
+      return { ready: true, state: 'ready' as const, ...configuration, counts: Object.fromEntries(counts.map(r => [r.kind, r.count])), sources, pending_jobs: pending?.count ?? 0,
         worker, ai: await this.aiSettings() }
     } catch (error) {
-      return { ready: false, ...configuration, counts: {}, pending_jobs: 0, ai: defaultAI,
+      // `unavailable`: hay una base configurada que no responde; la consola no debe tratarla como memoria nueva.
+      const state = configuration.database_configured ? 'unavailable' as const : 'unconfigured' as const
+      return { ready: false, state, ...configuration, counts: {}, pending_jobs: 0, ai: defaultAI,
         detail: error instanceof MemoryError ? error.message : 'La memoria local no está disponible' }
     }
   }

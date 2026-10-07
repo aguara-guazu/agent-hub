@@ -34,10 +34,17 @@ export function MemoryFrame({ children, setup = false }: { children: ReactNode; 
   const status = useMemoryStatus()
   return <div className="memory-page"><MemoryNav /><ErrorBox error={status.error} retry={status.refetch} />
     {!setup && status.isPending ? <div className="hub-loading" role="status">Conectando con tu memoria…</div>
+      : !setup && status.data?.state === 'unavailable' ? <MemoryUnavailable detail={status.data.detail} retry={() => void status.refetch()} />
       : !setup && !status.data?.ready ? <div className="memory-welcome card"><div className="hub-eyebrow">MEMORIA LOCAL</div><h1>Un lugar para el contexto de tus proyectos</h1>
         <p>Reuniones, personas y documentos conectados, con acceso a la fuente de cada dato.</p><p className="muted">{status.data?.detail}</p><Link className="btn btn-primary" to="/memory/sources">Preparar memoria</Link></div>
         : children}
   </div>
+}
+export function MemoryUnavailable({ detail, retry }: { detail?: string; retry: () => void }) {
+  return <div className="memory-welcome card" role="alert"><div className="hub-eyebrow">MEMORIA LOCAL</div><h1>La memoria no responde</h1>
+    <p>Los datos siguen guardados en esta computadora. Agent Hub vuelve a intentar iniciar la base de forma automática.</p>
+    {detail && <p className="muted">{detail}</p>}<p className="muted">Si el problema continúa, el detalle está en <code>memory/postgres.log</code>, dentro de la carpeta de datos de Agent Hub.</p>
+    <button className="btn btn-primary" onClick={retry}>Reintentar</button></div>
 }
 export function PageHeading({ title, description, children }: { title: string; description?: string; children?: ReactNode }) {
   return <div className="hub-heading"><div><div className="hub-eyebrow">TU MEMORIA DE TRABAJO</div><h1>{title}</h1>{description && <p>{description}</p>}</div><div className="hub-actions">{children}</div></div>
