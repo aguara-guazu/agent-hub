@@ -7,6 +7,7 @@ import { MemoryDatabase, vector } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
 import { OpenCodeRuntime } from '../src/opencode.js'
+import type { CliExtractionRuntime } from '../src/cli-extraction.js'
 import { spawn } from 'node:child_process'
 import { MemoryError } from '../src/contracts.js'
 import { MemoryAI } from '../src/ai.js'
@@ -224,7 +225,7 @@ describe('memoria con SQLite', () => {
     expect((await operations.call('list_identity_proposals', {})).total).toBe(0)
   })
 
-  it.each(['deepseek', 'opencode'] as const)('respeta exclusiones remotas de %s y no vuelve a proponer vínculos descartados', async extraction => {
+  it.each(['deepseek', 'opencode', 'claude_code', 'codex_cli', 'kiro'] as const)('respeta exclusiones remotas de %s y no vuelve a proponer vínculos descartados', async extraction => {
     const { meeting, event, source, mockAI } = await identityFixture()
     const privateProject = await store.create({ kind: 'project', title: 'Privado', data: { remote_processing: false } })
     await store.link({ from_id: event.entity_id, to_id: privateProject.id, type: 'project' })
@@ -445,7 +446,7 @@ describe('memoria con SQLite', () => {
     expect((await store.list({ kind: 'fact' })).total).toBe(1)
   })
 
-  it.each(['deepseek', 'opencode'] as const)('no envía contenido a %s cuando un proyecto relacionado lo excluye', async extraction => {
+  it.each(['deepseek', 'opencode', 'claude_code', 'codex_cli', 'kiro'] as const)('no envía contenido a %s cuando un proyecto relacionado lo excluye', async extraction => {
     const project = await store.create({ kind: 'project', title: 'Proyecto privado', data: { remote_processing: false } })
     const source = await store.ingest({ kind: 'document', title: 'NDA', external_id: 'private', text: 'Contenido privado', project_ids: [project.id] })
     const config = { ...defaultAI, extraction, remote_processing_enabled: true }
@@ -471,10 +472,10 @@ describe('memoria con SQLite', () => {
     expect((await db.query('SELECT * FROM rule_runs')).length).toBe(1)
   })
 
-  it('procesa automáticamente una transcripción nueva con OpenCode y conserva hechos, reglas y evidencias', async () => {
+  it.each(['opencode', 'claude_code', 'codex_cli', 'kiro'] as const)('procesa automáticamente una transcripción nueva con %s y conserva hechos, reglas y evidencias', async extraction => {
     const collection = await store.create({ kind: 'collection', title: 'Hallazgos', data: { fields: [{ key: 'text', label: 'Texto', type: 'text' }] } })
     await operations.call('create_rule', { name: 'Hallazgos', collection_id: collection.id, instructions: 'Guardar el hallazgo.' })
-    const config = { ...defaultAI, extraction: 'opencode' as const, extraction_model: 'fixture/chat', remote_processing_enabled: true }
+    const config = { ...defaultAI, extraction, extraction_model: 'fixture/chat', remote_processing_enabled: true }
     const extract = vi.fn(async (model: string, _system: string, content: any, schema: any, signal: AbortSignal) => {
       expect(signal.aborted).toBe(false)
       const evidence_ids = [content.fragments[0].id]
@@ -484,14 +485,15 @@ describe('memoria con SQLite', () => {
         : { facts: [{ category: 'finding', text: 'Solicitan una demo.', evidence_ids, project_ids: [] }] }
       return { value, usage: { model, input_tokens: 10, output_tokens: 5 } }
     })
-    const model = new MemoryAI(async () => defaultAI, vault, fetch, { extract } as unknown as OpenCodeRuntime)
+    const cli = { extract: async (provider: string, ...args: Parameters<typeof extract>) => { expect(provider).toBe(extraction); return extract(...args) } } as unknown as CliExtractionRuntime
+    const model = new MemoryAI(async () => defaultAI, vault, fetch, { extract } as unknown as OpenCodeRuntime, undefined, undefined, undefined, cli)
     const runner = new JobRunner(store, model, vault, new GoogleAuth(vault, 'http://127.0.0.1/callback'), async () => config)
     const input = { kind: 'meeting', title: 'Nueva reunión', external_id: 'auto-opencode', text: 'Solicitan una demo.' }
     const source = await store.ingest(input)
     expect((await operations.call('list_jobs', { state: 'queued' })).total).toBe(1)
     await runner.once(new AbortController().signal)
     const jobs = await operations.call('list_jobs', { kind: 'process' })
-    expect(jobs.items[0]).toMatchObject({ state: 'completed', progress: { provider: 'opencode', model: 'fixture/chat', extracted: 1 } })
+    expect(jobs.items[0]).toMatchObject({ state: 'completed', progress: { provider: extraction, model: 'fixture/chat', extracted: 1 } })
     const facts = await store.list({ kind: 'fact' })
     const finding = facts.items.find(f => f.data.category === 'finding')!
     expect(finding.data).toMatchObject({ category: 'finding', review_state: 'pending', model: 'fixture/chat' })

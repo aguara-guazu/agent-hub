@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { MemoryService } from './service.js'
+import { extractionClis, validCliModel } from './cli-extraction.js'
 import { memoryTools } from './operations.js'
 import { constantEqual } from './config.js'
 import { check, id, MemoryError, parse } from './contracts.js'
@@ -55,7 +56,24 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     try { return await service.openCode.test(model, controller.signal) }
     finally { reply.raw.off('close', abort) }
   })
-  app.put('/api/memory/ai', { preHandler: auth }, request => service.saveAI(request.body))
+  app.get('/api/memory/extraction-cli/:provider', { preHandler: auth }, request => {
+    const { provider } = parse(z.object({ provider: z.enum(extractionClis) }), request.params)
+    return service.cliExtraction.status(provider)
+  })
+  app.post('/api/memory/extraction-cli/:provider/test', { preHandler: auth }, async (request, reply) => {
+    const { provider } = parse(z.object({ provider: z.enum(extractionClis) }), request.params)
+    const { model } = parse(z.object({ model: z.string().refine(validCliModel) }).strict(), request.body)
+    const controller = new AbortController(), abort = () => controller.abort()
+    reply.raw.once('close', abort)
+    try { return await service.cliExtraction.test(provider, model, controller.signal) }
+    finally { reply.raw.off('close', abort) }
+  })
+  app.put('/api/memory/ai', { preHandler: auth }, async (request, reply) => {
+    const controller = new AbortController(), abort = () => controller.abort()
+    reply.raw.once('close', abort)
+    try { return await service.saveAI(request.body, controller.signal) }
+    finally { reply.raw.off('close', abort) }
+  })
   app.put('/api/memory/credentials/:key', { preHandler: auth }, async request => {
     const { key } = request.params as { key: string }
     if (key === 'google-client') {

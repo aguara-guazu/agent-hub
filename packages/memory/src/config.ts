@@ -3,9 +3,10 @@ import { mkdirSync, writeFileSync, renameSync, existsSync, chmodSync } from 'nod
 import { join } from 'node:path'
 import { SecretResolver } from '@agenthub/gateway'
 import { check } from './contracts.js'
+import { isExtractionCli, type ExtractionCli } from './cli-extraction.js'
 
 export interface AIConfig {
-  extraction: 'disabled' | 'deepseek' | 'ollama' | 'opencode'
+  extraction: 'disabled' | 'deepseek' | 'ollama' | 'opencode' | ExtractionCli
   extraction_model: string
   embeddings_enabled: boolean
   embedding_model: string
@@ -24,7 +25,7 @@ export const defaultAI: AIConfig = {
 
 /** OpenCode can route any model to a remote endpoint; keep source/project exclusions conservative. */
 export function usesRemoteExtraction(config: AIConfig): boolean {
-  return config.extraction === 'deepseek' || config.extraction === 'opencode'
+  return config.extraction === 'deepseek' || config.extraction === 'opencode' || isExtractionCli(config.extraction)
 }
 
 /** Secret files are private, atomic, outside the repository and excluded from exports. */

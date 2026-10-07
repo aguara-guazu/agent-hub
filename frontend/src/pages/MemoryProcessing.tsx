@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { MemoryFrame, PageHeading, ErrorBox, Pager, formatTime, useMemory, useMemoryMutation } from '../lib/memory'
 
+const providers: Record<string, string> = { deepseek: 'DeepSeek', ollama: 'Ollama', opencode: 'OpenCode', claude_code: 'Claude Code', codex_cli: 'Codex', kiro: 'Kiro CLI' }
 const states: Record<string, string> = { queued: 'En cola', running: 'Procesando', waiting: 'Esperando reintento', completed: 'Completado', failed: 'Falló', cancelled: 'Cancelado' }
 const stages: Record<string, string> = { identity_inference: 'Infiriendo vínculos de hablantes', project_inference: 'Buscando el proyecto de la fuente', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
 const number = (value: number) => value.toLocaleString('es-AR')
@@ -15,12 +16,12 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
   const elapsed = p.started_at ? Math.max(0, Math.floor(((p.finished_at ? Date.parse(p.finished_at) : active ? Date.now() : Date.parse(job.updated_at)) - Date.parse(p.started_at)) / 1000)) : null
   const title = job.kind === 'index_entities' ? 'Índice de búsqueda local' : job.kind === 'dedupe_people' ? 'Unificación de personas duplicadas' : job.source_title ?? p.source_title ?? (job.kind === 'sync' ? 'Sincronización de fuente' : job.kind === 'google_repair' ? 'Reparación de identidades' : job.kind === 'google_document' ? 'Importación de documento' : 'Fuente ya eliminada')
   const deepseek = p.provider ? p.provider === 'deepseek' : p.model?.startsWith('deepseek') && p.extraction !== 'not_configured'
-  const mode = job.kind === 'index_entities' || p.index_only || job.payload.index_only ? 'Sólo índice local' : deepseek ? 'DeepSeek' : p.provider === 'opencode' ? 'OpenCode' : p.provider === 'ollama' ? 'Ollama' : job.kind === 'process' ? p.provider === 'disabled' ? 'Procesamiento local' : 'Por iniciar' : 'Google / fuente'
+  const mode = job.kind === 'index_entities' || p.index_only || job.payload.index_only ? 'Sólo índice local' : deepseek ? 'DeepSeek' : providers[p.provider] ? providers[p.provider]! : job.kind === 'process' ? p.provider === 'disabled' ? 'Procesamiento local' : 'Por iniciar' : 'Google / fuente'
   return <article className="memory-processing-card card">
     <div className="spread"><span className="badge">{mode}</span><span className={`badge ${job.state === 'completed' ? 'badge-on' : job.state === 'failed' ? 'badge-off' : 'badge-stale'}`}>{states[job.state] ?? job.state}</span></div>
     <h3>{job.entity_id ? <Link to={`/memory/entities/${job.entity_id}${job.payload.version_id ? `?version=${job.payload.version_id}` : ''}`}>{title}</Link> : title}</h3>
     <p>{job.error ?? stages[p.stage] ?? 'Esperando al worker'}</p>
-    {p.model && ['DeepSeek','Ollama','OpenCode'].includes(mode) && <span className="muted">Modelo: {p.model}</span>}
+    {p.model && Object.values(providers).includes(mode) && <span className="muted">Modelo: {p.model}</span>}
     {(p.identity_only || job.payload.identity_only) && <p>Resolución de identidades</p>}
     {(p.projects_only || job.payload.projects_only) && <p>Búsqueda de proyecto</p>}
     {p.provider_retry && job.state === 'running' && <p className="memory-inline-error">{p.provider_error} Reintento {p.provider_retry}/{p.provider_retries} a las {new Date(p.provider_retry_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}.</p>}

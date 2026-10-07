@@ -99,3 +99,28 @@ it.each([true, false])('prueba el modelo de OpenCode y limpia el resultado al ca
   expect(container.textContent).not.toContain(message)
   expect(mock.calls.some(c => c.path === '/memory/ai')).toBe(false)
 })
+
+it.each([['claude_code', 'Claude Code'], ['codex_cli', 'Codex'], ['kiro', 'Kiro CLI']])('configura %s con modelos consultados y prueba en segundo plano', async (provider, label) => {
+  const path = `/memory/extraction-cli/${provider}`
+  const mock = installFetch({ handle: call => {
+    if (call.path === '/memory/status') return jsonResponse(status)
+    if (call.path === path) return jsonResponse({ installed: true, models: [{ id: 'fixture', name: 'Modelo de la cuenta' }] })
+    if (call.path === `${path}/test`) return jsonResponse({ ok: true, model: 'fixture', resolved_model: 'fixture' })
+    if (call.path === '/memory/ai') return jsonResponse(call.body)
+    if (call.path === '/memory/call') return jsonResponse((call.body as any).operation === 'list_connectors' ? [] : { items: [], total: 0 })
+  } })
+  await mount('settings')
+  await change(container.querySelector<HTMLSelectElement>('select')!, provider!)
+  expect(container.textContent).toContain(`No necesitás abrir ${label}`)
+  const models = [...container.querySelectorAll('select')].find(s => s.textContent?.includes('Modelo de la cuenta'))!
+  await change(models, 'fixture')
+  await act(async () => { [...container.querySelectorAll('button')].find(b => b.textContent === 'Probar modelo')!.click() }); await tick()
+  expect(mock.lastCall(`${path}/test`, 'POST')?.body).toEqual({ model: 'fixture' })
+  expect(container.textContent).toContain('Modelo verificado')
+  const permission = [...container.querySelectorAll('label')].find(l => l.textContent?.includes('Permitir enviar fragmentos'))!.querySelector('input')!
+  await act(async () => { permission.click() }); await tick()
+  await act(async () => { models.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await tick()
+  expect(mock.lastCall('/memory/ai', 'PUT')?.body).toMatchObject({ extraction: provider, extraction_model: 'fixture', remote_processing_enabled: true })
+  await change(container.querySelector<HTMLSelectElement>('select')!, 'opencode')
+  expect(container.textContent).not.toContain('Modelo verificado')
+})

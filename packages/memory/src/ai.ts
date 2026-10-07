@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { type AIConfig, type Vault, localUrl } from './config.js'
 import { OpenCodeRuntime } from './opencode.js'
+import { CliExtractionRuntime, isExtractionCli } from './cli-extraction.js'
 import { check, MemoryError, parse } from './contracts.js'
 
 export interface AIUsage { input_tokens: number; output_tokens: number; model: string }
@@ -23,10 +24,11 @@ export class MemoryAI {
   }
   constructor(private readonly settings: () => Promise<AIConfig>, private readonly vault: Vault, private readonly fetcher: typeof fetch = fetch,
     private readonly openCode = new OpenCodeRuntime(vault.directory), private readonly signal?: AbortSignal,
-    private readonly report?: AIProgress, private readonly retryDelays: readonly number[] = TRANSIENT_RETRY_DELAYS_MS) {}
+    private readonly report?: AIProgress, private readonly retryDelays: readonly number[] = TRANSIENT_RETRY_DELAYS_MS,
+    private readonly cliExtraction = new CliExtractionRuntime(vault.directory)) {}
   /** Pin provider/privacy settings, cancellation and progress reporting for the entire job, including identities and rules. */
   forJob(config: AIConfig, signal: AbortSignal, report?: AIProgress): MemoryAI {
-    return new MemoryAI(async () => config, this.vault, this.fetcher, this.openCode, signal, report, this.retryDelays)
+    return new MemoryAI(async () => config, this.vault, this.fetcher, this.openCode, signal, report, this.retryDelays, this.cliExtraction)
   }
   private requestSignal() { return AbortSignal.any([AbortSignal.timeout(120_000), ...(this.signal ? [this.signal] : [])]) }
   async embed(texts: string[], signal?: AbortSignal): Promise<{ model: string; vectors: number[][] }> {
@@ -81,6 +83,11 @@ export class MemoryAI {
     const messages = [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(content) }]
     let output: string, usage: AIUsage
     this.signal?.throwIfAborted()
+    if (isExtractionCli(config.extraction)) {
+      check(config.remote_processing_enabled, 'El procesamiento remoto está desactivado', 409)
+      const result = await this.cliExtraction.extract(config.extraction, config.extraction_model, system, content, z.toJSONSchema(schema), this.signal)
+      return { value: decode ? decode(result.value) : parse(schema, result.value), usage: result.usage }
+    }
     if (config.extraction === 'opencode') {
       check(config.remote_processing_enabled, 'El procesamiento remoto está desactivado', 409)
       const result = await this.openCode.extract(config.extraction_model, system, content, z.toJSONSchema(schema), this.signal)

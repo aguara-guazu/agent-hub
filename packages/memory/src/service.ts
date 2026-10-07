@@ -6,24 +6,29 @@ import { MemoryOperations } from './operations.js'
 import { MemoryAI } from './ai.js'
 import { GoogleAuth } from './google-auth.js'
 import { OpenCodeRuntime } from './opencode.js'
+import { CliExtractionRuntime, extractionClis, isExtractionCli, validCliModel } from './cli-extraction.js'
 import { JobRunner } from './jobs.js'
 import { check, MemoryError, parse } from './contracts.js'
 import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
 
-export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode']), extraction_model: z.string().min(1).max(200),
+export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode', ...extractionClis]), extraction_model: z.string().min(1).max(200),
   embeddings_enabled: z.boolean(), embedding_model: z.string().min(1).max(200), ollama_url: z.url(), remote_processing_enabled: z.boolean(),
   identity_auto_merge: z.boolean().default(true), project_auto_assign: z.boolean().default(true) }).strict().refine(
     config => config.extraction !== 'opencode' || /^[^/\s]+\/\S+$/.test(config.extraction_model),
-    { message: 'Elegí un modelo de OpenCode con formato proveedor/modelo', path: ['extraction_model'] })
+    { message: 'Elegí un modelo de OpenCode con formato proveedor/modelo', path: ['extraction_model'] }).refine(
+    config => !isExtractionCli(config.extraction) || validCliModel(config.extraction_model),
+    { message: 'Elegí un nombre de modelo válido para la CLI', path: ['extraction_model'] })
 export class MemoryService {
   readonly vault: Vault
   readonly google: GoogleAuth
   readonly openCode: OpenCodeRuntime
+  readonly cliExtraction: CliExtractionRuntime
   private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader) {
     this.openCode = new OpenCodeRuntime(directory)
+    this.cliExtraction = new CliExtractionRuntime(directory)
     this.vault = new Vault(directory)
     this.google = new GoogleAuth(this.vault, redirectUrl, fetcher)
   }
@@ -43,7 +48,7 @@ export class MemoryService {
       throw new MemoryError(503, 'No se pudo abrir la base de memoria local')
     }
     const store = new MemoryStore(db, this.directory)
-    const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode)
+    const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction)
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp)
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher)
     this.current = { db, store, ai, operations, runner }
@@ -75,16 +80,18 @@ export class MemoryService {
     const row = (await db.query("SELECT value FROM settings WHERE key='ai'"))[0]
     return { ...defaultAI, ...row?.value }
   }
-  async saveAI(raw: unknown) {
+  async saveAI(raw: unknown, signal?: AbortSignal) {
     const config = parse(aiConfigSchema, raw)
     localUrl(config.ollama_url)
     check(new URL(config.ollama_url).protocol === 'http:' || new URL(config.ollama_url).protocol === 'https:', 'URL de Ollama inválida')
     if (config.extraction === 'opencode' && config.remote_processing_enabled) {
-      await this.openCode.test(config.extraction_model)
+      await this.openCode.test(config.extraction_model, signal)
     }
+    if (isExtractionCli(config.extraction) && config.remote_processing_enabled) await this.cliExtraction.test(config.extraction, config.extraction_model, signal)
+    signal?.throwIfAborted()
     const { db } = await this.get()
     await db.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(config)])
     return config
   }
-  async close() { const current = this.current; this.current = null; await this.openCode.close(); if (current) await current.db.close() }
+  async close() { const current = this.current; this.current = null; await this.cliExtraction.close(); await this.openCode.close(); if (current) await current.db.close() }
 }
