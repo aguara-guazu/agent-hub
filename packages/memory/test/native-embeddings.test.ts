@@ -13,7 +13,7 @@ vi.mock('node:worker_threads', () => ({ Worker: class extends EventEmitter {
   terminated = false
   messages: any[] = []
   constructor(_url: URL, public options: any) { super(); workers.push(this) }
-  postMessage(value: any) { this.messages.push(value) }
+  postMessage(value: any) { this.messages.push(value); if (value.shutdown) queueMicrotask(() => this.emit('message', { type: 'stopped' })) }
   async terminate() { this.terminated = true; return 0 }
 } }))
 let directory: string, runtime: NativeEmbeddings
@@ -39,6 +39,7 @@ it('descarga sólo por acción explícita y no marca listo hasta completar la ca
   expect(runtime.installed()).toBe(false)
   artifacts(); workers[0].emit('message', { type: 'ready' }); await tick()
   expect(runtime.status().state).toBe('ready'); expect(workers[0].terminated).toBe(true)
+  expect(workers[0].messages).toContainEqual({ shutdown: true })
   rmSync(join(runtime.cache, EMBEDDING_REPOSITORY, EMBEDDING_REVISION, 'tokenizer.json'))
   expect(runtime.installed()).toBe(false)
 })
@@ -71,6 +72,7 @@ it('separa consultas y documentos, usa el caché sin red y cancela la inferencia
   await tick(); expect(worker.messages[1]).toEqual({ texts: ['Acta'], query: false })
   controller.abort(); await rejection
   expect(worker.terminated).toBe(true); expect(fetcher).not.toHaveBeenCalled()
+  expect(worker.messages).not.toContainEqual({ shutdown: true })
   expect(embeddingInput('consulta', true)).toBe('task: search result | query: consulta')
   expect(embeddingInput('documento', false)).toBe('title: none | text: documento')
 })

@@ -41,8 +41,8 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
   await progress({ entity_id: source.entity_id, source_title: source.title, version_id: versionId, provider: config.extraction,
     model: config.extraction_model, total_fragments: fragments.length, stage: 'preparing' })
   let embeddings = 0, extracted = 0, inputTokens = 0, outputTokens = 0, extractionRejected = 0, dedupeNeeded = false
-  const extractionAllowed = config.extraction !== 'disabled' && (!usesRemoteExtraction(config) || (config.remote_processing_enabled && allowedRemote))
-  const extractionState = config.extraction === 'disabled' ? 'not_configured' : extractionAllowed ? 'processed' : 'disabled_for_source'
+  const extractionAllowed = !!config.extraction_model && config.extraction !== 'disabled' && (!usesRemoteExtraction(config) || (config.remote_processing_enabled && allowedRemote))
+  const extractionState = !config.extraction_model || config.extraction === 'disabled' ? 'not_configured' : extractionAllowed ? 'processed' : 'disabled_for_source'
   if (options.projectsOnly) {
     const inferred = extractionAllowed ? await inferProject(store, ai, source, fragments, config, usesRemoteExtraction(config), progress, signal) : { project_inference: extractionState }
     return { stage: 'complete', ...inferred, extraction: extractionState }

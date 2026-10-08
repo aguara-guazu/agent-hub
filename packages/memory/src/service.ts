@@ -1,3 +1,4 @@
+import { MemoryDefaults, DEFAULTS_KEY } from './defaults.js'
 import { MediaRuntime } from './media-runtime.js'
 import { NativeEmbeddings } from './native-embeddings.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
@@ -15,15 +16,18 @@ import { check, MemoryError, parse } from './contracts.js'
 import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
 import { reasoningEffortSchema } from './reasoning.js'
 
-export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode', ...extractionClis]), extraction_model: z.string().min(1).max(200),
+export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode', ...extractionClis]), extraction_model: z.string().max(200),
   extraction_reasoning_effort: reasoningEffortSchema,
   embeddings_enabled: z.boolean(), embedding_model: z.string().min(1).max(200), ollama_url: z.url(), remote_processing_enabled: z.boolean(),
   identity_auto_merge: z.boolean().default(true), project_auto_assign: z.boolean().default(true) }).strict().refine(
-    config => config.extraction !== 'opencode' || /^[^/\s]+\/\S+$/.test(config.extraction_model),
+    config => config.extraction !== 'opencode' || (!config.extraction_model && !config.remote_processing_enabled) || /^[^/\s]+\/\S+$/.test(config.extraction_model),
     { message: 'Elegí un modelo de OpenCode con formato proveedor/modelo', path: ['extraction_model'] }).refine(
-    config => !isExtractionCli(config.extraction) || validCliModel(config.extraction_model),
-    { message: 'Elegí un nombre de modelo válido para la CLI', path: ['extraction_model'] })
+    config => !isExtractionCli(config.extraction) || (!config.extraction_model && !config.remote_processing_enabled) || validCliModel(config.extraction_model),
+    { message: 'Elegí un nombre de modelo válido para la CLI', path: ['extraction_model'] }).refine(
+    config => config.extraction === 'disabled' || !config.remote_processing_enabled || !!config.extraction_model.trim(),
+    { message: 'Elegí un modelo antes de habilitar el procesamiento', path: ['extraction_model'] })
 export class MemoryService {
+  readonly defaults = new MemoryDefaults(this)
   readonly media: MediaRuntime
   readonly nativeEmbeddings: NativeEmbeddings
   readonly vault: Vault
@@ -78,7 +82,7 @@ export class MemoryService {
       const [sources] = await db.query('SELECT count(*) AS count,max(synced_at) AS last_import FROM sources')
       const [pending] = await db.query("SELECT count(*) AS count FROM jobs WHERE state IN ('queued','running','waiting')")
       return { ready: true, state: 'ready' as const, ...configuration, counts: Object.fromEntries(counts.map(r => [r.kind, r.count])), sources, pending_jobs: pending?.count ?? 0,
-        worker, ai: await this.aiSettings() }
+        worker, ai: await this.aiSettings(), defaults: await this.defaults.status() }
     } catch (error) {
       return { ready: false, state: 'unavailable' as const, ...configuration, counts: {}, pending_jobs: 0, ai: defaultAI,
         detail: error instanceof MemoryError ? error.message : 'La memoria local no está disponible' }
@@ -100,8 +104,17 @@ export class MemoryService {
     if (isExtractionCli(config.extraction) && config.remote_processing_enabled) await this.cliExtraction.test(config.extraction, config.extraction_model, signal, config.extraction_reasoning_effort)
     signal?.throwIfAborted()
     const { db } = await this.get()
-    await db.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(config)])
+    let changedEmbedding = false
+    await db.transaction(async sql => {
+      const previous = (await sql.query("SELECT value FROM settings WHERE key='ai'"))[0]?.value
+      changedEmbedding = !!previous && (previous.embedding_model !== config.embedding_model || previous.embeddings_enabled !== config.embeddings_enabled)
+      if (changedEmbedding)
+        await sql.query("UPDATE settings SET value=json_set(value,'$.embedding_state','custom') WHERE key=$1", [DEFAULTS_KEY])
+      await sql.query("UPDATE settings SET value=json_set(value,'$.provider_state','preserved') WHERE key=$1", [DEFAULTS_KEY])
+      await sql.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(config)])
+    })
+    if (changedEmbedding && config.embedding_model !== NATIVE_EMBEDDING_MODEL) await this.nativeEmbeddings.cancelInstall()
     return config
   }
-  async close() { const current = this.current; this.current = null; await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); if (current) await current.db.close() }
+  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) await current.db.close() }
 }

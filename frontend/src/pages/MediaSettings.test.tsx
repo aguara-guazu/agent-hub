@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { installFetch, jsonResponse, setupDom } from '../test-utils'
 import { MediaSettings } from './MediaSettings'
 let root: Root, container: HTMLDivElement, client: QueryClient
-const settings = { ocr: false, transcription: false, vision: false, audio: false, automatic: true, language: 'es' }
+const settings = { pdf: true, ocr: false, transcription: false, vision: false, audio: false, automatic: true, language: 'es' }
 const modules = Object.fromEntries(['ocr','decoder','speech','vision','audio'].map(name => [name, { state: 'missing' }]))
 beforeEach(() => { setupDom(); vi.useFakeTimers(); container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }) })
 afterEach(() => { act(() => root.unmount()); client.clear(); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals() })
@@ -23,7 +23,7 @@ it('descarga sólo por acción explícita y guarda únicamente cuando hay cambio
   await mount(); expect(button('Guardar').disabled).toBe(true); expect(mock.callsTo('/memory/media/ocr/install')).toHaveLength(0)
   await act(async () => button('Descargar módulo').click()); await tick()
   expect(mock.callsTo('/memory/media/ocr/install')).toHaveLength(1)
-  await act(async () => container.querySelector<HTMLInputElement>('input[type=checkbox]')!.click()); await tick()
+  await act(async () => [...container.querySelectorAll<HTMLLabelElement>('label')].find(l => l.textContent?.includes('Reconocer texto'))!.querySelector<HTMLInputElement>('input')!.click()); await tick()
   expect(button('Guardar').disabled).toBe(false)
   await act(async () => button('Guardar').click()); await tick()
   expect(saved).toEqual({ ...settings, ocr: true }); expect(button('Guardar').disabled).toBe(true)
@@ -33,8 +33,8 @@ it('muestra progreso, permite cancelar y conserva cambios cuando guardar falla',
   await mount(); expect(container.querySelector('progress')!.value).toBe(32)
   await act(async () => button('Cancelar descarga').click()); await tick()
   expect(mock.callsTo('/memory/media/speech/cancel')).toHaveLength(1)
-  await act(async () => container.querySelector<HTMLInputElement>('input[type=checkbox]')!.click()); await tick()
+  await act(async () => [...container.querySelectorAll<HTMLLabelElement>('label')].find(l => l.textContent?.includes('Reconocer texto'))!.querySelector<HTMLInputElement>('input')!.click()); await tick()
   await act(async () => button('Guardar').click()); await tick()
-  expect(container.textContent).toContain('Descargá OCR primero'); expect(container.querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(true)
+  expect(container.textContent).toContain('Descargá OCR primero'); expect([...container.querySelectorAll<HTMLLabelElement>('label')].find(l => l.textContent?.includes('Reconocer texto'))!.querySelector<HTMLInputElement>('input')!.checked).toBe(true)
   expect(button('Guardar').disabled).toBe(false)
 })

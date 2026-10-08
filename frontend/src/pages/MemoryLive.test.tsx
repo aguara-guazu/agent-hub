@@ -31,6 +31,25 @@ async function mount(page: 'project' | 'global' | 'settings') {
 }
 async function change(select: HTMLSelectElement, value: string) { await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) }); await tick() }
 
+it('refleja la preparación automática sin perder una edición pendiente', async () => {
+  let persisted = { ...ai }
+  installFetch({ handle: call => {
+    if (call.path === '/memory/status') return jsonResponse({ ...status, ai: persisted })
+    if (call.path === '/memory/call') return jsonResponse((call.body as any).operation === 'list_connectors' ? [] : { items: [], total: 0 })
+  } })
+  await mount('settings')
+  persisted = { ...persisted, extraction: 'deepseek', embeddings_enabled: true, embedding_model: 'embeddinggemma-2-native-q8-v1' }
+  await tick(10_100)
+  const provider = container.querySelector<HTMLSelectElement>('select')!
+  expect(provider.value).toBe('deepseek')
+  expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Guardar configuración')!.disabled).toBe(true)
+  await change(provider, 'disabled')
+  persisted = { ...persisted, extraction_model: 'new-account-model' }
+  await tick(10_100)
+  expect(provider.value).toBe('disabled')
+  expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Guardar configuración')!.disabled).toBe(false)
+})
+
 it('Guardar queda grisado sin cambios, se habilita al editar y vuelve a grisado al guardar', async () => {
   let persisted = { ...ai, extraction: 'opencode', extraction_model: 'fixture/a', extraction_reasoning_effort: '' }
   const mock = installFetch({ handle: call => {
@@ -174,14 +193,15 @@ it.each([['claude_code', 'Claude Code'], ['codex_cli', 'Codex'], ['kiro', 'Kiro 
 
 it.each(['claude_code', 'codex_cli', 'kiro', 'opencode'])('prueba y guarda el esfuerzo de %s; lo reinicia al cambiar de modelo o proveedor', async provider => {
   const path = provider === 'opencode' ? '/memory/opencode' : `/memory/extraction-cli/${provider}`
+  let savedStatus = status
   const mock = installFetch({ handle: call => {
-    if (call.path === '/memory/status') return jsonResponse(status)
+    if (call.path === '/memory/status') return jsonResponse(savedStatus)
     if (call.path === path) return jsonResponse({ installed: true, models: [
       { id: 'fixture/chat', name: 'Modelo con esfuerzo', reasoning_efforts: ['low', 'high'] },
       { id: 'fixture/other', name: 'Modelo sin esfuerzo', reasoning_efforts: [] },
     ] })
     if (call.path === `${path}/test`) return jsonResponse({ ok: true, model: 'fixture/chat' })
-    if (call.path === '/memory/ai') return jsonResponse(call.body)
+    if (call.path === '/memory/ai') { savedStatus = { ...savedStatus, ai: call.body as typeof status.ai }; return jsonResponse(call.body) }
     if (call.path === '/memory/call') return jsonResponse((call.body as any).operation === 'list_connectors' ? [] : { items: [], total: 0 })
   } })
   await mount('settings')

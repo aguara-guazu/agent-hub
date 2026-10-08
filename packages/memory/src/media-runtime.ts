@@ -1,3 +1,5 @@
+import { pdfPages } from './pdf.js'
+import { splitText } from './transcript.js'
 import { execFile } from 'node:child_process'
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -9,7 +11,7 @@ import { check, MemoryError, parse } from './contracts.js'
 import { NativeEmbeddings } from './native-embeddings.js'
 import { MediaAssets } from './media-assets.js'
 
-export const mediaSettingsInput = z.object({ ocr: z.boolean().default(false), transcription: z.boolean().default(false),
+export const mediaSettingsInput = z.object({ pdf: z.boolean().default(true), ocr: z.boolean().default(false), transcription: z.boolean().default(false),
   vision: z.boolean().default(false), audio: z.boolean().default(false), language: z.enum(['es','en','pt','fr','de','it','ja','zh','ko','ru','ar','hi']).default('es'), automatic: z.boolean().default(true) }).strict()
 export type MediaSettings = z.infer<typeof mediaSettingsInput>
 export const MEDIA_MODULES = ['ocr','decoder','vision','audio','speech'] as const
@@ -61,7 +63,18 @@ export class MediaRuntime {
     }
     let directory: string | undefined
     try {
-      if (input.mime_type.startsWith('image/')) {
+      if (input.mime_type === 'application/pdf') {
+        for await (const page of pdfPages(input.data, { vision: settings.vision, ocr: settings.ocr }, signal)) {
+          await report({ stage: 'pdf', media_page: page.page, media_pages: page.count })
+          for (const chunk of splitText(page.text)) parts.push({ text: chunk.text, metadata: { generated: 'pdf_text', processor: 'pdfium-2.1.13', page: page.page, page_count: page.count, source_text: true } })
+          if (page.needsOCR && page.image) {
+            const from = parts.length; await ocr(Buffer.from(page.image))
+            for (const part of parts.slice(from)) Object.assign(part.metadata, { page: page.page, page_count: page.count })
+          }
+          if (settings.vision && page.image) parts.push({ text: `Contenido visual de la página ${page.page}`, metadata: { generated: 'media', modality: 'pdf_page', media_embedding: true, page: page.page, page_count: page.count }, vector: await this.vision.embedMedia({ kind: 'image', image: page.image }, signal) })
+          if (!page.text && !settings.vision && !settings.ocr) warnings.push(`Página ${page.page} sin texto extraíble. Activá OCR o el encoder visual para incluir su contenido.`)
+        }
+      } else if (input.mime_type.startsWith('image/')) {
         if (settings.ocr) { await report({ stage: 'ocr' }); await ocr(input.data) }
         if (settings.vision) { await report({ stage: 'media_embeddings' }); parts.push({ text: 'Contenido visual del archivo', metadata: { generated: 'media', modality: 'image', media_embedding: true }, vector: await this.vision.embedMedia({ kind: 'image', image: input.data }, signal) }) }
       } else if (input.mime_type.startsWith('audio/') || input.mime_type.startsWith('video/')) {

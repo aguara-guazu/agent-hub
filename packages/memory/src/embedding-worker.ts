@@ -39,7 +39,8 @@ if (workerData.checkRuntime) {
     parentPort!.postMessage({ type: 'validating' })
     await transcriber(new Float32Array(16000), { max_new_tokens: 8, language: 'es' })
     parentPort!.postMessage({ type: 'ready' })
-    parentPort!.on('message', async ({ audio, language }) => {
+    parentPort!.on('message', async ({ audio, language, shutdown }) => {
+      if (shutdown) { await model.dispose(); parentPort!.postMessage({ type: 'stopped' }); parentPort!.close(); return }
       try { parentPort!.postMessage({ type: 'result', result: await transcriber(audio, { language, return_timestamps: true, task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 }) }) }
       catch (error) { failure(error) }
     })
@@ -79,7 +80,8 @@ if (workerData.checkRuntime) {
     if (profile === 'vision') await embedMedia({ kind: 'image', image: await sharp({ create: { width: 96, height: 96, channels: 3, background: 'white' } }).png().toBuffer() })
     if (profile === 'audio') await embedMedia({ kind: 'audio', audio: new Float32Array(16000) })
     parentPort!.postMessage({ type: 'ready' })
-    parentPort!.on('message', async ({ texts, query, media }) => {
+    parentPort!.on('message', async ({ texts, query, media, shutdown }) => {
+      if (shutdown) { await model.dispose(); parentPort!.postMessage({ type: 'stopped' }); parentPort!.close(); return }
       try { parentPort!.postMessage({ type: 'result', vectors: media ? [await embedMedia(media)] : await embed(texts, query) }) }
       catch (error) { failure(error) }
     })

@@ -1,6 +1,8 @@
 # EmbeddingGemma 2 dentro de Agent Hub
 
-En **Memoria → Fuentes y ajustes → Motor de embeddings**, seleccioná **EmbeddingGemma 2 integrado** y pulsá **Descargar modelo**. La descarga de texto ocupa aproximadamente 350 MB. Cuando diga **Listo para usar**, activá **Habilitar embeddings locales** y guardá.
+En el primer arranque, el Hub descarga automáticamente **EmbeddingGemma 2 integrado** (unos 350 MB de pesos de texto), lo prueba y habilita la búsqueda local. El progreso, la cancelación y el reintento están en **Memoria → Fuentes y ajustes → Motor de embeddings**. Si falla la descarga, muestra el error y espera un reintento; si la cancelás, permanece pausada al reiniciar.
+
+Al actualizar desde una versión anterior también se prepara Gemma. La configuración y el índice anteriores siguen activos hasta que el modelo está listo; entonces se cambia a Gemma y se programa la regeneración local. Se conservan los originales, las extracciones y los vectores anteriores. Una elección manual posterior tiene prioridad y no se vuelve a reemplazar en cada arranque. Ollama sigue disponible como opción de compatibilidad. Las revisiones del modelo se fijan y verifican con cada versión del Hub; no se ejecutan pesos arbitrarios de «latest».
 
 El Hub genera los vectores localmente y reconstruye el índice en segundo plano. No requiere Ollama, Python, un servidor de inferencia, una cuenta ni API key. La primera descarga necesita acceso a Hugging Face y sus servidores de archivos; las consultas posteriores funcionan sin conexión. Los textos y consultas no forman parte de la descarga.
 
@@ -21,3 +23,9 @@ El cambio de modelo también detecta automáticamente el material pendiente. Los
 - Carga bajo demanda y liberación tras un minuto sin actividad. RAM y latencia dependen del equipo y de la longitud del texto; la descarga en disco no representa el consumo total de memoria.
 
 Los [módulos multimedia](media-processing.md) amplían la búsqueda con los encoders visual y sonoro del mismo modelo, en un espacio compartido de 768 dimensiones. Se descargan y activan por separado. Los [adjuntos](memory-files.md), sus versiones y citas permanecen disponibles aunque se desactive un módulo. Los vectores de imagen, video y audio conservan su modalidad al regenerar el índice; nunca se sustituyen por el embedding del texto descriptivo.
+
+## Proveedor de extracción inicial
+
+Si no hay configuración guardada, el Hub detecta ejecutables locales en este orden: **Claude Code → Codex → OpenCode → Kiro → Ollama → DeepSeek por API**. Selecciona un modelo anunciado por el proveedor, prefiriendo el marcado como predeterminado cuando está disponible. Si falta autenticación o no hay modelos disponibles, pide completar la configuración: no inventa un nombre de modelo ni cambia de proveedor durante un trabajo. Para Ollama debe haber un modelo de generación instalado.
+
+Las configuraciones existentes conservan su proveedor. **Usar proveedor recomendado** vuelve a aplicar la detección, limpia el modelo y esfuerzo anteriores y deja desactivado el procesamiento remoto. La selección inicial tampoco autoriza envíos: las cuentas, claves y permisos se configuran como antes. DeepSeek queda seleccionado sólo si no se encontró ninguno de los programas anteriores; requiere una clave y habilitar el procesamiento.

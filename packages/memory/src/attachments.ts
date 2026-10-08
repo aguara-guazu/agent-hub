@@ -1,3 +1,4 @@
+import { pdfPreview } from './pdf.js'
 import { createHash } from 'node:crypto'
 import { open } from 'node:fs/promises'
 import { constants } from 'node:fs'
@@ -21,7 +22,7 @@ export const importFileInput = z.object({
   external_id: z.string().min(1).max(1024).optional(), project_ids: z.array(id).max(100).default([]),
   occurred_at: instant.optional(), annotations: z.array(annotation).max(2000).default([]),
 }).strict().refine(v => Boolean(v.path) !== (v.data_base64 !== undefined), 'Enviá una ruta local o contenido base64, no ambos')
-export const getFileInput = z.object({ version_id: id, include_content: z.boolean().default(false) }).strict()
+export const getFileInput = z.object({ version_id: id, page: z.number().int().min(1).max(200).optional(), include_content: z.boolean().default(false) }).strict()
 
 export function fileMime(data: Buffer, name = ''): string {
   if (data.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return 'image/png'
@@ -88,8 +89,15 @@ export async function readFileAttachment(store: MemoryStore, versionId: string) 
   const name = parse(filename, file.filename)
   return { data, filename: name, mime_type: fileMime(data, name), size: data.length, sha256: file.sha256 as string }
 }
-export async function getFile(store: MemoryStore, raw: unknown) {
+export async function getFile(store: MemoryStore, raw: unknown, signal?: AbortSignal) {
   const input = parse(getFileInput, raw), { data, ...file } = await readFileAttachment(store, input.version_id)
+  if (input.page !== undefined) {
+    check(file.mime_type === 'application/pdf', 'La selección de página sólo corresponde a un PDF')
+    const preview = await pdfPreview(data, input.page, signal)
+    check(!input.include_content || preview.data.length <= 5_000_000, 'La página supera 5 MB; usá su enlace de descarga')
+    return { ...file, version_id: input.version_id, source_sha256: file.sha256, sha256: createHash('sha256').update(preview.data).digest('hex'), page: preview.page, pages: preview.pages, mime_type: 'image/png', filename: `${file.filename}.page-${input.page}.png`, size: preview.data.length,
+      download_url: `/api/memory/files/${input.version_id}/pages/${input.page}`, ...(input.include_content ? { data_base64: preview.data.toString('base64') } : {}) }
+  }
   check(!input.include_content || data.length <= 5_000_000, 'Para archivos de más de 5 MB usá la descarga del original')
   return { ...file, version_id: input.version_id, download_url: `/api/memory/files/${input.version_id}`,
     ...(input.include_content ? { data_base64: data.toString('base64') } : {}) }

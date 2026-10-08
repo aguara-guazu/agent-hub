@@ -12,14 +12,14 @@ export async function mediaSettings(store: MemoryStore): Promise<MediaSettings> 
 }
 function processingKey(settings: MediaSettings) { const { automatic: _automatic, ...features } = settings; return hash({ revision: MEDIA_REVISION, ...features }) }
 function applicable(mime: string, settings: MediaSettings) {
-  return mime.startsWith('image/') ? settings.ocr || settings.vision
+  return mime === 'application/pdf' ? settings.pdf : mime.startsWith('image/') ? settings.ocr || settings.vision
     : mime.startsWith('audio/') ? settings.transcription || settings.audio
       : mime.startsWith('video/') && (settings.ocr || settings.vision || settings.transcription || settings.audio)
 }
 export async function queueMedia(store: MemoryStore, raw: unknown, automatic = false) {
   const input = parse(processFilesInput, raw), settings = await mediaSettings(store)
   if (automatic && !settings.automatic) return { queued: 0 }
-  check(automatic || settings.ocr || settings.transcription || settings.vision || settings.audio, 'Activá el procesamiento multimedia desde Memoria → Fuentes y ajustes', 409)
+  check(automatic || settings.pdf || settings.ocr || settings.transcription || settings.vision || settings.audio, 'Activá el procesamiento multimedia desde Memoria → Fuentes y ajustes', 409)
   const key = processingKey(settings)
   const sources = await store.db.query(`SELECT s.current_version_id,v.metadata FROM sources s JOIN versions v ON v.id=s.current_version_id
     WHERE s.status='active' AND v.metadata->'attachment' IS NOT NULL AND ($1 IS NULL OR v.id=$1)`, [input.version_id ?? null])
@@ -71,6 +71,7 @@ export async function processMedia(store: MemoryStore, runtime: MediaRuntime, pa
         ON CONFLICT(fragment_id,model) DO UPDATE SET embedding=excluded.embedding,created_at=now()`, [fragment.id,NATIVE_EMBEDDING_MODEL,vector(embedding)])
     }
     return { stage: 'complete', entity_id: saved.entity_id, version_id: saved.version_id, generated_parts: parts.length, media_warnings: result.warnings,
+      pdf_pages: Math.max(0, ...result.parts.map(p => Number(p.metadata.page_count) || 0)), pdf_text_parts: result.parts.filter(p => p.metadata.generated === 'pdf_text').length,
       ocr_parts: result.parts.filter(p => p.metadata.generated === 'ocr').length, transcription_parts: result.parts.filter(p => p.metadata.generated === 'transcription').length,
       media_embeddings: result.parts.filter(p => p.vector).length }
   }))

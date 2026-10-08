@@ -124,9 +124,20 @@ export class NativeEmbeddings {
   private async stop(error = new Error('El motor de embeddings se cerró')) {
     clearTimeout(this.idle)
     clearTimeout(this.stalled)
-    const worker = this.worker; this.worker = undefined; this.loaded = false
+    const worker = this.worker, graceful = this.loaded && !this.pending; this.worker = undefined; this.loaded = false
     if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(error); this.pending = undefined }
-    if (worker) { worker.removeAllListeners(); await worker.terminate() }
+    if (worker) {
+      worker.removeAllListeners()
+      // Release ONNX sessions before terminating an idle worker. Forced cancellation stays immediate.
+      if (graceful) await new Promise<void>(resolve => {
+        const finish = () => { clearTimeout(timer); resolve() }
+        const timer = setTimeout(finish, 5000)
+        worker.once('error', finish); worker.once('exit', finish)
+        worker.on('message', message => { if (message.type === 'stopped') finish() })
+        try { worker.postMessage({ shutdown: true }) } catch { finish() }
+      })
+      worker.removeAllListeners(); await worker.terminate()
+    }
   }
   async close() { this.closed = true; await this.stop(); await this.queue }
 }

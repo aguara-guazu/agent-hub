@@ -12,7 +12,7 @@ export const extractionClis = ['claude_code', 'codex_cli', 'kiro'] as const
 export type ExtractionCli = typeof extractionClis[number]
 export const cliLabels: Record<ExtractionCli, string> = { claude_code: 'Claude Code', codex_cli: 'Codex', kiro: 'Kiro CLI' }
 export function isExtractionCli(value: string): value is ExtractionCli { return extractionClis.includes(value as ExtractionCli) }
-export interface CliModel { id: string; name: string; reasoning_efforts: string[] }
+export interface CliModel { default?: boolean; id: string; name: string; reasoning_efforts: string[] }
 export interface CliStatus { installed: boolean; models: CliModel[]; detail?: string }
 interface Options {
   /** Resolved locally for each launch, including in an already-running worker. */
@@ -177,7 +177,7 @@ export class CliExtractionRuntime {
             if (event.type !== 'control_response' || event.response?.request_id !== 'models') return
             const data = event.response?.response
             check(event.response.subtype === 'success' && Array.isArray(data?.models), 'Actualizá Claude Code para consultar sus modelos.', 409)
-            for (const model of data.models) models.push({ id: model.resolvedModel ?? model.value, name: model.displayName ?? model.value,
+            for (const model of data.models) models.push({ default: model.value === 'default' || model.isDefault === true, id: model.resolvedModel ?? model.value, name: model.displayName ?? model.value,
               reasoning_efforts: model.supportsEffort ? effortLevels(model.supportedEffortLevels) : [] })
             done()
           }, timeout)
@@ -190,7 +190,7 @@ export class CliExtractionRuntime {
             if (event.id !== id) return
             check(Array.isArray(event.result?.data), 'Codex devolvió un catálogo de modelos incompatible.', 502)
             for (const model of event.result.data) if (!model.hidden && (!model.inputModalities || model.inputModalities.includes('text')))
-              models.push({ id: model.model ?? model.id, name: model.displayName ?? model.model ?? model.id,
+              models.push({ default: model.isDefault === true, id: model.model ?? model.id, name: model.displayName ?? model.model ?? model.id,
                 reasoning_efforts: effortLevels(model.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort)) })
             if (event.result.nextCursor) {
               check(++pages < 100, 'Codex no terminó de listar sus modelos.', 502)

@@ -22,7 +22,7 @@ import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput,
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
-  process_files: ['Procesar imágenes, audio y video con OCR, transcripción y embeddings locales según Ajustes. Sin version_id recorre los archivos actuales; force vuelve a analizarlos conservando versiones. Seguir progreso con list_jobs.', processFilesInput],
+  process_files: ['Procesar PDF por páginas, imágenes, audio y video con OCR, transcripción y embeddings locales según Ajustes. Sin version_id recorre los archivos actuales; force vuelve a analizarlos conservando versiones. Seguir progreso con list_jobs.', processFilesInput],
   suggest_projects: ['Buscar proyectos por nombre, empresa y significado para preseleccionar una asociación. No guarda vínculos.', suggestProjectsInput],
   draft_profile: ['Generar un borrador de empresa o descripción de proyecto con evidencia de sus fuentes. No guarda cambios: requiere revisión humana.', draftProfileInput],
   save_project_company: ['Asociar una empresa existente o crear y asociar una empresa después de revisar el borrador.', saveProjectCompanyInput],
@@ -37,7 +37,7 @@ const definitions = {
   tidy_memory: ['Pedir al worker mantenimiento local: revisar vigencias explícitas, consolidar duplicados exactos, detectar pares relacionados por embeddings y retirar vectores históricos regenerables. Conserva originales y citas. Evita repetir dentro de 24 h salvo force.', tidyInput],
   health: ['Ver último mantenimiento, recomendaciones de recuerdos relacionados y si corresponde pedir otra revisión al worker.', maintenanceStatusInput],
   import_file: ['Guardar un archivo local (ruta absoluta) o base64 de hasta 25 MB: capturas, imágenes, audio, video, PDF y otros adjuntos. Agregar descripción y anotaciones con offset_ms, end_offset_ms, page o region. El original se conserva sin enviarlo a proveedores. OCR, transcripción e indexación audiovisual se realizan localmente si sus módulos están activados en Ajustes.', importFileInput],
-  get_file: ['Recuperar el archivo de una versión: metadatos y enlace de descarga; include_content devuelve contenido hasta 5 MB, como imagen o audio cuando el cliente lo admite.', getFileInput],
+  get_file: ['Recuperar el archivo de una versión: metadatos y enlace de descarga; page permite recuperar una página PDF como imagen. include_content devuelve contenido hasta 5 MB, como imagen o audio cuando el cliente lo admite.', getFileInput],
   import_source: ['Importar una fuente con original e intervenciones. IDs externos estables evitan duplicados.', importInput],
   search: ['Buscar texto y significado dentro de fuentes importadas. Sin query, recorre exhaustivamente los filtros.', searchInput],
   transcript: ['Leer intervenciones de una versión de fuente; filtrar por persona o proyecto.', z.object({ entity_id: id, version_id: id.optional(), person_id: id.optional(), project_id: id.optional(), ...page }).strict()],
@@ -153,7 +153,7 @@ export class MemoryOperations {
       case 'health': return maintenanceStatus(store, input.project_id)
       case 'process_files': return queueMedia(store, input)
       case 'import_file': return importFile(store, input, author)
-      case 'get_file': return getFile(store, input)
+      case 'get_file': return getFile(store, input, signal)
       case 'import_source': return store.ingest(input, actor)
       case 'search': return searchMemory(db, this.ai, input)
       case 'transcript': return store.fragments(input.entity_id, input)

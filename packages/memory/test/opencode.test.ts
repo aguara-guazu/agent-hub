@@ -122,14 +122,14 @@ it('cancelar durante el backoff impide otra llamada al proveedor', async () => {
 it('conserva la configuración anterior si el modelo falla la prueba antes de guardar', async () => {
   const service = new MemoryService(directory, 'http://127.0.0.1/callback')
   const query = vi.fn().mockResolvedValue([])
-  vi.spyOn(service, 'get').mockResolvedValue({ db: { query } } as any)
+  vi.spyOn(service, 'get').mockResolvedValue({ db: { query, transaction: (fn: (sql: any) => Promise<unknown>) => fn({ query }) } } as any)
   const test = vi.spyOn(service.openCode, 'test').mockRejectedValue(new MemoryError(409, 'Acceso rechazado'))
   const config = { ...defaultAI, extraction: 'opencode', extraction_model: model, remote_processing_enabled: true }
   await expect(service.saveAI(config)).rejects.toThrow('Acceso rechazado')
   expect(query).not.toHaveBeenCalled()
   test.mockResolvedValue({ model, ok: true })
   expect(await service.saveAI(config)).toEqual(config)
-  expect(query).toHaveBeenCalledTimes(1)
+  expect(query.mock.calls.some(([sql]) => sql.startsWith("INSERT INTO settings(key,value) VALUES('ai'"))).toBe(true)
 })
 it('usa una sesión nueva y JSON validado cuando el modelo sólo acepta tool_choice auto', async () => {
   setup()

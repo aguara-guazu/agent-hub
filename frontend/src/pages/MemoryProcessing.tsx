@@ -4,7 +4,7 @@ import { MemoryFrame, PageHeading, ErrorBox, Pager, formatTime, useMemory, useMe
 
 const providers: Record<string, string> = { deepseek: 'DeepSeek', ollama: 'Ollama', opencode: 'OpenCode', claude_code: 'Claude Code', codex_cli: 'Codex', kiro: 'Kiro CLI' }
 const states: Record<string, string> = { queued: 'En cola', running: 'Procesando', waiting: 'Esperando reintento', completed: 'Completado', failed: 'Falló', cancelled: 'Cancelado' }
-const stages: Record<string, string> = { ocr: 'Reconociendo texto en imágenes', transcription: 'Transcribiendo audio localmente', media_decode: 'Leyendo audio y video', media_embeddings: 'Generando embeddings multimedia', memory_maintenance: 'Organizando recuerdos y revisando el índice', identity_inference: 'Infiriendo vínculos de hablantes', project_inference: 'Buscando el proyecto de la fuente', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
+const stages: Record<string, string> = { pdf: 'Leyendo PDF por páginas', ocr: 'Reconociendo texto en imágenes', transcription: 'Transcribiendo audio localmente', media_decode: 'Leyendo audio y video', media_embeddings: 'Generando embeddings multimedia', memory_maintenance: 'Organizando recuerdos y revisando el índice', identity_inference: 'Infiriendo vínculos de hablantes', project_inference: 'Buscando el proyecto de la fuente', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
 const number = (value: number) => value.toLocaleString('es-AR')
 const projectResults: Record<string, string> = { auto_assigned: 'Proyecto asignado automáticamente con confianza alta', suggested: 'Proyecto sugerido: espera tu decisión en Proyectos', no_project: 'Sin proyecto coincidente: espera tu decisión en Proyectos' }
 
@@ -31,6 +31,8 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
     {p.total_batches > 0 && <p>Lotes completados: {p.batch ?? 0}/{p.total_batches}{job.state === 'running' && p.current_batch ? ` · Enviando/procesando lote ${p.current_batch}` : ''}</p>}
     {progress !== null && job.state !== 'completed' && <div className="memory-progress"><progress aria-label={`Avance de ${title}`} value={done} max={total} /><span>{progress}%</span></div>}
     {p.media_seconds !== undefined && <p>Audio: {Math.floor(p.media_seconds)} / {Math.ceil(p.media_duration_seconds ?? 0)} segundos</p>}
+    {p.media_page !== undefined && <p>PDF: página {p.media_page} / {p.media_pages}</p>}
+    {p.pdf_pages > 0 && <p>PDF: {p.pdf_pages} páginas · {p.pdf_text_parts ?? 0} fragmentos de texto</p>}
     {p.media_frame !== undefined && <p>Video: {p.media_frame} / {p.media_frames} fotogramas</p>}
     {p.generated_parts !== undefined && <p>OCR: {p.ocr_parts ?? 0} fragmentos · Transcripción: {p.transcription_parts ?? 0} segmentos · Embeddings multimedia: {p.media_embeddings ?? 0}</p>}
     {p.media_warnings?.map((warning: string) => <p key={warning}>{warning}</p>)}

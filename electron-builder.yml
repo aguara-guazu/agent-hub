@@ -20,6 +20,7 @@ files:
   - desktop/dist/**/*
   - desktop/assets/icon.png
   - desktop/assets/icon.icns
+  - desktop/assets/licenses/**/*
   - frontend/dist/**/*
   - packages/*/package.json
   - packages/*/dist/**/*
