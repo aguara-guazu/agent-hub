@@ -18,6 +18,13 @@ import { syncNotion } from './connectors/notion.js'
 import { syncSlack } from './connectors/slack.js'
 import { syncJira } from './connectors/jira.js'
 
+/** Whole-memory passes that rewrite people, identities or vectors: they start alone and nothing starts next to them. */
+const EXCLUSIVE_KINDS = ['dedupe_people', 'google_repair', 'tidy_memory']
+/** One running job per kind: a global pass, or local OCR/transcription engines shared by every job. */
+const SINGLE_KINDS = ['index_entities', 'media']
+/** Embedding-only jobs wait on the single local embedding engine; more of them would only hold slots extraction can use. */
+const MAX_EMBEDDING_ONLY_JOBS = 2
+
 export class JobRunner {
   readonly workerId = randomUUID()
   constructor(private store: MemoryStore, private ai: MemoryAI, private vault: Vault, private google: GoogleAuth,
@@ -38,9 +45,28 @@ export class JobRunner {
   }
 
   async once(signal: AbortSignal): Promise<boolean> {
-    const job = (await this.store.db.query(`UPDATE jobs SET state='running',lease_owner=$1,lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','+3 minutes'),attempts=attempts+1,updated_at=now()
-      WHERE id=(SELECT id FROM jobs WHERE state IN ('queued','waiting') AND available_at<=now() ORDER BY created_at LIMIT 1) RETURNING *`, [this.workerId]))[0]
-    if (!job) return false
+    const job = await this.claim()
+    return job ? this.run(job, signal) : false
+  }
+
+  /** Takes the oldest available job that can run next to the ones already running (see the kind lists above). */
+  async claim(): Promise<Record<string, any> | undefined> {
+    return (await this.store.db.query(`UPDATE jobs SET state='running',lease_owner=$1,lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','+3 minutes'),attempts=attempts+1,updated_at=now()
+      WHERE id=(SELECT j.id FROM jobs j WHERE j.state IN ('queued','waiting') AND j.available_at<=now()
+        AND NOT EXISTS(SELECT 1 FROM jobs r WHERE r.state='running' AND (
+          r.kind IN (SELECT value FROM json_each($2)) OR j.kind IN (SELECT value FROM json_each($2))
+          OR (r.kind=j.kind AND j.kind IN (SELECT value FROM json_each($3)))
+          OR (r.payload->>'version_id' IS NOT NULL AND r.payload->>'version_id'=j.payload->>'version_id')
+          OR (j.kind='sync' AND r.kind='sync' AND r.payload->>'connector_id'=j.payload->>'connector_id')))
+        AND NOT (COALESCE(j.payload->>'index_only',0) IN (1,'true') AND (SELECT count(*) FROM jobs r WHERE r.state='running'
+          AND COALESCE(r.payload->>'index_only',0) IN (1,'true'))>=$4)
+        AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.kind IN (SELECT value FROM json_each($2)) AND x.state IN ('queued','waiting')
+          AND x.available_at<=now() AND x.created_at<j.created_at)
+        ORDER BY j.created_at LIMIT 1) RETURNING *`,
+      [this.workerId, JSON.stringify(EXCLUSIVE_KINDS), JSON.stringify(SINGLE_KINDS), MAX_EMBEDDING_ONLY_JOBS]))[0]
+  }
+
+  async run(job: Record<string, any>, signal: AbortSignal): Promise<boolean> {
     const controller = new AbortController()
     const abort = () => controller.abort(signal.reason)
     signal.addEventListener('abort', abort, { once: true })
