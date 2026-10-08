@@ -16,6 +16,14 @@ import type { McpServerRow } from '../types.js'
 /** La herramienta desapareció del server. No se borra la fila: borrarla tiraría las
  *  reglas de exposición que la apuntan. */
 export const QUARANTINE_TOOL_MISSING = 'el server dejo de ofrecer esta herramienta'
+/** Setting con el id del server de memoria integrado en el hub. */
+export const MEMORY_CATALOG_SERVER_SETTING = 'memory_catalog_server_id'
+
+/** El server de memoria integrado publica definiciones que salen del código de la app instalada:
+ *  sólo cambian al actualizar el hub, y esa instalación ya es la aprobación del dueño. */
+export function isBundledServer(store: Store, server: McpServerRow): boolean {
+  return store.setting(MEMORY_CATALOG_SERVER_SETTING) === server.id
+}
 
 export interface SyncOutcome {
   added: string[]
@@ -24,7 +32,7 @@ export interface SyncOutcome {
   quarantined: string[]
 }
 
-export function applyProbeResult(store: Store, server: McpServerRow, result: ProbeResult): SyncOutcome {
+export function applyProbeResult(store: Store, server: McpServerRow, result: ProbeResult, trusted = isBundledServer(store, server)): SyncOutcome {
   const outcome: SyncOutcome = { added: [], updated: [], missing: [], quarantined: [] }
 
   if (!result.ok) {
@@ -62,12 +70,13 @@ export function applyProbeResult(store: Store, server: McpServerRow, result: Pro
     let quarantined = tool.quarantined
     let quarantineReason = tool.quarantine_reason
 
-    if (tool.definition_hash && tool.definition_hash !== newHash) {
+    if (!trusted && tool.definition_hash && tool.definition_hash !== newHash) {
       quarantined = true
       quarantineReason = QUARANTINE_DEFINITION_CHANGED
       outcome.quarantined.push(discovered.name)
-    } else if (tool.quarantined && tool.quarantine_reason === QUARANTINE_TOOL_MISSING) {
-      // Volvió con la misma definición ya aprobada: la ausencia se terminó.
+    } else if (tool.quarantined && (tool.quarantine_reason === QUARANTINE_TOOL_MISSING
+      || (trusted && tool.quarantine_reason === QUARANTINE_DEFINITION_CHANGED))) {
+      // Volvió con la misma definición ya aprobada, o es una definición integrada que llegó con una actualización anterior.
       quarantined = false
       quarantineReason = ''
     }

@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/memory",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -13,7 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/gateway": "0.7.5",
+    "@agenthub/gateway": "0.8.0",
     "@huggingface/transformers": "4.3.1",
     "@hyzyla/pdfium": "2.1.13",
     "@modelcontextprotocol/sdk": "1.30.0",

@@ -22,7 +22,7 @@ export {
 export { buildMatrix, computePropagation, hotReload, type MatrixResponse } from './matrix.js'
 export { record as auditRecord, verify as auditVerify, computeHash, GENESIS_HASH } from './audit/ledger.js'
 export { probeServer, type ProbeResult, type DiscoveredTool } from './catalog/probe.js'
-export { applyProbeResult, QUARANTINE_TOOL_MISSING, type SyncOutcome } from './catalog/reconcile.js'
+export { applyProbeResult, isBundledServer, MEMORY_CATALOG_SERVER_SETTING, QUARANTINE_TOOL_MISSING, type SyncOutcome } from './catalog/reconcile.js'
 export { ProbeRetryScheduler, DEFAULT_PROBE_RETRY_MS, isConfigured, isEnabledForOwner, needsRetry, type ProbeRetryDeps } from './catalog/retry.js'
 export { applyStarterCatalog, STARTER_SERVERS, STARTER_CATALOG_VERSION, type StarterServer, type StarterOutcome } from './catalog/starter.js'
 export { applyFactorySkill, type FactorySkill, type FactorySkillOutcome } from './catalog/factory-skills.js'

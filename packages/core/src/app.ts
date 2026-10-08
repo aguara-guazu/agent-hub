@@ -18,7 +18,7 @@ import { Store } from './store.js'
 import { record as auditRecord, verify as auditVerify } from './audit/ledger.js'
 import { buildMatrix, hotReload } from './matrix.js'
 import { diffSnapshots, hasChanges, type PendingRestart } from './restart.js'
-import { applyProbeResult, QUARANTINE_TOOL_MISSING } from './catalog/reconcile.js'
+import { applyProbeResult, MEMORY_CATALOG_SERVER_SETTING, QUARANTINE_TOOL_MISSING } from './catalog/reconcile.js'
 import { DEFAULT_TIMEOUT_MS as PROBE_TIMEOUT_MS, probeServer } from './catalog/probe.js'
 import { ProbeRetryScheduler } from './catalog/retry.js'
 import { applyStarterCatalog } from './catalog/starter.js'
@@ -284,7 +284,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       },
     })
     const registerCatalog = () => {
-      const installedId = store.setting('memory_catalog_server_id')
+      const installedId = store.setting(MEMORY_CATALOG_SERVER_SETTING)
       const existing = installedId ? store.server(installedId) : undefined
       if (installedId && !existing) return
       let slug = 'memory'
@@ -297,7 +297,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       applyProbeResult(store, store.server(server.id)!, { ok: true, error: '', auth_required: false, server_name: 'agenthub-memory', server_version: '0.2.0',
         tools: memoryTools.map(t => ({ name: t.name, title: t.name, description: t.description, input_schema: t.inputSchema })) })
       store.setSetting('memory_catalog_installed', '1')
-      store.setSetting('memory_catalog_server_id', server.id)
+      store.setSetting(MEMORY_CATALOG_SERVER_SETTING, server.id)
       registerMemorySkill()
       publishPolicyChange(bus, store, 'user', owner.id)
     }

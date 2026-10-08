@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/gateway",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -17,10 +17,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/shared": "0.7.5",
+    "@agenthub/shared": "0.8.0",
     "@modelcontextprotocol/sdk": "1.30.0"
   },
   "devDependencies": {
-    "@agenthub/testdata": "0.7.5"
+    "@agenthub/testdata": "0.8.0"
   }
 }
