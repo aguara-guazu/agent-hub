@@ -25,7 +25,9 @@ if [[ "${SKIP_PACKAGE:-0}" != "1" ]]; then
   (cd "$ROOT" && npm run package)
 fi
 # electron-builder deja el bundle en release/mac/ (x64) o release/mac-arm64/ (Apple Silicon).
-BUNDLE="$(find "$ROOT/release" -maxdepth 2 -type d -name "${APP_NAME}.app" -path "*/mac*" 2>/dev/null | head -1)"
+# Con builds de las dos arquitecturas en release/, se instala sólo el de esta máquina.
+if [[ "$(uname -m)" == "arm64" ]]; then BUNDLE_DIR="mac-arm64"; else BUNDLE_DIR="mac"; fi
+BUNDLE="$ROOT/release/$BUNDLE_DIR/${APP_NAME}.app"
 [[ -n "$BUNDLE" && -d "$BUNDLE" ]] || { log "no se encontró el bundle en $ROOT/release (¿falló npm run package?)"; exit 1; }
 
 # 1. Cerrar la app de escritorio (proceso principal, sin argumentos). Los gateways
