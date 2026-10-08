@@ -1,6 +1,7 @@
 import { processMedia, queueMedia } from './media-processing.js'
 import type { MediaRuntime } from './media-runtime.js'
 import { tidyMemory } from './memory-maintenance.js'
+import { NATIVE_EMBEDDING_ENGINES } from './native-embeddings.js'
 import { randomUUID } from 'node:crypto'
 import type { MemoryStore } from './store.js'
 import type { MemoryAI } from './ai.js'
@@ -18,12 +19,13 @@ import { syncNotion } from './connectors/notion.js'
 import { syncSlack } from './connectors/slack.js'
 import { syncJira } from './connectors/jira.js'
 
-/** Whole-memory passes that rewrite people, identities or vectors: they start alone and nothing starts next to them. */
+/** Whole-memory passes that rewrite people, identities or vectors: they start alone and nothing starts next to them.
+ *  Once one is the oldest pending job, newer jobs wait so it is not postponed indefinitely. */
 const EXCLUSIVE_KINDS = ['dedupe_people', 'google_repair', 'tidy_memory']
 /** One running job per kind: a global pass, or local OCR/transcription engines shared by every job. */
 const SINGLE_KINDS = ['index_entities', 'media']
-/** Embedding-only jobs wait on the single local embedding engine; more of them would only hold slots extraction can use. */
-const MAX_EMBEDDING_ONLY_JOBS = 2
+/** Embedding-only jobs beyond one per local engine would only wait in the engines and hold slots extraction can use. */
+const MAX_EMBEDDING_ONLY_JOBS = NATIVE_EMBEDDING_ENGINES
 
 export class JobRunner {
   readonly workerId = randomUUID()
@@ -61,7 +63,8 @@ export class JobRunner {
         AND NOT (COALESCE(j.payload->>'index_only',0) IN (1,'true') AND (SELECT count(*) FROM jobs r WHERE r.state='running'
           AND COALESCE(r.payload->>'index_only',0) IN (1,'true'))>=$4)
         AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.kind IN (SELECT value FROM json_each($2)) AND x.state IN ('queued','waiting')
-          AND x.available_at<=now() AND x.created_at<j.created_at)
+          AND x.available_at<=now() AND x.created_at<j.created_at
+          AND NOT EXISTS(SELECT 1 FROM jobs y WHERE y.state IN ('queued','waiting') AND y.available_at<=now() AND y.created_at<x.created_at))
         ORDER BY j.created_at LIMIT 1) RETURNING *`,
       [this.workerId, JSON.stringify(EXCLUSIVE_KINDS), JSON.stringify(SINGLE_KINDS), MAX_EMBEDDING_ONLY_JOBS]))[0]
   }

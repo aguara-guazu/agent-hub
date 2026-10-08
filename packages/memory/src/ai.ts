@@ -1,4 +1,4 @@
-import { NativeEmbeddings } from './native-embeddings.js'
+import { NativeEmbeddings, type TextEmbeddings } from './native-embeddings.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
@@ -28,7 +28,7 @@ export class MemoryAI {
     private readonly openCode = new OpenCodeRuntime(vault.directory), private readonly signal?: AbortSignal,
     private readonly report?: AIProgress, private readonly retryDelays: readonly number[] = TRANSIENT_RETRY_DELAYS_MS,
     private readonly cliExtraction = new CliExtractionRuntime(vault.directory, { kiroApiKey: () => vault.read<{ api_key: string }>('kiro')?.api_key }),
-    private readonly nativeEmbeddings = new NativeEmbeddings(vault.directory)) {}
+    private readonly nativeEmbeddings: TextEmbeddings = new NativeEmbeddings(vault.directory)) {}
   /** Pin provider/privacy settings, cancellation and progress reporting for the entire job, including identities and rules. */
   forJob(config: AIConfig, signal: AbortSignal, report?: AIProgress): MemoryAI {
     return new MemoryAI(async () => config, this.vault, this.fetcher, this.openCode, signal, report, this.retryDelays, this.cliExtraction, this.nativeEmbeddings)

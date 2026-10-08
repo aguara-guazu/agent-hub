@@ -65,6 +65,7 @@ const codexConfig = ['-c', 'approval_policy="never"', '-c', 'web_search="disable
 /** Invoke the installed clients with their own authentication. Never read or copy account tokens. */
 export class CliExtractionRuntime {
   private catalogs = new Map<ExtractionCli, { models: CliModel[]; at: number }>()
+  private catalogRequests = new Map<ExtractionCli, Promise<CliModel[]>>()
   private active = new Set<AbortController>()
   private operations = new Set<Promise<unknown>>()
   private closing = false
@@ -217,6 +218,18 @@ export class CliExtractionRuntime {
     return { ok: true, model, ...(provider === 'kiro' ? {} : { resolved_model: result.usage.model }) }
   }
 
+  /** Model catalog cached for a minute; parallel jobs share one CLI query instead of starting one each. */
+  private catalog(provider: ExtractionCli): Promise<CliModel[]> {
+    const cached = this.catalogs.get(provider)
+    if (cached && Date.now() - cached.at < 60_000) return Promise.resolve(cached.models)
+    let request = this.catalogRequests.get(provider)
+    if (!request) {
+      request = this.status(provider).then(status => status.models).finally(() => this.catalogRequests.delete(provider))
+      this.catalogRequests.set(provider, request)
+    }
+    return request
+  }
+
   async extract(provider: ExtractionCli, model: string, system: string, content: unknown, schema: Record<string, unknown>, signal?: AbortSignal, effort = '') {
     check(validCliModel(model), 'Elegí un nombre de modelo válido.', 400)
     signal?.throwIfAborted()
@@ -224,8 +237,9 @@ export class CliExtractionRuntime {
     // A successful subscription login on some CLI versions is not permission to bypass it.
     if (provider === 'kiro') check(this.kiroApiKey(), 'Kiro CLI requiere una API key para procesar en segundo plano. Agregala en Memoria → Fuentes y ajustes → Kiro CLI → API key de Kiro.', 409)
     if (effort) {
-      const cached = this.catalogs.get(provider)
-      const models = cached && Date.now() - cached.at < 60_000 ? cached.models : (await this.status(provider)).models
+      const models = await this.catalog(provider)
+      // An unreadable catalog (CLI busy or slow to start) says nothing about the effort: the job is retried, not failed.
+      if (!models.length) throw new MemoryError(503, `${cliLabels[provider]} no devolvió su lista de modelos; se reintenta.`, true)
       check(models.find(m => m.id === model)?.reasoning_efforts.includes(effort),
         `${cliLabels[provider]} no ofrece ese esfuerzo para el modelo elegido. Actualizá los modelos en Ajustes o elegí Predeterminado.`, 409)
       signal?.throwIfAborted()

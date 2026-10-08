@@ -1,6 +1,6 @@
 import { MemoryDefaults, DEFAULTS_KEY } from './defaults.js'
 import { MediaRuntime } from './media-runtime.js'
-import { NativeEmbeddings } from './native-embeddings.js'
+import { NativeEmbeddingPool } from './native-embeddings.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { z } from 'zod'
 import { MemoryDatabase } from './database.js'
@@ -29,7 +29,7 @@ export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepsee
 export class MemoryService {
   readonly defaults = new MemoryDefaults(this)
   readonly media: MediaRuntime
-  readonly nativeEmbeddings: NativeEmbeddings
+  readonly nativeEmbeddings: NativeEmbeddingPool
   readonly vault: Vault
   readonly google: GoogleAuth
   readonly openCode: OpenCodeRuntime
@@ -38,7 +38,7 @@ export class MemoryService {
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader) {
-    this.nativeEmbeddings = new NativeEmbeddings(directory)
+    this.nativeEmbeddings = new NativeEmbeddingPool(directory)
     this.media = new MediaRuntime(directory)
     this.openCode = new OpenCodeRuntime(directory)
     this.vault = new Vault(directory)

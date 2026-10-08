@@ -10,7 +10,7 @@ const stop = () => controller.abort()
 process.once('SIGTERM', stop); process.once('SIGINT', stop)
 process.stdin.resume(); process.stdin.once('end', stop); process.stdin.once('close', stop)
 /** Most job time is spent waiting on model providers or CLIs; CPU-bound stages queue inside their own local engines. */
-const MAX_PARALLEL_JOBS = 20
+const MAX_PARALLEL_JOBS = 10
 const running = new Set<Promise<void>>()
 let lastSchedule = 0
 while (!controller.signal.aborted) {

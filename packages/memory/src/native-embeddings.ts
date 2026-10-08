@@ -85,7 +85,14 @@ export class NativeEmbeddings {
     } catch (error) { await this.stop(error as Error) }
     await ready
   }
+  /** Requests waiting for or running on this engine. */
+  get load() { return this.requests }
+  private requests = 0
   private async request(payload: object, signal?: AbortSignal): Promise<any> {
+    this.requests++
+    try { return await this.serialRequest(payload, signal) } finally { this.requests-- }
+  }
+  private serialRequest(payload: object, signal?: AbortSignal): Promise<any> {
     return this.exclusive(async () => {
       signal?.throwIfAborted()
       if (!this.installed()) throw new MemoryError(409, 'Descargá el módulo local desde Memoria → Fuentes y ajustes')
@@ -140,4 +147,26 @@ export class NativeEmbeddings {
     }
   }
   async close() { this.closed = true; await this.stop(); await this.queue }
+}
+
+/** Text embedding engines run in parallel. Each worker uses two ONNX threads and loads the model only while it has work. */
+export const NATIVE_EMBEDDING_ENGINES = 4
+export type TextEmbeddings = Pick<NativeEmbeddings, 'embed'>
+
+/** Text embeddings spread over several engines that share one model cache; installation and status go through the first engine. */
+export class NativeEmbeddingPool {
+  private readonly engines: NativeEmbeddings[]
+  constructor(directory: string, size = NATIVE_EMBEDDING_ENGINES) {
+    this.engines = Array.from({ length: Math.max(1, size) }, () => new NativeEmbeddings(directory))
+  }
+  private get primary() { return this.engines[0]! }
+  installed() { return this.primary.installed() }
+  status() { return this.primary.status() }
+  install() { return this.primary.install() }
+  cancelInstall() { return this.primary.cancelInstall() }
+  embed(texts: string[], query: boolean, signal?: AbortSignal): Promise<number[][]> {
+    return this.engines.reduce((best, engine) => engine.load < best.load ? engine : best).embed(texts, query, signal)
+  }
+  async unload() { await Promise.all(this.engines.map(engine => engine.unload())) }
+  async close() { await Promise.all(this.engines.map(engine => engine.close())) }
 }

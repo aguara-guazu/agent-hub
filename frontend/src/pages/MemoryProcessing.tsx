@@ -4,6 +4,8 @@ import { MemoryFrame, PageHeading, ErrorBox, Pager, formatTime, useMemory, useMe
 
 const providers: Record<string, string> = { deepseek: 'DeepSeek', ollama: 'Ollama', opencode: 'OpenCode', claude_code: 'Claude Code', codex_cli: 'Codex', kiro: 'Kiro CLI' }
 const states: Record<string, string> = { queued: 'En cola', running: 'Procesando', waiting: 'Esperando reintento', completed: 'Completado', failed: 'Falló', cancelled: 'Cancelado' }
+/** Processing shows pending work only; completed and cancelled jobs are history. */
+const pendingStates = ['running', 'queued', 'waiting', 'failed']
 const stages: Record<string, string> = { pdf: 'Leyendo PDF por páginas', ocr: 'Reconociendo texto en imágenes', transcription: 'Transcribiendo audio localmente', media_decode: 'Leyendo audio y video', media_embeddings: 'Generando embeddings multimedia', memory_maintenance: 'Organizando recuerdos y revisando el índice', identity_inference: 'Infiriendo vínculos de hablantes', project_inference: 'Buscando el proyecto de la fuente', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
 const number = (value: number) => value.toLocaleString('es-AR')
 const projectResults: Record<string, string> = { auto_assigned: 'Proyecto asignado automáticamente con confianza alta', suggested: 'Proyecto sugerido: espera tu decisión en Proyectos', no_project: 'Sin proyecto coincidente: espera tu decisión en Proyectos' }
@@ -57,15 +59,15 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
 
 export function MemoryProcessing() { return <MemoryFrame><Processing /></MemoryFrame> }
 function Processing() {
-  const [state, setState] = useState(''), [offset, setOffset] = useState(0)
-  const jobs = useMemory<any>('list_jobs', { kind: 'process,dedupe_people,index_entities,tidy_memory,media', ...(state ? { state } : {}), limit: 20, offset })
+  const [state, setState] = useState('active'), [offset, setOffset] = useState(0)
+  const jobs = useMemory<any>('list_jobs', { kind: 'process,dedupe_people,index_entities,tidy_memory,media', state, limit: 20, offset })
   const overview = useMemory<any>('processing_status')
   const retry = useMemoryMutation('retry_job'), cancel = useMemoryMutation('cancel_job')
   const counts = overview.data?.states ?? {}, coverage = overview.data?.coverage
   return <><PageHeading title="Procesamiento" description="Seguí qué fuente está leyendo la IA y abrí sus resultados con evidencia." />
     <div className="memory-stats">{[['Procesando',counts.running ?? 0],['En cola',(counts.queued ?? 0) + (counts.waiting ?? 0)],['Fallidos',counts.failed ?? 0],['Con extracción',`${coverage?.extracted ?? 0}/${coverage?.sources ?? 0}`]].map(([label,value]) => <div className="card" key={label}><strong>{value}</strong><span>{label}</span></div>)}</div>
     <p className="memory-section-note">Se actualiza cada 5 segundos. Una fuente indexada para buscar puede seguir sin extracción de IA. Los tokens mostrados corresponden a respuestas registradas; la facturación final se consulta en el proveedor.</p>
-    <div className="memory-toolbar"><select className="input" aria-label="Estado del procesamiento" value={state} onChange={e => { setState(e.target.value); setOffset(0) }}><option value="">Todos los trabajos</option><option value="active">En curso y en cola</option>{Object.entries(states).map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select><Link className="btn" to="/memory/sources">Configurar IA y fuentes</Link><Link className="btn" to="/memory/review">Revisar propuestas</Link></div>
+    <div className="memory-toolbar"><select className="input" aria-label="Estado del procesamiento" value={state} onChange={e => { setState(e.target.value); setOffset(0) }}><option value="active">En curso y en cola</option>{pendingStates.map(value => <option key={value} value={value}>{states[value]}</option>)}</select><Link className="btn" to="/memory/sources">Configurar IA y fuentes</Link><Link className="btn" to="/memory/review">Revisar propuestas</Link></div>
     <ErrorBox error={jobs.error ?? overview.error ?? retry.error ?? cancel.error} /><div className="memory-processing-list">{jobs.data?.items.map((job: any) => <MemoryJobCard key={job.id} job={job} onRetry={id => retry.mutate({id})} onCancel={id => cancel.mutate({id})} />)}{jobs.data?.items.length === 0 && <p className="memory-empty">No hay trabajos en este estado.</p>}</div>
     {jobs.data && <Pager total={jobs.data.total} limit={20} offset={offset} setOffset={setOffset} />}
   </>
