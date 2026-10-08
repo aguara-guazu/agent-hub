@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads'
-import { mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync, statSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { EMBEDDING_REPOSITORY, EMBEDDING_REVISION, NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
+import { modelProfile, type InferenceProfile, type MediaEmbedding, type SpeechResult } from './media-models.js'
 import { MemoryError } from './contracts.js'
 
 export class NativeEmbeddings {
@@ -18,18 +18,18 @@ export class NativeEmbeddings {
   private progress: { file?: string; loaded?: number; total?: number; percent?: number } = {}
   readonly cache: string
   private readonly marker: string
-  constructor(directory: string) {
-    this.cache = join(directory, 'memory', 'models', NATIVE_EMBEDDING_MODEL)
-    this.marker = join(this.cache, 'ready.json')
+  constructor(directory: string, readonly profile: InferenceProfile = 'text') {
+    this.cache = join(directory, 'memory', 'models', modelProfile(profile).id)
+    this.marker = join(this.cache, profile === 'text' ? 'ready.json' : `ready-${profile}.json`)
   }
   installed() {
     try {
       const marker = JSON.parse(readFileSync(this.marker, 'utf8'))
-      return marker.revision === EMBEDDING_REVISION && ['config.json', 'tokenizer.json', 'tokenizer_config.json', 'onnx/model_quantized.onnx', 'onnx/model_quantized.onnx_data']
-        .every(file => statSync(join(this.cache, EMBEDDING_REPOSITORY, EMBEDDING_REVISION, file)).size > 0)
+      const model = modelProfile(this.profile)
+      return marker.revision === model.revision && model.files.every(file => statSync(join(this.cache, model.repository, model.revision, file)).size > 0)
     } catch { return false }
   }
-  status() { return { model: NATIVE_EMBEDDING_MODEL, state: this.installing ? 'downloading' : this.installed() ? 'ready' : this.error ? 'error' : 'missing',
+  status() { return { model: modelProfile(this.profile).id, state: this.installing ? 'downloading' : this.installed() ? 'ready' : this.error ? 'error' : 'missing',
     ...this.progress, error: this.error } }
   install() {
     if (this.closed) throw new MemoryError(503, 'El motor de embeddings está cerrado')
@@ -40,7 +40,7 @@ export class NativeEmbeddings {
         if (this.installCancelled) throw new Error('Descarga cancelada. Podés reintentar.')
         await this.start(true)
         mkdirSync(this.cache, { recursive: true })
-        writeFileSync(`${this.marker}.tmp`, JSON.stringify({ revision: EMBEDDING_REVISION }))
+        writeFileSync(`${this.marker}.tmp`, JSON.stringify({ revision: modelProfile(this.profile).revision }))
         renameSync(`${this.marker}.tmp`, this.marker)
       } catch (error) { this.error = error instanceof Error ? error.message : 'Falló la descarga del modelo' }
       finally { this.installing = false; await this.stop() }
@@ -60,14 +60,14 @@ export class NativeEmbeddings {
   }
   private async start(install = false) {
     if (this.loaded) return
-    const ready = this.wait(install ? 20 * 60_000 : 120_000)
+    const ready = this.wait(install ? 60 * 60_000 : 180_000)
     try {
       const touch = () => {
         clearTimeout(this.stalled)
         if (install) this.stalled = setTimeout(() => { void this.stop(new Error('La descarga no avanzó durante 90 segundos. Revisá la conexión y reintentá.')) }, 90_000)
       }
       touch()
-      this.worker = new Worker(new URL('./embedding-worker.js', import.meta.url), { workerData: { cache: this.cache, install } })
+      this.worker = new Worker(new URL('./embedding-worker.js', import.meta.url), { workerData: { cache: this.cache, install, profile: this.profile } })
       this.worker.on('message', message => {
         if (message.type === 'progress') {
           touch()
@@ -75,30 +75,32 @@ export class NativeEmbeddings {
           if (p.file) this.progress = { file: p.file, loaded: p.loaded, total: p.total, percent: p.progress }
           return
         }
+        if (message.type === 'validating') { clearTimeout(this.stalled); this.progress = { file: 'Comprobando el módulo local…' }; return }
         if (message.type === 'error') { void this.stop(new Error(message.error)); return }
         if (message.type === 'ready') { this.loaded = true; clearTimeout(this.stalled) }
-        if (this.pending) { clearTimeout(this.pending.timer); this.pending.resolve(message.vectors); this.pending = undefined }
+        if (this.pending) { clearTimeout(this.pending.timer); this.pending.resolve(message.result ?? message.vectors); this.pending = undefined }
       })
       this.worker.on('error', error => { void this.stop(error) })
       this.worker.on('exit', code => { if (this.pending) void this.stop(new Error(`El motor de embeddings se cerró (${code})`)) })
     } catch (error) { await this.stop(error as Error) }
     await ready
   }
-  async embed(texts: string[], query: boolean, signal?: AbortSignal): Promise<number[][]> {
+  private async request(payload: object, signal?: AbortSignal): Promise<any> {
     return this.exclusive(async () => {
       signal?.throwIfAborted()
-      if (!this.installed()) throw new MemoryError(409, 'Descargá EmbeddingGemma 2 desde Memoria → Fuentes y ajustes')
+      if (!this.installed()) throw new MemoryError(409, 'Descargá el módulo local desde Memoria → Fuentes y ajustes')
       clearTimeout(this.idle)
       const abort = () => { void this.stop(new Error('Generación de embeddings cancelada')) }
       signal?.addEventListener('abort', abort, { once: true })
       try {
-        await this.start()
+        try { await this.start() } catch (error) {
+          if (!signal?.aborted) { rmSync(this.marker, { force: true }); this.error = error instanceof Error ? error.message : 'No se pudo cargar el módulo. Reintentá su descarga.' }
+          throw error
+        }
         signal?.throwIfAborted()
-        const result = this.wait(120_000)
-        this.worker!.postMessage({ texts, query })
-        const vectors = await result as number[][]
-        if (vectors.length !== texts.length || vectors.some(v => v.length !== 768 || !v.every(Number.isFinite))) throw new Error('EmbeddingGemma 2 devolvió vectores inválidos')
-        return vectors
+        const result = this.wait(this.profile === 'speech' ? 10 * 60_000 : 180_000)
+        this.worker!.postMessage(payload)
+        return await result
       } finally {
         signal?.removeEventListener('abort', abort)
         this.idle = setTimeout(() => { void this.stop() }, 60_000)
@@ -106,6 +108,19 @@ export class NativeEmbeddings {
       }
     })
   }
+  async embed(texts: string[], query: boolean, signal?: AbortSignal): Promise<number[][]> {
+    const vectors = await this.request({ texts, query }, signal) as number[][]
+    if (vectors.length !== texts.length || vectors.some(v => v.length !== 768 || !v.every(Number.isFinite))) throw new Error('EmbeddingGemma 2 devolvió vectores inválidos')
+    return vectors
+  }
+  async embedMedia(media: MediaEmbedding, signal: AbortSignal): Promise<number[]> {
+    const vectors = await this.request({ media }, signal) as number[][]
+    const vector = vectors[0]
+    if (vectors.length !== 1 || !vector || vector.length !== 768 || !vector.every(Number.isFinite)) throw new Error('Embedding multimedia inválido')
+    return vector
+  }
+  transcribe(audio: Float32Array, signal: AbortSignal, language = 'es'): Promise<SpeechResult> { return this.request({ audio, language }, signal) }
+  async unload() { await this.queue; await this.stop() }
   private async stop(error = new Error('El motor de embeddings se cerró')) {
     clearTimeout(this.idle)
     clearTimeout(this.stalled)

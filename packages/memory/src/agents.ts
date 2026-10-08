@@ -1,3 +1,4 @@
+import { mediaSettings } from './media-processing.js'
 import { maintenanceStatus } from './memory-maintenance.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -157,7 +158,8 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
   return {
     memories, maintenance: { due: maintenance.due, last_run: maintenance.last?.finished_at ?? null, active: maintenance.active ? { id: maintenance.active.id, state: maintenance.active.state } : null },
     memory_capabilities: { primary_memory: true, remember: 'memory_remember', files: 'memory_import_file', retrieve_file: 'memory_get_file', tidy: 'memory_tidy_memory',
-      formats: ['text','images','screenshots','audio','video','PDF','other files'], max_file_mb: 25, binary_search: 'title, description and annotations', automatic_ocr_or_transcription: false },
+      formats: ['text','images','screenshots','audio','video','PDF','other files'], max_file_mb: 25, binary_search: 'title, description and annotations', local_media: { process: 'memory_process_files', settings: await mediaSettings(store), max_duration_minutes: 30, video_frame_interval_seconds: 5, requires_module_download: true, generated_content_requires_review: true },
+      binary_search_with_enabled_modules: 'OCR, timestamped transcription and native visual/audio embeddings (EmbeddingGemma 2)'  },
     agent: agent ? { ...agent, label: agentLabel(agent) } : null, path,
     project: project ? { id: project.id, title: project.title, folder: match!.folder, status: project.data.status ?? null, description: project.data.description ?? null,
       jira_project_key: project.data.jira_project_key ?? null, jira_site_url: project.data.jira_site_url ?? null } : null,

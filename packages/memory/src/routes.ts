@@ -1,3 +1,5 @@
+import { mediaSettings, queueMedia } from './media-processing.js'
+import { MEDIA_MODULES, mediaSettingsInput } from './media-runtime.js'
 import { readFileAttachment } from './attachments.js'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
@@ -49,6 +51,17 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     reply.raw.once('close', abort)
     try { const { db, ai } = await service.get(); return await globalSearch(db, ai, request.body, controller.signal) }
     finally { reply.raw.off('close', abort) }
+  })
+  app.get('/api/memory/media', { preHandler: auth }, async () => ({ settings: await mediaSettings((await service.get()).store), modules: service.media.status() }))
+  app.put('/api/memory/media', { preHandler: auth }, async request => {
+    const settings = service.media.validate(parse(mediaSettingsInput, request.body)), { store } = await service.get()
+    await store.db.query("INSERT INTO settings(key,value) VALUES('media',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(settings)])
+    await queueMedia(store, {}, true)
+    return { settings, modules: service.media.status() }
+  })
+  app.post('/api/memory/media/:module/:action', { preHandler: auth }, async (request, reply) => {
+    const { module, action } = parse(z.object({ module: z.enum(MEDIA_MODULES), action: z.enum(['install','cancel']) }).strict(), request.params)
+    return reply.code(action === 'install' ? 202 : 200).send(action === 'install' ? service.media[module].install() : await service.media[module].cancelInstall())
   })
   app.get('/api/memory/embeddings/native', { preHandler: auth }, () => service.nativeEmbeddings.status())
   app.post('/api/memory/embeddings/native/install', { preHandler: auth }, (_request, reply) => reply.code(202).send(service.nativeEmbeddings.install()))

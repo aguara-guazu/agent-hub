@@ -1,3 +1,4 @@
+import { MediaRuntime } from './media-runtime.js'
 import { NativeEmbeddings } from './native-embeddings.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { z } from 'zod'
@@ -23,6 +24,7 @@ export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepsee
     config => !isExtractionCli(config.extraction) || validCliModel(config.extraction_model),
     { message: 'Elegí un nombre de modelo válido para la CLI', path: ['extraction_model'] })
 export class MemoryService {
+  readonly media: MediaRuntime
   readonly nativeEmbeddings: NativeEmbeddings
   readonly vault: Vault
   readonly google: GoogleAuth
@@ -33,6 +35,7 @@ export class MemoryService {
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader) {
     this.nativeEmbeddings = new NativeEmbeddings(directory)
+    this.media = new MediaRuntime(directory)
     this.openCode = new OpenCodeRuntime(directory)
     this.vault = new Vault(directory)
     this.cliExtraction = new CliExtractionRuntime(directory, { kiroApiKey: () => this.vault.read<{ api_key: string }>('kiro')?.api_key })
@@ -56,7 +59,7 @@ export class MemoryService {
     const store = new MemoryStore(db, this.directory)
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp)
-    const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher)
+    const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     this.current = { db, store, ai, operations, runner }
     return this.current
   }
@@ -100,5 +103,5 @@ export class MemoryService {
     await db.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(config)])
     return config
   }
-  async close() { const current = this.current; this.current = null; await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); if (current) await current.db.close() }
+  async close() { const current = this.current; this.current = null; await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); if (current) await current.db.close() }
 }

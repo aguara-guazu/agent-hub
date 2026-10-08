@@ -1,3 +1,5 @@
+import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
+import { queueMedia, processFilesInput, mediaSettings } from './media-processing.js'
 import { remember, rememberInput, manageMemory, manageMemoryInput } from './remember.js'
 import { listMemories, listMemoriesInput, requestTidy, tidyInput, maintenanceStatus, maintenanceStatusInput } from './memory-maintenance.js'
 import { importFile, importFileInput, getFile, getFileInput } from './attachments.js'
@@ -20,6 +22,7 @@ import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput,
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
+  process_files: ['Procesar imágenes, audio y video con OCR, transcripción y embeddings locales según Ajustes. Sin version_id recorre los archivos actuales; force vuelve a analizarlos conservando versiones. Seguir progreso con list_jobs.', processFilesInput],
   suggest_projects: ['Buscar proyectos por nombre, empresa y significado para preseleccionar una asociación. No guarda vínculos.', suggestProjectsInput],
   draft_profile: ['Generar un borrador de empresa o descripción de proyecto con evidencia de sus fuentes. No guarda cambios: requiere revisión humana.', draftProfileInput],
   save_project_company: ['Asociar una empresa existente o crear y asociar una empresa después de revisar el borrador.', saveProjectCompanyInput],
@@ -33,7 +36,7 @@ const definitions = {
   manage_memory: ['Archivar, restaurar o fijar un recuerdo propio de la memoria, con motivo e historial. Archivar quita del recuerdo activo pero conserva originales y citas. Requiere la versión actual (expected_updated_at).', manageMemoryInput],
   tidy_memory: ['Pedir al worker mantenimiento local: revisar vigencias explícitas, consolidar duplicados exactos, detectar pares relacionados por embeddings y retirar vectores históricos regenerables. Conserva originales y citas. Evita repetir dentro de 24 h salvo force.', tidyInput],
   health: ['Ver último mantenimiento, recomendaciones de recuerdos relacionados y si corresponde pedir otra revisión al worker.', maintenanceStatusInput],
-  import_file: ['Guardar un archivo local (ruta absoluta) o base64 de hasta 25 MB: capturas, imágenes, audio, video, PDF y otros adjuntos. Agregar descripción y anotaciones con offset_ms, end_offset_ms, page o region. El original se conserva sin enviarlo a proveedores. No genera transcripción ni OCR automáticamente.', importFileInput],
+  import_file: ['Guardar un archivo local (ruta absoluta) o base64 de hasta 25 MB: capturas, imágenes, audio, video, PDF y otros adjuntos. Agregar descripción y anotaciones con offset_ms, end_offset_ms, page o region. El original se conserva sin enviarlo a proveedores. OCR, transcripción e indexación audiovisual se realizan localmente si sus módulos están activados en Ajustes.', importFileInput],
   get_file: ['Recuperar el archivo de una versión: metadatos y enlace de descarga; include_content devuelve contenido hasta 5 MB, como imagen o audio cuando el cliente lo admite.', getFileInput],
   import_source: ['Importar una fuente con original e intervenciones. IDs externos estables evitan duplicados.', importInput],
   search: ['Buscar texto y significado dentro de fuentes importadas. Sin query, recorre exhaustivamente los filtros.', searchInput],
@@ -51,7 +54,7 @@ const definitions = {
   list_rules: ['Consultar reglas de extracción y su cobertura por versiones.', z.object({}).strict()],
   update_rule: ['Editar o pausar una regla; una nueva revisión puede reprocesar el historial.', ruleInput.partial().extend({ id }).strict()],
   reprocess: ['Reprocesar una fuente o todo el material actual, incluidos embeddings y reglas.', z.object({ entity_id: id.optional(), force: z.boolean().default(false) }).strict()],
-  rebuild_embeddings: ['Regenerar todos los embeddings con el modelo configurado, sin repetir extracción ni modificar originales. Ver progreso con list_jobs.', z.object({}).strict()],
+  rebuild_embeddings: ['Regenerar todos los embeddings con el modelo configurado, sin repetir extracción remota ni modificar originales. Con Gemma 2 regenera también los análisis audiovisuales habilitados. Ver progreso con list_jobs.', z.object({}).strict()],
   infer_identities: ['Proponer vínculos de hablantes sin email usando candidatos conocidos y contexto. Con confianza alta y la unificación automática activa, aplica el vínculo y unifica al hablante con la persona conocida.', z.object({ entity_id: id.optional() }).strict()],
   list_identity_proposals: ['Leer vínculos de identidad inferidos, con confianza, motivo y evidencia.', z.object({ entity_id: id.optional(), state: z.enum(['pending','accepted','rejected']).default('pending'), ...page }).strict()],
   review_identity: ['Confirmar un email propuesto o descartar la inferencia. Confirmar unifica al hablante con la persona conocida que ya tiene ese email y protege la corrección frente a sincronizaciones.', z.object({ id, decision: z.enum(['accepted','rejected']) }).strict()],
@@ -148,6 +151,7 @@ export class MemoryOperations {
       case 'manage_memory': return manageMemory(store, input, author)
       case 'tidy_memory': return requestTidy(store, input, author)
       case 'health': return maintenanceStatus(store, input.project_id)
+      case 'process_files': return queueMedia(store, input)
       case 'import_file': return importFile(store, input, author)
       case 'get_file': return getFile(store, input)
       case 'import_source': return store.ingest(input, actor)
@@ -221,7 +225,7 @@ export class MemoryOperations {
       case 'rebuild_embeddings': {
         const settings = (await db.query("SELECT value FROM settings WHERE key='ai'"))[0]?.value
         check(settings?.embeddings_enabled, 'Habilitá y guardá el modelo de embeddings primero', 409)
-        return db.transaction(async sql => {
+        const rebuilt = await db.transaction(async sql => {
           // Keep source vectors until replacements succeed; invalidate entity hashes to queue their reindexing.
           await sql.query("UPDATE entity_embeddings SET content_hash='',created_at='1970-01-01T00:00:00.000Z' WHERE model=$1", [settings.embedding_model])
           const rows = await sql.query("SELECT current_version_id FROM sources WHERE status='active' AND current_version_id IS NOT NULL")
@@ -229,6 +233,9 @@ export class MemoryOperations {
           await store.enqueue('index_entities', {}, `entity-index:${settings.embedding_model}`, sql)
           return { queued: rows.length + 1, model: settings.embedding_model }
         })
+        const media = await mediaSettings(store)
+        const audiovisual = settings.embedding_model === NATIVE_EMBEDDING_MODEL && (media.vision || media.audio) ? await queueMedia(store, { force: true }) : { queued: 0 }
+        return { ...rebuilt, queued: rebuilt.queued + audiovisual.queued, media_queued: audiovisual.queued }
       }
       case 'infer_identities':
       case 'reprocess': {
@@ -298,7 +305,7 @@ export class MemoryOperations {
         total: (await db.query(`SELECT count(*) AS total FROM jobs j WHERE ${where}`, [kinds,input.state ?? null]))[0]!.total }
       }
       case 'processing_status': {
-        const states = await db.query("SELECT state,count(*) AS count FROM jobs WHERE kind IN ('process','index_entities','dedupe_people','tidy_memory') GROUP BY state")
+        const states = await db.query("SELECT state,count(*) AS count FROM jobs WHERE kind IN ('process','index_entities','dedupe_people','tidy_memory','media') GROUP BY state")
         const [usage] = await db.query("SELECT CAST(COALESCE(sum(CAST(progress->>'input_tokens' AS INTEGER)),0) AS REAL) AS input_tokens,CAST(COALESCE(sum(CAST(progress->>'output_tokens' AS INTEGER)),0) AS REAL) AS output_tokens FROM jobs WHERE kind='process'")
         const [coverage] = await db.query(`SELECT count(*) AS sources,count(*) FILTER(WHERE json_type(v.metadata,'$.extraction_key') IS NOT NULL) AS extracted
           FROM sources s JOIN versions v ON v.id=s.current_version_id WHERE s.status='active'`)

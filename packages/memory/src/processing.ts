@@ -25,7 +25,7 @@ export interface ProcessOptions {
   projectsOnly?: boolean
 }
 
-const fragmentQuery = `SELECT f.id,f.text,f.speaker_id,f.start_time,f.end_time,f.offset_ms,f.ordinal,
+const fragmentQuery = `SELECT f.id,f.text,f.speaker_id,f.start_time,f.end_time,f.offset_ms,f.ordinal,f.metadata,
   COALESCE((SELECT json_group_array(fp.project_id ORDER BY fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS "project_ids:json",
   p.title AS speaker_name,p.data->>'email' AS speaker_email FROM fragments f LEFT JOIN entities p ON p.id=f.speaker_id WHERE version_id=$1 ORDER BY ordinal`
 
@@ -49,7 +49,7 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
   }
   if (config.embeddings_enabled && !identityOnly) {
     const existing = new Set((await store.db.query('SELECT fragment_id FROM embeddings WHERE model=$1 AND fragment_id IN (SELECT value FROM json_each($2))', [config.embedding_model, fragments.map(f => f.id)])).map(r => r.fragment_id))
-    const pending = fragments.filter(f => force || !existing.has(f.id))
+    const pending = fragments.filter(f => !f.metadata?.media_embedding && (force || !existing.has(f.id)))
     for (let offset = 0; offset < pending.length; offset += 8) {
       signal.throwIfAborted()
       const batch = pending.slice(offset, offset + 8)

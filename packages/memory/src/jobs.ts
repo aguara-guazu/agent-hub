@@ -1,3 +1,5 @@
+import { processMedia, queueMedia } from './media-processing.js'
+import type { MediaRuntime } from './media-runtime.js'
 import { tidyMemory } from './memory-maintenance.js'
 import { randomUUID } from 'node:crypto'
 import type { MemoryStore } from './store.js'
@@ -19,7 +21,7 @@ import { syncJira } from './connectors/jira.js'
 export class JobRunner {
   readonly workerId = randomUUID()
   constructor(private store: MemoryStore, private ai: MemoryAI, private vault: Vault, private google: GoogleAuth,
-    private settings: () => Promise<AIConfig>, private fetcher: typeof fetch = fetch) {}
+    private settings: () => Promise<AIConfig>, private fetcher: typeof fetch = fetch, private media?: MediaRuntime) {}
 
   async schedule(): Promise<void> {
     await this.store.db.query(`UPDATE jobs SET state='queued',lease_until=NULL,lease_owner=NULL,available_at=now(),updated_at=now()
@@ -30,6 +32,7 @@ export class JobRunner {
         AND (j.state IN ('queued','running','waiting') OR j.updated_at>strftime('%Y-%m-%dT%H:%M:%fZ','now','-'||c.interval_minutes||' minutes')))`)
     for (const connector of due) await this.store.enqueue('sync', { connector_id: connector.id }, `sync:${connector.id}`)
     await scheduleEntityIndex(this.store, await this.settings())
+    if (this.media) await queueMedia(this.store, {}, true)
     await sweepNotes(this.store.db)
     await this.store.db.query(`INSERT INTO settings(key,value) VALUES('worker',json_object('heartbeat',now(),'id',$1)) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [this.workerId])
   }
@@ -61,6 +64,9 @@ export class JobRunner {
         const result = await processVersion(this.store, this.ai.forJob(settings, controller.signal, progress), job.payload.version_id, settings, progress, controller.signal,
           Boolean(job.payload.force), Boolean(job.payload.identity_only), { runKey: job.id, projectsOnly: Boolean(job.payload.projects_only) })
         await progress(result)
+      } else if (job.kind === 'media') {
+        if (!this.media) throw new MemoryError(409, 'El procesamiento multimedia no está disponible')
+        await progress(await processMedia(this.store, this.media, job.payload, controller.signal, progress))
       } else if (job.kind === 'index_entities') {
         const settings = await this.settings()
         await progress(await indexEntities(this.store, this.ai.forJob(settings, controller.signal, progress), settings, controller.signal, progress))

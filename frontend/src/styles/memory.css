@@ -194,3 +194,6 @@
 
 .memory-attachment-image, .memory-callout video { display: block; max-width: 100%; max-height: 560px; margin-top: 16px; object-fit: contain; }
 .memory-callout audio { display: block; width: 100%; margin-top: 16px; }
+
+.memory-media-modules { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
+.memory-media-modules progress { width: 100%; }

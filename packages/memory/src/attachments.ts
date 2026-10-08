@@ -34,7 +34,8 @@ export function fileMime(data: Buffer, name = ''): string {
   if (data.subarray(0,3).toString() === 'ID3' || (data[0] === 255 && ((data[1] ?? 0) & 224) === 224)) return 'audio/mpeg'
   if (data.subarray(0,4).toString() === 'OggS') return 'audio/ogg'
   if (data.subarray(0,4).toString() === 'fLaC') return 'audio/flac'
-  if (data.subarray(4,8).toString() === 'ftyp') return 'video/mp4'
+  if (data.subarray(4,8).toString() === 'ftyp') return /\.(m4a|m4b)$/i.test(name) ? 'audio/mp4' : 'video/mp4'
+  if (data.subarray(0,4).equals(Buffer.from([0x1a,0x45,0xdf,0xa3]))) return /\.(weba|opus)$/i.test(name) ? 'audio/webm' : 'video/webm'
   if (data.subarray(0,5).toString() === '%PDF-') return 'application/pdf'
   if (/\.(txt|md|csv|json|yaml|yml|log|vtt|srt)$/i.test(name) && data.length <= 5_000_000) {
     try { new TextDecoder('utf-8', { fatal: true }).decode(data); return 'text/plain' } catch { /* preserve non-UTF8 originals as binary */ }

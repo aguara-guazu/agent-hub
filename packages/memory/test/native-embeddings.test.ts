@@ -74,3 +74,14 @@ it('separa consultas y documentos, usa el caché sin red y cancela la inferencia
   expect(embeddingInput('consulta', true)).toBe('task: search result | query: consulta')
   expect(embeddingInput('documento', false)).toBe('title: none | text: documento')
 })
+
+it('habilita reparar una instalación que ya no puede cargar sin descargar automáticamente', async () => {
+  await install()
+  const pending = runtime.embed(['prueba'], false)
+  const rejected = expect(pending).rejects.toThrow('incompleto')
+  await tick(); const worker = workers.at(-1)
+  worker.emit('message', { type: 'error', error: 'El modelo local está incompleto' })
+  await rejected; expect(runtime.status().state).toBe('error'); expect(runtime.installed()).toBe(false)
+  expect(worker.options.workerData.install).toBe(false)
+  await install(); expect(runtime.installed()).toBe(true)
+})

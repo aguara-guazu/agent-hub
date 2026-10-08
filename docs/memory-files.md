@@ -41,10 +41,10 @@ Las anotaciones admiten `offset_ms` y `end_offset_ms` para un momento de audio/v
 }
 ```
 
-Estas marcas deben provenir de evidencia conocida: el Hub no inventa tiempos ni los deduce del archivo. La interfaz puede abrir una cita y ubicar la reproducción en su `offset_ms`.
+Las anotaciones manuales deben provenir de evidencia conocida. El procesamiento local también puede producir timestamps de transcripción y fotogramas, y regiones de OCR; se distinguen como contenido generado pendiente de revisión. La interfaz puede abrir una cita y ubicar la reproducción en su `offset_ms`.
 
 ## Recuperar el original
 
 `memory_search` devuelve las anotaciones con la referencia al adjunto, su versión y ubicación. Abrí el contexto con `memory_get_evidence`. Después, `memory_get_file` con `version_id` entrega metadatos y el enlace del original; con `include_content: true` devuelve el contenido hasta 5 MB, como imagen/audio MCP o recurso binario para otros formatos. El cliente del agente debe soportar ese tipo de contenido. Para archivos mayores, entregá el enlace de la fuente en el Hub para abrir y descargar el original.
 
-Los archivos TXT, Markdown, CSV, JSON, YAML, LOG, VTT y SRT en UTF-8 de hasta 5 MB también indexan su contenido textual. Los adjuntos binarios se buscan por título, descripción y anotaciones. Esta versión no incluye OCR, lectura automática de PDF, transcripción ni búsqueda por el contenido visual/sonoro del archivo. Una anotación de un agente se conserva como contexto aportado, no como texto verificado del original. Los adjuntos nacen con procesamiento remoto desactivado.
+Los archivos TXT, Markdown, CSV, JSON, YAML, LOG, VTT y SRT en UTF-8 de hasta 5 MB también indexan su contenido textual. Los adjuntos binarios se buscan por título, descripción y anotaciones. Con los [módulos multimedia locales](media-processing.md) habilitados también se indexan OCR, transcripciones y contenido visual/sonoro de imágenes, audio y video. PDF y otros binarios se conservan, pero todavía no tienen extracción automática. Una anotación de un agente se conserva como contexto aportado, no como texto verificado del original. Los adjuntos nacen con procesamiento remoto desactivado.

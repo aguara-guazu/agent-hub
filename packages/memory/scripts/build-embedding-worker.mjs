@@ -10,9 +10,6 @@ await build({ entryPoints: [resolve(root, 'src/embedding-worker.ts')], outfile: 
   plugins: [{ name: 'local-onnx', setup(build) {
     build.onResolve({ filter: /^@huggingface\/transformers$/ }, () => ({ path: transformers }))
     build.onResolve({ filter: /\/onnx-node\.js$/ }, () => ({ path: resolve(root, 'scripts/onnx-local.mjs') }))
-    // The worker loads text encoders only. Do not require platform-specific image codecs on startup.
-    build.onResolve({ filter: /^sharp$/ }, () => ({ path: 'text-only', namespace: 'text-only' }))
-    build.onLoad({ filter: /.*/, namespace: 'text-only' }, () => ({ contents: 'export default function sharp() { throw new Error("This worker supports text embeddings only") }', loader: 'js' }))
     // 4.3.1 discovers tokenizer filenames over HTTP even with local_files_only. Our pinned model has two known files.
     build.onResolve({ filter: /\/get_tokenizer_files\.js$/ }, () => ({ path: 'tokenizer-files', namespace: 'pinned-model' }))
     build.onLoad({ filter: /.*/, namespace: 'pinned-model' }, () => ({ contents: 'export async function get_tokenizer_files() { return ["tokenizer.json", "tokenizer_config.json"] }', loader: 'js' }))

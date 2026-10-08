@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { dirname, join, basename } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { workerData } from 'node:worker_threads'
@@ -14,8 +14,8 @@ if ((process.platform === 'darwin' && process.arch === 'x64') || workerData?.for
   web.env.wasm.numThreads = 1
   web.env.wasm.wasmBinary = readFileSync(join(dist, 'ort-wasm-simd-threaded.wasm'))
   web.env.wasm.wasmPaths = { mjs: pathToFileURL(join(dist, 'ort-wasm-simd-threaded.mjs')).href }
-  runtime = { ...web, InferenceSession: { create: (path, options) => web.InferenceSession.create(readFileSync(path), {
-    ...options, executionProviders: ['wasm'], externalData: [{ path: `${basename(path)}_data`, data: readFileSync(`${path}_data`) }],
+  runtime = { ...web, InferenceSession: { create: (path, options) => web.InferenceSession.create(typeof path === 'string' ? readFileSync(path) : path, {
+    ...options, executionProviders: ['wasm'], ...(typeof path === 'string' && existsSync(`${path}_data`) ? { externalData: [{ path: `${basename(path)}_data`, data: readFileSync(`${path}_data`) }] } : {}),
   }) } }
 } else runtime = require('onnxruntime-node')
 export default runtime
