@@ -2,6 +2,7 @@ const { execFileSync } = require('node:child_process')
 const { join } = require('node:path')
 const { readdirSync, rmSync, existsSync } = require('node:fs')
 const { Arch } = require('builder-util')
+const { prepareSharp } = require('./prepare-sharp.cjs')
 
 // `identity: null` hace que electron-builder no firme nada, y el bundle queda con la
 // firma del enlazador pero sin sello de recursos. Se vuelve a firmar ad hoc para que
@@ -11,6 +12,7 @@ exports.default = async (context) => {
   const resources = context.electronPlatformName === 'darwin'
     ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
     : join(context.appOutDir, 'resources')
+  await prepareSharp(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   const binaries = join(resources, 'app', 'node_modules', 'onnxruntime-node', 'bin', 'napi-v6')
   // The npm package includes bindings for five targets. Ship only the current platform/architecture.
   if (existsSync(binaries)) for (const platform of readdirSync(binaries)) {
