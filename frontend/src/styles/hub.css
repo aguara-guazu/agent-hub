@@ -211,3 +211,5 @@
 .hub-oauth-client-form { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
 .hub-oauth-client-fields { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .hub-oauth-client-fields input { flex: 1 1 14rem; min-width: 0; }
+
+.hub-client-logo.antigravity { color: #b3d5fd; background: #253345; }

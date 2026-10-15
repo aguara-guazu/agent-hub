@@ -2,7 +2,7 @@
 
 export type OrgRole = 'owner' | 'admin' | 'member'
 export type SquadRole = 'lead' | 'member'
-export type CliKind = 'claude_code' | 'codex_cli' | 'gemini_cli' | 'kiro' | 'claude_desktop' | 'opencode'
+export type CliKind = 'claude_code' | 'codex_cli' | 'gemini_cli' | 'kiro' | 'claude_desktop' | 'opencode' | 'antigravity'
 export type Transport = 'stdio' | 'http'
 export type ServerAuth = 'none' | 'oauth'
 export type OAuthStatus = 'none' | 'required' | 'authorized'
@@ -21,6 +21,7 @@ export const CLI_LABELS: Record<CliKind, string> = {
   claude_code: 'Claude Code',
   codex_cli: 'Codex CLI',
   gemini_cli: 'Gemini CLI',
+  antigravity: 'Antigravity',
   kiro: 'Kiro',
   claude_desktop: 'Claude Desktop',
   opencode: 'OpenCode',
@@ -32,6 +33,7 @@ export const CLI_HOT_RELOAD: Record<CliKind, boolean> = {
   claude_code: true,
   codex_cli: false,
   gemini_cli: false,
+  antigravity: false,
   kiro: false,
   claude_desktop: false,
   opencode: false,
@@ -42,6 +44,7 @@ export const CLI_FILE_SKILLS: Record<CliKind, boolean> = {
   claude_code: true,
   codex_cli: true,
   gemini_cli: true,
+  antigravity: true,
   kiro: true,
   claude_desktop: false,
   opencode: true,

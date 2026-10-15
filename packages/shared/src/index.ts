@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 
 export type OrgRole = 'owner' | 'admin' | 'member'
 export type SquadRole = 'lead' | 'member'
-export type CliKind = 'claude_code' | 'codex_cli' | 'gemini_cli' | 'kiro' | 'claude_desktop' | 'opencode'
+export type CliKind = 'claude_code' | 'codex_cli' | 'gemini_cli' | 'kiro' | 'claude_desktop' | 'opencode' | 'antigravity'
 export type Transport = 'stdio' | 'http'
 /** Cómo se autentica el hub ante un MCP server http: nada/encabezados, u OAuth 2.1 en el navegador. */
 export type ServerAuth = 'none' | 'oauth'
@@ -17,11 +17,12 @@ export type RuleState = 'on' | 'off' | 'inherit'
 export type RuleScope = 'user' | 'client'
 export type PropagationState = 'applied_live' | 'applied_stale_list' | 'pending_restart' | 'pending_sync' | 'unknown'
 
-export const CLI_KINDS: readonly CliKind[] = ['claude_code', 'codex_cli', 'gemini_cli', 'kiro', 'claude_desktop', 'opencode']
+export const CLI_KINDS: readonly CliKind[] = ['claude_code', 'codex_cli', 'gemini_cli', 'kiro', 'claude_desktop', 'opencode', 'antigravity']
 export const CLI_HOT_RELOAD: Readonly<Record<CliKind, boolean>> = {
   claude_code: true,
   codex_cli: false,
   gemini_cli: false,
+  antigravity: false,
   kiro: false,
   claude_desktop: false,
   opencode: false,
@@ -35,6 +36,7 @@ export const CLI_FILE_SKILLS: Readonly<Record<CliKind, boolean>> = {
   claude_code: true,
   codex_cli: true,
   gemini_cli: true,
+  antigravity: true,
   kiro: true,
   claude_desktop: false,
   opencode: true,

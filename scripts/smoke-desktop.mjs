@@ -1,16 +1,18 @@
 /* global window, document, fetch */
 import { createRequire } from 'node:module'
 const { _electron: electron } = createRequire(new URL('../frontend/package.json', import.meta.url))('playwright')
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { URL, fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
+import { exec } from 'node:child_process'
 import assert from 'node:assert/strict'
 
 // Run against the installed/unpacked executable, with a fresh profile and no model downloads or external accounts.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const directory = await mkdtemp(join(tmpdir(), 'Agent Hub prueba Pérez #%20 '))
+await mkdir(join(directory, 'home/.gemini/antigravity'), { recursive: true })
 const server = createServer()
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
 const port = server.address().port
@@ -35,7 +37,28 @@ try {
     assert.equal(result.http, 200)
     assert.equal(result.memory.ready, true)
     assert.ok(result.text.trim(), 'Renderer must load')
-    console.log(`Desktop smoke ${attempt + 1}: renderer, session and memory ready; ${process.platform}/${process.arch}`)
+    await page.waitForFunction(async () => {
+      const api = window.agentHub, token = await api.getSession(), status = await api.getCoreStatus()
+      const response = await fetch(`${status.apiBaseUrl}/api/local/overview`, { headers: { Authorization: `Bearer ${token}` } })
+      const { clients } = await response.json()
+      return clients.length === 1 && clients[0].cli_kind === 'antigravity' && clients[0].synchronized
+    }, undefined, { timeout: 30_000 })
+    const mcp = JSON.parse(await readFile(join(directory, 'home/.gemini/config/mcp_config.json'), 'utf8'))
+    assert.ok(mcp.mcpServers.hub.command, 'Packaged gateway command must be configured')
+    const hooks = JSON.parse(await readFile(join(directory, 'home/.gemini/config/hooks.json'), 'utf8'))['agenthub-memory']
+    const hookOutput = await new Promise((resolve, reject) => {
+      const child = exec(hooks.PreToolUse[0].hooks[0].command, { env, windowsHide: true, timeout: 15_000 },
+        (error, stdout) => error ? reject(error) : resolve(stdout))
+      child.stdin.end(JSON.stringify({ conversationId: `smoke-${attempt}`, workspacePaths: [directory],
+        toolCall: { name: 'mcp_hub_memory_context', args: {} } }))
+    })
+    assert.deepEqual(JSON.parse(hookOutput), { decision: 'allow' }, 'Native hook must run from the installed executable')
+    for (const variant of ['config', 'antigravity-cli']) {
+      assert.match(await readFile(join(directory, 'home/.gemini', variant, 'skills/memory/SKILL.md'), 'utf8'), /name:/)
+    }
+    await page.evaluate(() => { window.location.hash = '/clients' })
+    await page.getByRole('heading', { name: 'Antigravity', exact: true }).waitFor()
+    console.log(`Desktop smoke ${attempt + 1}: renderer, session, memory and Antigravity integration ready; ${process.platform}/${process.arch}`)
     await app.close(); app = undefined
   }
 } finally {

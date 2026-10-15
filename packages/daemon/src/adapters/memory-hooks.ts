@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { driftItem, Manifest, planFileWrite, planJsonHooks, type DriftItem, type FileChange } from './atomic.js'
+import { driftItem, Manifest, planFileWrite, planJsonHooks, planJsonValue, type DriftItem, type FileChange } from './atomic.js'
 import type { GatewayEndpoint, Snapshot } from './base.js'
 import { OpenCodeAdapter } from './opencode.js'
 
@@ -40,6 +40,22 @@ export function planMemoryHooks(snapshot: Snapshot, endpoint: GatewayEndpoint, h
   args.push('--agenthub-memory-hook')
   const enabled = snapshot.servers.some(server => server.tools.some(tool => tool.name === 'finish_notes'))
   const manifest = Manifest.load(home)
+  if (kind === 'antigravity') {
+    const path = join(home, '.gemini/config/hooks.json')
+    try {
+      // Antigravity uses named definitions, flat Stop handlers and camelCase payloads.
+      // Its payload has no event name, so each command carries the event explicitly.
+      const handler = (event: string) => ({ type: 'command',
+        command: hookCommand(endpoint.command, [...args, '--hook-event', event], true), timeout: WINDOWS ? 10 : 3 })
+      const value = enabled ? {
+        PreToolUse: [{ matcher: '^mcp_hub_.*', hooks: [handler('PreToolUse')] }],
+        Stop: [handler('Stop')],
+      } : { enabled: false }
+      const [change, drift] = planJsonValue({ home, path, keyPath: ['agenthub-memory'], value, manifest, cliKind: kind,
+        summary: 'Eventos de conversación de Antigravity para la memoria' })
+      return [change ? [change] : [], drift]
+    } catch (error) { return [[], [driftItem(path, 'agenthub-memory', (error as Error).message)]] }
+  }
   if (kind === 'opencode') {
     const content = `// Managed by Agent Hub. Native session events close only this session's notes.\nimport { spawnSync } from 'node:child_process'\nexport const AgentHubMemory = async ({ directory }) => {\n  const emit = event => { if (!${JSON.stringify(enabled)}) return; spawnSync(${JSON.stringify(endpoint.command)}, ${JSON.stringify(args)}, { input: JSON.stringify({ cwd: directory, ...event }), env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 2500, windowsHide: true, stdio: ['pipe','ignore','ignore'] }) }\n  return {\n    'tool.execute.before': async (input, output) => { if (input.tool.startsWith('hub_')) emit({ hook_event_name: 'PreToolUse', session_id: input.sessionID, tool_name: input.tool, tool_input: output.args }) },\n    event: async ({ event }) => { if (['session.idle','session.error','session.deleted'].includes(event.type)) emit({ hook_event_name: event.type === 'session.error' ? 'StopFailure' : event.type === 'session.deleted' ? 'SessionEnd' : 'Stop', session_id: event.properties.sessionID ?? event.properties.info?.id }) }\n  }\n}\n`
     const [change, drift] = planFileWrite({ home, path: join(new OpenCodeAdapter().configDir(home), 'plugins', 'agenthub-memory.js'), content, manifest, cliKind: kind, mode: 0o600 })

@@ -68,7 +68,7 @@ Varios agentes (y varias sesiones del mismo) pueden trabajar a la vez en un proy
 
 - Antes de empezar, leer \`working_notes\` de \`memory_context\` o \`memory_list_notes\` (\`project_id\`). Si otro agente está trabajando en lo mismo, no pisarlo: coordinar a través de la persona o elegir otra parte.
 - Al empezar una tarea, dejar una nota corta con \`memory_write_note\` (una o dos oraciones: qué se va a hacer y dónde; \`task_id\` si corresponde a una tarea). Una nota nueva de la misma sesión reemplaza a la anterior. Volver a leer las notas entre pasos largos.
-- Al terminar (o al quedar bloqueado), cerrar con \`memory_finish_notes\` y un \`summary\` de lo que se hizo o de qué falta. Los hooks de Codex, Claude Code, Gemini CLI y OpenCode cierran las notas al terminar el turno cuando están habilitados. En los demás clientes se cierran al finalizar la sesión o por inactividad; el resumen explícito es lo que usan los demás.
+- Al terminar (o al quedar bloqueado), cerrar con \`memory_finish_notes\` y un \`summary\` de lo que se hizo o de qué falta. Los hooks de Codex, Claude Code, Gemini CLI, OpenCode y Antigravity cierran las notas al terminar el turno cuando están habilitados. En los demás clientes se cierran al finalizar la sesión o por inactividad; el resumen explícito es lo que usan los demás.
 - Las notas son cortas y factuales; nada de credenciales ni contenido sensible.
 
 ## Tareas: Jira y pendientes internos

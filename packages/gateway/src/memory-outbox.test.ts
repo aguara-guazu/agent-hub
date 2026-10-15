@@ -74,3 +74,29 @@ it('reconoce el prefijo MCP de Gemini', async () => {
   await recordLifecycle(directory,'gemini','gemini_cli',{session_id:'s',hook_event_name:'BeforeTool',tool_name:'mcp_hub_memory_write_note',tool_input:{text:'Trabajando'}})
   expect(await sessionForCall(directory,'memory_write_note',{text:'Trabajando'})).toEqual(nativeSession('gemini','gemini_cli','s',undefined))
 })
+
+it('atribuye conversaciones Antigravity y espera fullyIdle antes de cerrar sus notas', async () => {
+  const event = { conversationId: 'ag-session', workspacePaths: ['/workspace'], hook_event_name: 'PreToolUse',
+    toolCall: { name: 'mcp_hub_memory_write_note', args: { text: 'PRIVATE_NOTE' } } }
+  await recordLifecycle(directory, 'ag', 'antigravity', event)
+  const who = nativeSession('ag', 'antigravity', 'ag-session', '/workspace')
+  expect(await sessionForCall(directory, 'memory_write_note', event.toolCall.args)).toEqual(who)
+  const outbox = new MemoryOutbox(directory)
+  await recordLifecycle(directory, 'ag', 'antigravity', { ...event, hook_event_name: 'Stop', fullyIdle: false })
+  expect(await outbox.pending()).toBe(0)
+  await recordLifecycle(directory, 'ag', 'antigravity', { ...event, hook_event_name: 'Stop' })
+  expect(await outbox.pending()).toBe(0)
+  await recordLifecycle(directory, 'ag', 'antigravity', { ...event, hook_event_name: 'Stop', fullyIdle: true })
+  const callTool = vi.fn(async () => ({ is_error: false, content: [] }))
+  await outbox.flush(() => view(), { callTool } as unknown as ConnectionPool)
+  expect(callTool).toHaveBeenCalledWith('agent', expect.anything(), 'finish_notes',
+    { reason: 'turn_end', before: expect.any(String) }, { 'agenthub/agent': who })
+})
+
+it('marca bloqueadas las notas de una conversación Antigravity que termina por error', async () => {
+  await recordLifecycle(directory, 'ag', 'antigravity', { conversationId: 'failed-session', hook_event_name: 'Stop', fullyIdle: true, terminationReason: 'error' })
+  const callTool = vi.fn(async () => ({ is_error: false, content: [] }))
+  await new MemoryOutbox(directory).flush(() => view(), { callTool } as unknown as ConnectionPool)
+  expect(callTool).toHaveBeenCalledWith('agent', expect.anything(), 'finish_notes',
+    expect.objectContaining({ state: 'blocked' }), { 'agenthub/agent': nativeSession('ag', 'antigravity', 'failed-session', undefined) })
+})

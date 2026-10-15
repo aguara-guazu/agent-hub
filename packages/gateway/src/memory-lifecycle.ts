@@ -21,6 +21,13 @@ const receiptKey = (name: string, args: unknown) => digest([exposedTool(name), a
 
 /** Hook receipts contain only a digest, never tool arguments, prompts or transcript contents. */
 export async function recordLifecycle(directory: string, agentId: string, cliKind: string, event: Record<string, any>) {
+  if (cliKind === 'antigravity') {
+    // Stop can fire while background work is still running; do not close those notes.
+    if (event.hook_event_name === 'Stop' && event.fullyIdle !== true) return
+    event = { ...event, session_id: event.conversationId, cwd: Array.isArray(event.workspacePaths) ? event.workspacePaths[0] : undefined,
+      tool_name: event.toolCall?.name, tool_input: event.toolCall?.args,
+      hook_event_name: event.hook_event_name === 'Stop' && (event.error || event.terminationReason === 'error') ? 'StopFailure' : event.hook_event_name }
+  }
   const session = event.session_id ?? event.sessionID
   if (typeof session !== 'string' || !session || session.length > 300) return
   const who = nativeSession(agentId, cliKind, session, event.cwd)

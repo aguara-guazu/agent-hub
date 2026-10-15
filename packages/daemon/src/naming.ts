@@ -20,6 +20,7 @@ export const CLIENT_PREFIXES: Readonly<Record<CliKind, string>> = {
   claude_code: `mcp__${SERVER_ALIAS}__`,
   codex_cli: `${SERVER_ALIAS}__`,
   gemini_cli: `${SERVER_ALIAS}__`,
+  antigravity: `mcp_${SERVER_ALIAS}_`,
   kiro: `${SERVER_ALIAS}___`,
   // Anthropic no documenta el prefijo de Claude Desktop; se toma el genérico.
   claude_desktop: `${SERVER_ALIAS}__`,

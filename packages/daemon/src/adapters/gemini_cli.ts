@@ -2,8 +2,7 @@
  * Adaptador de Gemini CLI.
  *
  * - `~/.gemini/settings.json`, clave `mcpServers`.
- * - `~/.agents/skills/<slug>/SKILL.md`, la misma raíz que Codex CLI: una sola
- *   materialización cubre a los dos y no se duplica.
+ * - `~/.gemini/skills/<slug>/SKILL.md`, independiente de los demás clientes.
  *
  * El alias del server es `hub`, sin guion bajo, justamente por este CLI: su parser
  * de políticas corta en el primer guion bajo después de `mcp_`.
@@ -37,7 +36,6 @@ import { planSkills, skillsDriftTargets, skillsRoot } from './skills.js'
 export const CLI_KIND = 'gemini_cli'
 
 const CONFIG_RELPATH = '.gemini/settings.json'
-const HOME_DIR_RELPATH = '.gemini'
 
 const MCP_KEY = ['mcpServers', SERVER_ALIAS]
 const MCP_REGION: ManagedRegion = region('json_value', MCP_KEY)
@@ -54,7 +52,7 @@ export class GeminiCliAdapter implements CliAdapter {
   }
 
   detect(home: string): DetectionResult | null {
-    for (const candidate of [this.configPath(home), join(home, HOME_DIR_RELPATH)]) {
+    for (const candidate of [this.configPath(home)]) {
       if (existsSync(candidate)) {
         return { cliKind: CLI_KIND, home, configPath: this.configPath(home), evidence: candidate, version: '' }
       }

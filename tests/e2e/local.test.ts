@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -155,10 +155,11 @@ describe('hub local TypeScript completo', () => {
     expect(existsSync(join(home,'.claude/skills/e2e-skill/SKILL.md'))).toBe(false)
     await api(`/machines/agents/${agents[0]!.id}`,'PATCH',{enabled:true})
     // Detect clients installed after enrolment and distribute the same catalogue.
-    for (const directory of ['.codex','.gemini','.kiro']) mkdirSync(join(home,directory),{recursive:true})
+    for (const directory of ['.codex','.gemini/antigravity','.kiro']) mkdirSync(join(home,directory),{recursive:true})
+    writeFileSync(join(home, '.gemini/settings.json'), '{}')
     await synchronizer.syncOnce({apply:true})
     const overview = await api('/local/overview')
-    expect(overview.clients).toHaveLength(4)
+    expect(overview.clients).toHaveLength(5)
     expect(overview.clients.every((c:any)=>c.synchronized && c.server_count===baseline.server_count+1 && c.skill_count===baseline.skill_count+1)).toBe(true)
     const codex = overview.clients.find((c:any)=>c.cli_kind==='codex_cli')
     await api('/policy/rules','PUT',{scope:'client',scope_id:codex.id,resource_type:'skill',resource_id:skill.id,state:'off'})
@@ -166,6 +167,50 @@ describe('hub local TypeScript completo', () => {
     expect(existsSync(join(home,'.codex/skills/e2e-skill/SKILL.md'))).toBe(false)
     expect(existsSync(join(home,'.gemini/skills/e2e-skill/SKILL.md'))).toBe(true)
     expect(existsSync(join(home,'.claude/skills/e2e-skill/SKILL.md'))).toBe(true)
+    // Connect through the exact entry written for Antigravity, then exercise its independent policy.
+    const antigravity = overview.clients.find((c:any)=>c.cli_kind==='antigravity')
+    const agEntry = JSON.parse(readFileSync(join(home, '.gemini/config/mcp_config.json'), 'utf8')).mcpServers.hub
+    const agClient = new Client({ name: 'antigravity-integration-test', version: '1.0.0' })
+    try {
+      await agClient.connect(new StdioClientTransport({ ...agEntry, env: { ...getDefaultEnvironment(), ...agEntry.env }, stderr: 'pipe' }))
+      expect((await agClient.listTools()).tools.some(t => t.name === name)).toBe(true)
+      expect((await agClient.callTool({ name, arguments: {} })).isError).not.toBe(true)
+      await api('/policy/rules','PUT',{scope:'client',scope_id:antigravity.id,resource_type:'mcp_server',resource_id:server.id,state:'off'})
+      expect((await agClient.callTool({ name, arguments: {} })).isError).toBe(true)
+      expect((await client.callTool({ name, arguments: {} })).isError).not.toBe(true)
+      await api('/policy/rules','PUT',{scope:'client',scope_id:antigravity.id,resource_type:'skill',resource_id:skill.id,state:'off'})
+      await synchronizer.syncOnce({apply:true})
+      for (const folder of ['config', 'antigravity-cli']) expect(existsSync(join(home, '.gemini', folder, 'skills/e2e-skill/SKILL.md'))).toBe(false)
+      expect(existsSync(join(home, '.gemini/skills/e2e-skill/SKILL.md'))).toBe(true)
+      const hooks = JSON.parse(readFileSync(join(home, '.gemini/config/hooks.json'), 'utf8'))['agenthub-memory']
+      const toolArgs = { text: 'Antigravity integration note' }
+      const event = { conversationId: 'ag-e2e-conversation', workspacePaths: [home], toolCall: { name: 'mcp_hub_memory_write_note', args: toolArgs } }
+      const hook = spawn(hooks.PreToolUse[0].hooks[0].command, { shell: true, cwd: home, env, stdio: ['pipe','pipe','pipe'] })
+      children.push(hook)
+      const hookResult = exitOf(hook)
+      hook.stdin!.end(JSON.stringify(event))
+      expect(await hookResult).toEqual({ code: 0, output: '{"decision":"allow"}\n' })
+      const noteResult = await agClient.callTool({ name: 'memory_write_note', arguments: toolArgs })
+      expect(noteResult.isError, JSON.stringify(noteResult)).not.toBe(true)
+      expect(JSON.stringify(noteResult)).toContain('native:')
+      const stopHook = spawn(hooks.Stop[0].command, { shell: true, cwd: home, env, stdio: ['pipe','pipe','pipe'] })
+      children.push(stopHook)
+      const stopResult = exitOf(stopHook)
+      stopHook.stdin!.end(JSON.stringify({ conversationId: event.conversationId, workspacePaths: [home], fullyIdle: true, terminationReason: 'model_stop' }))
+      expect(await stopResult).toEqual({ code: 0, output: '{"decision":"stop"}\n' })
+      let closed = false
+      for (let attempt = 0; attempt < 50 && !closed; attempt++) {
+        const notes = await agClient.callTool({ name: 'memory_list_notes', arguments: { include_finished: true } })
+        const data = JSON.parse((notes.content as Array<{ text: string }>)[0]!.text)
+        closed = data.items.some((note:any) => note.text === toolArgs.text && note.state === 'done' && note.finish_reason === 'turn_end')
+        if (!closed) await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      expect(closed, 'Antigravity Stop hook must close only its native conversation notes').toBe(true)
+      await api(`/machines/agents/${antigravity.id}`, 'PATCH', { enabled: false })
+      expect((await agClient.listTools()).tools).toHaveLength(0)
+      await synchronizer.syncOnce({apply:true})
+      expect(JSON.parse(readFileSync(join(home, '.gemini/config/hooks.json'), 'utf8'))['agenthub-memory']).toEqual({ enabled: false })
+    } finally { await agClient.close() }
     // Global control explicitly clears existing per-client overrides.
     await api('/policy/rules','PUT',{scope:'client',scope_id:agents[0]!.id,resource_type:'mcp_server',resource_id:server.id,state:'on'})
     await api('/policy/rules','PUT',{scope:'user',resource_type:'mcp_server',resource_id:server.id,state:'off',reset_clients:true})

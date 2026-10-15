@@ -64,6 +64,7 @@ interface ParsedArgs {
   hostname?: string
   tool?: string
   agent?: string
+  hookEvent?: string
   once: boolean
   local: boolean
   maxCycles: number
@@ -82,6 +83,7 @@ const LABELS: Record<string, string> = {
   claude_code: 'Claude Code',
   codex_cli: 'Codex CLI',
   gemini_cli: 'Gemini CLI',
+  antigravity: 'Antigravity',
   kiro: 'Kiro',
   claude_desktop: 'Claude Desktop',
   opencode: 'OpenCode',
@@ -124,6 +126,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break
       case '--agent':
         args.agent = take(++i)
+        break
+      case '--hook-event':
+        args.hookEvent = take(++i)
         break
       case '--once':
         args.once = true
@@ -483,8 +488,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       let raw = ''
       for await (const chunk of process.stdin) { raw += String(chunk); if (raw.length > 2_000_000) return EXIT_ERROR }
       const event = JSON.parse(raw || '{}') as Record<string, unknown>
+      if (snapshot['cli_kind'] === 'antigravity') event['hook_event_name'] = args.hookEvent
       await recordLifecycle(integrationDirectory(args.stateDir, args.agent), args.agent, String(snapshot['cli_kind'] ?? ''), event)
-      say('{}')
+      // "allow" delegates to the client's normal approval policy; never auto-approve a tool.
+      say(snapshot['cli_kind'] === 'antigravity' ? JSON.stringify({ decision: args.hookEvent === 'PreToolUse' ? 'allow' : 'stop' }) : '{}')
       return EXIT_OK
     }
     const app = buildApp(args)

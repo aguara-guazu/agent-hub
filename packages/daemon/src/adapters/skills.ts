@@ -40,6 +40,7 @@ export const SKILL_ROOTS: Record<string, string> = {
   claude_code: '.claude/skills',
   codex_cli: '.codex/skills',
   gemini_cli: '.gemini/skills',
+  antigravity: '.gemini/config/skills',
   kiro: '.kiro/skills',
   // Claude Desktop no carga skills desde el disco y no tiene raíz.
   opencode: '.config/opencode/skills',

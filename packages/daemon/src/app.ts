@@ -122,7 +122,7 @@ export function detectClis(home: string): DetectionSummary {
   const found = detectAll(home)
   const seen = new Set(found.map((f) => f.cliKind))
   // Claude Desktop no tiene binario en el PATH: lo detecta su adaptador por el directorio de datos.
-  const binaries: Record<string, string> = { claude_code: 'claude', codex_cli: 'codex', gemini_cli: 'gemini', kiro: 'kiro-cli', opencode: 'opencode' }
+  const binaries: Record<string, string> = { claude_code: 'claude', codex_cli: 'codex', gemini_cli: 'gemini', kiro: 'kiro-cli', opencode: 'opencode', antigravity: 'agy' }
   const directories = [join(home, '.local/bin'), join(home, '.cargo/bin'), join(home, '.opencode/bin'),
     ...(samePath(home, homedir()) ? (process.env.PATH ?? '').split(delimiter) : []),
   ]
@@ -130,10 +130,11 @@ export function detectClis(home: string): DetectionSummary {
   const extensions = platform() === 'win32' ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map(ext => ext.toLowerCase()) : ['']
   for (const [kind, binary] of Object.entries(binaries)) {
     if (seen.has(kind)) continue
-    const executable = directories.flatMap(dir => extensions.map(ext => join(dir, binary + ext)))
+    const names = kind === 'antigravity' ? ['agy', 'antigravity'] : [binary]
+    const executable = directories.flatMap(dir => names.flatMap(name => extensions.map(ext => join(dir, name + ext))))
       .find(path => { try { accessSync(path, constants.X_OK); return true } catch { return false } })
     if (!executable) continue
-    const paths: Record<string, string> = { claude_code: join(home, '.claude.json'), codex_cli: join(home, '.codex/config.toml'), gemini_cli: join(home, '.gemini/settings.json'), kiro: join(home, '.kiro/settings/mcp.json'), opencode: new OpenCodeAdapter().configPath(home) }
+    const paths: Record<string, string> = { claude_code: join(home, '.claude.json'), codex_cli: join(home, '.codex/config.toml'), gemini_cli: join(home, '.gemini/settings.json'), kiro: join(home, '.kiro/settings/mcp.json'), opencode: new OpenCodeAdapter().configPath(home), antigravity: join(home, '.gemini/config/mcp_config.json') }
     found.push({ cliKind: kind, home, configPath: paths[kind]!, evidence: executable, version: '' })
     seen.add(kind)
   }
@@ -144,7 +145,7 @@ export function detectClis(home: string): DetectionSummary {
 /** Normaliza el nombre de una herramienta a su exposed_name, con o sin prefijo. */
 export function normalizeToolName(raw: string): string {
   const name = raw.trim()
-  for (const prefix of ['mcp__hub__', 'hub___', 'hub__']) {
+  for (const prefix of ['mcp__hub__', 'mcp_hub_', 'hub___', 'hub__', 'hub_']) {
     if (name.startsWith(prefix)) return name.slice(prefix.length)
   }
   return name

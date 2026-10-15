@@ -14,7 +14,7 @@ export const AGENT_META_KEY = 'agenthub/agent'
 
 /** A working note without activity from its session for this long is shown as finished. */
 export const NOTE_INACTIVITY_MINUTES = 20
-const CLI_NAMES: Record<string, string> = { claude_code: 'Claude Code', codex_cli: 'Codex', gemini_cli: 'Gemini CLI', kiro: 'Kiro', claude_desktop: 'Claude Desktop', opencode: 'OpenCode' }
+const CLI_NAMES: Record<string, string> = { claude_code: 'Claude Code', codex_cli: 'Codex', gemini_cli: 'Gemini CLI', antigravity: 'Antigravity', kiro: 'Kiro', claude_desktop: 'Claude Desktop', opencode: 'OpenCode' }
 
 export function agentFromMeta(meta: unknown): AgentContext | undefined {
   const raw = meta && typeof meta === 'object' ? (meta as Record<string, unknown>)[AGENT_META_KEY] : undefined
