@@ -21,8 +21,9 @@ export class AntigravityAdapter implements CliAdapter {
   }
 
   skillsRoots(home: string): string[] {
+    const legacyRoot = join(home, '.gemini/antigravity/skills')
     return [skillsRoot(CLI_KIND, home), join(home, '.gemini/antigravity-cli/skills'),
-      ...(existsSync(join(home, '.gemini/antigravity/mcp_config.json')) ? [join(home, '.gemini/antigravity/skills')] : [])]
+      ...(existsSync(legacyRoot) || existsSync(join(home, '.gemini/antigravity/mcp_config.json')) ? [legacyRoot] : [])]
   }
 
   detect(home: string): DetectionResult | null {

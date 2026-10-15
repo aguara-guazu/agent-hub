@@ -56,6 +56,10 @@ it('mantiene conectadas configuraciones antiguas sin mover ni borrar sus prefere
   expect(json(legacy).mcpServers.mine).toEqual({ command: 'mine' })
   expect(json(legacy).mcpServers.hub).toEqual(json(adapter.configPath(home)).mcpServers.hub)
   expect(existsSync(join(home, '.gemini/antigravity/skills/memory/SKILL.md'))).toBe(true)
+  // Migrating the MCP file must not strand managed skills in a still-readable legacy root.
+  rmSync(legacy)
+  applyChanges(adapter.plan({ ...snapshot, skills: [] }, endpoint, home))
+  expect(existsSync(join(home, '.gemini/antigravity/skills/memory'))).toBe(false)
 })
 
 it('apaga skills de todas las variantes sin afectar Gemini ni skills personales', () => {
