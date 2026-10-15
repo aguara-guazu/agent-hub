@@ -12,11 +12,12 @@ import { defaultAI } from '../src/config.js'
 
 let directory: string, service: MemoryService
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jv1sAAAAASUVORK5CYII=', 'base64')
-const settings = mediaSettingsInput.parse({ ocr: true, vision: true })
+const settings = mediaSettingsInput.parse({ ocr: true, vision: true, transcription: false, audio: false })
 const signal = () => new AbortController().signal
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'media-processing-test-')); service = new MemoryService(directory, 'http://localhost/callback') })
 afterEach(async () => { await service.close(); await rm(directory, { force: true, recursive: true }) })
 async function fixture() {
+  for (const module of [service.media.ocr, service.media.vision]) vi.spyOn(module, 'installed').mockReturnValue(true)
   const { store, operations } = await service.get()
   await store.db.query("INSERT INTO settings(key,value) VALUES('media',$1)", [JSON.stringify(settings)])
   const saved = await operations.call('import_file', { title: 'Captura', filename: 'captura.png', data_base64: png.toString('base64'), description: 'Anotación original' })
@@ -28,7 +29,7 @@ const embedding = [1, ...Array(767).fill(0)]
 function runtime(process = vi.fn(async () => ({ parts: [
   { text: 'Factura aurora', metadata: { generated: 'ocr', processor: 'fixture', confidence: 0.9 } },
   { text: 'Contenido visual', metadata: { generated: 'media', media_embedding: true, modality: 'image' }, vector: embedding },
-], warnings: [] }))) { return { validate: () => settings, process } as unknown as MediaRuntime }
+], warnings: [] }))) { return { validate: () => settings, process, ...Object.fromEntries(['decoder', 'ocr', 'vision', 'speech', 'audio'].map(name => [name, { installed: () => true }])) } as unknown as MediaRuntime }
 it('conserva originales y citas en una nueva versión; indexa OCR y el vector visual en el espacio nativo', async () => {
   const { store, operations, saved, job } = await fixture()
   const before = await store.original(saved.version_id)
@@ -61,7 +62,7 @@ it('no reintenta automáticamente un análisis cancelado y no ejecuta una config
   const { store, job } = await fixture()
   await store.db.query("UPDATE jobs SET state='cancelled' WHERE id=$1", [job.id])
   expect(await queueMedia(store, {}, true)).toEqual({ queued: 0 })
-  await store.db.query("UPDATE settings SET value=$1 WHERE key='media'", [JSON.stringify(mediaSettingsInput.parse({}))])
+  await store.db.query("UPDATE settings SET value=$1 WHERE key='media'", [JSON.stringify(mediaSettingsInput.parse({ ocr: false, vision: false, audio: false, transcription: false }))])
   const engine = runtime()
   expect(await processMedia(store, engine, job.payload, signal(), async () => {})).toEqual({ skipped: 'settings_changed' })
   expect(engine.process).not.toHaveBeenCalled()

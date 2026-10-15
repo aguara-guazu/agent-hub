@@ -86,6 +86,9 @@ async function reevaluatePending(store: MemoryStore, config: AIConfig): Promise<
   for (const row of pending) await store.db.transaction(async sql => {
     const proposal = await requireEntity(sql, row.id, 'fact')
     if (proposal.data.review_state !== 'pending') return
+    // A person deleted after the proposal was made leaves it without a subject: drop it instead of aborting the pass.
+    const present = await sql.query("SELECT id FROM entities WHERE kind='person' AND id IN ($1,$2)", [proposal.data.from_id, proposal.data.into_id])
+    if (present.length < 2) { await sql.query('DELETE FROM entities WHERE id=$1', [row.id]); return }
     const a = await requireEntity(sql, proposal.data.from_id, 'person'), b = await requireEntity(sql, proposal.data.into_id, 'person')
     if (a.data.merged_into || b.data.merged_into) return
     const decision = await decideMerge(sql, a, b, proposal.data.confidence, config)

@@ -7,6 +7,32 @@ on:
   workflow_call:
 
 jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Windows paths, secrets, diagnostics and startup regressions
+        run: npx vitest run packages/gateway/src/secrets.test.ts packages/gateway/src/platform.test.ts packages/daemon/src/secrets/index.test.ts packages/daemon/src/adapters/memory-hooks.test.ts packages/memory/test/vault.test.ts packages/memory/test/report.test.ts desktop/src/session.test.ts desktop/src/clients.test.ts desktop/src/prepare-sharp.test.ts
+      - name: Build Windows installer
+        run: npx electron-builder --win nsis --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Install and open twice with a fresh profile
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'Agent Hub installed Pérez'
+          $installer = (Resolve-Path 'release/AgentHub-Setup-x64.exe').Path
+          $process = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+          node scripts/smoke-desktop.mjs (Join-Path $installDir 'Agent Hub.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Installed desktop smoke failed' }
   verify:
     runs-on: ubuntu-latest
     strategy:

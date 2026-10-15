@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { join } from 'node:path'
 import { MEMORY_META_KEY } from './memory-bridge.js'
 import { MemoryOutbox } from './memory-outbox.js'
+import { renameRetry } from './platform.js'
 
 export interface NativeSession { agent_id: string; cli_kind: string; client: string; session_id: string; cwd: string | null }
 function canonical(value: unknown): string {
@@ -28,7 +29,7 @@ export async function recordLifecycle(directory: string, agentId: string, cliKin
     const receipts = join(directory, 'calls'); await mkdir(receipts, { recursive: true, mode: 0o700 })
     const path = join(receipts, `${receiptKey(event.tool_name, event.tool_input ?? {})}-${randomUUID()}.json`)
     await writeFile(`${path}.tmp`, JSON.stringify({ who, at: Date.now() }), { mode: 0o600 })
-    await rename(`${path}.tmp`, path)
+    await renameRetry(`${path}.tmp`, path).catch(async (error: unknown) => { await rm(`${path}.tmp`, { force: true }); throw error })
   } else if (['Stop', 'AfterAgent', 'SessionEnd', 'Interrupt', 'StopFailure'].includes(name)) {
     await new MemoryOutbox(directory).enqueue({ operation: 'finish_notes', args: { reason: name === 'SessionEnd' ? 'session_end' : 'turn_end',
       ...(name === 'Interrupt' || name === 'StopFailure' ? { state: 'blocked' } : {}), before: new Date().toISOString() }, meta: { [MEMORY_META_KEY]: who } })

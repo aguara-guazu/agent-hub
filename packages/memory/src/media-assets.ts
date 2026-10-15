@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
-import { chmod, open, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, open, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { renameRetry } from '@agenthub/gateway/platform'
 import { DECODER_ASSETS, DECODER_RELEASE } from './media-decoder-assets.js'
 import { check, MemoryError } from './contracts.js'
 
@@ -17,6 +18,7 @@ export class MediaAssets {
   readonly files: { name: string; url: string; sha256: string; bytes?: number }[]
   constructor(directory: string, readonly module: AssetModule) {
     this.directory = join(directory, 'memory', 'models', module === 'ocr' ? 'tesseract-eng-spa-fast-v1' : 'ffmpeg-b6.1.1')
+    // No win32-arm64 build is published; Windows 11 on ARM runs the x64 binaries under emulation.
     const platform = `${process.platform}-${process.platform === 'win32' && process.arch === 'arm64' ? 'x64' : process.arch}`
     this.files = module === 'ocr' ? [
       { name: 'eng.traineddata.gz', url: `${TESSDATA}/eng.traineddata.gz`, sha256: '18c1ac52b75e35d44735fb6c2a60acfaf23033524653200738e98f0243edb75b' },
@@ -59,7 +61,7 @@ export class MediaAssets {
           this.progress = { file: file.name, loaded, total, percent: total ? 100 * loaded / total : undefined }
         }
         check(digest.digest('hex') === file.sha256 && (!file.bytes || loaded === file.bytes), 'La descarga no coincide con la huella publicada; reintentá', 502)
-        await output.close(); await rename(temp, path)
+        await output.close(); await renameRetry(temp, path)
         if (/^ff(mpeg|probe)/.test(file.name)) await chmod(path, 0o700)
       } finally { clearTimeout(timer); await output.close().catch(() => {}); await rm(temp, { force: true }).catch(() => {}) }
     }

@@ -9,6 +9,10 @@ import { NATIVE_EMBEDDING_MODEL } from '../src/embedding-model.js'
 let directory: string, service: MemoryService, defaults: MemoryDefaults, state: 'missing'|'downloading'|'ready'|'error'
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'memory-defaults-')); service = new MemoryService(directory, 'http://localhost/callback')
+  for (const module of Object.values({ ocr: service.media.ocr, decoder: service.media.decoder, vision: service.media.vision, audio: service.media.audio, speech: service.media.speech })) {
+    vi.spyOn(module, 'status').mockReturnValue({ state: 'ready' } as any)
+    vi.spyOn(module, 'install').mockImplementation(() => { throw new Error('Unexpected model download') })
+  }
   defaults = new MemoryDefaults(service, () => 'claude_code'); state = 'missing'
   vi.spyOn(service.nativeEmbeddings, 'status').mockImplementation(() => ({ model: NATIVE_EMBEDDING_MODEL, state, error: state === 'error' ? 'offline' : undefined }))
   vi.spyOn(service.nativeEmbeddings, 'install').mockImplementation(() => { state = 'downloading'; return service.nativeEmbeddings.status() })

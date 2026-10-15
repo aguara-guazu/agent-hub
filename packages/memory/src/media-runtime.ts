@@ -5,19 +5,25 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createWorker, OEM } from 'tesseract.js'
-import sharp from 'sharp'
 import { z } from 'zod'
 import { check, MemoryError, parse } from './contracts.js'
 import { NativeEmbeddings } from './native-embeddings.js'
 import { MediaAssets } from './media-assets.js'
 
-export const mediaSettingsInput = z.object({ pdf: z.boolean().default(true), ocr: z.boolean().default(false), transcription: z.boolean().default(false),
-  vision: z.boolean().default(false), audio: z.boolean().default(false), language: z.enum(['es','en','pt','fr','de','it','ja','zh','ko','ru','ar','hi']).default('es'), automatic: z.boolean().default(true) }).strict()
+export const mediaSettingsInput = z.object({ pdf: z.boolean().default(true), ocr: z.boolean().default(true), transcription: z.boolean().default(true),
+  vision: z.boolean().default(true), audio: z.boolean().default(true), language: z.enum(['es','en','pt','fr','de','it','ja','zh','ko','ru','ar','hi']).default('es'), automatic: z.boolean().default(true) }).strict()
 export type MediaSettings = z.infer<typeof mediaSettingsInput>
 export const MEDIA_MODULES = ['ocr','decoder','vision','audio','speech'] as const
 export const MEDIA_MAX_SECONDS = 1800, VIDEO_FRAME_INTERVAL = 5, MEDIA_REVISION = 'media-v1'
 export type MediaPart = { text: string; offset_ms?: number | undefined; metadata: Record<string, any>; vector?: number[] }
 export type MediaInput = { data: Buffer; mime_type: string; filename: string }
+// This module is on the core's startup path: a static import would let a native libvips load failure (missing DLL,
+// quarantined binary) kill the core before it listens, instead of failing only image processing.
+let sharpModule: Promise<typeof import('sharp')['default']> | undefined
+const loadSharp = () => (sharpModule ??= import('sharp').then(module => module.default).catch((error: unknown) => {
+  sharpModule = undefined
+  throw new MemoryError(503, `El procesamiento de imágenes no está disponible en este equipo: ${error instanceof Error ? error.message : String(error)}`)
+}))
 export class MediaRuntime {
   readonly ocr: MediaAssets
   readonly decoder: MediaAssets
@@ -50,6 +56,7 @@ export class MediaRuntime {
         catch (error) { void starting.then(late => late.terminate()).catch(() => {}); throw error }
       }
       signal.throwIfAborted()
+      const sharp = await loadSharp()
       const prepared = await sharp(data, { limitInputPixels: 40_000_000 }).rotate().resize({ width: 2400, height: 2400, fit: 'inside', withoutEnlargement: true }).png().toBuffer()
       const imageSize = await sharp(prepared).metadata()
       const result = await interruptibleOCR(worker.recognize(prepared, {}, { text: true, blocks: true }), signal)
@@ -67,7 +74,7 @@ export class MediaRuntime {
         for await (const page of pdfPages(input.data, { vision: settings.vision, ocr: settings.ocr }, signal)) {
           await report({ stage: 'pdf', media_page: page.page, media_pages: page.count })
           for (const chunk of splitText(page.text)) parts.push({ text: chunk.text, metadata: { generated: 'pdf_text', processor: 'pdfium-2.1.13', page: page.page, page_count: page.count, source_text: true } })
-          if (page.needsOCR && page.image) {
+          if (settings.ocr && page.needsOCR && page.image) {
             const from = parts.length; await ocr(Buffer.from(page.image))
             for (const part of parts.slice(from)) Object.assign(part.metadata, { page: page.page, page_count: page.count })
           }
@@ -136,7 +143,7 @@ export class MediaRuntime {
       signal.removeEventListener('abort', abortOCR)
       await worker?.terminate().catch(() => {})
       await Promise.all([this.vision.unload(), this.audio.unload(), this.speech.unload()])
-      if (directory) await rm(directory, { recursive: true, force: true })
+      if (directory) await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => undefined)
     }
   }
   async close() { await Promise.all(MEDIA_MODULES.map(m => this[m].close())) }

@@ -3,8 +3,9 @@
  * Claude Code.
  *
  * - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`.
- *   Windows: `%APPDATA%\Claude\claude_desktop_config.json`, es decir `AppData/Roaming/Claude`
- *   bajo el home. Clave `mcpServers`; la única entrada es el puntero al gateway. El
+ *   Windows: `%APPDATA%\Claude\claude_desktop_config.json`, o la copia que la instalación MSIX lee
+ *   primero en `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude`. Clave
+ *   `mcpServers`; la única entrada es el puntero al gateway. El
  *   archivo sólo admite servers stdio (`command`, `args`, `env`): no hay campo de URL,
  *   así que un gateway http no se puede configurar y se reporta como deriva. En Linux la
  *   ruta no está documentada y el cliente no se detecta.
@@ -26,7 +27,7 @@
  */
 
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { platform } from 'node:os'
+import { homedir, platform } from 'node:os'
 import { dirname, join, relative, sep } from 'node:path'
 
 import { canonicalJson, sha256, SKILL_FILENAME, type SnapshotSkill } from '@agenthub/shared'
@@ -38,6 +39,7 @@ import {
   Manifest,
   planJsonValue,
   region,
+  samePath,
   type DriftItem,
   type DriftReport,
   type FileChange,
@@ -64,6 +66,33 @@ const DATA_DIRS: Readonly<Record<string, string>> = {
   win32: 'AppData/Roaming/Claude',
 }
 const FALLBACK_DATA_DIR = '.config/Claude'
+
+/** `%APPDATA%` o `%LOCALAPPDATA%` del usuario real; para otro home, su equivalente bajo `AppData`. */
+function windowsAppData(home: string, scope: 'Roaming' | 'Local'): string {
+  const fromEnv = process.env[scope === 'Roaming' ? 'APPDATA' : 'LOCALAPPDATA']?.trim()
+  return fromEnv && samePath(home, homedir()) ? fromEnv : join(home, 'AppData', scope)
+}
+
+/**
+ * Carpetas de datos posibles en Windows, en orden de preferencia, con `%APPDATA%\Claude` al final. Una app
+ * empaquetada como MSIX escribe lo que va a `AppData\Roaming` en el `LocalCache` de su paquete y lee primero
+ * ahí, con la ruta real como respaldo:
+ * https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes. El sufijo del
+ * paquete depende del editor, por eso se busca por prefijo.
+ */
+function windowsDataDirs(home: string): string[] {
+  const packages = join(windowsAppData(home, 'Local'), 'Packages')
+  let names: string[] = []
+  try {
+    names = readdirSync(packages).filter((name) => /^Claude_/i.test(name)).sort()
+  } catch {
+    /* sin paquetes instalados */
+  }
+  return [
+    ...names.map((name) => join(packages, name, 'LocalCache', 'Roaming', 'Claude')).filter((dir) => existsSync(dir)),
+    join(windowsAppData(home, 'Roaming'), 'Claude'),
+  ]
+}
 
 const MCP_KEY = ['mcpServers', SERVER_ALIAS]
 const MCP_REGION: ManagedRegion = region('json_value', MCP_KEY)
@@ -163,19 +192,24 @@ function expectedFingerprint(skill: SnapshotSkill): string | null {
 export class ClaudeDesktopAdapter implements CliAdapter {
   readonly cliKind = CLI_KIND
 
+  /** Carpetas donde la app puede tener sus datos; la última es la que se usa si todavía no existe ninguna. */
+  dataDirs(home: string): string[] {
+    if (platform() === 'win32') return windowsDataDirs(home)
+    return [join(home, DATA_DIRS[platform()] ?? FALLBACK_DATA_DIR)]
+  }
+
+  /** La primera carpeta que ya tiene el archivo; si ninguna, la primera que existe. */
   configPath(home: string): string {
-    return join(home, DATA_DIRS[platform()] ?? FALLBACK_DATA_DIR, CONFIG_FILENAME)
+    const dirs = this.dataDirs(home)
+    const dir = dirs.find((item) => existsSync(join(item, CONFIG_FILENAME))) ?? dirs.find((item) => existsSync(item)) ?? dirs[dirs.length - 1]!
+    return join(dir, CONFIG_FILENAME)
   }
 
   detect(home: string): DetectionResult | null {
     if (!Object.hasOwn(DATA_DIRS, platform())) return null
     const config = this.configPath(home)
-    for (const candidate of [config, dirname(config)]) {
-      if (existsSync(candidate)) {
-        return { cliKind: CLI_KIND, home, configPath: config, evidence: candidate, version: '' }
-      }
-    }
-    return null
+    const evidence = [config, ...this.dataDirs(home)].find((candidate) => existsSync(candidate))
+    return evidence === undefined ? null : { cliKind: CLI_KIND, home, configPath: config, evidence, version: '' }
   }
 
   /** La ÚNICA entrada de MCP server que baja al cliente; el archivo sólo entiende stdio. */
@@ -216,7 +250,7 @@ export class ClaudeDesktopAdapter implements CliAdapter {
    */
   accountCacheStamp(home: string): string {
     const parts: string[] = []
-    for (const dir of accountSkillDirs(dirname(this.configPath(home)))) {
+    for (const dir of this.dataDirs(home).flatMap(accountSkillDirs)) {
       for (const path of [join(dirname(dir), ACCOUNT_MANIFEST), dir]) {
         try {
           parts.push(`${path}:${statSync(path).mtimeMs}`)
@@ -230,7 +264,7 @@ export class ClaudeDesktopAdapter implements CliAdapter {
 
   /** `null` cuando la app no tiene caché de cuenta: no hay nada que informar. */
   readAccountSkills(snapshot: Snapshot, home: string, checkedAt = new Date().toISOString()): AccountSkillsReport | null {
-    const dirs = accountSkillDirs(dirname(this.configPath(home)))
+    const dirs = this.dataDirs(home).flatMap(accountSkillDirs)
     if (dirs.length === 0) return null
     const skills: AccountSkillsReport['skills'] = []
     for (const skill of snapshot.skills ?? []) {

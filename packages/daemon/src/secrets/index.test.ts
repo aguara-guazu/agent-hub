@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -75,16 +76,16 @@ describe('FileSecretBackend', () => {
     writeFileSync(path, 'el-token\n')
     chmodSync(path, 0o600)
     const backend = new FileSecretBackend()
-    expect(backend.get(parseRef(`file://${path}`))).toBe('el-token')
+    expect(backend.get(parseRef(pathToFileURL(path).href))).toBe('el-token')
   })
 
-  it('se niega a leer un archivo con permisos más abiertos que 0600', () => {
+  it.skipIf(process.platform === 'win32')('se niega a leer un archivo con permisos más abiertos que 0600', () => {
     const path = join(dir, 'abierto.txt')
     writeFileSync(path, 'el-token')
     chmodSync(path, 0o644)
     const backend = new FileSecretBackend()
     try {
-      backend.get(parseRef(`file://${path}`))
+      backend.get(parseRef(pathToFileURL(path).href))
       throw new Error('debería haber fallado')
     } catch (exc) {
       expect(exc).toBeInstanceOf(SecretBackendError)
@@ -100,7 +101,7 @@ describe('FileSecretBackend', () => {
 
   it('reporta el archivo inexistente como no encontrado', () => {
     const backend = new FileSecretBackend()
-    expect(() => backend.get(parseRef(`file://${join(dir, 'no.txt')}`))).toThrowError(SecretNotFoundError)
+    expect(() => backend.get(parseRef(pathToFileURL(join(dir, 'no.txt')).href))).toThrowError(SecretNotFoundError)
   })
 })
 

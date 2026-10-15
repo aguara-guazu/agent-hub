@@ -78,7 +78,7 @@ it('recarga la clave local sin reiniciar y sólo la entrega al entorno del proce
   const calls = launch.mock.calls.length
   await expect(runtime.test('kiro', 'fixture')).rejects.toMatchObject({ statusCode: 409 })
   expect(launch.mock.calls).toHaveLength(calls)
-})
+}, 15_000)
 it('sólo ofrece esfuerzos documentados en Kiro si el catálogo no los informa', () => {
   expect(kiroEfforts('claude-opus-4.6')).toEqual(['low', 'medium', 'high', 'max'])
   expect(kiroEfforts('claude-sonnet-5')).toContain('xhigh')

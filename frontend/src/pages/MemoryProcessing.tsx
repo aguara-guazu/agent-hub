@@ -1,14 +1,41 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useMutation } from '@tanstack/react-query'
+import { api } from '../lib/api'
+import { useToast } from '../components/Toast'
 import { MemoryFrame, PageHeading, ErrorBox, Pager, formatTime, useMemory, useMemoryMutation } from '../lib/memory'
 
 const providers: Record<string, string> = { deepseek: 'DeepSeek', ollama: 'Ollama', opencode: 'OpenCode', claude_code: 'Claude Code', codex_cli: 'Codex', kiro: 'Kiro CLI' }
 const states: Record<string, string> = { queued: 'En cola', running: 'Procesando', waiting: 'Esperando reintento', completed: 'Completado', failed: 'Falló', cancelled: 'Cancelado' }
 /** Processing shows pending work only; completed and cancelled jobs are history. */
 const pendingStates = ['running', 'queued', 'waiting', 'failed']
-const stages: Record<string, string> = { pdf: 'Leyendo PDF por páginas', ocr: 'Reconociendo texto en imágenes', transcription: 'Transcribiendo audio localmente', media_decode: 'Leyendo audio y video', media_embeddings: 'Generando embeddings multimedia', memory_maintenance: 'Organizando recuerdos y revisando el índice', identity_inference: 'Infiriendo vínculos de hablantes', project_inference: 'Buscando el proyecto de la fuente', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
+const stages: Record<string, string> = { pdf: 'Leyendo PDF por páginas', ocr: 'Reconociendo texto en imágenes', transcription: 'Transcribiendo audio localmente', media_decode: 'Leyendo audio y video', media_embeddings: 'Generando embeddings multimedia', memory_maintenance: 'Organizando recuerdos y revisando el índice', identity_inference: 'Infiriendo vínculos de hablantes', project_inference: 'Buscando el proyecto de la fuente', metadata_inference: 'Infiriendo título, identificador y resumen', dedupe_people: 'Unificando personas duplicadas', preparing: 'Preparando contenido', embeddings: 'Generando embeddings locales', extraction: 'Extrayendo con IA', complete: 'Finalizado', identities: 'Resolviendo emails de Google', document_speakers: 'Recuperando hablantes de documentos', calendar: 'Leyendo Calendar', meet: 'Leyendo Meet' }
 const number = (value: number) => value.toLocaleString('es-AR')
 const projectResults: Record<string, string> = { auto_assigned: 'Proyecto asignado automáticamente con confianza alta', suggested: 'Proyecto sugerido: espera tu decisión en Proyectos', no_project: 'Sin proyecto coincidente: espera tu decisión en Proyectos' }
+
+/** Fetch first; opening the link remains a user gesture so browsers do not block it. */
+function ReportButton({ id }: { id: string }) {
+  const toast = useToast()
+  const [ready, setReady] = useState<{ text: string; url: string } | null>(null)
+  const report = useMutation({
+    mutationFn: () => api.get<{ text: string; url: string }>(`/memory/jobs/${id}/report`),
+    onSuccess: setReady,
+    onError: e => toast.error('No se pudo armar el reporte', e.message),
+  })
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(ready!.text); toast.success('Reporte copiado', 'Podés pegarlo en el issue.') }
+    catch { toast.error('No se pudo copiar', 'Seleccioná y copiá el texto del reporte.') }
+  }
+  return <div>
+    <button className="btn btn-sm" disabled={report.isPending} onClick={() => ready ? setReady(null) : report.mutate()}>{ready ? 'Cerrar reporte' : 'Reportar'}</button>
+    {ready && <div>
+      <p>Se filtraron credenciales conocidas, emails y rutas personales. Revisá el texto antes de publicarlo.</p>
+      <textarea aria-label="Reporte del trabajo" readOnly value={ready.text} rows={10} />
+      <button className="btn btn-sm" onClick={() => void copy()}>Copiar reporte</button>
+      <a className="btn btn-sm" href={ready.url} target="_blank" rel="noopener noreferrer">Abrir issue en GitHub</a>
+    </div>}
+  </div>
+}
 
 export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (id: string) => void; onCancel: (id: string) => void }) {
   const p = job.progress ?? {}, active = ['queued', 'running', 'waiting'].includes(job.state)
@@ -16,7 +43,7 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
   const done = p.stage === 'identity_inference' ? p.identity_batch ?? 0 : p.stage === 'dedupe_people' ? p.dedupe_batch ?? 0 : p.stage === 'extraction' ? p.batch ?? 0 : p.embeddings ?? 0
   const progress = total > 0 ? Math.min(100, Math.floor(done / total * 100)) : null
   const elapsed = p.started_at ? Math.max(0, Math.floor(((p.finished_at ? Date.parse(p.finished_at) : active ? Date.now() : Date.parse(job.updated_at)) - Date.parse(p.started_at)) / 1000)) : null
-  const title = job.kind === 'tidy_memory' ? 'Organización de la memoria' : job.kind === 'index_entities' ? 'Índice de búsqueda local' : job.kind === 'dedupe_people' ? 'Unificación de personas duplicadas' : job.source_title ?? p.source_title ?? (job.kind === 'sync' ? 'Sincronización de fuente' : job.kind === 'google_repair' ? 'Reparación de identidades' : job.kind === 'google_document' ? 'Importación de documento' : 'Fuente ya eliminada')
+  const title = job.kind === 'tidy_memory' ? 'Organización de la memoria' : job.kind === 'index_entities' ? 'Índice de búsqueda local' : job.kind === 'dedupe_people' ? 'Unificación de personas duplicadas' : job.source_title ?? p.source_title ?? (job.kind === 'sync' ? job.payload?.since ? 'Sincronización de un período anterior' : 'Sincronización de fuente' : job.kind === 'gmail' ? 'Correos de Gmail' : job.kind === 'google_repair' ? 'Reparación de identidades' : job.kind === 'google_document' ? 'Importación de documento' : 'Fuente ya eliminada')
   const deepseek = p.provider ? p.provider === 'deepseek' : p.model?.startsWith('deepseek') && p.extraction !== 'not_configured'
   const mode = job.kind === 'media' ? 'Multimedia local' : job.kind === 'tidy_memory' ? 'Mantenimiento local' : job.kind === 'index_entities' || p.index_only || job.payload.index_only ? 'Sólo índice local' : deepseek ? 'DeepSeek' : providers[p.provider] ? providers[p.provider]! : job.kind === 'process' ? p.provider === 'disabled' ? 'Procesamiento local' : 'Por iniciar' : 'Google / fuente'
   return <article className="memory-processing-card card">
@@ -43,7 +70,7 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
     {p.related_memories?.length > 0 && <details><summary>{p.related_memories.length} pares de recuerdos relacionados para revisar</summary>{p.related_memories.map((pair: any) => <p key={`${pair.first_id}:${pair.second_id}`}><Link to={`/memory/entities/${pair.first_id}`}>{pair.first_title}</Link> · <Link to={`/memory/entities/${pair.second_id}`}>{pair.second_title}</Link></p>)}</details>}
     {p.identities_total !== undefined && <p>Identidades: {p.identities_completed ?? 0}/{p.identities_total} · Emails resueltos: {p.emails_resolved ?? 0}</p>}
     {p.documents_total !== undefined && <p>Documentos: {p.documents_completed ?? 0}/{p.documents_total}</p>}
-    {p.dedupe_email_groups !== undefined && <p>Emails compartidos: {p.dedupe_email_merged ?? 0} perfiles unificados · {p.dedupe_email_conflicts ?? 0} conflictos · {p.dedupe_identities_applied ?? 0} inferencias de confianza alta aplicadas</p>}
+    {p.dedupe_email_groups !== undefined && <p>Emails compartidos: {p.dedupe_email_merged ?? 0} perfiles unificados · {p.dedupe_email_conflicts ?? 0} conflictos · {p.dedupe_identities_applied ?? 0} inferencias de confianza alta aplicadas{p.dedupe_labels_merged ? ` · ${p.dedupe_labels_merged} etiquetas de documento unificadas por nombre` : ''}</p>}
     {p.dedupe_pairs !== undefined && <p>Pares comparados por IA: {p.dedupe_batch ?? 0}/{p.dedupe_batches ?? 0} lotes de {p.dedupe_pairs} pares · {p.dedupe_auto_merged ?? 0} unificados automáticamente · {p.dedupe_proposals ?? 0} propuestas · {p.dedupe_different ?? 0} distintos{job.state === 'running' && p.stage === 'dedupe_people' && p.dedupe_current_batch ? ` · Procesando lote ${p.dedupe_current_batch}` : ''}</p>}
     {p.identity_auto_applied > 0 && <p>{p.identity_auto_applied} vínculos aplicados automáticamente con confianza alta</p>}
     {p.identity_rejected > 0 && <p className="memory-inline-error">Se descartaron {p.identity_rejected} asociaciones sin referencias válidas. Podés volver a inferir esta fuente.</p>}
@@ -52,7 +79,7 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
     {p.identity_warning && <p className="memory-inline-error">{p.identity_warning}</p>}{p.document_error && <p className="memory-inline-error">{p.document_error}</p>}
     {p.extraction === 'disabled_for_source' && <p>Esta fuente excluye el procesamiento remoto.</p>}
     <footer><small>{formatTime(p.started_at ?? job.created_at)} · Intento {job.attempts}/{job.max_attempts}{elapsed !== null ? ` · ${Math.floor(elapsed / 60)} min ${elapsed % 60} s` : ''}</small><div className="memory-button-wrap">
-      {['failed','cancelled','waiting'].includes(job.state) && <button className="btn btn-sm" onClick={() => onRetry(job.id)}>Reintentar</button>}{active && <button className="btn btn-sm" onClick={() => onCancel(job.id)}>Cancelar</button>}
+      {['failed','cancelled','waiting'].includes(job.state) && <button className="btn btn-sm" onClick={() => onRetry(job.id)}>Reintentar</button>}{active && <button className="btn btn-sm" onClick={() => onCancel(job.id)}>Cancelar</button>}{job.state === 'failed' && <ReportButton id={job.id} />}
     </div></footer>
   </article>
 }
@@ -60,7 +87,7 @@ export function MemoryJobCard({ job, onRetry, onCancel }: { job: any; onRetry: (
 export function MemoryProcessing() { return <MemoryFrame><Processing /></MemoryFrame> }
 function Processing() {
   const [state, setState] = useState('active'), [offset, setOffset] = useState(0)
-  const jobs = useMemory<any>('list_jobs', { kind: 'process,dedupe_people,index_entities,tidy_memory,media', state, limit: 20, offset })
+  const jobs = useMemory<any>('list_jobs', { kind: 'process,describe_source,dedupe_people,index_entities,tidy_memory,media', state, limit: 20, offset })
   const overview = useMemory<any>('processing_status')
   const retry = useMemoryMutation('retry_job'), cancel = useMemoryMutation('cancel_job')
   const counts = overview.data?.states ?? {}, coverage = overview.data?.coverage

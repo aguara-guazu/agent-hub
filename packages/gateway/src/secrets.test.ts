@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   EnvBackend,
@@ -46,12 +47,13 @@ describe('FileSecretBackend', () => {
     writeFileSync(ok, 'contenido-secreto\n')
     chmodSync(ok, 0o600)
     const backend = new FileSecretBackend()
-    expect(backend.get(parseRef(`file://${ok}`, 'T'))).toBe('contenido-secreto')
+    expect(backend.get(parseRef(pathToFileURL(ok).href, 'T'))).toBe('contenido-secreto')
 
     const open = join(dir, 'open.txt')
     writeFileSync(open, 'x')
     chmodSync(open, 0o644)
-    expect(() => backend.get(parseRef(`file://${open}`, 'T'))).toThrow(/permisos/)
+    if (process.platform === 'win32') expect(backend.get(parseRef(pathToFileURL(open).href, 'T'))).toBe('x')
+    else expect(() => backend.get(parseRef(pathToFileURL(open).href, 'T'))).toThrow(/permisos/)
   })
 })
 

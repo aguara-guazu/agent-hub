@@ -1,8 +1,10 @@
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { mkdirSync, writeFileSync, renameSync, existsSync, chmodSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, chmodSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { SecretResolver } from '@agenthub/gateway'
+import { renameRetrySync } from '@agenthub/gateway/platform'
 import { check } from './contracts.js'
 import { isExtractionCli, type ExtractionCli } from './cli-extraction.js'
 
@@ -43,7 +45,7 @@ export class Vault {
   read<T = Record<string, any>>(key: string): T | null {
     const path = this.path(key)
     if (!existsSync(path)) return null
-    try { return JSON.parse(this.resolver.resolve(`file://${path}`)) as T }
+    try { return JSON.parse(this.resolver.resolve(pathToFileURL(path).href)) as T }
     catch { throw new Error('No se pudo leer una credencial local; revisá su configuración y permisos') }
   }
   save(key: string, value: unknown): void {
@@ -51,14 +53,16 @@ export class Vault {
     mkdirSync(join(this.directory, 'secrets'), { recursive: true, mode: 0o700 })
     const temp = `${path}.${randomBytes(8).toString('hex')}.tmp`
     writeFileSync(temp, JSON.stringify(value), { mode: 0o600 })
-    renameSync(temp, path)
+    try { renameRetrySync(temp, path) } catch (error) { rmSync(temp, { force: true }); throw error }
     chmodSync(path, 0o600)
   }
   mcpCredential(): { token: string; reference: string } {
     const path = join(this.directory, 'secrets', 'memory-mcp')
     mkdirSync(join(this.directory, 'secrets'), { recursive: true, mode: 0o700 })
     if (!existsSync(path)) writeFileSync(path, `Bearer ${randomBytes(32).toString('base64url')}`, { mode: 0o600, flag: 'wx' })
-    return { token: this.resolver.resolve(`file://${path}`), reference: `file://${path}` }
+    // `file://${path}` is `file://C:\...` on Windows; pathToFileURL gives `file:///C:/...` with the path percent-encoded.
+    const reference = pathToFileURL(path).href
+    return { token: this.resolver.resolve(reference), reference }
   }
 }
 export function constantEqual(a: string, b: string): boolean {

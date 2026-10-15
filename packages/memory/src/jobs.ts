@@ -10,11 +10,14 @@ import type { GoogleAuth } from './google-auth.js'
 import { MemoryError } from './contracts.js'
 import { scheduleEntityIndex, indexEntities } from './entity-index.js'
 import { processVersion } from './processing.js'
+import { inferSourceMetadata } from './source-inference.js'
 import { dedupePeople } from './people-dedupe.js'
 import { sweepNotes } from './agents.js'
 import { ProviderError, ProviderHttp } from './connectors/http.js'
 import type { Connector, ConnectorContext } from './connectors/types.js'
-import { syncGoogle, importGoogleDocument, repairGoogle } from './connectors/google.js'
+import { syncGoogle, syncGoogleRange, importGoogleDocument, repairGoogle } from './connectors/google.js'
+import { syncGmail } from './connectors/gmail.js'
+import { GMAIL_SCOPE } from './google-auth.js'
 import { syncNotion } from './connectors/notion.js'
 import { syncSlack } from './connectors/slack.js'
 import { syncJira } from './connectors/jira.js'
@@ -22,10 +25,19 @@ import { syncJira } from './connectors/jira.js'
 /** Whole-memory passes that rewrite people, identities or vectors: they start alone and nothing starts next to them.
  *  Once one is the oldest pending job, newer jobs wait so it is not postponed indefinitely. */
 const EXCLUSIVE_KINDS = ['dedupe_people', 'google_repair', 'tidy_memory']
+/** Exclusive passes that leave connector cursors alone: syncs and Gmail polls still start next to them (and they start
+ *  next to those imports), so mail keeps arriving during a long dedupe. Writes stay serialized by the single writer
+ *  connection; a person merged mid-import is followed through `merged_into` and the repointed identities.
+ *  google_repair rewrites the Google source itself and keeps running alone. */
+const IMPORT_KINDS = ['sync', 'gmail']
+const IMPORTS_ALONGSIDE = ['dedupe_people', 'tidy_memory']
 /** One running job per kind: a global pass, or local OCR/transcription engines shared by every job. */
 const SINGLE_KINDS = ['index_entities', 'media']
 /** Embedding-only jobs beyond one per local engine would only wait in the engines and hold slots extraction can use. */
 const MAX_EMBEDDING_ONLY_JOBS = NATIVE_EMBEDDING_ENGINES
+/** Gmail is polled apart from the full Google sync, which re-reads calendar windows and Meet records on every run. */
+const GMAIL_POLL_SECONDS = 120
+const GMAIL_RETRY_SECONDS = 1800
 
 export class JobRunner {
   readonly workerId = randomUUID()
@@ -33,15 +45,28 @@ export class JobRunner {
     private settings: () => Promise<AIConfig>, private fetcher: typeof fetch = fetch, private media?: MediaRuntime) {}
 
   async schedule(): Promise<void> {
-    await this.store.db.query(`UPDATE jobs SET state='queued',lease_until=NULL,lease_owner=NULL,available_at=now(),updated_at=now()
-      WHERE state='running' AND lease_until<now()`)
+    // An expired lease of another owner means that worker died mid-job (native crash, kill). Without the attempts cap a job
+    // that aborts the process is claimed again on every restart and takes the other running jobs down with it.
+    // Leases of this worker also expire across a macOS sleep; those jobs are still running here and renew on the next heartbeat.
+    const orphaned = await this.store.db.query(`UPDATE jobs SET state=CASE WHEN attempts>=max_attempts THEN 'failed' ELSE 'queued' END,
+      error=CASE WHEN attempts>=max_attempts THEN 'El proceso de trabajos se cerró inesperadamente en cada intento de este trabajo' ELSE error END,
+      lease_until=NULL,lease_owner=NULL,available_at=now(),updated_at=now()
+      WHERE state='running' AND lease_until<now() AND lease_owner IS NOT $1 RETURNING id,kind,state,attempts,max_attempts`, [this.workerId])
+    for (const job of orphaned) console.error(`[job ${job.id}] ${job.kind} intento ${job.attempts}/${job.max_attempts}: el worker anterior se cerró con el trabajo en curso; queda ${job.state === 'failed' ? 'fallido' : 'en cola'}`)
     const due = await this.store.db.query<Connector>(`SELECT c.* FROM connectors c WHERE c.enabled=1
       AND (c.last_success_at IS NULL OR c.last_success_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-'||c.interval_minutes||' minutes'))
-      AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='sync' AND j.payload->>'connector_id'=c.id
+      AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='sync' AND j.payload->>'connector_id'=c.id AND j.payload->>'since' IS NULL
         AND (j.state IN ('queued','running','waiting') OR j.updated_at>strftime('%Y-%m-%dT%H:%M:%fZ','now','-'||c.interval_minutes||' minutes')))`)
     for (const connector of due) await this.store.enqueue('sync', { connector_id: connector.id }, `sync:${connector.id}`)
+    const mailboxes = await this.store.db.query<Connector>(`SELECT c.* FROM connectors c WHERE c.enabled=1 AND c.provider='google' AND COALESCE(c.config->>'gmail_enabled',1) NOT IN (0,'false')
+      AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='gmail' AND j.payload->>'connector_id'=c.id AND (j.state IN ('queued','running','waiting')
+        OR j.updated_at>strftime('%Y-%m-%dT%H:%M:%fZ','now',CASE WHEN j.state='completed' THEN $1 ELSE $2 END)))`,
+      [`-${GMAIL_POLL_SECONDS} seconds`, `-${GMAIL_RETRY_SECONDS} seconds`])
+    for (const connector of mailboxes) if (this.google.granted(connector.id, GMAIL_SCOPE)) await this.store.enqueue('gmail', { connector_id: connector.id }, `gmail:${connector.id}`)
+    await this.store.db.query(`DELETE FROM jobs WHERE kind='gmail' AND state='completed' AND COALESCE(progress->>'imported',0)=0
+      AND updated_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour')`)
     await scheduleEntityIndex(this.store, await this.settings())
-    if (this.media) await queueMedia(this.store, {}, true)
+    if (this.media) await queueMedia(this.store, {}, true, this.media)
     await sweepNotes(this.store.db)
     await this.store.db.query(`INSERT INTO settings(key,value) VALUES('worker',json_object('heartbeat',now(),'id',$1)) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [this.workerId])
   }
@@ -51,22 +76,29 @@ export class JobRunner {
     return job ? this.run(job, signal) : false
   }
 
-  /** Takes the oldest available job that can run next to the ones already running (see the kind lists above). */
+  /** Takes the oldest available job that can run next to the ones already running (see the kind lists above).
+   *  Syncs and Gmail polls of one connector share its cursor and run one at a time; a period import (`since`) writes
+   *  no cursor, so the mailbox keeps being polled while it runs. Source syncs go first: they are short network jobs, and
+   *  behind an extraction backlog a new mail would otherwise wait for every older source to be processed. */
   async claim(): Promise<Record<string, any> | undefined> {
     return (await this.store.db.query(`UPDATE jobs SET state='running',lease_owner=$1,lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','+3 minutes'),attempts=attempts+1,updated_at=now()
       WHERE id=(SELECT j.id FROM jobs j WHERE j.state IN ('queued','waiting') AND j.available_at<=now()
         AND NOT EXISTS(SELECT 1 FROM jobs r WHERE r.state='running' AND (
-          r.kind IN (SELECT value FROM json_each($2)) OR j.kind IN (SELECT value FROM json_each($2))
+          ((r.kind IN (SELECT value FROM json_each($2)) OR j.kind IN (SELECT value FROM json_each($2)))
+            AND NOT ((j.kind IN (SELECT value FROM json_each($5)) AND r.kind IN (SELECT value FROM json_each($6)))
+              OR (r.kind IN (SELECT value FROM json_each($5)) AND j.kind IN (SELECT value FROM json_each($6)))))
           OR (r.kind=j.kind AND j.kind IN (SELECT value FROM json_each($3)))
           OR (r.payload->>'version_id' IS NOT NULL AND r.payload->>'version_id'=j.payload->>'version_id')
-          OR (j.kind='sync' AND r.kind='sync' AND r.payload->>'connector_id'=j.payload->>'connector_id')))
+          OR (j.kind IN ('sync','gmail') AND r.kind IN ('sync','gmail') AND r.payload->>'connector_id'=j.payload->>'connector_id'
+            AND NOT ((j.kind='gmail' AND r.payload->>'since' IS NOT NULL) OR (r.kind='gmail' AND j.payload->>'since' IS NOT NULL)))))
         AND NOT (COALESCE(j.payload->>'index_only',0) IN (1,'true') AND (SELECT count(*) FROM jobs r WHERE r.state='running'
           AND COALESCE(r.payload->>'index_only',0) IN (1,'true'))>=$4)
         AND NOT EXISTS(SELECT 1 FROM jobs x WHERE x.kind IN (SELECT value FROM json_each($2)) AND x.state IN ('queued','waiting')
           AND x.available_at<=now() AND x.created_at<j.created_at
+          AND NOT (j.kind IN (SELECT value FROM json_each($5)) AND x.kind IN (SELECT value FROM json_each($6)))
           AND NOT EXISTS(SELECT 1 FROM jobs y WHERE y.state IN ('queued','waiting') AND y.available_at<=now() AND y.created_at<x.created_at))
-        ORDER BY j.created_at LIMIT 1) RETURNING *`,
-      [this.workerId, JSON.stringify(EXCLUSIVE_KINDS), JSON.stringify(SINGLE_KINDS), MAX_EMBEDDING_ONLY_JOBS]))[0]
+        ORDER BY CASE WHEN j.kind IN ('gmail','sync') THEN 0 ELSE 1 END,j.created_at LIMIT 1) RETURNING *`,
+      [this.workerId, JSON.stringify(EXCLUSIVE_KINDS), JSON.stringify(SINGLE_KINDS), MAX_EMBEDDING_ONLY_JOBS, JSON.stringify(IMPORT_KINDS), JSON.stringify(IMPORTS_ALONGSIDE)]))[0]
   }
 
   async run(job: Record<string, any>, signal: AbortSignal): Promise<boolean> {
@@ -93,6 +125,9 @@ export class JobRunner {
         const result = await processVersion(this.store, this.ai.forJob(settings, controller.signal, progress), job.payload.version_id, settings, progress, controller.signal,
           Boolean(job.payload.force), Boolean(job.payload.identity_only), { runKey: job.id, projectsOnly: Boolean(job.payload.projects_only) })
         await progress(result)
+      } else if (job.kind === 'describe_source') {
+        const settings = await this.settings()
+        await progress(await inferSourceMetadata(this.store, this.ai.forJob(settings, controller.signal, progress), job.payload.version_id, settings, progress, controller.signal))
       } else if (job.kind === 'media') {
         if (!this.media) throw new MemoryError(409, 'El procesamiento multimedia no está disponible')
         await progress(await processMedia(this.store, this.media, job.payload, controller.signal, progress))
@@ -104,7 +139,7 @@ export class JobRunner {
       } else if (job.kind === 'dedupe_people') {
         const settings = await this.settings()
         await progress(await dedupePeople(this.store, this.ai.forJob(settings, controller.signal, progress), settings, progress, controller.signal))
-      } else if (job.kind === 'sync' || job.kind === 'google_document' || job.kind === 'google_repair') {
+      } else if (job.kind === 'sync' || job.kind === 'gmail' || job.kind === 'google_document' || job.kind === 'google_repair') {
         const connector = (await this.store.db.query<Connector>('SELECT * FROM connectors WHERE id=$1', [job.payload.connector_id]))[0]
         if (!connector) throw new MemoryError(404, 'El conector ya no existe')
         if (!connector.enabled) throw new MemoryError(409, 'El conector está pausado')
@@ -112,7 +147,12 @@ export class JobRunner {
           http: new ProviderHttp(this.fetcher, controller.signal), signal: controller.signal, progress,
           checkpoint: async cursor => { await this.store.db.query('UPDATE connectors SET cursor=$2 WHERE id=$1', [connector.id, JSON.stringify(cursor)]) } }
         if (job.kind === 'google_repair') await repairGoogle(connector, ctx)
+        else if (job.kind === 'gmail') {
+          await syncGmail(connector, ctx)
+          await this.store.db.query("UPDATE connectors SET last_error=NULL WHERE id=$1 AND last_error LIKE 'Gmail:%'", [connector.id])
+        }
         else if (job.kind === 'google_document') await importGoogleDocument(connector, ctx, job.payload.document_id, job.payload.meeting_entity_id ?? job.payload.event_entity_id)
+        else if (job.payload.since) await syncGoogleRange(connector, ctx, job.payload.since, job.payload.until)
         else {
           await ({ google: syncGoogle, notion: syncNotion, slack: syncSlack, jira: syncJira })[connector.provider](connector, ctx)
           await this.store.db.query('UPDATE connectors SET last_success_at=now(),last_error=NULL WHERE id=$1', [connector.id])
@@ -121,6 +161,9 @@ export class JobRunner {
       await progress({ finished_at: new Date().toISOString() })
       await this.store.db.query("UPDATE jobs SET state='completed',lease_until=NULL,lease_owner=NULL,error=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2", [job.id, this.workerId])
     } catch (error) {
+      // The stored message is user-facing and generic; worker.log keeps the stack for the job's failure report.
+      const diagnostic = error instanceof Error ? error.stack ?? error.message : String(error)
+      console.error(diagnostic.split(/\r?\n/).map(line => `[job ${job.id}] ${job.kind} intento ${job.attempts}/${job.max_attempts}: ${line}`).join('\n'))
       const message = error instanceof MemoryError ? error.message : controller.signal.aborted ? 'Trabajo interrumpido; se puede reanudar' : 'No se pudo completar el trabajo; revisá disponibilidad y configuración de la fuente'
       const retry = (controller.signal.aborted || !(error instanceof MemoryError && [404,409,422].includes(error.statusCode))) && job.attempts < job.max_attempts
       // An overloaded model provider needs minutes, not seconds: 1, 2, 4 and 8 minutes after the in-request retries.
@@ -128,7 +171,7 @@ export class JobRunner {
         : error instanceof MemoryError && error.transient ? Math.min(1800, 60 * 2 ** Math.max(0, job.attempts - 1)) : Math.min(300, 2 ** job.attempts * 5)
       await this.store.db.query(`UPDATE jobs SET state=$3,error=$4,lease_until=NULL,lease_owner=NULL,available_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||$5||' seconds'),updated_at=now()
         WHERE id=$1 AND lease_owner=$2`, [job.id, this.workerId, retry ? 'waiting' : 'failed', message, seconds]).catch(() => undefined)
-      if (job.kind === 'sync') await this.store.db.query('UPDATE connectors SET last_error=$2 WHERE id=$1', [job.payload.connector_id, message]).catch(() => undefined)
+      if (job.kind === 'sync' || job.kind === 'gmail') await this.store.db.query('UPDATE connectors SET last_error=$2 WHERE id=$1', [job.payload.connector_id, job.kind === 'gmail' ? `Gmail: ${message}` : job.payload.since ? `Período histórico: ${message}` : message]).catch(() => undefined)
     } finally { clearInterval(heartbeat); signal.removeEventListener('abort', abort) }
     return true
   }

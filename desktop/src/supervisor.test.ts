@@ -131,4 +131,15 @@ describe('CoreSupervisor', () => {
     expect(sup.state).toBe('failed')
     expect(errors[0]?.message).toBe('ENOENT')
   })
+
+  it('marca failed si spawn informa error sin emitir exit', () => {
+    const child = new FakeProcess()
+    Object.defineProperty(child, 'pid', { value: undefined })
+    const sup = new CoreSupervisor({ command: 'missing', args: [], spawnFn: () => child })
+    sup.on('error', () => {})
+    sup.start()
+    child.emit('error', new Error('ENOENT'))
+    expect(sup.state).toBe('failed')
+    expect(sup.pid).toBeUndefined()
+  })
 })

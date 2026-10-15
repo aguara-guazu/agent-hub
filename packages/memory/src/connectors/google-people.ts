@@ -31,7 +31,7 @@ export class GooglePeople {
       return { ...person, ...(email ? { email } : {}), email_candidates: candidates.slice(0, 30),
         email_status: email ? 'verified' : candidates.length ? 'ambiguous' : 'missing', email_source: `google_people:${resource}` }
     } catch (error) {
-      if (!(error instanceof ProviderError && [403, 404].includes(error.httpStatus))) throw error
+      if (!(error instanceof ProviderError && !error.rateLimited && [403, 404].includes(error.httpStatus))) throw error
       await this.ctx.progress({ identity_warning: error.httpStatus === 403 ? 'Google no permitió leer algunos perfiles. Revisá People API y reconectá Google para autorizar contactos y directorio.' : 'Google no publicó el email de algunos participantes.' })
       return { ...person, email_status: error.httpStatus === 403 ? 'permission_required' : 'missing' }
     }

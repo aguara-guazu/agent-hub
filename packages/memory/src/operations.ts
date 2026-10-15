@@ -12,9 +12,9 @@ import type { MemoryAI } from './ai.js'
 import { exportMemory, deleteEntity } from './backup.js'
 import { reviewIdentity } from './identity-inference.js'
 import { mergePeople, resolveCanonical } from './people.js'
-import type { GoogleAuth } from './google-auth.js'
+import { GMAIL_SCOPE, googleScopes, type GoogleAuth } from './google-auth.js'
 import type { Vault } from './config.js'
-import { GOOGLE_SETUP_APIS, GOOGLE_SETUP_SCOPES, readGoogleClientFile } from './google-setup.js'
+import { GOOGLE_SETUP_APIS, GOOGLE_SETUP_SCOPES, ensureGoogleSource, readGoogleClientFile } from './google-setup.js'
 import { listTasks, listTasksInput, saveTask, saveTaskInput, syncTasks, syncTasksInput, taskDetail, taskStats, taskStatsInput } from './tasks.js'
 import { contextInput, finishNotes, finishNotesInput, listNotes, listNotesInput, touchSession, workContext, writeNote, writeNoteInput, type AgentContext } from './agents.js'
 import { listProjectSuggestions, projectSuggestionReview, reviewProjectSuggestion, PROJECT_SOURCE_KINDS } from './project-inference.js'
@@ -75,11 +75,12 @@ const definitions = {
   infer_projects: ['Buscar el proyecto de reuniones y documentos que todavía no tienen uno. Con confianza alta se asignan solos si está activado; el resto queda como sugerencia.', z.object({ entity_id: id.optional() }).strict()],
   list_connectors: ['Ver fuentes configuradas, cobertura y errores, sin credenciales.', z.object({}).strict()],
   save_connector: ['Configurar alcance de una fuente. Las credenciales se cargan desde la UI del hub.', connectorInput.extend({ id: id.optional() })],
-  sync_connector: ['Solicitar una sincronización del conector habilitado.', z.object({ id }).strict()],
+  sync_connector: ['Solicitar una sincronización del conector habilitado. Google revisa siempre los últimos 90 días (Calendar y Gmail) y lo nuevo. Con since (y opcionalmente until, por defecto ahora) importa además ese período de una fuente Google: eventos de Calendar y correos de Gmail más antiguos. Usar since sólo cuando la persona pida datos anteriores a esos 90 días.',
+    z.object({ id, since: z.union([instant, z.iso.date()]).optional(), until: z.union([instant, z.iso.date()]).optional() }).strict().refine(v => !v.until || v.since, 'until requiere since')],
   sync_sources: ['Buscar contenido nuevo en todas las fuentes activas (transcripciones de Meet, documentos, conversaciones, issues). Lo nuevo se procesa en segundo plano.', z.object({}).strict()],
   repair_google: ['Actualizar emails por identidad Google y recuperar hablantes de documentos ya guardados.', z.object({ id }).strict()],
   google_setup_status: ['Diagnosticar la configuración de Google: cliente OAuth cargado, URL de retorno, APIs y permisos requeridos, y qué fuentes Google están conectadas. Sin credenciales.', z.object({}).strict()],
-  import_google_client: ['Cargar el cliente OAuth de escritorio de Google desde el archivo JSON descargado de Google Cloud (ruta absoluta en esta computadora). El secreto queda en un archivo privado y nunca se devuelve.', z.object({ path: z.string().min(1).max(4000) }).strict()],
+  import_google_client: ['Cargar el cliente OAuth de escritorio de Google desde el archivo JSON descargado de Google Cloud (ruta absoluta en esta computadora). El secreto queda en un archivo privado y nunca se devuelve. Si no hay una fuente Google, la crea (Calendar, Meet y Gmail) y devuelve authorization_url para abrir en el navegador (vence a los 10 minutos); al aceptar, la fuente se activa y empieza a sincronizar sola.', z.object({ path: z.string().min(1).max(4000) }).strict()],
   connect_google: ['Obtener la URL para autorizar una fuente Google en el navegador. Vence a los 10 minutos; al terminar, el token queda en esta computadora.', z.object({ id }).strict()],
   list_jobs: ['Ver fuente, modelo, progreso, reintentos y errores de sincronización o procesamiento. kind admite varios tipos separados por coma.', z.object({ ...page, kind: z.string().max(100).optional(), state: z.enum(['active','queued','running','waiting','completed','failed','cancelled']).optional() }).strict()],
   processing_status: ['Ver actividad, tokens reportados y cobertura de extracción de la memoria.', z.object({}).strict()],
@@ -96,7 +97,7 @@ export const READ_OPERATIONS = new Set(['list_memories','health','get_file','sug
 
 export class MemoryOperations {
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
-    private jiraMcp?: import('./tasks.js').JiraTaskReader) {}
+    private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime) {}
   /** `agent` identifies the calling agent session (from the gateway); it attributes notes and keeps the session alive for the notes board. */
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
     const definition = definitions[operation as keyof typeof definitions]
@@ -129,11 +130,14 @@ export class MemoryOperations {
         return { queued: rows.length }
       }
       case 'sync_sources': {
-        const connectors = await db.query('SELECT id,name,provider FROM connectors WHERE enabled=true ORDER BY created_at')
+        const rows = await db.query('SELECT id,name,provider,config FROM connectors WHERE enabled=true ORDER BY created_at')
         // A sync waiting out a backoff is brought forward: the person explicitly asked to look for new content now.
-        await db.query("UPDATE jobs SET available_at=now(),updated_at=now() WHERE kind='sync' AND state IN ('queued','waiting') AND available_at>now()")
-        for (const connector of connectors) await store.enqueue('sync', { connector_id: connector.id }, `sync:${connector.id}`)
-        return { queued: connectors.length, connectors }
+        await db.query("UPDATE jobs SET available_at=now(),updated_at=now() WHERE kind IN ('sync','gmail') AND state IN ('queued','waiting') AND available_at>now()")
+        for (const connector of rows) {
+          await store.enqueue('sync', { connector_id: connector.id }, `sync:${connector.id}`)
+          await this.enqueueGmail(connector)
+        }
+        return { queued: rows.length, connectors: rows.map(({ config: _config, ...connector }) => connector) }
       }
       case 'list_entities': return store.list(input)
       case 'get_entity': return store.detail(input.id)
@@ -151,7 +155,7 @@ export class MemoryOperations {
       case 'manage_memory': return manageMemory(store, input, author)
       case 'tidy_memory': return requestTidy(store, input, author)
       case 'health': return maintenanceStatus(store, input.project_id)
-      case 'process_files': return queueMedia(store, input)
+      case 'process_files': return queueMedia(store, input, false, this.media)
       case 'import_file': return importFile(store, input, author)
       case 'get_file': return getFile(store, input, signal)
       case 'import_source': return store.ingest(input, actor)
@@ -234,7 +238,7 @@ export class MemoryOperations {
           return { queued: rows.length + 1, model: settings.embedding_model }
         })
         const media = await mediaSettings(store)
-        const audiovisual = settings.embedding_model === NATIVE_EMBEDDING_MODEL && (media.vision || media.audio) ? await queueMedia(store, { force: true }) : { queued: 0 }
+        const audiovisual = settings.embedding_model === NATIVE_EMBEDDING_MODEL && (media.vision || media.audio) ? await queueMedia(store, { force: true }, false, this.media) : { queued: 0 }
         return { ...rebuilt, queued: rebuilt.queued + audiovisual.queued, media_queued: audiovisual.queued }
       }
       case 'infer_identities':
@@ -248,8 +252,13 @@ export class MemoryOperations {
         return { queued: rows.length }
       }
       case 'timeline': return store.list({ project_id: input.project_id, limit: input.limit, offset: input.offset })
-      case 'list_connectors': return db.query('SELECT id,provider,name,config,project_ids,enabled,interval_minutes,last_success_at,last_error,created_at FROM connectors ORDER BY created_at')
+      case 'list_connectors': {
+        const rows = await db.query('SELECT id,provider,name,config,project_ids,enabled,interval_minutes,last_success_at,last_error,created_at FROM connectors ORDER BY created_at')
+        return rows.map(row => row.provider === 'google' && row.config.gmail_enabled !== false && this.google ? { ...row, gmail_authorized: this.google.granted(row.id, GMAIL_SCOPE) } : row)
+      }
       case 'save_connector': {
+        // Google covers a fixed 90-day window; an older `since` from previous versions is dropped, and older periods use sync_connector.
+        if (input.provider === 'google') delete input.config.since
         this.validateConnectorConfig(input.provider, input.config)
         await validateProjects(db, input.project_ids)
         const connectorId = input.id ?? randomUUID()
@@ -266,33 +275,44 @@ export class MemoryOperations {
       }
       case 'sync_connector':
       case 'repair_google': {
-        const connector = (await db.query('SELECT enabled,provider FROM connectors WHERE id=$1', [input.id]))[0]
+        const connector = (await db.query('SELECT id,enabled,provider,config FROM connectors WHERE id=$1', [input.id]))[0]
         check(connector, 'Conector inexistente', 404); check(connector.enabled, 'Activá el conector antes de sincronizar', 409)
         if (operation === 'repair_google') {
           check(connector.provider === 'google', 'Esta reparación requiere una fuente Google')
           return store.enqueue('google_repair', { connector_id: input.id }, `google-repair:${input.id}`)
         }
+        if (input.since) {
+          check(connector.provider === 'google', 'La sincronización de un período sólo está disponible para fuentes Google')
+          const bound = (value: string) => value.length === 10 ? `${value}T00:00:00Z` : value
+          const since = bound(input.since), until = input.until ? bound(input.until) : new Date().toISOString()
+          check(Date.parse(since) < Date.parse(until), 'La fecha de inicio debe ser anterior al final del período')
+          return store.enqueue('sync', { connector_id: input.id, since, until }, `sync-range:${input.id}:${since}:${until}`)
+        }
+        await this.enqueueGmail(connector)
         return store.enqueue('sync', { connector_id: input.id }, `sync:${input.id}`)
       }
       case 'google_setup_status': {
         const { google, vault } = this.googleSetup()
         const client = vault.read('google-client')
-        const connectors = await db.query("SELECT id,name,enabled,project_ids,last_success_at,last_error FROM connectors WHERE provider='google' ORDER BY created_at")
+        const connectors = await db.query("SELECT id,name,enabled,config,project_ids,last_success_at,last_error FROM connectors WHERE provider='google' ORDER BY created_at")
         return { client_configured: Boolean(client?.client_id), client_id: client?.client_id ?? null, client_has_secret: Boolean(client?.client_secret),
           redirect_url: google.redirectUrl, apis: GOOGLE_SETUP_APIS, scopes: GOOGLE_SETUP_SCOPES,
-          connectors: connectors.map(row => ({ ...row, connected: Boolean(vault.read(row.id)?.refresh_token) })) }
+          connectors: connectors.map(row => ({ ...row, connected: Boolean(vault.read(row.id)?.refresh_token),
+            ...(row.config.gmail_enabled !== false ? { gmail_authorized: google.granted(row.id, GMAIL_SCOPE) } : {}) })) }
       }
       case 'import_google_client': {
         const { vault } = this.googleSetup()
         const client = readGoogleClientFile(input.path)
         vault.save('google-client', { client_id: client.client_id, ...(client.client_secret ? { client_secret: client.client_secret } : {}) })
-        return { configured: true, client_type: client.type, client_id: client.client_id, project_id: client.project_id ?? null }
+        const source = await ensureGoogleSource(store)
+        return { configured: true, client_type: client.type, client_id: client.client_id, project_id: client.project_id ?? null,
+          connector_id: source.id, authorization_url: this.googleSetup().google.start(source.id, googleScopes(source.config)), expires_in_seconds: 600 }
       }
       case 'connect_google': {
         const { google } = this.googleSetup()
-        const connector = (await db.query("SELECT id FROM connectors WHERE id=$1 AND provider='google'", [input.id]))[0]
+        const connector = (await db.query("SELECT id,config FROM connectors WHERE id=$1 AND provider='google'", [input.id]))[0]
         check(connector, 'Conector de Google inexistente', 404)
-        return { authorization_url: google.start(input.id), expires_in_seconds: 600 }
+        return { authorization_url: google.start(input.id, googleScopes(connector.config)), expires_in_seconds: 600 }
       }
       case 'list_jobs': {
         const where = `($1 IS NULL OR j.kind IN (SELECT value FROM json_each($1))) AND ($2 IS NULL OR j.state=$2 OR ($2='active' AND j.state IN ('queued','running','waiting')))`
@@ -305,8 +325,8 @@ export class MemoryOperations {
         total: (await db.query(`SELECT count(*) AS total FROM jobs j WHERE ${where}`, [kinds,input.state ?? null]))[0]!.total }
       }
       case 'processing_status': {
-        const states = await db.query("SELECT state,count(*) AS count FROM jobs WHERE kind IN ('process','index_entities','dedupe_people','tidy_memory','media') GROUP BY state")
-        const [usage] = await db.query("SELECT CAST(COALESCE(sum(CAST(progress->>'input_tokens' AS INTEGER)),0) AS REAL) AS input_tokens,CAST(COALESCE(sum(CAST(progress->>'output_tokens' AS INTEGER)),0) AS REAL) AS output_tokens FROM jobs WHERE kind='process'")
+        const states = await db.query("SELECT state,count(*) AS count FROM jobs WHERE kind IN ('process','describe_source','index_entities','dedupe_people','tidy_memory','media') GROUP BY state")
+        const [usage] = await db.query("SELECT CAST(COALESCE(sum(CAST(progress->>'input_tokens' AS INTEGER)),0) AS REAL) AS input_tokens,CAST(COALESCE(sum(CAST(progress->>'output_tokens' AS INTEGER)),0) AS REAL) AS output_tokens FROM jobs WHERE kind IN ('process','describe_source')")
         const [coverage] = await db.query(`SELECT count(*) AS sources,count(*) FILTER(WHERE json_type(v.metadata,'$.extraction_key') IS NOT NULL) AS extracted
           FROM sources s JOIN versions v ON v.id=s.current_version_id WHERE s.status='active'`)
         return { states: Object.fromEntries(states.map(r => [r.state,r.count])), usage, coverage }
@@ -334,17 +354,22 @@ export class MemoryOperations {
     return this.vault
   }
 
+  private async enqueueGmail(connector: Record<string, any>) {
+    if (connector.provider === 'google' && connector.config.gmail_enabled !== false && this.google?.granted(connector.id, GMAIL_SCOPE))
+      await this.store.enqueue('gmail', { connector_id: connector.id }, `gmail:${connector.id}`)
+  }
+
   private googleSetup(): { google: GoogleAuth; vault: Vault } {
     check(this.google && this.vault, 'La configuración de Google no está disponible en este contexto', 503)
     return { google: this.google, vault: this.vault }
   }
 
   private validateConnectorConfig(provider: string, config: Record<string, unknown>) {
-    const keys: Record<string, string[]> = { google: ['calendars', 'since', 'calendar_enabled', 'meet_enabled', 'document_ids', 'folder_ids'], notion: ['page_ids'], slack: ['channel_ids', 'since'], jira: ['site_url', 'jql'] }
+    const keys: Record<string, string[]> = { google: ['calendars', 'calendar_enabled', 'meet_enabled', 'gmail_enabled', 'document_ids', 'folder_ids'], notion: ['page_ids'], slack: ['channel_ids', 'since'], jira: ['site_url', 'jql'] }
     check(Object.keys(config).every(key => keys[provider]?.includes(key)), 'Configuración desconocida. Las credenciales se guardan por separado')
     for (const key of ['calendars', 'document_ids', 'folder_ids', 'page_ids', 'channel_ids']) if (key in config) parse(z.array(z.string().min(1).max(500)).max(100), config[key])
     if (config.since) parse(instant, config.since)
-    for (const key of ['calendar_enabled', 'meet_enabled']) if (key in config) parse(z.boolean(), config[key])
+    for (const key of ['calendar_enabled', 'meet_enabled', 'gmail_enabled']) if (key in config) parse(z.boolean(), config[key])
     if (provider === 'jira') {
       const url = new URL(String(config.site_url ?? ''))
       check(url.protocol === 'https:' && url.hostname.endsWith('.atlassian.net') && !url.username && !url.password, 'Se requiere un sitio de Jira Cloud')

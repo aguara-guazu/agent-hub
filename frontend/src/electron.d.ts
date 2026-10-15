@@ -37,6 +37,8 @@ export interface AgentHubBridge {
   syncNow(): Promise<void>
   /** Cierra y vuelve a abrir un cliente de escritorio (hoy sólo `claude_desktop`). */
   restartClient(cliKind: string): Promise<ClientRestartResult>
+  /** Abre un PDF guardado con la aplicación asociada del sistema; `ok: false` cuando no hay ninguna. Ausente en versiones anteriores del escritorio. */
+  openStoredPdf?(versionId: string): Promise<{ ok: boolean; detail: string }>
 }
 
 declare global {

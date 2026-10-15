@@ -44,6 +44,14 @@
 .memory-form-actions { display: flex; gap: 8px; justify-content: flex-end; padding-top: 16px; border-top: 1px solid var(--border); }
 .memory-drop { border: 1px dashed var(--border-strong); border-radius: 8px; background: var(--surface-2); padding: 24px; display: flex; flex-direction: column; gap: 12px; }
 .memory-drop p { color: var(--text-muted); font-size: 12px; }
+.memory-upload-drop { align-items: center; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+.memory-upload-drop.dragging,.memory-upload-drop:focus-within { border-color: var(--accent); background: var(--surface-3); }
+.memory-upload-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; max-height: 240px; overflow-y: auto; }
+.memory-upload-list li { display: grid; grid-template-columns: minmax(0,1fr) auto 28px; align-items: center; gap: 12px; padding: 8px 12px; font-size: 13px; }
+.memory-upload-list li + li { border-top: 1px solid var(--border); }
+.memory-upload-list li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-upload-list li small { color: var(--text-muted); font-size: 12px; }
+.memory-upload-list li.invalid small { color: var(--off-text); }
 .memory-fields-builder { display: flex; flex-direction: column; gap: 14px; }
 .memory-column-input { display: grid; grid-template-columns: 1fr 1fr 100px auto 28px; gap: 8px; align-items: end; }
 .memory-column-input input,.memory-column-input select { width: 100%; }
@@ -53,6 +61,7 @@
 .memory-section { display: flex; flex-direction: column; gap: 16px; }
 .memory-section h2,.memory-panel h2 { font-size: 17px; }
 .memory-section-note { color: var(--text-muted); font-size: 12px; }
+.memory-section-bar { flex-wrap: wrap; }
 .memory-project-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); overflow-x: auto; }
 .memory-project-tabs button { border: 0; background: transparent; padding: 12px; color: var(--text-muted); border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; font-size: 12px; }
 .memory-project-tabs button.active { color: var(--accent-text); border-bottom-color: var(--accent); }

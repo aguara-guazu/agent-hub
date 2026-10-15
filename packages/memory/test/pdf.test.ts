@@ -42,10 +42,10 @@ it('produce evidencia textual y visual con pÃ¡gina y avisa sobre escaneos sin mÃ
   const runtime = new MediaRuntime(directory), signal = new AbortController().signal
   const embed = vi.spyOn(runtime.vision, 'embedMedia').mockResolvedValue([1, ...Array(767).fill(0)])
   try {
-    const plain = await runtime.process({ data: pdf, mime_type: 'application/pdf', filename: 'evidence.pdf' }, mediaSettingsInput.parse({}), signal, async () => {})
+    const plain = await runtime.process({ data: pdf, mime_type: 'application/pdf', filename: 'evidence.pdf' }, mediaSettingsInput.parse({ ocr: false, vision: false, audio: false, transcription: false }), signal, async () => {})
     expect(plain.parts[0]).toMatchObject({ metadata: { generated: 'pdf_text', page: 1, page_count: 2 } })
     expect(plain.warnings).toHaveLength(1)
-    const visual = await runtime.process({ data: pdf, mime_type: 'application/pdf', filename: 'evidence.pdf' }, mediaSettingsInput.parse({ vision: true }), signal, async () => {})
+    const visual = await runtime.process({ data: pdf, mime_type: 'application/pdf', filename: 'evidence.pdf' }, mediaSettingsInput.parse({ vision: true, ocr: false, audio: false, transcription: false }), signal, async () => {})
     expect(embed).toHaveBeenCalledTimes(2)
     expect(visual.parts.filter(p => p.vector).map(p => p.metadata.page)).toEqual([1, 2])
     expect(visual.warnings).toEqual([])

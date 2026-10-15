@@ -1,7 +1,7 @@
 import { pdfPreview } from './pdf.js'
 import { mediaSettings, queueMedia } from './media-processing.js'
 import { MEDIA_MODULES, mediaSettingsInput } from './media-runtime.js'
-import { readFileAttachment } from './attachments.js'
+import { fileText, readFileAttachment } from './attachments.js'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { getJiraSettings, saveJiraSettings } from './jira-settings.js'
@@ -17,9 +17,16 @@ import { constantEqual } from './config.js'
 import { check, id, MemoryError, parse } from './contracts.js'
 import { restoreMemory, streamBackup } from './backup.js'
 import { globalSearch } from './global-search.js'
-import { WorkerSupervisor } from './supervisor.js'
+import { WorkerSupervisor, workerLogPath } from './supervisor.js'
+import { buildReport, tailLog } from './report.js'
+import { createRequire } from 'node:module'
+import { homedir, release } from 'node:os'
+import { googleScopes } from './google-auth.js'
+import { activateGoogleSource, ensureGoogleSource } from './google-setup.js'
 import { agentFromMeta } from './agents.js'
 import { requestMigrationRetry } from './legacy-postgres.js'
+
+const VERSION = String((createRequire(import.meta.url)('../package.json') as { version: string }).version)
 
 export interface MemoryRouteOptions {
   directory: string; baseUrl: string;
@@ -33,6 +40,27 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }
   app.get('/api/memory/status', { preHandler: auth }, () => service.status())
+  // Public issue: kind, state, stage, model and the worker lines of this job only. Source titles and payloads stay out
+  // because they name clients and projects.
+  app.get('/api/memory/jobs/:id/report', { preHandler: auth }, async request => {
+    const { id: jobId } = parse(z.object({ id }), request.params)
+    const job = (await (await service.get()).db.query('SELECT * FROM jobs WHERE id=$1', [jobId]))[0]
+    check(job, 'El trabajo no existe', 404)
+    const lines = tailLog(workerLogPath(options.directory), 5000)
+    const progress = job.progress ?? {}
+    return buildReport({
+      title: `Trabajo de memoria ${job.kind} falló: ${String(job.error ?? 'sin mensaje').slice(0, 120)}`,
+      summary: `Un trabajo de la memoria (${job.kind}) quedó en estado «${job.state}» después de ${job.attempts} de ${job.max_attempts} intentos.`,
+      error: job.error ?? 'sin mensaje',
+      environment: { Versión: VERSION, Sistema: `${process.platform} ${release()} (${process.arch})`, Electron: process.versions.electron ?? '-', Node: process.versions.node },
+      details: { Tipo: job.kind, Estado: job.state, Etapa: String(progress.stage ?? '-'), Intentos: `${job.attempts}/${job.max_attempts}`,
+        ...(progress.provider ? { Proveedor: `${progress.provider}${progress.model ? ` / ${progress.model}` : ''}` } : {}),
+        Creado: String(job.created_at), Actualizado: String(job.updated_at) },
+      logs: [{ name: 'worker, este trabajo', lines: lines.filter(line => line.includes(job.id)).slice(-60) },
+        { name: 'worker, cierres del proceso', lines: lines.filter(line => line.includes('[supervisor]')).slice(-10) }],
+      home: homedir(),
+    })
+  })
   app.get('/api/memory/jira-settings', { preHandler: auth }, async () => getJiraSettings((await service.get()).db))
   app.put('/api/memory/jira-settings', { preHandler: auth }, async request => saveJiraSettings((await service.get()).db,request.body))
   app.post('/api/memory/call', { preHandler: auth, bodyLimit: 36_000_000 }, async (request, reply) => {
@@ -55,9 +83,10 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   })
   app.get('/api/memory/media', { preHandler: auth }, async () => ({ settings: await mediaSettings((await service.get()).store), modules: service.media.status() }))
   app.put('/api/memory/media', { preHandler: auth }, async request => {
-    const settings = service.media.validate(parse(mediaSettingsInput, request.body)), { store } = await service.get()
+    // Modules that are still downloading are skipped when processing, so saving does not wait for them.
+    const settings = parse(mediaSettingsInput, request.body), { store } = await service.get()
     await store.db.query("INSERT INTO settings(key,value) VALUES('media',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(settings)])
-    await queueMedia(store, {}, true)
+    await queueMedia(store, {}, true, service.media)
     return { settings, modules: service.media.status() }
   })
   app.post('/api/memory/media/:module/:action', { preHandler: auth }, async (request, reply) => {
@@ -107,6 +136,8 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     if (key === 'google-client') {
       const value = parse(z.object({ client_id: z.string().min(1).max(1000), client_secret: z.string().max(2000).optional() }).strict(), request.body)
       service.vault.save(key, value)
+      const source = await ensureGoogleSource((await service.get()).store)
+      return { configured: true, connector_id: source.id, authorization_url: service.google.start(source.id, googleScopes(source.config)) }
     } else if (key === 'kiro') {
       service.vault.save(key, parse(z.object({ api_key: z.string().trim().min(1).max(4000).regex(/^[^\s\x00-\x1f\x7f]+$/) }).strict(), request.body))
     } else if (key === 'deepseek') {
@@ -122,17 +153,18 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   })
   app.post('/api/memory/connectors/:id/google/start', { preHandler: auth }, async request => {
     const connectorId = parse(id, (request.params as { id: string }).id)
-    const row = (await (await service.get()).db.query("SELECT id FROM connectors WHERE id=$1 AND provider='google'", [connectorId]))[0]
+    const row = (await (await service.get()).db.query("SELECT id,config FROM connectors WHERE id=$1 AND provider='google'", [connectorId]))[0]
     check(row, 'Conector de Google inexistente', 404)
-    return { authorization_url: service.google.start(connectorId) }
+    return { authorization_url: service.google.start(connectorId, googleScopes(row.config)) }
   })
   app.get('/api/memory/google/callback', async (request, reply) => {
     const query = request.query as Record<string, string>
     reply.header('Content-Type', 'text/html; charset=utf-8').header('Cache-Control', 'no-store')
     try {
       check(query.state && query.code && !query.error, 'No se completó la autorización', 400)
-      await service.google.finish(query.state, query.code)
-      return reply.send('<!doctype html><meta charset="utf-8"><title>Google conectado</title><h1>Google conectado a Agent Hub</h1><p>Podés cerrar esta ventana y volver a Fuentes en tu hub.</p>')
+      const connectorId = await service.google.finish(query.state, query.code)
+      await activateGoogleSource((await service.get()).store, service.google, connectorId).catch(() => undefined)
+      return reply.send('<!doctype html><meta charset="utf-8"><title>Google conectado</title><h1>Google conectado a Agent Hub</h1><p>La fuente quedó activa y empezó a sincronizar. Esta ventana ya se puede cerrar.</p>')
     } catch { return reply.code(400).send('<!doctype html><meta charset="utf-8"><title>Conexión pendiente</title><h1>No se completó la conexión</h1><p>Volvé al hub y revisá el cliente OAuth antes de reintentar.</p>') }
   })
   app.get('/api/memory/backups/:id', { preHandler: auth }, async (request, reply) => {
@@ -171,7 +203,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
         if (request.params.name === 'get_file' && data.data_base64) {
           const { data_base64, ...metadata } = data
           const summary = { type: 'text' as const, text: JSON.stringify(metadata) }
-          if (data.mime_type === 'text/plain') return { content: [summary, { type: 'resource', resource: { uri: `memory://files/${data.version_id}/${encodeURIComponent(data.filename)}`, mimeType: data.mime_type, text: Buffer.from(data_base64, 'base64').toString('utf8') } }] }
+          if (data.mime_type === 'text/plain') return { content: [summary, { type: 'resource', resource: { uri: `memory://files/${data.version_id}/${encodeURIComponent(data.filename)}`, mimeType: data.mime_type, text: fileText(Buffer.from(data_base64, 'base64'), data.filename) ?? Buffer.from(data_base64, 'base64').toString('utf8') } }] }
           if (data.mime_type.startsWith('image/')) return { content: [summary, { type: 'image', mimeType: data.mime_type, data: data_base64 }] }
           if (data.mime_type.startsWith('audio/')) return { content: [summary, { type: 'audio', mimeType: data.mime_type, data: data_base64 }] }
           return { content: [summary, { type: 'resource', resource: { uri: `memory://files/${data.version_id}/${encodeURIComponent(data.filename)}`, mimeType: data.mime_type, blob: data_base64 } }] }

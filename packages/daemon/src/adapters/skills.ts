@@ -50,6 +50,15 @@ const STORE_SUBDIR = 'skills'
 
 /** El slug es nombre de carpeta: se valida acá aunque el catálogo ya lo valide. */
 const SAFE_SLUG = /^[a-z0-9][a-z0-9._-]*$/
+/**
+ * Nombres que Windows no deja crear o altera: dispositivos reservados, solos o con extensión (`nul.txt` abre `NUL`),
+ * y un punto final, que recorta en silencio. Se rechazan en todas las plataformas para que el slug sea portable.
+ */
+const RESERVED_SLUG = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?$|\.$/
+
+function portableSlug(slug: string): boolean {
+  return SAFE_SLUG.test(slug) && !RESERVED_SLUG.test(slug)
+}
 
 export function skillsRoot(cliKind: string, home: string): string {
   return join(home, SKILL_ROOTS[cliKind]!)
@@ -88,7 +97,7 @@ export function planSkills(
   const wanted: Record<string, SnapshotSkill> = {}
   for (const skill of snapshot.skills ?? []) {
     const slug = skill.slug
-    if (!SAFE_SLUG.test(slug)) {
+    if (!portableSlug(slug)) {
       drift.push(
         driftItem(store, 'slug', `la skill '${slug}' tiene un nombre que no puede ser carpeta; no se materializa`),
       )

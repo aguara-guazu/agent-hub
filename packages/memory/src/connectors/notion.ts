@@ -57,7 +57,7 @@ export async function syncNotion(connector: Connector, ctx: ConnectorContext): P
         project_ids: connector.project_ids, metadata: { modified_at: page.last_edited_time, properties: page.properties, parent: page.parent }, original: { page, blocks: originals } }, 'connector:notion')
       imported++
     } catch (error) {
-      if (!(error instanceof ProviderError && [403, 404].includes(error.httpStatus))) throw error
+      if (!(error instanceof ProviderError && !error.rateLimited && [403, 404].includes(error.httpStatus))) throw error
       await ctx.store.db.query("UPDATE sources SET status='inaccessible' WHERE provider='notion' AND account=$1 AND external_id=$2", [connector.id, pageId])
       inaccessible++
     }

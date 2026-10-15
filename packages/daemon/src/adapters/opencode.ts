@@ -18,13 +18,14 @@
 
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 
 import {
   detectDrift,
   Manifest,
   planJsonValue,
   region,
+  samePath,
   type DriftItem,
   type DriftReport,
   type FileChange,
@@ -56,7 +57,7 @@ export class OpenCodeAdapter implements CliAdapter {
   /** `XDG_CONFIG_HOME` sólo se respeta para el home real; un home de prueba queda determinista. */
   configDir(home: string): string {
     const xdg = process.env['XDG_CONFIG_HOME']?.trim()
-    if (xdg && resolve(home) === resolve(homedir())) return join(xdg, 'opencode')
+    if (xdg && samePath(home, homedir())) return join(xdg, 'opencode')
     return join(home, CONFIG_DIR_RELPATH)
   }
 

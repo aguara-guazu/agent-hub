@@ -5,11 +5,12 @@ import { defaultAI, localUrl, type AIConfig } from './config.js'
 import { findExtractionCli, isExtractionCli } from './cli-extraction.js'
 import { findOpenCode } from './opencode.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
+import { MEDIA_MODULES } from './media-runtime.js'
 import type { MemoryService } from './service.js'
 
 export const EXTRACTION_PRIORITY = ['claude_code','codex_cli','opencode','kiro','ollama','deepseek'] as const
 export function findOllama(env = process.env, home = homedir()) {
-  for (const dir of [...(env.PATH ?? '').split(delimiter).filter(Boolean), join(home,'.local/bin'), '/opt/homebrew/bin','/usr/local/bin','/Applications/Ollama.app/Contents/Resources', ...(env.LOCALAPPDATA ? [join(env.LOCALAPPDATA,'Programs','Ollama')] : [])]) {
+  for (const dir of [...(env.PATH ?? '').split(delimiter).filter(Boolean), join(home,'.local/bin'), ...(process.platform === 'win32' ? [] : ['/opt/homebrew/bin','/usr/local/bin','/Applications/Ollama.app/Contents/Resources']), ...(env.LOCALAPPDATA ? [join(env.LOCALAPPDATA,'Programs','Ollama')] : [])]) {
     const path = join(dir, process.platform === 'win32' ? 'ollama.exe' : 'ollama')
     try { accessSync(path, constants.X_OK); if (statSync(path).isFile()) return path } catch { /* optional */ }
   }
@@ -51,6 +52,16 @@ export class MemoryDefaults {
     const { db } = await this.service.get()
     await db.query("UPDATE settings SET value=json_set(value,'$.embedding_state',$1) WHERE key=$2", [value, DEFAULTS_KEY])
   }
+  /**
+   * Keeps every local model installed regardless of the selected engine. A missing one (first run, or a new revision
+   * after an update) starts downloading, one at a time; a failed or cancelled download waits for an explicit retry.
+   */
+  private installModels(setup: Setup) {
+    const media = this.service.media, models = [this.service.nativeEmbeddings, ...MEDIA_MODULES.map(name => media[name])]
+    if (models.some(model => model.status().state === 'downloading')) return
+    models.find(model => model.status().state === 'missing' &&
+      (model !== this.service.nativeEmbeddings || !['paused', 'error'].includes(setup.embedding_state)))?.install()
+  }
   private async prepare() {
     const { db, store } = await this.service.get(), native = this.service.nativeEmbeddings
     await db.transaction(async sql => {
@@ -66,6 +77,7 @@ export class MemoryDefaults {
     })
     let setup = await this.status()
     if (!setup || this.stopped) return
+    this.installModels(setup)
     if (setup.embedding_state === 'pending' || setup.embedding_state === 'downloading') {
       const status = native.status()
       if (status.state === 'ready') {

@@ -11,18 +11,21 @@ export const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/contacts.other.readonly',
   'https://www.googleapis.com/auth/directory.readonly',
 ]
+export const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
+/** Gmail is on unless a source turns it off with `gmail_enabled: false`; only then is the restricted scope left out. */
+export const googleScopes = (config: Record<string, unknown>): readonly string[] => config.gmail_enabled !== false ? [...GOOGLE_SCOPES, GMAIL_SCOPE] : GOOGLE_SCOPES
 export class GoogleAuth {
   private pending = new Map<string, { connector: string; verifier: string; expires: number }>()
   private refreshes = new Map<string, Promise<string>>()
   constructor(private vault: Vault, readonly redirectUrl: string, private fetcher: typeof fetch = fetch) {}
-  start(connector: string): string {
+  start(connector: string, scopes: readonly string[] = GOOGLE_SCOPES): string {
     const credentials = this.vault.read('google-client')
     check(credentials?.client_id, 'Configurá el client ID de una aplicación OAuth de escritorio de Google', 409)
     for (const [key, value] of this.pending) if (value.expires < Date.now()) this.pending.delete(key)
     const state = randomBytes(32).toString('base64url'), verifier = randomBytes(48).toString('base64url')
     this.pending.set(state, { connector, verifier, expires: Date.now() + 600_000 })
     const params = new URLSearchParams({ client_id: credentials.client_id, redirect_uri: this.redirectUrl,
-      response_type: 'code', scope: GOOGLE_SCOPES.join(' '), state, access_type: 'offline', prompt: 'consent',
+      response_type: 'code', scope: scopes.join(' '), state, access_type: 'offline', prompt: 'consent',
       code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url') })
     return `https://accounts.google.com/o/oauth2/v2/auth?${params}`
   }
@@ -35,6 +38,11 @@ export class GoogleAuth {
       code, code_verifier: pending.verifier, redirect_uri: this.redirectUrl, grant_type: 'authorization_code' })
     this.vault.save(pending.connector, { ...tokens, expires_at: Date.now() + Number(tokens.expires_in ?? 3600) * 1000 })
     return pending.connector
+  }
+  /** Reads the scopes Google reported with the last token exchange or refresh. */
+  granted(connector: string, scope: string): boolean {
+    const granted = this.vault.read(connector)?.scope
+    return typeof granted === 'string' && granted.split(' ').includes(scope)
   }
   async token(connector: string): Promise<string> {
     const tokens = this.vault.read(connector)

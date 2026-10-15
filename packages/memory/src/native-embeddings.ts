@@ -1,6 +1,7 @@
 import { Worker } from 'node:worker_threads'
-import { mkdirSync, readFileSync, renameSync, writeFileSync, statSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { renameRetrySync } from '@agenthub/gateway/platform'
 import { modelProfile, type InferenceProfile, type MediaEmbedding, type SpeechResult } from './media-models.js'
 import { MemoryError } from './contracts.js'
 
@@ -41,7 +42,7 @@ export class NativeEmbeddings {
         await this.start(true)
         mkdirSync(this.cache, { recursive: true })
         writeFileSync(`${this.marker}.tmp`, JSON.stringify({ revision: modelProfile(this.profile).revision }))
-        renameSync(`${this.marker}.tmp`, this.marker)
+        try { renameRetrySync(`${this.marker}.tmp`, this.marker) } catch (error) { rmSync(`${this.marker}.tmp`, { force: true }); throw error }
       } catch (error) { this.error = error instanceof Error ? error.message : 'Falló la descarga del modelo' }
       finally { this.installing = false; await this.stop() }
     }).catch(error => { this.installing = false; this.error = error instanceof Error ? error.message : 'Falló la descarga del modelo' })

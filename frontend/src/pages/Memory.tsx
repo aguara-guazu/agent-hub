@@ -51,13 +51,13 @@ export function MemoryExplore() { return <MemoryFrame><Explore /></MemoryFrame> 
 function Explore() {
   const { params, change, offset } = useMemoryView(), query = params.get('q') ?? '', kind = params.get('kind') ?? ''
   const setQuery = (q: string) => change({ q, offset: 0 }), setKind = (kind: string) => change({ kind, offset: 0 }), setOffset = (offset: number) => change({ offset })
-  const [form, setForm] = useState(''), [importing, setImporting] = useState(false)
+  const [form, setForm] = useState('')
   const entities = useMemory<Page<MemoryEntity>>('list_entities', { ...(kind ? { kind } : {}), query, limit: 50, offset })
-  return <><PageHeading title="Explorar memoria" description="Navegá las fuentes, las personas y sus conexiones."><button className="btn" onClick={() => setForm('note')}>Nueva nota</button><button className="btn" onClick={() => setForm('collection')}>Nueva colección</button><button className="btn btn-primary" onClick={() => setImporting(true)}>Importar fuente</button></PageHeading>
+  return <><PageHeading title="Explorar memoria" description="Navegá las fuentes, las personas y sus conexiones."><button className="btn" onClick={() => setForm('note')}>Nueva nota</button><button className="btn" onClick={() => setForm('collection')}>Nueva colección</button></PageHeading>
     <div className="memory-toolbar"><input className="input" aria-label="Buscar entidades" placeholder="Buscar por nombre…" value={query} onChange={e => setQuery(e.target.value)} /><select className="input" aria-label="Tipo de entidad" value={kind} onChange={e => setKind(e.target.value)}><option value="">Todos los tipos</option>{Object.entries(entityLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></div>
     <ErrorBox error={entities.error} retry={entities.refetch} /><div className="card">{entities.isPending ? <p className="memory-loading" role="status">Cargando memoria…</p> : <EntityRows items={entities.data?.items ?? []} />}</div>
     {entities.data && <Pager total={entities.data.total} offset={offset} limit={50} setOffset={setOffset} />}
-    {form && <EntityForm kind={form} open onClose={() => setForm('')} />}{importing && <ImportForm open onClose={() => setImporting(false)} />}
+    {form && <EntityForm kind={form} open onClose={() => setForm('')} />}
   </>
 }
 
@@ -81,9 +81,10 @@ function EntityPage({ entityId }: { entityId: string }) {
     <PageHeading title={entity.title} description={entity.data.description ?? entity.data.email ?? ''}>
       <button className="btn" onClick={() => setEditing(true)}>Editar</button><button className="btn" onClick={() => setLinking(true)}>Vincular</button>
       {isProject && <button className="btn" onClick={() => setCompanyForm(true)}>{entity.data.company_id ? 'Cambiar empresa' : 'Asociar empresa'}</button>}
-      {isProject ? <button className="btn btn-primary" onClick={() => setImporting(true)}>Importar fuente</button> : detail.data.sources.length > 0 && <button className="btn" disabled={reprocess.isPending} onClick={() => reprocess.mutate({ entity_id: entityId, force: true })}>Reprocesar</button>}
+      {!isProject && detail.data.sources.length > 0 && <button className="btn" disabled={reprocess.isPending} onClick={() => reprocess.mutate({ entity_id: entityId, force: true })}>Reprocesar</button>}
     </PageHeading>
     <div className="memory-meta"><span className="badge">{entityLabels[entity.kind]}</span>{entity.data.status && <span className="badge badge-accent">{entity.data.status}</span>}<span>{formatTime(entity.data.occurred_at ?? entity.updated_at)}</span>
+      {entity.data.inferred_metadata && detail.data.sources[0] && <span title="Inferido a partir del contenido">Identificador: <code>{detail.data.sources[0].external_id}</code></span>}
       {entity.data.timezone && <span>{entity.data.timezone}</span>}{entity.data.stale && <span className="badge badge-stale">La fuente cambió</span>}
       {isProject && !!entity.data.folders?.length && <span title="Los agentes que trabajan en estas carpetas buscan primero en este proyecto">Carpetas: {entity.data.folders.map((f: string) => <code key={f}>{f}</code>)}</span>}</div>
     {entity.data.agent_memory && <MemoryRemember entity={entity} />}
@@ -97,7 +98,7 @@ function EntityPage({ entityId }: { entityId: string }) {
       {!!entity.data.merged_from?.length && <p>Incluye {entity.data.merged_from.length} {entity.data.merged_from.length === 1 ? 'identidad unificada' : 'identidades unificadas'}. El historial de cada unificación está en la información adicional.</p>}
       {entity.data.merged_into ? <Link className="btn btn-primary btn-sm" to={`/memory/entities/${entity.data.merged_into}`}>Ver identidad vigente</Link> : <><Link className="btn btn-sm" to={`/memory/search?person=${entityId}`}>Ver intervenciones</Link><MergePerson person={entity} /></>}</div>}
     {isProject && <><div className="memory-project-tabs">{[['all','Línea de tiempo'],['meeting','Reuniones'],['document','Documentos'],['tasks','Tareas'],['fact','Decisiones y hallazgos'],['collection','Colecciones']].map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key!)}>{label}</button>)}<button onClick={() => setForm('collection')}>＋ Colección</button></div>
-      {tab === 'tasks' ? <ProjectTasks project={entity} /> : <><p className="memory-section-note">Estado según las fuentes importadas. Las fechas corresponden al contenido cuando están disponibles.</p><ErrorBox error={related.error} /><div className="card"><EntityRows items={related.data?.items ?? []} /></div>{related.data && <Pager total={related.data.total} offset={relatedOffset} limit={100} setOffset={setRelatedOffset} />}</>}</>}
+      {tab === 'tasks' ? <ProjectTasks project={entity} /> : <><div className="spread memory-section-bar"><p className="memory-section-note">Estado según las fuentes importadas. Las fechas corresponden al contenido cuando están disponibles.</p>{tab === 'document' && <button className="btn btn-primary" onClick={() => setImporting(true)}>Adjuntar archivos</button>}</div><ErrorBox error={related.error} /><div className="card"><EntityRows items={related.data?.items ?? []} /></div>{related.data && <Pager total={related.data.total} offset={relatedOffset} limit={100} setOffset={setRelatedOffset} />}</>}</>}
     {entity.kind === 'collection' && <MemoryCollection entity={entity} />}
     {['meeting','document','person'].includes(entity.kind) && <IdentityProposals entityId={entityId} canInfer={entity.kind !== 'person'} />}
     {entity.kind === 'person' && !entity.data.merged_into && <DuplicateProposals entityId={entityId} />}
@@ -109,7 +110,7 @@ function EntityPage({ entityId }: { entityId: string }) {
     <details className="memory-details"><summary>Información adicional e historial</summary><pre>{JSON.stringify(entity.data, null, 2)}</pre>{detail.data.changes.map((c: any) => <p key={c.id}>{formatTime(c.created_at)} · {c.action} · {c.actor}</p>)}<button className="btn btn-danger" onClick={() => setDeleting(true)}>Eliminar de la memoria</button></details>
     {editing && <EditEntity entity={entity} onClose={() => setEditing(false)} />}{linking && <LinkEntity entity={entity} links={detail.data.links} onClose={() => setLinking(false)} />}
     {companyForm && <ProjectCompanyForm project={entity} onClose={() => setCompanyForm(false)} />}
-    {importing && <ImportForm open projectId={isProject ? entityId : undefined} onClose={() => setImporting(false)} />}{form && <EntityForm kind={form} open projectId={entityId} onClose={() => setForm('')} />}
+    {importing && isProject && <ImportForm open projectId={entityId} onClose={() => setImporting(false)} />}{form && <EntityForm kind={form} open projectId={entityId} onClose={() => setForm('')} />}
     <ConfirmDialog open={deleting} title="Eliminar de la memoria" message="Se eliminarán esta entidad, sus fuentes y los datos derivados que dependan de ellas. Los respaldos anteriores se conservan." destructive confirmLabel="Eliminar" busy={remove.isPending} onClose={() => setDeleting(false)} onConfirm={() => remove.mutate({ id: entityId })} />
   </>
 }
@@ -161,7 +162,7 @@ function EditEntity({ entity, onClose }: { entity: MemoryEntity; onClose: () => 
     <Field label="Descripción"><textarea rows={3} value={description} onChange={e => setDescription(e.target.value)} /></Field>
     {entity.kind === 'project' && <ProfileDraft projectId={entity.id} kind="project" onUse={draft => setDescription(draft.description)} />}
     {entity.kind === 'project' && <Field label="Etapa"><select value={status} onChange={e => setStatus(e.target.value)}>{['discovery','presales','poc','delivery','support','completed','paused'].map(s => <option key={s}>{s}</option>)}</select></Field>}
-    {entity.kind === 'project' && <Field label="Carpetas de trabajo (una ruta absoluta por línea)"><textarea rows={3} value={folders} onChange={e => setFolders(e.target.value)} placeholder="/Users/nombre/proyectos/cliente-api" /><span className="field-hint">Un agente (Claude Code, Codex, etc.) que trabaja dentro de estas carpetas busca primero en este proyecto y deja sus notas aquí.</span></Field>}
+    {entity.kind === 'project' && <Field label="Carpetas de trabajo (una ruta absoluta por línea)"><textarea rows={3} value={folders} onChange={e => setFolders(e.target.value)} placeholder={/^win/i.test(window.agentHub?.platform ?? navigator.platform) ? 'C:\\Users\\nombre\\proyectos\\cliente-api' : '/Users/nombre/proyectos/cliente-api'} /><span className="field-hint">Un agente (Claude Code, Codex, etc.) que trabaja dentro de estas carpetas busca primero en este proyecto y deja sus notas aquí.</span></Field>}
     {entity.kind === 'person' && <><Field label="Email"><input type="email" value={email} onChange={e => setEmail(e.target.value)} /></Field><Field label="Identidad"><select value={identity} onChange={e => setIdentity(e.target.value)}><option value="unresolved">Por verificar</option><option value="verified">Confirmada por mí</option>{identity === 'merged' && <option value="merged">Unificada</option>}</select></Field></>}
     {['note','fact'].includes(entity.kind) && <Field label="Contenido"><textarea rows={5} value={text} onChange={e => setText(e.target.value)} /></Field>}
     {['project','meeting','document','message','issue','note'].includes(entity.kind) && <label className="check"><input type="checkbox" checked={remote} onChange={e => setRemote(e.target.checked)} />Permitir extracción con proveedores remotos si está habilitada en Ajustes</label>}

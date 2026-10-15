@@ -19,9 +19,10 @@
 
 import { runHeadless, recordLifecycle, integrationDirectory } from '@agenthub/gateway'
 
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 
 import {
@@ -33,6 +34,7 @@ import {
   type AgentPass,
   type SyncReport,
 } from './app.js'
+import { samePath, sweepStaleTemps } from './adapters/atomic.js'
 import { loadConfig } from './config.js'
 import { ControlPlaneError, DEFAULT_MAX_ATTEMPTS } from './sync.js'
 import { DaemonState } from './state.js'
@@ -413,6 +415,11 @@ async function cmdRun(app: DaemonApp, args: ParsedArgs): Promise<number> {
     process.stdin.once('close', onSignal)
   }
 
+  try {
+    sweepStaleTemps(app.home)
+  } catch {
+    /* un temporal huérfano no justifica frenar el arranque */
+  }
   const stopWatching = app.watchExternalSkills()
   const first = await app.syncOnce({ apply: true, wait: 0 })
   printSync(app, first, true)
@@ -508,8 +515,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 }
 
+/** Rutas reales: un bin enlazado o otra capitalización de la unidad en Windows siguen siendo este módulo. */
+function invokedDirectly(): boolean {
+  if (!process.argv[1]) return false
+  const real = (path: string): string => {
+    try {
+      return realpathSync(path)
+    } catch {
+      return path
+    }
+  }
+  return samePath(real(fileURLToPath(import.meta.url)), real(process.argv[1]))
+}
+
 // Entry point cuando se ejecuta directamente.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (invokedDirectly()) {
   main().then(
     (code) => process.exit(code),
     (exc) => {

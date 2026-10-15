@@ -11,6 +11,7 @@
     { "path": "../packages/shared" },
     { "path": "../packages/gateway" },
     { "path": "../packages/daemon" },
+    { "path": "../packages/memory" },
     { "path": "../packages/core" }
   ],
   "include": ["src/**/*.ts"]

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { copyFile, mkdir, open, rename, rm, stat } from 'node:fs/promises'
+import { copyFile, mkdir, open, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { renameRetry } from '@agenthub/gateway/platform'
 import { modelProfile, type InferenceProfile } from './media-models.js'
 import { MODEL_FILES } from './model-files.js'
 
@@ -39,7 +40,8 @@ export async function prepareModelFiles(cache: string, profile: InferenceProfile
       }
     } finally { await file.close() }
     if (await digest(partial) !== expected.sha256) { await rm(partial, { force: true }); throw new Error('La descarga del modelo no coincide con su huella. Reintentá desde Ajustes.') }
-    await rename(partial, path)
+    // A verified partial is kept if the rename fails: the next attempt skips the download and only renames it.
+    await renameRetry(partial, path)
   }
 }
 async function digest(path: string) {

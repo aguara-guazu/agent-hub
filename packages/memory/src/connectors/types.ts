@@ -2,6 +2,8 @@ import type { MemoryStore } from '../store.js'
 import type { Vault } from '../config.js'
 import type { GoogleAuth } from '../google-auth.js'
 import type { ProviderHttp } from './http.js'
+/** Days the regular Google sync covers (Calendar window, first Gmail listing); older periods are imported on request. */
+export const GOOGLE_WINDOW_DAYS = 90
 export interface Connector {
   id: string; provider: 'google' | 'notion' | 'slack' | 'jira'; name: string;
   config: Record<string, any>; project_ids: string[]; cursor: Record<string, any>;

@@ -20,7 +20,17 @@ if (core.settings.consoleDist && existsSync(core.settings.consoleDist)) {
   })
 }
 
-await core.fastify.listen({ host, port })
+try {
+  await core.fastify.listen({ host, port })
+} catch (error) {
+  const code = (error as NodeJS.ErrnoException).code
+  // EACCES without a listener is a port inside a Windows excluded range (Hyper-V, WSL, Docker).
+  if (code === 'EACCES' || code === 'EADDRINUSE') {
+    console.error(`[core] error: no se pudo escuchar en ${host}:${port} (${code}). ` +
+      (code === 'EACCES' ? 'En Windows, revise «netsh interface ipv4 show excludedportrange protocol=tcp».' : 'Otro proceso usa ese puerto.'))
+  }
+  throw error
+}
 // Un server que no conectó se vuelve a sondear solo mientras esté habilitado y configurado.
 core.probeRetry.start()
 

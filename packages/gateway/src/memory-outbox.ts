@@ -1,11 +1,12 @@
 /** Durable local delivery. Only memory writes and Jira reads can be replayed; never Jira mutations. */
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { watch, type FSWatcher } from 'node:fs'
 import type { SnapshotView } from './policy.js'
 import { type ConnectionPool, resultText } from './runtime.js'
 import { isMemorySpec, issuesIn, JIRA_REREADS, siteFromResources } from './memory-bridge.js'
+import { renameRetry } from './platform.js'
 
 export interface MemoryDelivery {
   operation: 'sync_tasks' | 'finish_notes'
@@ -22,7 +23,10 @@ export class MemoryOutbox {
   constructor(readonly directory: string) {}
   async watch(onChange: () => void): Promise<FSWatcher> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
-    return watch(this.directory, { persistent: false }, (_event, name) => { if (name?.endsWith('.json')) onChange() })
+    const watcher = watch(this.directory, { persistent: false }, (_event, name) => { if (name?.endsWith('.json')) onChange() })
+    // Windows reports EPERM when the watched folder is deleted; without a listener that is an uncaught exception.
+    watcher.on('error', () => watcher.close())
+    return watcher
   }
   async enqueue(delivery: MemoryDelivery): Promise<string> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
@@ -33,7 +37,7 @@ export class MemoryOutbox {
   private async save(entry: Entry) {
     const path = join(this.directory, `${entry.id}.json`), temp = `${path}.${randomUUID()}.tmp`
     await writeFile(temp, JSON.stringify(entry), { mode: 0o600 })
-    await rename(temp, path)
+    await renameRetry(temp, path).catch(async (error: unknown) => { await rm(temp, { force: true }); throw error })
   }
   async pending(): Promise<number> { return (await readdir(this.directory).catch(() => [])).filter(n => /^[\da-f-]{36}\.json$/.test(n)).length }
   async has(id: string): Promise<boolean> { return readFile(join(this.directory, `${id}.json`)).then(() => true, () => false) }
@@ -47,11 +51,14 @@ export class MemoryOutbox {
       const path = join(this.directory, name), lock = `${path}.lock`
       try { await mkdir(lock); await writeFile(join(lock, 'pid'), String(process.pid), { mode: 0o600 }) }
       catch {
-        // Another gateway or the daemon owns this delivery. Recover only after that process exits.
+        // Another gateway or the daemon owns this delivery. Recover only after that process exits, or when the lock is
+        // far older than any delivery: Windows reuses PIDs quickly, so a live PID can belong to an unrelated process.
         try {
           const pid = Number(await readFile(join(lock, 'pid'), 'utf8'))
           if (Number.isInteger(pid) && pid > 0) {
             try { process.kill(pid, 0) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') await rm(lock, { recursive: true, force: true }) }
+            const info = await stat(lock).catch(() => undefined)
+            if (info && Date.now() - info.mtimeMs > 15 * 60_000) await rm(lock, { recursive: true, force: true })
           }
         } catch {
           // A crash between mkdir and writing pid must not strand the delivery forever.

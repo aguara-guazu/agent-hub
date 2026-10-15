@@ -13,10 +13,11 @@
  *   registra nada ni abre nada, falla con `OAuthAuthorizationRequired`.
  */
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
+import { renameRetrySync } from './platform.js'
 
 export const AUTH_NONE = 'none'
 export const AUTH_OAUTH = 'oauth'
@@ -81,7 +82,12 @@ export class OAuthStore {
     const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
     writeFileSync(tmp, JSON.stringify({ ...record, updated_at: new Date().toISOString() }, null, 2), { mode: 0o600 })
     chmodSync(tmp, 0o600)
-    renameSync(tmp, path)
+    try {
+      renameRetrySync(tmp, path)
+    } catch (error) {
+      rmSync(tmp, { force: true })
+      throw error
+    }
   }
 
   delete(serverId: string): void {

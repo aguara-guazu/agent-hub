@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC, type AgentHubBridge, type ClientRestartResult, type CoreStatus } from './ipc.js'
+import { IPC, type AgentHubBridge, type ClientRestartResult, type CoreStatus, type OpenFileResult } from './ipc.js'
 
 /**
  * Preload seguro. Con `contextIsolation` y `sandbox` activos, el renderer sólo
@@ -23,6 +23,7 @@ const bridge: AgentHubBridge = {
   getSession: () => ipcRenderer.invoke(IPC.getSession) as Promise<string>,
   syncNow: () => ipcRenderer.invoke(IPC.syncNow) as Promise<void>,
   restartClient: (cliKind: string) => ipcRenderer.invoke(IPC.restartClient, cliKind) as Promise<ClientRestartResult>,
+  openStoredPdf: (versionId: string) => ipcRenderer.invoke(IPC.openStoredPdf, versionId) as Promise<OpenFileResult>,
 }
 
 contextBridge.exposeInMainWorld('agentHub', bridge)

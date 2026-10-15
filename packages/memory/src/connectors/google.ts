@@ -1,68 +1,32 @@
-import type { Connector, ConnectorContext } from './types.js'
+import { GOOGLE_WINDOW_DAYS, type Connector, type ConnectorContext } from './types.js'
 import { pages, ProviderError } from './http.js'
 import type { ImportInput } from '../contracts.js'
 import { GooglePeople } from './google-people.js'
 import { parseGoogleDocument } from './google-document.js'
+import { importGmailRange } from './gmail.js'
+import { GMAIL_SCOPE } from '../google-auth.js'
 
 const encoded = encodeURIComponent
+const sourceBase = (connector: Connector) => ({ provider: 'google' as const, account: connector.id, connector_id: connector.id, project_ids: connector.project_ids })
+
 export async function syncGoogle(connector: Connector, ctx: ConnectorContext): Promise<void> {
   const { store, http } = ctx
   const token = await ctx.google.token(connector.id)
   const headers = { Authorization: `Bearer ${token}` }
   const people = new GooglePeople(ctx, headers)
-  const base = { provider: 'google' as const, account: connector.id, connector_id: connector.id, project_ids: connector.project_ids }
-  const since = connector.config.since ?? new Date(Date.now() - 90 * 86400_000).toISOString()
+  const base = sourceBase(connector)
+  const since = new Date(Date.now() - GOOGLE_WINDOW_DAYS * 86400_000).toISOString()
   const until = new Date().toISOString()
   const cursor = { ...connector.cursor }
   let imported = 0
-  const calendars: string[] = connector.config.calendars?.length ? connector.config.calendars : ['primary']
-  if (connector.config.calendar_enabled !== false) for (const calendar of calendars) {
-    // Revisit a bounded window: expanding recurring series without timeMax can
-    // materialize decades of future events. A syncToken cannot carry timeMax,
-    // and misses unchanged occurrences entering a moving time window.
-    if (Date.parse(since) >= Date.parse(until)) continue
-    let pageToken = '', completed = false
-    while (!completed) {
-      ctx.signal.throwIfAborted()
-      const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encoded(calendar)}/events`)
-      url.searchParams.set('singleEvents', 'true'); url.searchParams.set('showDeleted', 'true'); url.searchParams.set('maxResults', '250')
-      url.searchParams.set('timeMin', since); url.searchParams.set('timeMax', until)
-      if (pageToken) url.searchParams.set('pageToken', pageToken)
-      const page = await http.json(url.toString(), headers)
-      for (const event of page.items ?? []) {
-        ctx.signal.throwIfAborted()
-        const externalId = `calendar:${calendar}:${event.id}`
-        if (event.status === 'cancelled') {
-          // A cancelled calendar event never deletes a conference or its transcript.
-          await store.db.query(`UPDATE entities SET data=jsonb_merge(data,'{"status":"cancelled"}'),updated_at=now()
-            WHERE id IN(SELECT entity_id FROM sources WHERE provider='google' AND account=$1 AND external_id=$2)`, [connector.id, externalId])
-          continue
-        }
-        const result = await store.ingest({ ...base, external_id: externalId, kind: 'event', title: event.summary || 'Reunión sin título',
-          ...(event.htmlLink ? { url: event.htmlLink } : {}), ...(event.start?.dateTime ? { occurred_at: event.start.dateTime } : {}),
-          text: [event.summary, event.description, ...(event.attendees ?? []).map((a: any) => `${a.displayName ?? ''} ${a.email ?? ''} (${a.responseStatus ?? 'needsAction'})`)].filter(Boolean).join('\n'),
-          metadata: { event_id: event.id, calendar, status: event.status, scheduled_start: event.start ?? null, scheduled_end: event.end ?? null,
-            organizer: event.organizer ?? null, attendees: event.attendees ?? [], recurrence_id: event.recurringEventId ?? null,
-            original_start: event.originalStartTime ?? null, meet_url: event.hangoutLink ?? null, conference_data: event.conferenceData ?? null, attachments: event.attachments ?? [] }, original: event }, 'connector:google')
-        // Explicit document attachments provide a path to historical transcripts, even after Meet entries expire.
-        for (const attachment of event.attachments ?? []) if (attachment.fileId && attachment.mimeType === 'application/vnd.google-apps.document') {
-          await store.enqueue('google_document', { connector_id: connector.id, document_id: attachment.fileId, event_entity_id: result.entity_id }, `google-doc:${connector.id}:${attachment.fileId}:${event.updated ?? ''}`)
-        }
-        imported++
-      }
-      await ctx.progress({ stage: 'calendar', calendar, imported })
-      pageToken = page.nextPageToken ?? ''
-      if (!pageToken) {
-        delete cursor[`calendar:${calendar}`]
-        cursor[`calendar_window:${calendar}`] = { from: since, to: until }
-        await ctx.checkpoint(cursor)
-        completed = true
-      }
-    }
-  }
+  if (connector.config.calendar_enabled !== false) imported += await syncCalendar(connector, ctx, headers, since, until, async calendar => {
+    delete cursor[`calendar:${calendar}`]
+    cursor[`calendar_window:${calendar}`] = { from: since, to: until }
+    await ctx.checkpoint(cursor)
+  })
   if (connector.config.meet_enabled !== false) {
     // Revisit the retention window so late-generated transcript artifacts are not missed.
-    const from = new Date(Math.max(Date.parse(since), Date.now() - 29 * 86400_000)).toISOString()
+    const from = new Date(Date.now() - 29 * 86400_000).toISOString()
     const url = new URL('https://meet.googleapis.com/v2/conferenceRecords')
     url.searchParams.set('filter', `start_time >= "${from}"`)
     url.searchParams.set('pageSize', '100')
@@ -92,7 +56,7 @@ export async function syncGoogle(connector: Connector, ctx: ConnectorContext): P
       let meetingCode = ''
       if (typeof conference.space === 'string') {
         try { meetingCode = (await http.json(`https://meet.googleapis.com/v2/${conference.space}`, headers)).meetingCode ?? '' }
-        catch (error) { if (!(error instanceof ProviderError && [403,404].includes(error.httpStatus))) throw error }
+        catch (error) { if (!(error instanceof ProviderError && !error.rateLimited && [403,404].includes(error.httpStatus))) throw error }
       }
       const matched = await store.db.query(`SELECT e.* FROM entities e JOIN sources s ON s.entity_id=e.id WHERE s.account=$1 AND e.kind='event'
         AND e.data->'conference_data'->>'conferenceId'=$2
@@ -122,12 +86,77 @@ export async function syncGoogle(connector: Connector, ctx: ConnectorContext): P
   await ctx.progress({ stage: 'complete', imported, documents: documentIds.size })
 }
 
+/**
+ * Imports the calendar events between `since` and `until`. A bounded window is revisited on purpose: expanding
+ * recurring series without timeMax can materialize decades of future events, a syncToken cannot carry timeMax,
+ * and it misses unchanged occurrences entering a moving window. `done` runs after each calendar's last page.
+ */
+async function syncCalendar(connector: Connector, ctx: ConnectorContext, headers: Record<string, string>, since: string, until: string,
+  done?: (calendar: string) => Promise<void>): Promise<number> {
+  const base = sourceBase(connector)
+  const calendars: string[] = connector.config.calendars?.length ? connector.config.calendars : ['primary']
+  let imported = 0
+  for (const calendar of calendars) {
+    if (Date.parse(since) >= Date.parse(until)) continue
+    let pageToken = ''
+    do {
+      ctx.signal.throwIfAborted()
+      const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encoded(calendar)}/events`)
+      url.searchParams.set('singleEvents', 'true'); url.searchParams.set('showDeleted', 'true'); url.searchParams.set('maxResults', '250')
+      url.searchParams.set('timeMin', since); url.searchParams.set('timeMax', until)
+      if (pageToken) url.searchParams.set('pageToken', pageToken)
+      const page = await ctx.http.json(url.toString(), headers)
+      for (const event of page.items ?? []) {
+        ctx.signal.throwIfAborted()
+        const externalId = `calendar:${calendar}:${event.id}`
+        if (event.status === 'cancelled') {
+          // A cancelled calendar event never deletes a conference or its transcript.
+          await ctx.store.db.query(`UPDATE entities SET data=jsonb_merge(data,'{"status":"cancelled"}'),updated_at=now()
+            WHERE id IN(SELECT entity_id FROM sources WHERE provider='google' AND account=$1 AND external_id=$2)`, [connector.id, externalId])
+          continue
+        }
+        const result = await ctx.store.ingest({ ...base, external_id: externalId, kind: 'event', title: event.summary || 'Reunión sin título',
+          ...(event.htmlLink ? { url: event.htmlLink } : {}), ...(event.start?.dateTime ? { occurred_at: event.start.dateTime } : {}),
+          text: [event.summary, event.description, ...(event.attendees ?? []).map((a: any) => `${a.displayName ?? ''} ${a.email ?? ''} (${a.responseStatus ?? 'needsAction'})`)].filter(Boolean).join('\n'),
+          metadata: { event_id: event.id, calendar, status: event.status, scheduled_start: event.start ?? null, scheduled_end: event.end ?? null,
+            organizer: event.organizer ?? null, attendees: event.attendees ?? [], recurrence_id: event.recurringEventId ?? null,
+            original_start: event.originalStartTime ?? null, meet_url: event.hangoutLink ?? null, conference_data: event.conferenceData ?? null, attachments: event.attachments ?? [] }, original: event }, 'connector:google')
+        // Explicit document attachments provide a path to historical transcripts, even after Meet entries expire.
+        for (const attachment of event.attachments ?? []) if (attachment.fileId && attachment.mimeType === 'application/vnd.google-apps.document') {
+          await ctx.store.enqueue('google_document', { connector_id: connector.id, document_id: attachment.fileId, event_entity_id: result.entity_id }, `google-doc:${connector.id}:${attachment.fileId}:${event.updated ?? ''}`)
+        }
+        imported++
+      }
+      await ctx.progress({ stage: 'calendar', calendar, imported })
+      pageToken = page.nextPageToken ?? ''
+    } while (pageToken)
+    await done?.(calendar)
+  }
+  return imported
+}
+
+/**
+ * Imports an older period on request: calendar events and Gmail messages between `since` and `until`. Meet keeps
+ * transcript entries for about 30 days and Drive documents are not dated, so both stay with the regular sync.
+ * The regular cursors are not modified.
+ */
+export async function syncGoogleRange(connector: Connector, ctx: ConnectorContext, since: string, until: string): Promise<void> {
+  const headers = { Authorization: `Bearer ${await ctx.google.token(connector.id)}` }
+  const imported = connector.config.calendar_enabled !== false ? await syncCalendar(connector, ctx, headers, since, until) : 0
+  let mail = 0
+  if (connector.config.gmail_enabled !== false) {
+    if (ctx.google.granted(connector.id, GMAIL_SCOPE)) mail = await importGmailRange(connector, ctx, since, until)
+    else await ctx.progress({ gmail_warning: 'La cuenta no autorizó la lectura de Gmail; el período se importó sin correos' })
+  }
+  await ctx.progress({ stage: 'complete', imported, gmail_imported: mail, range: { since, until } })
+}
+
 export async function importGoogleDocument(connector: Connector, ctx: ConnectorContext, documentId: string, relatedId?: string, cachedDocument?: any) {
   const token = await ctx.google.token(connector.id)
   let document: any
   try { document = cachedDocument ?? await ctx.http.json(`https://docs.googleapis.com/v1/documents/${encoded(documentId)}?includeTabsContent=true`, { Authorization: `Bearer ${token}` }) }
   catch (error) {
-    if (!(error instanceof ProviderError && [403,404].includes(error.httpStatus))) throw error
+    if (!(error instanceof ProviderError && !error.rateLimited && [403,404].includes(error.httpStatus))) throw error
     await ctx.store.db.query("UPDATE sources SET status='inaccessible' WHERE provider='google' AND account=$1 AND external_id=$2", [connector.id, `docs:${documentId}`])
     await ctx.progress({ inaccessible_document: documentId, document_error: 'Documento sin acceso; se conserva la copia anterior si existe' })
     return

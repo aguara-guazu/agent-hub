@@ -23,13 +23,14 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeSync,
 } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+
+import { renameRetrySync } from '@agenthub/gateway/platform'
 
 export const STATE_VERSION = 1
 
@@ -420,6 +421,7 @@ function writeJson(path: string, payload: Record<string, unknown>, mode = 0o600)
     writeSync(fd, body)
     fsyncSync(fd)
     closeSync(fd)
+    renameRetrySync(tmp, path)
   } catch (exc) {
     try {
       closeSync(fd)
@@ -429,6 +431,5 @@ function writeJson(path: string, payload: Record<string, unknown>, mode = 0o600)
     rmSync(tmp, { force: true })
     throw exc
   }
-  renameSync(tmp, path)
   chmodSync(path, mode)
 }

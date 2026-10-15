@@ -21,10 +21,12 @@ it.each(['codex_cli','claude_code','gemini_cli'] as const)('instala hooks de %s 
   expect(drift).toEqual([]); expect(applyChanges(changes).drift).toEqual([])
   const current = JSON.parse(readFileSync(path,'utf8'))
   expect(current.personal_preference).toBe(true); expect(current.hooks.Stop).toContainEqual(personal)
-  expect(readFileSync(path,'utf8')).toContain('--agenthub-memory-hook')
+  const before = kind === 'gemini_cli' ? 'BeforeTool' : 'PreToolUse'
+  const command = current.hooks[before][0].hooks[0].command as string
+  const encoded = /-EncodedCommand\s+([A-Za-z0-9+/=]+)/i.exec(command)?.[1]
+  expect(encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : command).toContain('--agenthub-memory-hook')
   expect(readFileSync(path,'utf8')).not.toContain('permissionDecision')
   expect(planMemoryHooks(snapshot,endpoint,home)[0]).toHaveLength(0)
-  const before = kind === 'gemini_cli' ? 'BeforeTool' : 'PreToolUse'
   current.hooks[before][0].hooks[0].command += ' user edit'
   writeFileSync(path,JSON.stringify(current))
   expect(planMemoryHooks(snapshot,endpoint,home)[1]).toHaveLength(1)

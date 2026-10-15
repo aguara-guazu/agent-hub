@@ -26,6 +26,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { canonicalJson, sha256, type Transport as SnapshotTransport } from '@agenthub/shared'
 import { SecretResolver, defaultResolver } from './secrets.js'
 import { AUTH_NONE, AUTH_OAUTH, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore, isAuthorizationRequired } from './oauth.js'
+import { childEnv, killTree } from './platform.js'
 
 export const TRANSPORT_STDIO = 'stdio'
 export const TRANSPORT_HTTP = 'http'
@@ -194,16 +195,36 @@ function describe(err: unknown): string {
   return String(err)
 }
 
+/**
+ * Cierra el cliente y, para un server stdio en Windows, el árbol de procesos completo.
+ *
+ * El SDK cierra stdin, espera 2 s y después hace `kill()`. En Windows ese kill termina sólo
+ * el proceso directo (el `cmd.exe` que arma cross-spawn para `npx`/`uvx`), y el server real
+ * queda huérfano. Si el server no salió solo con el EOF antes de ese plazo, se mata el árbol
+ * mientras la raíz todavía vive, que es cuando `taskkill /T` encuentra a los hijos.
+ */
+export async function closeClient(client: Client, transport: Transport): Promise<void> {
+  const pid = transport instanceof StdioClientTransport ? transport.pid : null
+  const closing = client.close().catch(() => undefined)
+  if (process.platform === 'win32' && pid) {
+    const closed = await Promise.race([closing.then(() => true), new Promise<false>((resolve) => setTimeout(() => resolve(false), 1500).unref?.())])
+    if (!closed) killTree(pid)
+  }
+  await closing
+}
+
 /** Conexion basada en un `Client` del SDK sobre un `Transport` cualquiera. */
 export class ClientConnection implements UpstreamConnection {
   private readonly slug: string
   private readonly client: Client
+  private readonly transport: Transport | undefined
   private readonly requestTimeoutMs: number
   private alive = true
 
-  constructor(slug: string, client: Client, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  constructor(slug: string, client: Client, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, transport?: Transport) {
     this.slug = slug
     this.client = client
+    this.transport = transport
     this.requestTimeoutMs = requestTimeoutMs
   }
 
@@ -248,7 +269,8 @@ export class ClientConnection implements UpstreamConnection {
   async close(): Promise<void> {
     this.alive = false
     try {
-      await this.client.close()
+      if (this.transport) await closeClient(this.client, this.transport)
+      else await this.client.close()
     } catch {
       // Cerrar es best effort: un upstream que ya murio no puede tumbar al gateway.
     }
@@ -268,14 +290,10 @@ async function connectClient(slug: string, transport: Transport, timeoutMs: numb
   try {
     await Promise.race([client.connect(transport), timer])
   } catch (err) {
-    try {
-      await client.close()
-    } catch {
-      // best effort
-    }
+    await closeClient(client, transport)
     throw new UpstreamConnectError(slug, `no se pudo conectar: ${describe(err)}`)
   }
-  return new ClientConnection(slug, client, DEFAULT_REQUEST_TIMEOUT_MS)
+  return new ClientConnection(slug, client, DEFAULT_REQUEST_TIMEOUT_MS, transport)
 }
 
 /** Proceso hijo stdio en la maquina de la persona. */
@@ -298,15 +316,10 @@ export class HostProcessRuntime implements Runtime {
     } catch (err) {
       throw new UpstreamConnectError(spec.slug, describe(err))
     }
-    const env: Record<string, string> = {}
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined) env[k] = v
-    }
-    Object.assign(env, spec.env, secretEnv)
     const transport = new StdioClientTransport({
       command: spec.command,
       args: [...spec.args],
-      env,
+      env: childEnv(spec.env, secretEnv),
       ...(spec.cwd ? { cwd: spec.cwd } : {}),
       stderr: 'ignore',
     })
@@ -396,7 +409,7 @@ export interface PoolListing {
 
 function isContainerEngineAvailable(): boolean {
   for (const engine of ['podman', 'docker']) {
-    const res = spawnSync(engine, ['--version'], { encoding: 'utf-8' })
+    const res = spawnSync(engine, ['--version'], { stdio: 'ignore', windowsHide: true, timeout: 2000 })
     if (res.status === 0) return true
   }
   return false

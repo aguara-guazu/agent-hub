@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { syncGoogle, importGoogleDocument } from '../src/connectors/google.js'
@@ -6,6 +7,8 @@ import { syncSlack } from '../src/connectors/slack.js'
 import { syncJira } from '../src/connectors/jira.js'
 import type { Connector, ConnectorContext } from '../src/connectors/types.js'
 import { ProviderHttp, ProviderError } from '../src/connectors/http.js'
+
+vi.mock('node:timers/promises', () => ({ setTimeout: vi.fn(async () => undefined) }))
 
 function fixture(provider: Connector['provider'], config: Record<string, any>, respond: (url: URL, body: any) => unknown) {
   const imported: any[] = [], checkpoints: any[] = [], requests: string[] = []
@@ -27,6 +30,7 @@ describe('conectores con respuestas representativas de las APIs', () => {
       if (url.searchParams.has('pageToken')) return { items: [{ id: 'instance-2', summary: 'Cliente', recurringEventId: 'series', originalStartTime: { dateTime: '2026-09-12T13:00:00Z' }, start: { dateTime: '2026-09-12T14:00:00Z' } }], nextSyncToken: 'next-sync' }
       return { items: [{ id: 'instance-1', summary: 'Cliente', start: { dateTime: '2026-09-11T13:00:00Z' }, attendees: [{ email: 'guest@example.com', responseStatus: 'accepted' }] }], nextPageToken: 'page2' }
     })
+    const before = Date.now()
     await syncGoogle(f.connector, f.ctx)
     expect(f.imported).toHaveLength(2)
     expect(f.imported[0].kind).toBe('event')
@@ -35,12 +39,15 @@ describe('conectores con respuestas representativas de las APIs', () => {
     const urls = f.requests.map(value => new URL(value))
     const until = urls[0]!.searchParams.get('timeMax')
     expect(Date.parse(until!)).not.toBeNaN()
+    const since = urls[0]!.searchParams.get('timeMin')!
+    expect(Date.parse(since)).toBeGreaterThanOrEqual(before - 90 * 86400_000)
+    expect(Date.parse(since)).toBeLessThanOrEqual(Date.now() - 90 * 86400_000)
     for (const url of urls) {
-      expect(url.searchParams.get('timeMin')).toBe('2026-01-01T00:00:00Z')
+      expect(url.searchParams.get('timeMin')).toBe(since)
       expect(url.searchParams.get('timeMax')).toBe(until)
       expect(url.searchParams.has('syncToken')).toBe(false)
     }
-    expect(f.checkpoints).toEqual([{ 'calendar_window:primary': { from: '2026-01-01T00:00:00Z', to: until } }])
+    expect(f.checkpoints).toEqual([{ 'calendar_window:primary': { from: since, to: until } }])
   })
   it('Calendar revisita recurrencias que entran en la ventana sin depender de cambios remotos ni cursores antiguos', async () => {
     vi.useFakeTimers()
@@ -124,8 +131,11 @@ describe('conectores con respuestas representativas de las APIs', () => {
     expect(f.imported[0].metadata.status).toBe('En curso')
   })
   it('respeta Retry-After y no repite secretos del proveedor en errores', async () => {
+    vi.mocked(sleep).mockClear()
     const http = new ProviderHttp(async () => new Response('secret-from-provider', { status: 429, headers: { 'Retry-After': '120' } }))
     try { await http.json('https://example.com', { Authorization: 'private' }); expect.fail() }
     catch (error) { expect(error).toBeInstanceOf(ProviderError); expect((error as ProviderError).retryAfter).toBe(120); expect(String(error)).not.toContain('secret') }
+    expect(sleep).toHaveBeenCalledTimes(4)
+    expect(vi.mocked(sleep).mock.calls.every(([ms]) => ms! >= 120_000)).toBe(true)
   })
 })

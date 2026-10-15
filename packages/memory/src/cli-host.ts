@@ -1,21 +1,27 @@
 /** The control pipe ties the CLI process tree to the worker, even if the worker crashes. */
 import { spawn } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { createInterface } from 'node:readline'
+import { childEnv, killTree } from '@agenthub/gateway/platform'
 
+const windows = process.platform === 'win32'
 const executable = process.argv[2]!
 const isScript = /\.(?:m?js|cjs)$/.test(executable)
+// Scripts run on process.execPath and need ELECTRON_RUN_AS_NODE; a native CLI would pass it on to any Electron app it opens.
 const child = spawn(isScript ? process.execPath : executable,
   isScript ? process.argv.slice(2) : process.argv.slice(3), {
-    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32',
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: !windows, env: isScript ? process.env : childEnv(),
   })
+// Windows locks a process's current directory: the run folder stays removable while this host (or a taskkill it starts) lives.
+if (windows) try { process.chdir(tmpdir()) } catch { /* keep the inherited cwd */ }
 child.stdout!.pipe(process.stdout)
 child.stderr!.pipe(process.stderr)
 child.stdin!.on('error', () => undefined)
 let stopping = false
 function kill(signal: NodeJS.Signals) {
+  if (windows) return killTree(child, signal)
   try {
-    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal)
-    else if (child.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on('error', () => child.kill(signal))
+    if (child.pid) process.kill(-child.pid, signal)
   } catch { /* already stopped */ }
 }
 function stop() {
@@ -38,7 +44,8 @@ process.once('SIGINT', stop)
 process.stdout.on('error', stop)
 process.stderr.on('error', stop)
 child.once('error', () => process.exit(1))
-child.once('exit', () => kill('SIGKILL'))
+// The process group outlives its leader on POSIX. taskkill /T cannot find the children of an exited PID on Windows.
+child.once('exit', () => { if (!windows) kill('SIGKILL') })
 child.once('close', code => {
   input.close(); process.stdin.destroy()
   // Drain the forwarded output before exiting, including large extraction responses.

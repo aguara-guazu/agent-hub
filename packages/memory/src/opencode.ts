@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import { childEnv, killTree } from '@agenthub/gateway/platform'
 import { Ajv2020 } from 'ajv/dist/2020.js'
 import { check, MemoryError } from './contracts.js'
 
@@ -25,6 +26,9 @@ interface Options {
 // Only StructuredOutput executes. Never inherit the user's filesystem/MCP permissions.
 const permissions: Record<string, 'deny' | 'ask' | 'allow'> = { '*': 'deny', read: 'ask', glob: 'ask', grep: 'ask',
   bash: 'ask', edit: 'ask', write: 'ask', apply_patch: 'ask', StructuredOutput: 'allow' }
+
+/** Windows can refuse to delete the server's folder for a moment after the process exits. */
+const removal = { recursive: true, force: true, maxRetries: 10, retryDelay: 100 } as const
 
 // Upstream failures relayed by OpenCode as UnknownError, e.g. "Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded".
 const transientProviderMessage = /overload|temporar|unavailable|timed? ?out|ECONNRESET|ECONNREFUSED|socket hang up|stream(?:ing)? response failed|rate.?limit|too many requests|try again/i
@@ -75,12 +79,14 @@ function textValue(result: any, schema: Record<string, unknown>): unknown {
 /** GUI apps do not necessarily inherit the user's shell PATH. Never invoke a shell to find/run the CLI. */
 export function findOpenCode(env = process.env, home = homedir()): string | undefined {
   const directories = [...(env.PATH ?? '').split(delimiter).filter(Boolean), join(home, '.opencode/bin'),
-    join(home, '.local/bin'), join(home, '.bun/bin'), '/opt/homebrew/bin', '/usr/local/bin',
+    join(home, '.local/bin'), join(home, '.bun/bin'), ...(process.platform === 'win32' ? [] : ['/opt/homebrew/bin', '/usr/local/bin']),
     ...(env.APPDATA ? [join(env.APPDATA, 'npm')] : []), join(home, 'scoop/apps/opencode/current')]
   try { for (const version of readdirSync(join(home, '.nvm/versions/node'))) directories.push(join(home, '.nvm/versions/node', version, 'bin')) } catch { /* optional */ }
+  // Windows on ARM runs the x64 build under emulation when the native package is missing.
+  const windowsPackages = [`opencode-windows-${process.arch}`, ...(process.arch === 'arm64' ? ['opencode-windows-x64'] : [])]
   for (const dir of directories) {
     const candidates = process.platform === 'win32'
-      ? [join(dir, 'opencode.exe'), ...['', 'node_modules/opencode-ai/'].map(prefix => join(dir, prefix, 'node_modules', `opencode-windows-${process.arch}`, 'bin/opencode.exe'))]
+      ? [join(dir, 'opencode.exe'), ...['', 'node_modules/opencode-ai/'].flatMap(prefix => windowsPackages.map(name => join(dir, prefix, 'node_modules', name, 'bin/opencode.exe')))]
       : [join(dir, 'opencode')]
     for (const path of candidates) {
       try { accessSync(path, constants.X_OK); if (statSync(path).isFile()) return path } catch { /* next installation */ }
@@ -104,18 +110,18 @@ export class OpenCodeRuntime {
     check(executable, 'No se encontró OpenCode. Instalalo y conectá un proveedor para procesar reuniones.', 409)
     await mkdir(join(this.directory, 'opencode'), { recursive: true, mode: 0o700 })
     const directory = await mkdtemp(join(this.directory, 'opencode/run-'))
-    if (signal?.aborted) { await rm(directory, { recursive: true, force: true }); signal.throwIfAborted() }
+    if (signal?.aborted) { await rm(directory, removal).catch(() => undefined); signal.throwIfAborted() }
     const password = randomBytes(32).toString('base64url')
-    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', OPENCODE_SERVER_PASSWORD: password, OPENCODE_SERVER_USERNAME: 'agenthub',
+    // opencode-host runs on process.execPath and needs ELECTRON_RUN_AS_NODE; it drops the variable again for OpenCode.
+    const env = childEnv({ ELECTRON_RUN_AS_NODE: '1', OPENCODE_SERVER_PASSWORD: password, OPENCODE_SERVER_USERNAME: 'agenthub',
       OPENCODE_DISABLE_PROJECT_CONFIG: 'true', OPENCODE_DISABLE_CLAUDE_CODE: 'true',
       OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: 'disabled', snapshot: false, autoupdate: false,
         compaction: { auto: false }, default_agent: 'agenthub-memory',
         agent: { 'agenthub-memory': { mode: 'primary', description: 'Extracción de memoria con evidencia',
           steps: 3, permission: permissions } } }),
-    }
-    // Do not inherit an unrelated project's config override. Global provider/auth configuration is retained.
-    delete (env as NodeJS.ProcessEnv).OPENCODE_CONFIG
-    delete (env as NodeJS.ProcessEnv).OPENCODE_CONFIG_DIR
+      // Do not inherit an unrelated project's config override. Global provider/auth configuration is retained.
+      OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_DIR: undefined,
+    })
     const child = (this.options.launch ?? spawn)(process.execPath, [fileURLToPath(new URL('./opencode-host.js', import.meta.url)), executable!], {
       cwd: directory, env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true,
     })
@@ -143,7 +149,7 @@ export class OpenCodeRuntime {
       child.stdout?.resume()
       this.connection = connection
       return connection
-    } catch (error) { await this.stop(connection); signal?.throwIfAborted(); throw error }
+    } catch (error) { await this.stop(connection).catch(() => undefined); signal?.throwIfAborted(); throw error }
     finally { this.starting = undefined; signal?.removeEventListener('abort', abort) }
   }
 
@@ -160,10 +166,12 @@ export class OpenCodeRuntime {
         const timer = setTimeout(() => { child.kill('SIGKILL'); resolve() }, 2500)
         child.once('exit', () => { clearTimeout(timer); resolve() })
         child.stdin?.end()
-        child.kill('SIGTERM')
+        // kill() on Windows terminates opencode-host alone; taskkill /T must run while it lives to reach the server.
+        if (process.platform === 'win32') killTree(child)
+        else child.kill('SIGTERM')
       })
     }
-    await rm(connection.directory, { recursive: true, force: true })
+    await rm(connection.directory, removal).catch(() => undefined)
   }
 
   async close() {
@@ -186,8 +194,10 @@ export class OpenCodeRuntime {
   }
 
   private async request(connection: Connection, path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<any> {
+    // Header values are byte strings: fetch throws above U+00FF and other non-ASCII bytes would be misread. The server already runs in this directory.
+    const directory = /[^\x20-\x7e]/.test(connection.directory) ? {} : { 'x-opencode-directory': connection.directory }
     const response = await fetch(`${connection.url}${path}`, {
-      method, headers: { Authorization: `Basic ${Buffer.from(`agenthub:${connection.password}`).toString('base64')}`, 'Content-Type': 'application/json', 'x-opencode-directory': connection.directory },
+      method, headers: { Authorization: `Basic ${Buffer.from(`agenthub:${connection.password}`).toString('base64')}`, 'Content-Type': 'application/json', ...directory },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.any([connection.lifetime.signal, AbortSignal.timeout(this.options.requestMs ?? 180_000), ...(signal ? [signal] : [])]),
     })
@@ -298,7 +308,7 @@ export class OpenCodeRuntime {
         throw new MemoryError(502, 'OpenCode no completó la extracción.')
       } catch (error) {
         // A timed-out HTTP request must not leave model generation running in the background.
-        await this.stop(connection)
+        await this.stop(connection).catch(() => undefined)
         if (signal?.aborted) signal.throwIfAborted()
         throw error instanceof MemoryError ? error : new MemoryError(503, 'Se interrumpió el procesamiento con OpenCode; el trabajo se puede reintentar.', true)
       } finally {

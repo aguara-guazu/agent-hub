@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 
 export const id = z.string().uuid()
@@ -115,4 +116,17 @@ export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
 }
 export function check(condition: unknown, message: string, code = 422): asserts condition {
   if (!condition) throw new MemoryError(code, message)
+}
+
+/**
+ * Absolute local path received from an agent or the UI. On Windows, Git Bash (`/c/Users/...`) and WSL
+ * (`/mnt/c/Users/...`) spellings become `C:\Users\...`; anything else must carry a drive letter or be UNC, since
+ * isAbsolute() also accepts `\Users\...`, which resolves against whatever drive is current.
+ */
+export function localPath(path: string, message: string): string {
+  if (process.platform !== 'win32') { check(isAbsolute(path), message); return path }
+  const posix = /^(?:\/mnt)?\/([a-zA-Z])(?:\/(.*))?$/s.exec(path)
+  const native = posix ? `${posix[1]!.toUpperCase()}:\\${(posix[2] ?? '').replace(/\//g, '\\')}` : path
+  check(/^[a-zA-Z]:[\\/]/.test(native) || /^[\\/]{2}[^\\/]+[\\/][^\\/]/.test(native), message)
+  return native
 }

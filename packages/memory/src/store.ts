@@ -26,7 +26,7 @@ export async function requireEntity(sql: Sql, entityId: string, kind?: EntityKin
 export async function validateProjects(sql: Sql, ids: string[]): Promise<void> {
   for (const project of new Set(ids)) await requireEntity(sql, project, 'project')
 }
-async function audit(sql: Sql, entityId: string, action: string, actor: string, before: unknown, after: unknown) {
+export async function audit(sql: Sql, entityId: string, action: string, actor: string, before: unknown, after: unknown) {
   await sql.query('INSERT INTO changes(entity_id,action,actor,before_value,after_value) VALUES($1,$2,$3,$4,$5)',
     [entityId, action, actor, JSON.stringify(before), JSON.stringify(after)])
 }
@@ -43,7 +43,7 @@ async function attachProjects(sql: Sql, entityId: string, projects: string[]) {
   }
 }
 export const jiraProjectKey = z.string().regex(/^[A-Z][A-Z0-9_]{0,19}$/, 'La clave de Jira usa mayúsculas, números o _, por ejemplo POC')
-export const workFolder = z.string().trim().min(2).max(1000).refine(v => v.startsWith('/') || /^[A-Za-z]:[\\/]/.test(v), 'Cada carpeta debe ser una ruta absoluta')
+export const workFolder = z.string().trim().min(2).max(1000).refine(v => v.startsWith('/') || /^[A-Za-z]:[\\/]/.test(v) || /^\\\\[^\\/]+[\\/][^\\/]/.test(v), 'Cada carpeta debe ser una ruta absoluta')
 function validateData(data: Record<string, any>) {
   if (data.occurred_at != null) parse(instant, data.occurred_at)
   if (data.email != null && data.email !== '') parse(z.email(), data.email)
@@ -320,6 +320,11 @@ export class MemoryStore {
       }
       await audit(sql, source.entity_id, 'imported', actor, { previous_version: source.current_version_id }, { version_id: versionId, fragments: parts.length })
       await this.enqueue('process', { version_id: versionId, ...(indexOnly ? { index_only: true } : {}) }, `process:${versionId}`, sql)
+      // Metadata inference needs readable content: a binary attachment only qualifies once OCR, PDF text or transcription added it.
+      if (input.metadata.infer_metadata === true && parts.some(part => part.metadata?.annotation !== true)
+        && (await sql.query("SELECT 1 FROM entities WHERE id=$1 AND (data->>'inferred_metadata') IS NULL", [source.entity_id])).length) {
+        await this.enqueue('describe_source', { version_id: versionId }, `describe:${versionId}`, sql)
+      }
       return { entity_id: source.entity_id as string, source_id: source.id as string, version_id: versionId, duplicate: false, fragments: parts.length }
     })
   }

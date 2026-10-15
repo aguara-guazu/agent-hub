@@ -2,11 +2,13 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { PDFiumLibrary } from '@hyzyla/pdfium'
-import sharp from 'sharp'
 const require = createRequire(import.meta.url)
 // Supply the bundled WASM bytes explicitly; PDF processing never fetches a decoder.
 globalThis.fetch = async () => { throw new Error('El lector PDF local no accede a la red') }
 try {
+  const { default: sharp } = await import('sharp').catch((error: unknown) => {
+    throw new Error(`El procesamiento de imágenes no está disponible en este equipo: ${error instanceof Error ? error.message : String(error)}`)
+  })
   const wasm = await readFile(require.resolve('@hyzyla/pdfium/pdfium.wasm'))
   const library = await PDFiumLibrary.init({ wasmBinary: new Uint8Array(wasm).buffer })
   if (workerData.checkRuntime) {
@@ -37,5 +39,5 @@ try {
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : ''
-  parentPort!.postMessage({ type: 'error', message: /páginas|dimensiones|límite/.test(message) ? message : 'No se pudo abrir el PDF. Verificá que sea válido y no requiera contraseña.' })
+  parentPort!.postMessage({ type: 'error', message: /páginas|dimensiones|límite|imágenes/.test(message) ? message : 'No se pudo abrir el PDF. Verificá que sea válido y no requiera contraseña.' })
 }

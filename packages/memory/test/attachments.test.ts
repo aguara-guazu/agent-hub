@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -73,6 +73,7 @@ it('regenera sólo los embeddings sin cambiar originales ni pedir extracción re
   const jobs = await db.query("SELECT payload FROM jobs WHERE dedupe_key LIKE 'rebuild-embeddings:%'")
   expect(jobs[0]!.payload).toEqual({ version_id: source.version_id, index_only: true, force: true })
   expect(await store.original(source.version_id)).toEqual(before)
-  await expect(service.saveAI({ ...defaultAI, embedding_model: NATIVE_EMBEDDING_MODEL, embeddings_enabled: true })).rejects.toThrow('Descargá')
+  vi.spyOn(service.defaults, 'tick').mockResolvedValue()
+  await expect(service.saveAI({ ...defaultAI, embedding_model: NATIVE_EMBEDDING_MODEL, embeddings_enabled: true })).resolves.toMatchObject({ embedding_model: NATIVE_EMBEDDING_MODEL })
   expect((await service.aiSettings()).embedding_model).toBe('old-ollama-model')
 })

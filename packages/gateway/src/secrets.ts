@@ -9,7 +9,7 @@
  * FORMATO
  *
  *     <backend>://<ruta>
- *     keychain://agenthub/github-token   Keychain de macOS / Secret Service (via `security`/`secret-tool`)
+ *     keychain://agenthub/github-token   Keychain de macOS / Secret Service / Administrador de credenciales de Windows
  *     env://GITHUB_TOKEN                 entorno del propio proceso del gateway
  *     file:///ruta/absoluta/al/secreto   archivo 0600 en disco
  *
@@ -22,6 +22,8 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { platform } from 'node:os'
+import { join } from 'node:path'
+import { secretFilePath } from './platform.js'
 
 export const NO_SCHEME_REASON =
   "la referencia no declara esquema. Se espera '<backend>://<ruta>', por ejemplo " +
@@ -144,8 +146,10 @@ export class FileSecretBackend implements SecretBackend {
     if (!info.isFile()) {
       throw new SecretError('backend', ref.key, refString(ref), `${path} no es un archivo regular`)
     }
+    // Windows no tiene bits POSIX: stat informa 0666 (o 0444 si es de solo lectura) sin importar las ACL, que son las que
+    // protegen el archivo dentro de %APPDATA%. Exigir 0600 ahi rechazaria todo secreto.
     const mode = info.mode & 0o777
-    if (mode & FORBIDDEN_MODE_BITS) {
+    if (platform() !== 'win32' && (mode & FORBIDDEN_MODE_BITS) !== 0) {
       throw new SecretError(
         'backend',
         ref.key,
@@ -169,20 +173,28 @@ export class FileSecretBackend implements SecretBackend {
     return value
   }
 
+  /**
+   * `file:///ruta` a ruta nativa con `fileURLToPath`: en Windows `file:///C:/x` es `C:\x`, no `/C:/x`. Decodifica los
+   * `%XX` una sola vez; `?` y `#` se escapan antes para que no corten la ruta como query o fragmento. El host debe ir
+   * vacio: `file://servidor/recurso` seria una ruta UNC en Windows.
+   */
   private resolvePath(ref: SecretRef): string {
-    const raw = decodeURIComponent(ref.path).trim()
-    if (raw.includes('\0')) {
+    const raw = ref.path.trim()
+    if (raw.includes('\0') || /%00/i.test(raw)) {
       throw new SecretError('ref', ref.key, refString(ref), 'la ruta del secreto tiene un byte nulo')
     }
-    if (!raw.startsWith('/')) {
-      throw new SecretError(
-        'ref',
-        ref.key,
-        refString(ref),
-        'se espera una ruta absoluta con la forma file:///ruta/al/secreto (tres barras: el host va vacio)',
-      )
+    const absolute = () => new SecretError(
+      'ref',
+      ref.key,
+      refString(ref),
+      'se espera una ruta absoluta con la forma file:///ruta/al/secreto (tres barras: el host va vacio)',
+    )
+    if (!raw.startsWith('/')) throw absolute()
+    try {
+      return secretFilePath(raw)
+    } catch {
+      throw absolute()
     }
-    return raw
   }
 }
 
@@ -192,13 +204,65 @@ export class FileSecretBackend implements SecretBackend {
  *     keychain://agenthub/github-token   ->  servicio "agenthub", cuenta "github-token"
  *     keychain://github-token            ->  servicio "agenthub" (por defecto)
  *
- * En macOS usa `security find-generic-password`; en Linux `secret-tool lookup`. Se
- * inyecta un `lookup` en las pruebas para no tocar el llavero real, que abre un
- * dialogo de autorizacion sin interaccion.
+ * En macOS usa `security find-generic-password`; en Linux `secret-tool lookup`; en Windows
+ * lee la credencial genérica `<servicio>/<cuenta>` del Administrador de credenciales
+ * (`cmdkey /generic:agenthub/github-token /user:github-token /pass` la crea pidiendo el
+ * valor). Se inyecta un `lookup` en las pruebas para no tocar el llavero real, que abre
+ * un dialogo de autorizacion sin interaccion.
  */
 export type KeychainLookup = (service: string, account: string) => string | null
 
+/**
+ * CredReadW por P/Invoke desde Windows PowerShell 5.1, que viene con el sistema. El blob de
+ * una credencial genérica creada con cmdkey o con el panel de control es UTF-16LE. El
+ * nombre viaja por entorno y el script por -EncodedCommand: nada depende del quoting de
+ * la línea de comandos.
+ */
+const WINDOWS_CREDENTIAL_SCRIPT = `$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AgentHubCredential {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct CREDENTIAL {
+    public int Flags; public int Type; public string TargetName; public string Comment;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+    public int CredentialBlobSize; public IntPtr CredentialBlob; public int Persist;
+    public int AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;
+  }
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool CredReadW(string target, int type, int flags, out IntPtr credential);
+  [DllImport("advapi32.dll")]
+  static extern void CredFree(IntPtr credential);
+  public static string Read(string target) {
+    IntPtr pointer;
+    if (!CredReadW(target, 1, 0, out pointer)) return null;
+    try {
+      CREDENTIAL credential = (CREDENTIAL)Marshal.PtrToStructure(pointer, typeof(CREDENTIAL));
+      return credential.CredentialBlobSize == 0 ? "" : Marshal.PtrToStringUni(credential.CredentialBlob, credential.CredentialBlobSize / 2);
+    } finally { CredFree(pointer); }
+  }
+}
+'@
+$value = [AgentHubCredential]::Read($env:AGENTHUB_CREDENTIAL_TARGET)
+if ($null -eq $value) { exit 2 }
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::Out.Write($value)
+`
+
+function windowsLookup(service: string, account: string): string | null {
+  const powershell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const res = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand',
+    Buffer.from(WINDOWS_CREDENTIAL_SCRIPT, 'utf16le').toString('base64')], {
+    encoding: 'utf-8', windowsHide: true, timeout: 20_000, env: { ...process.env, AGENTHUB_CREDENTIAL_TARGET: `${service}/${account}` },
+  })
+  if (res.status === 0) return res.stdout.replace(/^\uFEFF/, '')
+  if (res.status === 2) return null
+  throw new Error(`powershell terminó con ${res.status ?? res.signal ?? res.error?.message}`)
+}
+
 function nativeLookup(service: string, account: string): string | null {
+  if (platform() === 'win32') return windowsLookup(service, account)
   if (platform() === 'darwin') {
     const res = spawnSync('security', ['find-generic-password', '-s', service, '-a', account, '-w'], {
       encoding: 'utf-8',

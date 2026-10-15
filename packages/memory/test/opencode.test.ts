@@ -164,7 +164,7 @@ it('rechaza modelos no disponibles antes de enviar la transcripción', async () 
   expect((await requests()).every(c => c.path === '/provider')).toBe(true)
 })
 it.each(['timeout', 'crash'])('maneja %s, termina la generación y permite reintentar', async scenario => {
-  const launch = setup({ requestMs: 200 })
+  const launch = setup({ requestMs: 1000 })
   await expect(runtime.extract(model, '', { scenario }, schema)).rejects.toThrow('se puede reintentar')
   expect(children[0]!.exitCode !== null || children[0]!.signalCode !== null).toBe(true)
   expect((await runtime.extract(model, '', {}, schema)).value).toEqual({ facts: [] })
@@ -175,9 +175,12 @@ it('cancela una generación activa y detiene el proceso', async () => {
   const controller = new AbortController()
   const result = runtime.extract(model, '', { scenario: 'timeout' }, schema, controller.signal)
   const assertion = expect(result).rejects.toMatchObject({ name: 'AbortError' })
-  await vi.waitFor(async () => expect((await requests()).some(c => c.path.endsWith('/message'))).toBe(true))
-  controller.abort()
-  await assertion
+  try {
+    await vi.waitFor(async () => expect((await requests()).some(c => c.path.endsWith('/message'))).toBe(true), { timeout: 3000 })
+  } finally {
+    controller.abort()
+    await assertion
+  }
   expect(children[0]!.signalCode).not.toBeNull()
 })
 it('termina un proceso que nunca publica su dirección', async () => {

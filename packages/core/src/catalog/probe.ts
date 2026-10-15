@@ -13,7 +13,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { McpServerRow } from '../types.js'
-import { AUTH_OAUTH, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, defaultResolver, isAuthorizationRequired, type OAuthStore } from '@agenthub/gateway'
+import { AUTH_OAUTH, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, childEnv, closeClient, defaultResolver, isAuthorizationRequired, type OAuthStore } from '@agenthub/gateway'
+import { redactReport } from '@agenthub/memory/report'
 
 export const DEFAULT_TIMEOUT_MS = 10_000
 /** Tope de páginas de `tools/list`: un server que pagina sin fin no cuelga el sondeo. */
@@ -62,7 +63,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: string): Pro
   })
 }
 
-function transportFor(server: McpServerRow, options: ProbeOptions): { transport: Transport } | { error: string; authRequired?: boolean } {
+/** Lo que deja un server stdio que no llegó a hablar MCP: el error de spawn y el final de su stderr. */
+interface Diagnostics {
+  spawnError?: unknown
+  stderr: string
+}
+
+function transportFor(server: McpServerRow, options: ProbeOptions, diagnostics: Diagnostics): { transport: Transport } | { error: string; authRequired?: boolean } {
   if (server.transport === 'stdio') {
     if (!server.command.trim()) return { error: 'el server stdio no tiene comando configurado' }
     const params: {
@@ -72,10 +79,14 @@ function transportFor(server: McpServerRow, options: ProbeOptions): { transport:
       env?: Record<string, string>
       stderr: 'pipe'
     } = { command: server.command, args: [...server.args], stderr: 'pipe' }
-    params.env = { ...server.env, ...defaultResolver().resolveEnv(server.secret_refs) }
+    // Mismo entorno que el runtime del gateway: un server no puede pasar el sondeo y fallar al usarse, ni al revés.
+    params.env = childEnv(server.env, defaultResolver().resolveEnv(server.secret_refs))
     if (server.cwd) params.cwd = server.cwd
     const transport = new StdioClientTransport(params)
-    transport.stderr?.on('data', () => undefined)
+    transport.stderr?.on('data', (chunk: Buffer) => { diagnostics.stderr = (diagnostics.stderr + chunk.toString('utf8')).slice(-4000) })
+    // En Windows cross-spawn informa ENOENT recién cuando cmd.exe termina, después de que el SDK dio el proceso por iniciado;
+    // el SDK encadena este manejador con el del cliente.
+    transport.onerror = (error) => { diagnostics.spawnError ??= error }
     return { transport }
   }
   if (server.transport === 'http') {
@@ -101,19 +112,19 @@ function transportFor(server: McpServerRow, options: ProbeOptions): { transport:
 
 export async function probeServer(server: McpServerRow, timeoutMs = DEFAULT_TIMEOUT_MS, options: ProbeOptions = {}): Promise<ProbeResult> {
   const client = new Client({ name: 'agenthub-probe', version: '0.2.0' })
+  const diagnostics: Diagnostics = { stderr: '' }
+  let transport: Transport | undefined
   try {
-    const result = transportFor(server, options)
+    const result = transportFor(server, options, diagnostics)
     if ('error' in result) return failure(result.error, result.authRequired ?? false)
-    return await withTimeout(collect(client, result.transport), timeoutMs, `el sondeo supero el limite de ${(timeoutMs / 1000).toFixed(0)} segundos`)
+    transport = result.transport
+    return await withTimeout(collect(client, transport), timeoutMs, `el sondeo supero el limite de ${(timeoutMs / 1000).toFixed(0)} segundos`)
   } catch (error) {
     if (server.auth === AUTH_OAUTH && isAuthorizationRequired(error)) return failure(OAUTH_AUTH_REQUIRED_MESSAGE, true)
-    return failure(describe(server, error))
+    return failure(describe(server, error, diagnostics))
   } finally {
-    try {
-      await client.close()
-    } catch {
-      // cerrar un cliente que nunca conectó no es un error del sondeo
-    }
+    // Cierra también el árbol de procesos en Windows; cerrar un cliente que nunca conectó no es un error del sondeo.
+    if (transport) await closeClient(client, transport)
   }
 }
 
@@ -145,11 +156,13 @@ async function collect(client: Client, transport: Transport): Promise<ProbeResul
   }
 }
 
-function describe(server: McpServerRow, error: unknown): string {
-  const message = error instanceof Error ? error.message.trim() : String(error).trim()
-  const code = (error as { code?: string })?.code
+function describe(server: McpServerRow, error: unknown, diagnostics: Diagnostics = { stderr: '' }): string {
+  const code = (error as { code?: string })?.code ?? (diagnostics.spawnError as { code?: string } | undefined)?.code
   if (code === 'ENOENT') return `no se encontro el comando '${server.command}'`
   if (code === 'EACCES') return `sin permiso para ejecutar '${server.command}'`
+  const message = error instanceof Error ? error.message.trim() : String(error).trim()
   const name = error instanceof Error ? error.constructor.name : 'Error'
-  return message ? `${name}: ${message}` : name
+  const detail = message ? `${name}: ${message}` : name
+  const tail = redactReport(diagnostics.stderr).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-3).join(' | ')
+  return tail ? `${detail} (stderr del server: ${tail.slice(-600)})` : detail
 }

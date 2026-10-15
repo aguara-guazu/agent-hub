@@ -26,6 +26,11 @@ export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepsee
     { message: 'Elegí un nombre de modelo válido para la CLI', path: ['extraction_model'] }).refine(
     config => config.extraction === 'disabled' || !config.remote_processing_enabled || !!config.extraction_model.trim(),
     { message: 'Elegí un modelo antes de habilitar el procesamiento', path: ['extraction_model'] })
+/** The engine the person chose: while the integrated model is still downloading for a saved selection, it is reported instead of the engine still in use. */
+function selectedAI(ai: AIConfig, defaults: { target?: string; embedding_state?: string } | undefined): AIConfig {
+  const pending = defaults?.target === NATIVE_EMBEDDING_MODEL && ['pending', 'downloading'].includes(defaults.embedding_state ?? '')
+  return pending ? { ...ai, embedding_model: NATIVE_EMBEDDING_MODEL, embeddings_enabled: true } : ai
+}
 export class MemoryService {
   readonly defaults = new MemoryDefaults(this)
   readonly media: MediaRuntime
@@ -62,7 +67,7 @@ export class MemoryService {
     }
     const store = new MemoryStore(db, this.directory)
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
-    const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp)
+    const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media)
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     this.current = { db, store, ai, operations, runner }
     return this.current
@@ -81,8 +86,9 @@ export class MemoryService {
       const worker = (await db.query("SELECT value FROM settings WHERE key='worker'"))[0]?.value ?? null
       const [sources] = await db.query('SELECT count(*) AS count,max(synced_at) AS last_import FROM sources')
       const [pending] = await db.query("SELECT count(*) AS count FROM jobs WHERE state IN ('queued','running','waiting')")
+      const defaults = await this.defaults.status()
       return { ready: true, state: 'ready' as const, ...configuration, counts: Object.fromEntries(counts.map(r => [r.kind, r.count])), sources, pending_jobs: pending?.count ?? 0,
-        worker, ai: await this.aiSettings(), defaults: await this.defaults.status() }
+        worker, ai: selectedAI(await this.aiSettings(), defaults), defaults }
     } catch (error) {
       return { ready: false, state: 'unavailable' as const, ...configuration, counts: {}, pending_jobs: 0, ai: defaultAI,
         detail: error instanceof MemoryError ? error.message : 'La memoria local no está disponible' }
@@ -95,7 +101,8 @@ export class MemoryService {
   }
   async saveAI(raw: unknown, signal?: AbortSignal) {
     const config = parse(aiConfigSchema, raw)
-    if (config.embeddings_enabled && config.embedding_model === NATIVE_EMBEDDING_MODEL) check(this.nativeEmbeddings.installed(), 'Descargá EmbeddingGemma 2 antes de habilitarlo', 409)
+    // Choosing the integrated model before its download finishes keeps the current engine; MemoryDefaults switches and reindexes once it is ready.
+    const deferred = config.embeddings_enabled && config.embedding_model === NATIVE_EMBEDDING_MODEL && !this.nativeEmbeddings.installed()
     localUrl(config.ollama_url)
     check(new URL(config.ollama_url).protocol === 'http:' || new URL(config.ollama_url).protocol === 'https:', 'URL de Ollama inválida')
     if (config.extraction === 'opencode' && config.remote_processing_enabled) {
@@ -104,16 +111,20 @@ export class MemoryService {
     if (isExtractionCli(config.extraction) && config.remote_processing_enabled) await this.cliExtraction.test(config.extraction, config.extraction_model, signal, config.extraction_reasoning_effort)
     signal?.throwIfAborted()
     const { db } = await this.get()
-    let changedEmbedding = false
     await db.transaction(async sql => {
       const previous = (await sql.query("SELECT value FROM settings WHERE key='ai'"))[0]?.value
-      changedEmbedding = !!previous && (previous.embedding_model !== config.embedding_model || previous.embeddings_enabled !== config.embeddings_enabled)
-      if (changedEmbedding)
+      const stored = deferred ? { ...config, embedding_model: previous?.embedding_model ?? config.embedding_model, embeddings_enabled: previous?.embeddings_enabled ?? false } : config
+      const changedEmbedding = !!previous && (previous.embedding_model !== stored.embedding_model || previous.embeddings_enabled !== stored.embeddings_enabled)
+      if (deferred) {
+        await sql.query(`INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=json_set(value,'$.target',$3,'$.embedding_state','pending')`,
+          [DEFAULTS_KEY, JSON.stringify({ target: NATIVE_EMBEDDING_MODEL, embedding_state: 'pending', previous_ai: previous ?? null, provider_state: 'preserved' }), NATIVE_EMBEDDING_MODEL])
+      } else if (changedEmbedding || config.embedding_model !== NATIVE_EMBEDDING_MODEL) {
         await sql.query("UPDATE settings SET value=json_set(value,'$.embedding_state','custom') WHERE key=$1", [DEFAULTS_KEY])
+      }
       await sql.query("UPDATE settings SET value=json_set(value,'$.provider_state','preserved') WHERE key=$1", [DEFAULTS_KEY])
-      await sql.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(config)])
+      await sql.query("INSERT INTO settings(key,value) VALUES('ai',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(stored)])
     })
-    if (changedEmbedding && config.embedding_model !== NATIVE_EMBEDDING_MODEL) await this.nativeEmbeddings.cancelInstall()
+    if (deferred) void this.defaults.tick().catch(() => {})
     return config
   }
   async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) await current.db.close() }

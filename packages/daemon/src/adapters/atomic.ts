@@ -28,15 +28,16 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
-  renameSync,
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeSync,
 } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
 import * as toml from '@iarna/toml'
+import { renameRetrySync } from '@agenthub/gateway/platform'
 
 export const HUB_DIRNAME = '.agenthub'
 export const MANIFEST_VERSION = 1
@@ -55,6 +56,12 @@ export function manifestPath(home: string): string {
 
 export function backupDir(home: string): string {
   return join(hubDir(home), 'backups')
+}
+
+/** Misma ruta una vez resuelta; en Windows el sistema de archivos no distingue mayúsculas. */
+export function samePath(a: string, b: string): boolean {
+  const left = resolve(a), right = resolve(b)
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
 }
 
 export class ConfigParseError extends Error {
@@ -110,7 +117,8 @@ function readText(path: string): string | null {
   try {
     const info = statSync(path)
     if (!info.isFile()) return null
-    return readFileSync(path, 'utf-8')
+    // Windows PowerShell 5.1 escribe UTF-8 con BOM y ni JSON.parse ni el parser de TOML lo aceptan.
+    return readFileSync(path, 'utf-8').replace(/^\uFEFF/, '')
   } catch {
     return null
   }
@@ -148,7 +156,8 @@ function readTree(path: string): unknown {
     const walk = (dir: string): void => {
       for (const name of readdirSync(dir).sort()) {
         const child = join(dir, name)
-        const rel = relative(path, child)
+        // Claves con `/` en todas las plataformas: la huella viaja al core y no puede depender del separador.
+        const rel = relative(path, child).split(sep).join('/')
         if (isSymlink(child)) {
           entries[rel] = 'symlink:' + readlinkSync(child)
         } else if (statSync(child).isDirectory()) {
@@ -434,7 +443,7 @@ export function atomicWriteText(path: string, content: string, mode = 0o600): vo
     fsyncSync(fd)
     closeSync(fd)
     chmodSync(tmp, mode)
-    renameSync(tmp, path)
+    renameRetrySync(tmp, path)
   } catch (exc) {
     try {
       closeSync(fd)
@@ -467,6 +476,43 @@ function fsyncDir(directory: string): void {
   }
 }
 
+const TEMP_NAME = /^\.(.+)\.\d+\.\d+\.tmp$/
+
+/**
+ * Borra los temporales de `atomicWriteText` que dejó un proceso muerto entre la escritura y el rename. Sólo mira
+ * junto a los archivos del manifiesto (y el manifiesto mismo) y sólo los que superan `maxAgeMs`: uno reciente
+ * puede ser una escritura en curso de otro proceso del hub.
+ */
+export function sweepStaleTemps(home: string, maxAgeMs = 60 * 60_000): string[] {
+  const managed = new Map<string, Set<string>>()
+  for (const path of [manifestPath(home), ...Object.keys(Manifest.load(home).files).map((key) => key.slice(0, key.lastIndexOf('#')))]) {
+    managed.set(dirname(path), (managed.get(dirname(path)) ?? new Set<string>()).add(basename(path)))
+  }
+  const removed: string[] = []
+  for (const [dir, names] of managed) {
+    let entries: string[]
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const owner = TEMP_NAME.exec(entry)?.[1]
+      if (owner === undefined || !names.has(owner)) continue
+      const path = join(dir, entry)
+      try {
+        const info = lstatSync(path)
+        if (!info.isFile() || Date.now() - info.mtimeMs < maxAgeMs) continue
+        rmSync(path, { force: true })
+        removed.push(path)
+      } catch {
+        /* otro proceso lo renombró o lo borró */
+      }
+    }
+  }
+  return removed
+}
+
 function backup(change: FileChange): string | null {
   if (isSymlink(change.path)) return null
   try {
@@ -485,7 +531,8 @@ function backup(change: FileChange): string | null {
 
 function removePath(path: string): void {
   if (isSymlink(path)) {
-    rmSync(path, { force: true })
+    // Sólo el enlace: lstat informa las junctions de Windows como symlink y unlink las quita sin entrar al destino.
+    unlinkSync(path)
   } else if (exists(path)) {
     rmSync(path, { force: true, recursive: true })
   }
@@ -517,47 +564,58 @@ export function applyChanges(changes: readonly FileChange[]): ApplyResult {
   for (const [home, group] of byHome) {
     const manifest = Manifest.load(home)
     let touched = false
-    for (const change of group) {
-      let found: string | null
-      try {
-        found = regionDigest(change.path, change.region)
-      } catch (exc) {
-        if (!(exc instanceof ConfigParseError)) throw exc
-        result.drift.push(driftItem(change.path, regionLabel(change.region), exc.message))
-        result.skipped.push(change.path)
-        continue
-      }
+    try {
+      for (const change of group) {
+        let found: string | null
+        try {
+          found = regionDigest(change.path, change.region)
+        } catch (exc) {
+          if (!(exc instanceof ConfigParseError)) throw exc
+          result.drift.push(driftItem(change.path, regionLabel(change.region), exc.message))
+          result.skipped.push(change.path)
+          continue
+        }
 
-      const stale =
-        found !== change.expectedDigest ||
-        (change.action === 'write' && fileDigest(change.path) !== change.baseDigest)
-      if (stale) {
-        result.drift.push(
-          driftItem(
-            change.path,
-            regionLabel(change.region),
-            'el archivo cambió entre el plan y la escritura; el hub no lo pisa',
-            change.expectedDigest,
-            found,
-          ),
-        )
-        result.skipped.push(change.path)
-        continue
-      }
+        const stale =
+          found !== change.expectedDigest ||
+          (change.action === 'write' && fileDigest(change.path) !== change.baseDigest)
+        if (stale) {
+          result.drift.push(
+            driftItem(
+              change.path,
+              regionLabel(change.region),
+              'el archivo cambió entre el plan y la escritura; el hub no lo pisa',
+              change.expectedDigest,
+              found,
+            ),
+          )
+          result.skipped.push(change.path)
+          continue
+        }
 
-      perform(change, result)
-      touched = true
-
-      if (change.action === 'delete') {
-        manifest.forgetUnder(change.path)
-        if (change.skillsRoot !== null && change.skillSlug) manifest.dropSkill(change.skillsRoot, change.skillSlug)
-      } else {
-        // Se relee de disco: con el plan B de copia lo que quedó no es un symlink.
-        manifest.record(change.path, change.region, regionDigest(change.path, change.region))
-        if (change.skillsRoot !== null && change.skillSlug) manifest.addSkill(change.skillsRoot, change.skillSlug)
+        // Un cambio que falla (archivo bloqueado, sin permiso) queda como deriva y no frena a los demás.
+        try {
+          perform(change, result)
+          touched = true
+          if (change.action === 'delete') {
+            manifest.forgetUnder(change.path)
+            if (change.skillsRoot !== null && change.skillSlug) manifest.dropSkill(change.skillsRoot, change.skillSlug)
+          } else {
+            // Se relee de disco: con el plan B de copia lo que quedó no es un symlink.
+            manifest.record(change.path, change.region, regionDigest(change.path, change.region))
+            if (change.skillsRoot !== null && change.skillSlug) manifest.addSkill(change.skillsRoot, change.skillSlug)
+          }
+        } catch (exc) {
+          result.drift.push(
+            driftItem(change.path, regionLabel(change.region), `no se pudo aplicar el cambio: ${(exc as Error).message}`, change.expectedDigest, found),
+          )
+          result.skipped.push(change.path)
+        }
       }
+    } finally {
+      // Lo ya aplicado tiene que quedar registrado aunque un cambio posterior haya abortado la pasada.
+      if (touched) manifest.save()
     }
-    if (touched) manifest.save()
   }
 
   return result
@@ -583,7 +641,8 @@ function perform(change: FileChange, result: ApplyResult): void {
     removePath(change.path)
     try {
       const isDir = exists(target) && statSync(target).isDirectory()
-      symlinkSync(target, change.path, isDir ? 'dir' : 'file')
+      // En Windows un symlink exige privilegio o modo desarrollador; una junction no, pero sólo apunta a directorios locales.
+      symlinkSync(target, change.path, isDir ? (process.platform === 'win32' ? 'junction' : 'dir') : 'file')
     } catch (exc) {
       // Windows sin privilegios: la copia es el plan B previsto, no un fallo.
       if (!change.fallbackCopy) throw exc
@@ -607,8 +666,14 @@ function perform(change: FileChange, result: ApplyResult): void {
 
 export type PlanOutcome = [FileChange | null, DriftItem[]]
 
+/** `-EncodedCommand` lleva el script en base64 de UTF-16LE: la marca del hub sólo aparece decodificada. */
+function hookText(command: string): string {
+  const encoded = /-EncodedCommand\s+([A-Za-z0-9+/=]+)/i.exec(command)?.[1]
+  return encoded ? `${command}\n${Buffer.from(encoded, 'base64').toString('utf16le')}` : command
+}
+
 function isHubHook(group: any): boolean {
-  return Array.isArray(group?.hooks) && group.hooks.some((hook: any) => typeof hook?.command === 'string' && hook.command.includes('--agenthub-memory-hook'))
+  return Array.isArray(group?.hooks) && group.hooks.some((hook: any) => typeof hook?.command === 'string' && hookText(hook.command).includes('--agenthub-memory-hook'))
 }
 /** Own only Agent Hub's hook groups; preserve personal hooks and detect edits to ours. */
 export function planJsonHooks(args: PlanJsonArgs): PlanOutcome {
@@ -920,7 +985,7 @@ export function planSymlink(args: PlanSymlinkArgs): PlanOutcome {
   // Un enlace relativo (`../../.agents/skills/x`, como los deja `npx skills`) y el absoluto
   // del hub son el mismo destino: se comparan resueltos, no por el texto del enlace.
   const currentLink = current !== null && typeof current === 'object' && 'symlink' in current ? String((current as { symlink: unknown }).symlink) : null
-  const sameTarget = currentLink !== null && resolve(dirname(args.path), currentLink) === resolve(args.target)
+  const sameTarget = currentLink !== null && samePath(resolve(dirname(args.path), currentLink), args.target)
   if (currentDigest === desiredDigest || sameTarget) {
     if (!args.adopt || expected !== null) return [null, []]
     return [

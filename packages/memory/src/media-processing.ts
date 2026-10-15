@@ -2,7 +2,10 @@ import { z } from 'zod'
 import { id, check, parse, importInput } from './contracts.js'
 import { hash, type MemoryStore } from './store.js'
 import { readFileAttachment } from './attachments.js'
+import { redactSecrets } from './secrets.js'
 import { MediaRuntime, mediaSettingsInput, MEDIA_REVISION, type MediaSettings } from './media-runtime.js'
+
+type MediaModules = Pick<MediaRuntime, 'ocr' | 'decoder' | 'vision' | 'audio' | 'speech'>
 import { vector } from './database.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 
@@ -11,13 +14,25 @@ export async function mediaSettings(store: MemoryStore): Promise<MediaSettings> 
   return parse(mediaSettingsInput, (await store.db.query("SELECT value FROM settings WHERE key='media'"))[0]?.value ?? {})
 }
 function processingKey(settings: MediaSettings) { const { automatic: _automatic, ...features } = settings; return hash({ revision: MEDIA_REVISION, ...features }) }
-function applicable(mime: string, settings: MediaSettings) {
+/**
+ * Narrows the saved features to the modules installed right now. Models download in the background, so a file stored
+ * meanwhile is analysed with what is ready; its processing key then differs from the full one and the automatic scan
+ * reanalyses it once the remaining modules finish. Without a runtime the saved settings are used as they are.
+ */
+export function availableMediaSettings(settings: MediaSettings, runtime?: MediaModules): MediaSettings {
+  if (!runtime) return settings
+  const decoder = runtime.decoder.installed()
+  return { ...settings, ocr: settings.ocr && runtime.ocr.installed(), vision: settings.vision && runtime.vision.installed(),
+    transcription: settings.transcription && decoder && runtime.speech.installed(), audio: settings.audio && decoder && runtime.audio.installed() }
+}
+function applicable(mime: string, settings: MediaSettings, decoder = true) {
   return mime === 'application/pdf' ? settings.pdf : mime.startsWith('image/') ? settings.ocr || settings.vision
     : mime.startsWith('audio/') ? settings.transcription || settings.audio
-      : mime.startsWith('video/') && (settings.ocr || settings.vision || settings.transcription || settings.audio)
+      : mime.startsWith('video/') && decoder && (settings.ocr || settings.vision || settings.transcription || settings.audio)
 }
-export async function queueMedia(store: MemoryStore, raw: unknown, automatic = false) {
-  const input = parse(processFilesInput, raw), settings = await mediaSettings(store)
+export async function queueMedia(store: MemoryStore, raw: unknown, automatic = false, runtime?: MediaModules) {
+  const input = parse(processFilesInput, raw), settings = availableMediaSettings(await mediaSettings(store), runtime)
+  const decoder = runtime ? runtime.decoder.installed() : true
   if (automatic && !settings.automatic) return { queued: 0 }
   check(automatic || settings.pdf || settings.ocr || settings.transcription || settings.vision || settings.audio, 'Activá el procesamiento multimedia desde Memoria → Fuentes y ajustes', 409)
   const key = processingKey(settings)
@@ -26,7 +41,7 @@ export async function queueMedia(store: MemoryStore, raw: unknown, automatic = f
   if (input.version_id) check(sources.length, 'El archivo ya no es la versión vigente', 409)
   let queued = 0
   for (const row of sources) {
-    if (!applicable(row.metadata.attachment.mime_type, settings)) continue
+    if (!applicable(row.metadata.attachment.mime_type, settings, decoder)) continue
     if (!input.force && row.metadata.media_processing?.key === key) continue
     const dedupe = `media:${row.current_version_id}:${key}`
     // Failed and cancelled jobs stay visible; an automatic scan never silently restarts them.
@@ -42,7 +57,7 @@ export async function processMedia(store: MemoryStore, runtime: MediaRuntime, pa
   const source = (await store.db.query(`SELECT s.*,e.title,e.data FROM sources s JOIN entities e ON e.id=s.entity_id
     WHERE s.current_version_id=$1 AND s.status='active'`, [payload.version_id]))[0]
   if (!source) return { skipped: 'historical_version' }
-  if (processingKey(await mediaSettings(store)) !== payload.key) return { skipped: 'settings_changed' }
+  if (processingKey(availableMediaSettings(await mediaSettings(store), runtime)) !== payload.key) return { skipped: 'settings_changed' }
   const settings = runtime.validate(payload.settings)
   const original = parse(importInput, await store.original(payload.version_id))
   if (!payload.force && (original.metadata.media_processing as any)?.key === payload.key) return { skipped: 'already_processed' }
@@ -53,7 +68,8 @@ export async function processMedia(store: MemoryStore, runtime: MediaRuntime, pa
   const inherited = await store.db.query("SELECT to_id FROM links WHERE from_id=$1 AND type='project'", [source.entity_id])
   const base = original.fragments.filter((f: any) => !f.metadata?.generated)
   // Each analysis is a new immutable version. Previous OCR, timestamps and citations remain retrievable.
-  const parts = result.parts.map(({ text, offset_ms, metadata }, index) => ({ text, ...(offset_ms === undefined ? {} : { offset_ms }),
+  const redact = original.metadata.redact_secrets === true
+  const parts = result.parts.map(({ text, offset_ms, metadata }, index) => ({ text: redact ? redactSecrets(text).text : text, ...(offset_ms === undefined ? {} : { offset_ms }),
     metadata: { ...metadata, attachment: original.metadata.attachment, annotation: false, analysis_key: payload.key, analysis_part: index, review_state: 'pending' } }))
   return store.db.withOriginals(() => store.db.transaction(async sql => {
     const current = (await sql.query('SELECT current_version_id,status FROM sources WHERE id=$1', [source.id]))[0]

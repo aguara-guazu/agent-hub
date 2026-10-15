@@ -69,6 +69,7 @@ export function runProbe(argv: readonly string[], timeout: number): ProbeResult 
   const result = spawnSync(argv[0]!, argv.slice(1), {
     encoding: 'utf-8',
     timeout: timeout * 1000,
+    windowsHide: true,
   })
   if (result.error) {
     const err = result.error as NodeJS.ErrnoException
@@ -87,7 +88,7 @@ export function runProbe(argv: readonly string[], timeout: number): ProbeResult 
 /** Localizador por defecto: usa `which`/`where` del sistema vía la sonda misma. */
 export function defaultWhich(cmd: string): string | null {
   const finder = process.platform === 'win32' ? 'where' : 'which'
-  const result = spawnSync(finder, [cmd], { encoding: 'utf-8' })
+  const result = spawnSync(finder, [cmd], { encoding: 'utf-8', timeout: DEFAULT_PROBE_TIMEOUT * 1000, windowsHide: true })
   if (result.status !== 0) return null
   return firstLine(result.stdout) || null
 }

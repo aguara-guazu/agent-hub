@@ -15,7 +15,13 @@ env.useFSCache = true
 let lastProgress = 0
 const options = { revision: definition.revision, cache_dir: workerData.cache, local_files_only: !workerData.install,
   progress_callback: (progress: any) => { if (progress.status === 'progress_total') return; if (progress.status !== 'progress' || Date.now() - lastProgress > 200) { lastProgress = Date.now(); parentPort!.postMessage({ type: 'progress', progress }) } } }
-const session_options = { intraOpNumThreads: 2, interOpNumThreads: 1 }
+// The CPU arena extends in power-of-two blocks; under Electron's allocator a block over ~2 GiB aborts the whole
+// process (SIGTRAP, not a catchable error). With the arena, EmbeddingGemma 2 crossed it at ~2.5k input tokens.
+const session_options = { intraOpNumThreads: 2, interOpNumThreads: 1, enableCpuMemArena: false }
+/** Without the arena, 4096 tokens peak at ~2.6 GB RSS per engine and 8192 still aborts the process. */
+const MAX_INPUT_TOKENS = 4096
+/** A fragment holds ≤1800 characters (≈1300 tokens of prose); text tokenizing past this is invisible padding or encoded data. */
+const MAX_TEXT_TOKENS = 2048
 const failure = (error: unknown) => parentPort!.postMessage({ type: 'error', error: error instanceof Error ? error.message : 'No se pudo cargar el modelo local' })
 async function decodeImage(data: Uint8Array) {
   const { data: pixels, info } = await sharp(Buffer.from(data), { limitInputPixels: 40_000_000 }).rotate().removeAlpha().toColourspace('srgb').raw().toBuffer({ resolveWithObject: true })
@@ -52,7 +58,7 @@ if (workerData.checkRuntime) {
     const processor = profile === 'text' ? null : await AutoProcessor.from_pretrained(definition.repository, options)
     const model = await AutoModel.from_pretrained(definition.repository, { ...options, config, device: 'cpu', dtype: 'q8', session_options })
     const infer = async (inputs: any) => {
-      if (inputs.input_ids.dims[1]! > 8192) throw new Error('El contenido supera el límite de 8192 tokens de EmbeddingGemma 2')
+      if (inputs.input_ids.dims[1]! > MAX_INPUT_TOKENS) throw new Error(`El contenido supera el límite de ${MAX_INPUT_TOKENS} tokens de EmbeddingGemma 2`)
       let output: any
       try {
         output = await model(inputs)
@@ -72,7 +78,7 @@ if (workerData.checkRuntime) {
     }
     const embed = async (texts: string[], query: boolean) => {
       const vectors: number[][] = []
-      for (const text of texts) vectors.push(await infer(tokenizer(embeddingInput(text, query), { truncation: false })))
+      for (const text of texts) vectors.push(await infer(tokenizer(embeddingInput(text, query), { truncation: true, max_length: MAX_TEXT_TOKENS })))
       return vectors
     }
     parentPort!.postMessage({ type: 'validating' })

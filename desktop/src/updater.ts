@@ -9,8 +9,8 @@
  *
  * - macOS: monta el dmg, verifica el bundle id, prepara el bundle nuevo al lado del
  *   actual y lo intercambia en un solo movimiento, con copia de respaldo.
- * - Windows con instalador NSIS: corre el instalador nuevo en modo silencioso; él
- *   reemplaza la instalación y vuelve a abrir la app.
+ * - Windows con instalador NSIS: corre el instalador nuevo en modo silencioso cuando la
+ *   app ya detuvo core y daemon; él reemplaza la instalación y vuelve a abrir la app.
  * - Linux AppImage: reemplaza el archivo .AppImage en su lugar y lo vuelve a abrir.
  * - Otros formatos (zip de Windows, .deb): sólo avisa, con enlace a la release.
  *
@@ -18,7 +18,7 @@
  */
 import { spawn as nodeSpawn, execFile } from 'node:child_process'
 import { accessSync, constants as fsConstants, createReadStream, createWriteStream, existsSync } from 'node:fs'
-import { chmod, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -59,7 +59,8 @@ export type ApplyOutcome = 'relaunch' | 'external'
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>
 export type RunFn = (command: string, args: readonly string[]) => Promise<{ stdout: string }>
-export type SpawnFn = (command: string, args: readonly string[]) => void
+/** Lanza un proceso independiente; si devuelve una promesa, se rechaza cuando el ejecutable no pudo iniciarse. */
+export type SpawnFn = (command: string, args: readonly string[]) => void | Promise<void>
 
 function parseVersion(value: string): number[] {
   return value.replace(/^v/, '').split('.').map((part) => Number.parseInt(part, 10) || 0)
@@ -197,12 +198,16 @@ export async function downloadAsset(url: string, target: string, options: {
 }
 
 const defaultRun: RunFn = async (command, args) => {
-  const { stdout } = await promisify(execFile)(command, [...args], { timeout: 120_000 })
+  const { stdout } = await promisify(execFile)(command, [...args], { timeout: 120_000, windowsHide: true })
   return { stdout: String(stdout) }
 }
-const defaultSpawn: SpawnFn = (command, args) => {
-  nodeSpawn(command, [...args], { detached: true, stdio: 'ignore' }).unref()
-}
+// Sin el listener de 'error', un instalador que el antivirus puso en cuarentena sería una excepción no capturada
+// del proceso principal en medio del apagado.
+const defaultSpawn: SpawnFn = (command, args) => new Promise((resolve, reject) => {
+  const child = nodeSpawn(command, [...args], { detached: true, stdio: 'ignore', windowsHide: true })
+  child.once('error', reject)
+  child.once('spawn', () => { child.unref(); resolve() })
+})
 
 // fs.rm no siempre termina de borrar un bundle cuyo binario está mapeado por un
 // proceso vivo (deja un esqueleto); los borrados van por /bin/rm.
@@ -254,11 +259,32 @@ export async function installDmg(dmgPath: string, bundlePath: string, expectedBu
 
 /**
  * Windows: el instalador NSIS de electron-builder en modo silencioso reemplaza la
- * instalación por usuario y, con `--force-run`, vuelve a abrir la app. Son los mismos
- * argumentos que usa electron-updater.
+ * instalación por usuario y, con `--force-run`, vuelve a abrir la app con `--updated`.
+ * Son los mismos argumentos que usa electron-updater. Con `--updated` el instalador
+ * cierra con Stop-Process todo proceso que corra desde la carpeta de instalación
+ * (`allowOnlyOneInstallerInstance.nsh`), así que se lanza recién cuando la app ya
+ * detuvo core y daemon; si alguno no se deja cerrar, el instalador sale sin instalar.
  */
-export function installNsis(installerPath: string, spawnFn: SpawnFn = defaultSpawn): void {
-  spawnFn(installerPath, ['--updated', '/S', '--force-run'])
+export async function installNsis(installerPath: string, spawnFn: SpawnFn = defaultSpawn): Promise<void> {
+  await spawnFn(installerPath, ['--updated', '/S', '--force-run'])
+}
+
+/**
+ * Windows: puentes MCP (`--agenthub-headless`) que Claude Desktop, Claude Code u otro
+ * cliente lanzaron con el ejecutable de esta instalación. El instalador NSIS los cierra
+ * y el cliente pierde el hub hasta reiniciarlos. Devuelve 0 si no se pudo consultar.
+ */
+export async function liveBridges(execPath: string, run: RunFn = defaultRun): Promise<number> {
+  const literal = (value: string) => `'${value.replace(/'/g, "''")}'`
+  const script = `@(Get-CimInstance Win32_Process -Filter ${literal(`Name='${basename(execPath).replace(/'/g, "\\'")}'`)} | ` +
+    `Where-Object { $_.ProcessId -ne ${process.pid} -and $_.ExecutablePath -eq ${literal(execPath)} -and $_.CommandLine -like '*--agenthub-headless*' -and $_.CommandLine -notlike '*memory-hook*' }).Count`
+  const powershell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  try {
+    const { stdout } = await run(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')])
+    return Number.parseInt(stdout.trim(), 10) || 0
+  } catch {
+    return 0
+  }
 }
 
 /** Linux: reemplaza el .AppImage en su lugar (mismo directorio, rename atómico) y lo vuelve a abrir. */
@@ -272,7 +298,7 @@ export async function installAppImage(downloadedPath: string, appImagePath: stri
   })
   await chmod(staged, 0o755)
   await rename(staged, appImagePath)
-  spawnFn(appImagePath, [])
+  await spawnFn(appImagePath, [])
 }
 
 export interface AutoUpdaterDeps {
@@ -364,7 +390,7 @@ export class AutoUpdater {
       return 'relaunch'
     }
     if (update.strategy === 'nsis') {
-      installNsis(update.path, this.deps.spawnFn ?? defaultSpawn)
+      await installNsis(update.path, this.deps.spawnFn ?? defaultSpawn)
       return 'external'
     }
     const appImage = this.deps.env.APPIMAGE
@@ -373,8 +399,22 @@ export class AutoUpdater {
     return 'external'
   }
 
-  /** Limpieza al arrancar de lo que dejó una actualización anterior (macOS). */
+  /** Puentes MCP vivos que cerraría el instalador; sólo aplica a NSIS. */
+  async bridgesAtRisk(): Promise<number> {
+    return this.strategy === 'nsis' ? liveBridges(this.deps.execPath, this.deps.run ?? defaultRun) : 0
+  }
+
+  /**
+   * Limpieza al arrancar de lo que dejó una actualización anterior: bundles de respaldo
+   * en macOS y descargas en la carpeta temporal. En Windows el instalador NSIS corre
+   * desde ahí y nada lo borra después; uno que todavía corre no se puede borrar y queda
+   * para el próximo arranque.
+   */
   async cleanup(): Promise<void> {
+    const temp = this.deps.tmpDir ?? tmpdir()
+    for (const entry of await readdir(temp).catch(() => [] as string[])) {
+      if (entry.startsWith('agenthub-update-')) await rm(join(temp, entry), { recursive: true, force: true }).catch(() => undefined)
+    }
     if (this.strategy !== 'dmg') return
     const bundle = bundlePathFrom(this.deps.execPath)
     if (bundle) await cleanupLeftovers(bundle, this.deps.run ?? defaultRun)

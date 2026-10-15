@@ -73,8 +73,9 @@ function unquote(raw: string): string {
  * escalares planos o entrecomillados, bloques `>`/`|` (con `-` opcional) y continuaciones
  * indentadas. Cualquier otra estructura queda como texto plano en su clave.
  */
-export function parseFrontmatter(text: string): Frontmatter {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)
+export function parseFrontmatter(raw: string): Frontmatter {
+  const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
+  const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text)
   if (match === null) return { fields: {}, body: text }
   const lines = match[1]!.split(/\r?\n/)
   const fields: Record<string, string> = {}
@@ -163,7 +164,7 @@ export function scanExternalSkills(home: string): ExternalScan {
       slug: name,
       display_name: fields['title'] || fields['name'] || name,
       description: fields['description'] ?? '',
-      body: body.replace(/^\n+/, ''),
+      body: body.replace(/^(?:\r?\n)+/, ''),
       tree_hash: treeHash,
       source_path: dir,
       source_ref: refs[name] ?? '',

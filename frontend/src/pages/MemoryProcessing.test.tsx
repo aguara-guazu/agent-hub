@@ -27,3 +27,21 @@ it('muestra la fuente, el avance real, tokens y controles del trabajo de DeepSee
     expect(container.querySelector('button')).toBeNull()
   } finally { act(() => root.unmount()) }
 })
+
+it('permite revisar y copiar un reporte sin abrir ventanas desde una respuesta asíncrona', async () => {
+  const { setupDom, teardownDom, installFetch, jsonResponse, renderWithProviders, click, flush } = await import('../test-utils')
+  setupDom()
+  const copied = vi.fn(async () => {}), opened = vi.spyOn(window, 'open')
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copied } })
+  installFetch({ handle: ({ path }) => path === '/memory/jobs/job/report' ? jsonResponse({ text: 'Reporte filtrado', url: 'https://github.com/aguara-guazu/agent-hub/issues/new?title=Test' }) : undefined })
+  try {
+    const { container } = await renderWithProviders(<MemoryJobCard job={{ id: 'job', state: 'failed', kind: 'process', attempts: 1, max_attempts: 5, payload: {}, created_at: '2026-09-13T10:00:00Z' }} onRetry={vi.fn()} onCancel={vi.fn()} />)
+    await click(Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Reportar')!)
+    await flush()
+    expect(container.querySelector('textarea')?.value).toBe('Reporte filtrado')
+    expect(opened).not.toHaveBeenCalled()
+    expect(container.querySelector('a[target="_blank"]')?.getAttribute('href')).toContain('/issues/new')
+    await click(Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Copiar reporte')!)
+    expect(copied).toHaveBeenCalledWith('Reporte filtrado')
+  } finally { opened.mockRestore(); teardownDom() }
+})

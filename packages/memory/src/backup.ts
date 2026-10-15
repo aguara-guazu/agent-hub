@@ -1,7 +1,8 @@
-import { mkdir, open, readFile, rename, rm, writeFile, unlink } from 'node:fs/promises'
+import { mkdir, open, readFile, rm, writeFile, unlink } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { renameRetry } from '@agenthub/gateway/platform'
 import { z } from 'zod'
 import type { MemoryStore } from './store.js'
 import { canonical, hash } from './store.js'
@@ -55,7 +56,7 @@ async function exportOriginals(store: MemoryStore) {
       }
       await file.writeFile('}}')
     }, 'read')
-    await file.sync(); await file.close(); await rename(temp, path)
+    await file.sync(); await file.close(); await renameRetry(temp, path)
     return { id: backupId, exported_at: exportedAt, download_url: `/api/memory/backups/${backupId}`, includes_credentials: false }
   } catch (error) { await file.close().catch(() => undefined); await rm(temp, { force: true }); throw error }
 }
@@ -118,6 +119,9 @@ async function deleteEntityRows(store: MemoryStore, entityId: string) {
     await sql.query(`DELETE FROM collection_records WHERE id IN(SELECT re.record_id FROM record_evidence re JOIN fragments f ON f.id=re.fragment_id
       JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE s.entity_id=$1)`, [entityId])
     const originals = await sql.query('SELECT v.original_path FROM versions v JOIN sources s ON s.id=v.source_id WHERE s.entity_id=$1', [entityId])
+    // Duplicate and identity proposals reference people by id inside their data, not through links, so no cascade reaches them.
+    if (before.kind === 'person') await sql.query(`DELETE FROM entities WHERE kind='fact' AND ((data->>'category'='person_duplicate' AND $1 IN (data->>'from_id',data->>'into_id'))
+      OR (data->>'category'='identity_match' AND data->>'speaker_id'=$1))`, [entityId])
     await sql.query('DELETE FROM entities WHERE id=$1', [entityId])
     await sql.query("UPDATE entities SET data=json_remove(data,'$.company_id') WHERE data->>'company_id'=$1", [entityId])
     await sql.query('DELETE FROM changes WHERE entity_id=$1', [entityId])

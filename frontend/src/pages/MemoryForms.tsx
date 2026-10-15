@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { Modal } from '../components/Modal'
-import { Field, ProjectSelect, ErrorBox, useMemory, useMemoryMutation, entityPath, type MemoryEntity, type Page } from '../lib/memory'
+import { useToast } from '../components/Toast'
+import { Field, ProjectSelect, ErrorBox, memoryCall, useMemory, useMemoryMutation, entityPath, type MemoryEntity, type Page } from '../lib/memory'
 
 export function EntityForm({ kind, open, onClose, projectId }: { kind: string; open: boolean; onClose: () => void; projectId?: string }) {
   const navigate = useNavigate()
@@ -31,43 +33,74 @@ export function EntityForm({ kind, open, onClose, projectId }: { kind: string; o
   </Modal>
 }
 
-export function ImportForm({ open, onClose, projectId }: { open: boolean; onClose: () => void; projectId?: string }) {
-  const navigate = useNavigate(), [title, setTitle] = useState(''), [text, setText] = useState(''), [externalId, setExternalId] = useState('')
-  const [kind, setKind] = useState('meeting'), [projects, setProjects] = useState(projectId ? [projectId] : []), [occurredAt, setOccurredAt] = useState('')
-  const [attachment, setAttachment] = useState<{ filename: string; data_base64: string } | null>(null)
-  const [json, setJson] = useState<unknown>(null), [fileError, setFileError] = useState<Error | null>(null)
-  const ingest = useMemoryMutation<any>('import_source', result => { onClose(); navigate(`/memory/entities/${result.entity_id}`) })
-  const ingestFile = useMemoryMutation<any>('import_file', result => { onClose(); navigate(`/memory/entities/${result.entity_id}`) })
-  async function load(file?: File) {
-    if (!file) return
-    try {
-      if (!/\.(txt|md|vtt|srt|json)$/i.test(file.name)) {
-        if (file.size > 25_000_000) throw new Error('El archivo supera 25 MB; dividilo en archivos más pequeños')
-        const encoded = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]!); reader.onerror = () => reject(new Error('No se pudo leer el archivo')); reader.readAsDataURL(file) })
-        setAttachment({ filename: file.name, data_base64: encoded }); setJson(null); setText(''); setTitle(file.name); setExternalId(''); setFileError(null); return
-      }
-      setAttachment(null)
-      if (file.size > 5_000_000) throw new Error('El archivo supera 5 MB; dividilo por reunión o documento')
-      const content = await file.text()
-      setTitle(file.name.replace(/\.[^.]+$/, '')); setExternalId(`file:${file.name}`); setFileError(null)
-      if (file.name.endsWith('.json')) { setJson(JSON.parse(content)); setText(content) }
-      else { setJson(null); setText(content) }
-    } catch (error) { setFileError(error instanceof Error ? error : new Error('No se pudo leer el archivo')) }
+const MAX_FILE_BYTES = 25_000_000
+const kindLabels: Record<string, string> = { document: 'Documento', meeting: 'Reunión', note: 'Nota' }
+
+function fileSize(bytes: number): string {
+  return bytes < 1_000_000 ? `${Math.max(1, Math.round(bytes / 1000))} KB` : `${(bytes / 1_000_000).toFixed(1)} MB`
+}
+function fileProblem(file: File): string | null {
+  return file.size === 0 ? 'está vacío' : file.size > MAX_FILE_BYTES ? 'supera 25 MB' : null
+}
+function readBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo'))
+    reader.readAsDataURL(file)
+  })
+}
+
+/** Uploads several files to one project. Title, external_id and description are left to the worker (`infer_metadata`). */
+export function ImportForm({ open, onClose, projectId }: { open: boolean; onClose: () => void; projectId: string }) {
+  const cache = useQueryClient(), toast = useToast()
+  const [files, setFiles] = useState<File[]>([]), [kind, setKind] = useState('document'), [occurredAt, setOccurredAt] = useState('')
+  const [dragging, setDragging] = useState(false), [uploading, setUploading] = useState<number | null>(null), [failures, setFailures] = useState<{ name: string; message: string }[]>([])
+  const busy = uploading !== null, invalid = files.some(file => fileProblem(file) !== null)
+  function add(list: FileList | null) {
+    if (!list?.length) return
+    const known = new Set(files.map(file => `${file.name}:${file.size}:${file.lastModified}`))
+    setFiles([...files, ...Array.from(list).filter(file => !known.has(`${file.name}:${file.size}:${file.lastModified}`))]); setFailures([])
   }
-  return <Modal open={open} onClose={onClose} title="Incorporar una fuente" busy={ingest.isPending || ingestFile.isPending} width={800}>
-    <form className="memory-form" onSubmit={e => { e.preventDefault(); if (fileError) return
-      if (attachment) { ingestFile.mutate({ ...attachment, title, description: text, project_ids: projects, ...(externalId.trim() ? { external_id: externalId.trim() } : {}), ...(occurredAt ? { occurred_at: new Date(occurredAt).toISOString() } : {}) }); return }
-      ingest.mutate(json ?? { kind, title, text, external_id: externalId.trim() || `manual:${crypto.randomUUID()}`, project_ids: projects,
-        ...(occurredAt ? { occurred_at: new Date(occurredAt).toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } : {}) }) }}>
-      <div className="memory-drop"><strong>Texto, captura, audio o archivo</strong><p>TXT, Markdown, VTT, SRT y JSON como texto; imágenes, audio, video, PDF y otros archivos como adjuntos de hasta 25 MB. El original se conserva en esta computadora.</p>
-        <input aria-label="Archivo para importar" type="file" onChange={e => void load(e.target.files?.[0])} /></div>
-      {json !== null ? <p className="memory-callout">Se importará el objeto JSON completo. Sus participantes, proyectos e intervenciones se validan antes de guardar.</p> : <>
-        <div className="memory-form-grid"><Field label="Título"><input value={title} onChange={e => setTitle(e.target.value)} required /></Field><Field label="Tipo de fuente"><select value={kind} onChange={e => setKind(e.target.value)}><option value="meeting">Reunión</option><option value="document">Documento</option><option value="note">Nota</option></select></Field></div>
-        <div className="memory-form-grid"><Field label="Fecha y hora de la reunión"><input type="datetime-local" value={occurredAt} onChange={e => setOccurredAt(e.target.value)} /></Field><Field label="Identificador de origen"><input value={externalId} onChange={e => setExternalId(e.target.value)} placeholder="Ej.: reunion-interna-2026-09-11" /><span className="field-hint">Reutilizalo para importar una versión actualizada.</span></Field></div>
-        <ProjectSelect value={projects} onChange={setProjects} />
-      </>}
-      <Field label={attachment ? 'Descripción del archivo (para buscarlo después)' : json !== null ? 'Vista previa del JSON' : 'Contenido'}><textarea rows={12} value={text} readOnly={json !== null} onChange={e => setText(e.target.value)} placeholder={attachment ? 'Qué muestra, por qué importa y a qué tarea pertenece…' : '00:02 Ana: Ya validamos la integración.\n00:04 Martín: Revisamos los resultados el martes.'} required={!attachment} /></Field>
-      <ErrorBox error={fileError ?? ingest.error ?? ingestFile.error} /><div className="memory-form-actions"><button type="button" className="btn" onClick={onClose}>Cancelar</button><button className="btn btn-primary" disabled={ingest.isPending || ingestFile.isPending || !!fileError}>Importar fuente</button></div>
+  async function upload() {
+    const failed: { file: File; message: string }[] = []
+    for (const [index, file] of files.entries()) {
+      setUploading(index)
+      try {
+        await memoryCall('import_file', { filename: file.name, data_base64: await readBase64(file), kind, project_ids: [projectId], infer_metadata: true,
+          ...(occurredAt ? { occurred_at: new Date(occurredAt).toISOString() } : {}) })
+      } catch (error) { failed.push({ file, message: error instanceof Error ? error.message : 'No se pudo subir' }) }
+    }
+    setUploading(null)
+    void cache.invalidateQueries({ queryKey: ['memory'] }); void cache.invalidateQueries({ queryKey: ['memory-status'] })
+    const saved = files.length - failed.length
+    if (saved) toast.success(saved === 1 ? 'Archivo adjuntado' : `${saved} archivos adjuntados`, 'El título, el identificador y el resumen se completan al procesarlos.')
+    if (!failed.length) { onClose(); return }
+    setFiles(failed.map(f => f.file)); setFailures(failed.map(f => ({ name: f.file.name, message: f.message })))
+  }
+  return <Modal open={open} onClose={onClose} title="Adjuntar archivos" busy={busy} width={720}>
+    <form className="memory-form" onSubmit={e => { e.preventDefault(); if (files.length && !invalid) void upload() }}>
+      <label className={`memory-drop memory-upload-drop${dragging ? ' dragging' : ''}`} onDragOver={e => { e.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)}
+        onDrop={e => { e.preventDefault(); setDragging(false); if (!busy) add(e.dataTransfer.files) }}>
+        <strong>Arrastrá archivos acá o elegilos</strong>
+        <p>PDF, documentos, imágenes, audio, video y texto (TXT, Markdown, VTT, SRT, JSON), hasta 25 MB cada uno. El original se conserva en esta computadora.</p>
+        <span className="btn">Elegir archivos</span>
+        <input className="sr-only" aria-label="Archivos para adjuntar" type="file" multiple disabled={busy} onChange={e => { add(e.target.files); e.target.value = '' }} />
+      </label>
+      {files.length > 0 && <ul className="memory-upload-list">{files.map((file, index) => {
+        const problem = fileProblem(file), failure = failures.find(f => f.name === file.name)
+        return <li key={`${file.name}:${file.size}:${file.lastModified}`} className={problem || failure ? 'invalid' : ''}>
+          <span>{file.name}</span><small>{problem ?? failure?.message ?? (uploading === index ? 'Subiendo…' : uploading !== null && index < uploading ? 'Listo' : fileSize(file.size))}</small>
+          <button type="button" className="btn btn-sm" aria-label={`Quitar ${file.name}`} disabled={busy} onClick={() => setFiles(files.filter((_, i) => i !== index))}>×</button>
+        </li>
+      })}</ul>}
+      <div className="memory-form-grid">
+        <Field label="Tipo de fuente"><select value={kind} disabled={busy} onChange={e => setKind(e.target.value)}>{Object.entries(kindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+        <Field label={kind === 'meeting' ? 'Fecha y hora de la reunión' : 'Fecha y hora'}><input type="datetime-local" value={occurredAt} disabled={busy} onChange={e => setOccurredAt(e.target.value)} /></Field>
+      </div>
+      {failures.length > 0 && <ErrorBox error={new Error(failures.length === 1 ? `No se pudo subir ${failures[0]!.name}.` : `No se pudieron subir ${failures.length} archivos.`)} />}
+      <div className="memory-form-actions"><button type="button" className="btn" disabled={busy} onClick={onClose}>Cancelar</button>
+        <button className="btn btn-primary" disabled={busy || !files.length || invalid}>{busy ? `Subiendo ${uploading! + 1} de ${files.length}…` : files.length > 1 ? `Adjuntar ${files.length} archivos` : 'Adjuntar archivo'}</button></div>
     </form>
   </Modal>
 }

@@ -14,7 +14,10 @@
  *   https://github.com/anthropics/claude-code/issues/28543) o el alias de la instalación
  *   MSIX (`%LOCALAPPDATA%\Microsoft\WindowsApps\Claude.exe`,
  *   https://dev.to/arthamjayanth/fixing-claude-codes-desktop-on-windows-claude-desktop-is-not-installed-microsoft-storemsix-130a);
- *   si ninguno existe, por el esquema `claude://`. No se probó en una máquina Windows.
+ *   si ninguno existe, por el esquema `claude://`. El proceso se identifica por su carpeta
+ *   (`AnthropicClaude` o `WindowsApps`), no sólo por el nombre: el instalador nativo de
+ *   Claude Code también deja un `claude.exe`, y `CloseMainWindow` sobre él podría cerrar la
+ *   consola donde corre. No se probó en una máquina Windows.
  * - Nunca se fuerza el cierre: si la app no termina sola, se informa y decide la persona.
  */
 import { execFile, spawn } from 'node:child_process'
@@ -23,7 +26,9 @@ import { win32 } from 'node:path'
 
 export const CLAUDE_DESKTOP_BUNDLE_ID = 'com.anthropic.claudefordesktop'
 const CLAUDE_DESKTOP_PROCESS_MAC = 'Claude'
-const CLAUDE_DESKTOP_PROCESS_WIN = 'Claude.exe'
+/** Procesos `Claude` de Claude Desktop (instalación clásica o MSIX), sin el `claude.exe` de Claude Code. */
+const CLAUDE_DESKTOP_PROCESSES_WIN = 'Get-Process -Name Claude -ErrorAction SilentlyContinue | Where-Object { ' +
+  "$_.Path -like ($env:LOCALAPPDATA + '\\AnthropicClaude\\*') -or $_.Path -like ($env:ProgramFiles + '\\WindowsApps\\*') }"
 /** Tope de espera para que la app termine sola. */
 const CLOSE_TIMEOUT_MS = 15_000
 const POLL_MS = 250
@@ -79,8 +84,8 @@ export async function isClientRunning(cliKind: string, deps: ClientDeps): Promis
     return (await deps.run('pgrep', ['-x', CLAUDE_DESKTOP_PROCESS_MAC])).code === 0
   }
   if (deps.platform === 'win32') {
-    const result = await deps.run('tasklist', ['/FI', `IMAGENAME eq ${CLAUDE_DESKTOP_PROCESS_WIN}`, '/NH'])
-    return result.code === 0 && result.stdout.toLowerCase().includes(CLAUDE_DESKTOP_PROCESS_WIN.toLowerCase())
+    return (await deps.run('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+      `if (@(${CLAUDE_DESKTOP_PROCESSES_WIN}).Count) { exit 0 } else { exit 1 }`])).code === 0
   }
   return false
 }
@@ -114,8 +119,8 @@ export async function restartClient(cliKind: string, deps: ClientDeps = defaultC
       if (quit.code !== 0) await deps.run('pkill', ['-TERM', '-x', CLAUDE_DESKTOP_PROCESS_MAC])
     } else {
       await deps.run('powershell', [
-        '-NoProfile', '-Command',
-        `Get-Process -Name ${CLAUDE_DESKTOP_PROCESS_WIN.replace(/\.exe$/i, '')} -ErrorAction SilentlyContinue | ForEach-Object { $null = $_.CloseMainWindow() }`,
+        '-NoProfile', '-NonInteractive', '-Command',
+        `${CLAUDE_DESKTOP_PROCESSES_WIN} | ForEach-Object { $null = $_.CloseMainWindow() }`,
       ])
     }
     if (!(await waitUntilClosed(cliKind, deps))) {

@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { accessSync, constants, readdirSync, statSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { childEnv, killTree } from '@agenthub/gateway/platform'
 import { Ajv2020 } from 'ajv/dist/2020.js'
 import { check, MemoryError } from './contracts.js'
 import { effortLevels, kiroEfforts } from './reasoning.js'
@@ -30,7 +31,7 @@ export function validCliModel(value: string): boolean { return modelPattern.test
 /** Native installers and npm entrypoints, including GUI launches without a shell PATH. */
 export function findExtractionCli(provider: ExtractionCli, env = process.env, home = homedir()): string | undefined {
   const dirs = [...(env.PATH ?? '').split(delimiter).filter(Boolean), join(home, '.local/bin'), join(home, '.bun/bin'),
-    join(home, '.volta/bin'), '/opt/homebrew/bin', '/usr/local/bin', ...(env.APPDATA ? [join(env.APPDATA, 'npm')] : [])]
+    join(home, '.volta/bin'), ...(process.platform === 'win32' ? [] : ['/opt/homebrew/bin', '/usr/local/bin']), ...(env.APPDATA ? [join(env.APPDATA, 'npm')] : [])]
   try { for (const version of readdirSync(join(home, '.nvm/versions/node'))) dirs.push(join(home, '.nvm/versions/node', version, 'bin')) } catch { /* optional */ }
   for (const dir of dirs) {
     const candidates = [join(dir, binaries[provider] + (process.platform === 'win32' ? '.exe' : ''))]
@@ -45,6 +46,8 @@ export function findExtractionCli(provider: ExtractionCli, env = process.env, ho
 function failure(provider: ExtractionCli, output: string): MemoryError {
   const label = cliLabels[provider]
   // CLI errors can contain credentials or evidence. Classify them without returning their raw text.
+  if (/git-bash|CLAUDE_CODE_GIT_BASH_PATH/i.test(output))
+    return new MemoryError(409, `${label} necesita Git para Windows (Git Bash). Instálelo o defina la variable CLAUDE_CODE_GIT_BASH_PATH con la ruta de bash.exe.`)
   if (/rate.?limit|hit.{0,30}limit|usage limit|quota.{0,30}(?:exceed|exhaust)|too many requests|overload|temporar|\b429\b|\b50[0234]\b|ECONNRESET|timed? ?out/i.test(output))
     return new MemoryError(503, `${label} alcanzó un límite de uso o no respondió. Se reintentará automáticamente.`, true)
   if (/log.?in|sign.?in|auth|credential|api.?key|\b40[123]\b|unauthorized|forbidden/i.test(output))
@@ -62,6 +65,18 @@ const codexConfig = ['-c', 'approval_policy="never"', '-c', 'web_search="disable
   '-c', 'features.plugins=false', '-c', 'features.hooks=false', '-c', 'features.multi_agent=false',
   '-c', 'features.memories=false', '-c', 'features.skill_search=false', '-c', 'features.skip_host_skill_discovery=true']
 
+/** Windows can refuse to delete a folder for a moment after the CLI that used it exits. */
+const removal = { recursive: true, force: true, maxRetries: 10, retryDelay: 100 } as const
+
+/** Run folders left by a crashed worker or a failed removal; none is in use after an hour (requests time out sooner). */
+async function sweepRuns(root: string): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+  await Promise.all(entries.filter(entry => entry.isDirectory() && entry.name.startsWith('run-')).map(async entry => {
+    const path = join(root, entry.name)
+    if (Date.now() - (await stat(path)).mtimeMs > 3_600_000) await rm(path, removal)
+  }).map(cleanup => cleanup.catch(() => undefined)))
+}
+
 /** Invoke the installed clients with their own authentication. Never read or copy account tokens. */
 export class CliExtractionRuntime {
   private catalogs = new Map<ExtractionCli, { models: CliModel[]; at: number }>()
@@ -69,6 +84,7 @@ export class CliExtractionRuntime {
   private active = new Set<AbortController>()
   private operations = new Set<Promise<unknown>>()
   private closing = false
+  private swept = false
   constructor(private directory: string, private options: Options = {}) {}
   private kiroApiKey(): string | undefined { return (this.options.kiroApiKey?.() || process.env.KIRO_API_KEY)?.trim() || undefined }
   async close() {
@@ -86,8 +102,9 @@ export class CliExtractionRuntime {
   private async inWorkspace<T>(action: (cwd: string) => Promise<T>): Promise<T> {
     const root = join(this.directory, 'cli-extraction')
     await mkdir(root, { recursive: true, mode: 0o700 })
+    if (!this.swept) { this.swept = true; void sweepRuns(root) }
     const cwd = await mkdtemp(join(root, 'run-'))
-    try { return await action(cwd) } finally { await rm(cwd, { recursive: true, force: true }) }
+    try { return await action(cwd) } finally { await rm(cwd, removal).catch(() => undefined) }
   }
 
   private async run(provider: ExtractionCli, args: string[], cwd: string, input: string | undefined, signal?: AbortSignal,
@@ -99,24 +116,22 @@ export class CliExtractionRuntime {
     const lifetime = new AbortController()
     this.active.add(lifetime)
     const combined = AbortSignal.any([lifetime.signal, AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
-    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1' }
+    // cli-host runs on process.execPath and needs ELECTRON_RUN_AS_NODE; it drops the variable again for native CLIs.
     // Only the Kiro child receives this secret, never argv, stdin, output or other CLIs.
-    delete (env as NodeJS.ProcessEnv).KIRO_API_KEY
-    if (provider === 'kiro') {
-      const apiKey = this.kiroApiKey()
-      if (apiKey) (env as NodeJS.ProcessEnv).KIRO_API_KEY = apiKey
-    }
-    // Session markers from a parent assistant are not authentication and must not attach a new run to it.
-    for (const key of ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE']) delete (env as NodeJS.ProcessEnv)[key]
-    if (provider === 'claude_code' && args.includes('--effort')) delete (env as NodeJS.ProcessEnv).CLAUDE_CODE_EFFORT_LEVEL
+    const env = childEnv({ ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1', KIRO_API_KEY: provider === 'kiro' ? this.kiroApiKey() : undefined },
+      // Session markers from a parent assistant are not authentication and must not attach a new run to it.
+      Object.fromEntries(['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE'].map(key => [key, undefined])),
+      provider === 'claude_code' && args.includes('--effort') ? { CLAUDE_CODE_EFFORT_LEVEL: undefined } : undefined)
     try {
       return await new Promise<string>((resolve, reject) => {
         const child = (this.options.launch ?? spawn)(process.execPath, [fileURLToPath(new URL('./cli-host.js', import.meta.url)), executable!, ...args],
           { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
         let stdout = '', stderr = '', pending = '', settled = false, discoveryDone = false, problem: unknown
-        let force: ReturnType<typeof setTimeout> | undefined
+        let force: ReturnType<typeof setTimeout> | undefined, treeKilled = false
         const stop = () => {
           child.stdin?.end()
+          // kill() on Windows terminates cli-host alone; taskkill /T must run while it lives to reach the CLI it started.
+          if (process.platform === 'win32') { if (!treeKilled) { treeKilled = true; killTree(child) } return }
           child.kill('SIGTERM')
           force ??= setTimeout(() => child.kill('SIGKILL'), 2000)
           force.unref()

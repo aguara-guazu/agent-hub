@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { spawn as nodeSpawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
+import { killTree } from '@agenthub/gateway/platform'
 
 /**
  * Supervisor del core HTTP local.
@@ -8,7 +9,8 @@ import { setTimeout as delay } from 'node:timers/promises'
  * El proceso principal de Electron inicia el core en loopback y lo mantiene
  * vivo mientras la app esté corriendo. Al salir explícitamente (Quit) el
  * supervisor detiene el core de forma ordenada (SIGTERM y, si no responde,
- * SIGKILL). Cerrar la ventana NO detiene el core: eso lo decide el main.
+ * SIGKILL; en Windows, EOF en stdin y, si no responde, taskkill del árbol). Cerrar la
+ * ventana NO detiene el core: eso lo decide el main.
  *
  * El módulo no importa Electron para poder probarse con Node puro; la función
  * de spawn es inyectable.
@@ -18,6 +20,11 @@ export type SupervisorState = 'stopped' | 'starting' | 'running' | 'restarting' 
 
 export interface SpawnedProcess {
   readonly pid: number | undefined
+  /** Línea de vida: el hijo se apaga de forma ordenada al ver EOF. */
+  readonly stdin?: NodeJS.WritableStream | null
+  /** Salidas del hijo; el supervisor las emite como eventos `log` línea por línea. */
+  readonly stdout?: NodeJS.ReadableStream | null
+  readonly stderr?: NodeJS.ReadableStream | null
   kill(signal?: NodeJS.Signals): boolean
   once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): void
   once(event: 'error', listener: (err: Error) => void): void
@@ -60,9 +67,8 @@ const defaultSpawn: SpawnFn = (command, args, env) => {
   const child = nodeSpawn(command, [...args], {
     env: { ...env, AGENTHUB_STDIN_LIFELINE: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
   })
-  child.stdout.resume()
-  child.stderr.resume()
   return child as unknown as SpawnedProcess
 }
 
@@ -142,8 +148,15 @@ export class CoreSupervisor extends EventEmitter {
     }
     this.proc = child
     this.setState('running')
+    // Leer siempre las dos salidas: un pipe sin lector se llena y bloquea al hijo.
+    for (const stream of [child.stdout, child.stderr]) if (stream) this.emitLines(stream)
 
     child.once('error', (err) => {
+      // ENOENT/EACCES during spawn emits error and close, but no exit. Do not leave a phantom running core.
+      if (child.pid === undefined && this.proc === child) {
+        this.proc = null
+        this.setState(this.stopping ? 'stopped' : 'failed')
+      }
       this.emit('error', err)
     })
     child.once('exit', (code, signal) => {
@@ -154,6 +167,21 @@ export class CoreSupervisor extends EventEmitter {
         return
       }
       void this.handleUnexpectedExit()
+    })
+  }
+
+  private emitLines(stream: NodeJS.ReadableStream): void {
+    let rest = ''
+    stream.setEncoding('utf8')
+    stream.on('data', (chunk: string) => {
+      const lines = (rest + chunk).split(/\r?\n/)
+      rest = lines.pop() ?? ''
+      if (rest.length > 64_000) { lines.push(rest); rest = '' }
+      for (const line of lines) if (line.trim()) this.emit('log', line)
+    })
+    stream.on('end', () => {
+      if (rest.trim()) this.emit('log', rest)
+      rest = ''
     })
   }
 
@@ -179,7 +207,12 @@ export class CoreSupervisor extends EventEmitter {
     this.spawnOnce()
   }
 
-  /** Detiene el core de forma ordenada: SIGTERM y, si no responde, SIGKILL. */
+  /**
+   * Detiene el core de forma ordenada: SIGTERM y, si no responde, SIGKILL. En Windows
+   * `kill()` es TerminateProcess con cualquier señal y ningún manejador corre, así que el
+   * pedido ordenado es cerrar stdin; si no responde, se mata el árbol (core y worker de
+   * memoria) mientras la raíz todavía existe.
+   */
   async stop(): Promise<void> {
     const child = this.proc
     this.stopping = true
@@ -191,11 +224,14 @@ export class CoreSupervisor extends EventEmitter {
     const exited = new Promise<void>((resolve) => {
       child.once('exit', () => resolve())
     })
-    child.kill('SIGTERM')
+    const windows = process.platform === 'win32'
+    if (windows && child.stdin) child.stdin.end()
+    else child.kill('SIGTERM')
     const timeout = this.opts.sleepFn(this.opts.stopGraceMs).then(() => 'timeout' as const)
     const result = await Promise.race([exited.then(() => 'exited' as const), timeout])
     if (result === 'timeout' && this.proc) {
-      this.proc.kill('SIGKILL')
+      if (windows && this.proc.pid) killTree(this.proc.pid, 'SIGKILL')
+      else this.proc.kill('SIGKILL')
       await exited
     }
     this.proc = null

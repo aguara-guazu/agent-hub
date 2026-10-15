@@ -20,6 +20,7 @@ files:
   - desktop/dist/**/*
   - desktop/assets/icon.png
   - desktop/assets/icon.icns
+  - desktop/assets/icon.ico
   - desktop/assets/licenses/**/*
   - frontend/dist/**/*
   - packages/*/package.json
@@ -53,6 +54,9 @@ nsis:
   oneClick: true
   perMachine: false
   allowToChangeInstallationDirectory: false
+  # Con dos arquitecturas, electron-builder arma además un instalador universal con ambas;
+  # el actualizador sólo baja AgentHub-Setup-<arch>.exe.
+  buildUniversalInstaller: false
   artifactName: AgentHub-Setup-${arch}.${ext}
 linux:
   icon: desktop/assets/icon.png

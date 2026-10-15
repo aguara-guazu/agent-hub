@@ -9,7 +9,7 @@
 
 import { hostname as osHostname, platform, homedir } from 'node:os'
 import { accessSync, constants } from 'node:fs'
-import { delimiter, join, resolve } from 'node:path'
+import { delimiter, join } from 'node:path'
 
 import type { CliKind } from '@agenthub/shared'
 import { buildHeadlessGateway } from '@agenthub/gateway'
@@ -23,6 +23,8 @@ import {
   detectAll,
   exposedNameOf,
   gatewayEndpoint,
+  OpenCodeAdapter,
+  samePath,
   type AccountSkillsReport,
   type ApplyResult,
   type DetectionResult,
@@ -122,15 +124,17 @@ export function detectClis(home: string): DetectionSummary {
   // Claude Desktop no tiene binario en el PATH: lo detecta su adaptador por el directorio de datos.
   const binaries: Record<string, string> = { claude_code: 'claude', codex_cli: 'codex', gemini_cli: 'gemini', kiro: 'kiro-cli', opencode: 'opencode' }
   const directories = [join(home, '.local/bin'), join(home, '.cargo/bin'), join(home, '.opencode/bin'),
-    ...(resolve(home) === resolve(homedir()) ? (process.env.PATH ?? '').split(delimiter) : []),
+    ...(samePath(home, homedir()) ? (process.env.PATH ?? '').split(delimiter) : []),
   ]
+  // En Windows X_OK equivale a F_OK: lo ejecutable lo decide la extensión, en el orden de PATHEXT.
+  const extensions = platform() === 'win32' ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map(ext => ext.toLowerCase()) : ['']
   for (const [kind, binary] of Object.entries(binaries)) {
     if (seen.has(kind)) continue
-    const executable = directories.flatMap(dir => platform() === 'win32' ? [join(dir, binary + '.exe'), join(dir, binary + '.cmd')] : [join(dir, binary)])
+    const executable = directories.flatMap(dir => extensions.map(ext => join(dir, binary + ext)))
       .find(path => { try { accessSync(path, constants.X_OK); return true } catch { return false } })
     if (!executable) continue
-    const paths: Record<string, string> = { claude_code: '.claude.json', codex_cli: '.codex/config.toml', gemini_cli: '.gemini/settings.json', kiro: '.kiro/settings/mcp.json', opencode: '.config/opencode/opencode.json' }
-    found.push({ cliKind: kind, home, configPath: join(home, paths[kind]!), evidence: executable, version: '' })
+    const paths: Record<string, string> = { claude_code: join(home, '.claude.json'), codex_cli: join(home, '.codex/config.toml'), gemini_cli: join(home, '.gemini/settings.json'), kiro: join(home, '.kiro/settings/mcp.json'), opencode: new OpenCodeAdapter().configPath(home) }
+    found.push({ cliKind: kind, home, configPath: paths[kind]!, evidence: executable, version: '' })
     seen.add(kind)
   }
   const missing = CLI_KINDS.filter((kind) => !seen.has(kind))

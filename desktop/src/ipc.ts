@@ -22,6 +22,8 @@ export const IPC = {
   syncNow: 'agenthub:sync-now',
   /** invoke: renderer -> main, cierra y vuelve a abrir un cliente (hoy sólo Claude Desktop). */
   restartClient: 'agenthub:restart-client',
+  /** invoke: renderer -> main, abre un PDF guardado en la memoria con la aplicación del sistema. */
+  openStoredPdf: 'agenthub:open-stored-pdf',
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -38,6 +40,11 @@ export interface ClientRestartResult {
   detail: string
 }
 
+export interface OpenFileResult {
+  ok: boolean
+  detail: string
+}
+
 /** Superficie que el preload publica en `window.agentHub`. */
 export interface AgentHubBridge {
   getCoreStatus(): Promise<CoreStatus>
@@ -49,6 +56,7 @@ export interface AgentHubBridge {
   getSession(): Promise<string>
   syncNow(): Promise<void>
   restartClient(cliKind: string): Promise<ClientRestartResult>
+  openStoredPdf(versionId: string): Promise<OpenFileResult>
 }
 
 /** Lista blanca de canales que el preload puede usar en cada dirección. */
@@ -60,6 +68,7 @@ export const INVOKE_CHANNELS: readonly IpcChannel[] = [
   IPC.getSession,
   IPC.syncNow,
   IPC.restartClient,
+  IPC.openStoredPdf,
 ]
 
 export const RECEIVE_CHANNELS: readonly IpcChannel[] = [IPC.coreStateChanged]

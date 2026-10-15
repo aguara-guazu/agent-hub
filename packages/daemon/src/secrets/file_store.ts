@@ -13,11 +13,13 @@
  * Se consulta el modo del ARCHIVO DESTINO (`statSync` sigue el symlink): lo que
  * importa es quién puede leer el contenido, no los permisos del enlace.
  *
- * Limitación conocida: los bits POSIX no existen en Windows; el daemon apunta a
- * macOS y Linux.
+ * Windows no tiene bits POSIX: `stat` informa 0666 (0444 si es de sólo lectura) sin
+ * importar las ACL, que son las que protegen el archivo. Ahí no se exige el modo.
  */
 
 import { readFileSync, statSync } from 'node:fs'
+import { platform } from 'node:os'
+import { secretFilePath } from '@agenthub/gateway/platform'
 
 import { SecretBackendError, SecretNotFoundError, SecretRefError, type SecretBackend, type SecretRef } from './base.js'
 
@@ -52,7 +54,7 @@ export class FileSecretBackend implements SecretBackend {
     }
 
     const mode = info.mode & 0o777
-    if (mode & FORBIDDEN_MODE_BITS) {
+    if (platform() !== 'win32' && (mode & FORBIDDEN_MODE_BITS) !== 0) {
       throw new SecretBackendError(
         ref.key,
         ref.toString(),
@@ -90,22 +92,27 @@ export class FileSecretBackend implements SecretBackend {
   }
 
   /**
-   * `file:///ruta/absoluta` -> `/ruta/absoluta`. Se rechaza la forma con host
-   * (`file://servidor/ruta`) y la ruta relativa: el broker resuelve contra ESTA
-   * máquina, y una ruta relativa dependería del directorio de trabajo del daemon.
+   * `file:///ruta/absoluta` a ruta nativa con `fileURLToPath`: en Windows `file:///C:/x` es
+   * `C:\x`, no `/C:/x`. Los `%XX` se decodifican una sola vez; `?` y `#` se escapan antes
+   * para que no corten la ruta como query o fragmento. Se rechaza la forma con host
+   * (`file://servidor/ruta`, una ruta UNC en Windows) y la ruta relativa: el broker resuelve
+   * contra ESTA máquina, y una ruta relativa dependería del directorio de trabajo del daemon.
    */
   private pathOf(ref: SecretRef): string {
-    const raw = decodeURIComponent(ref.path).trim()
-    if (raw.includes('\x00')) {
+    const raw = ref.path.trim()
+    if (raw.includes('\x00') || /%00/i.test(raw)) {
       throw new SecretRefError(ref.key, ref.toString(), 'la ruta del secreto tiene un byte nulo')
     }
-    if (!raw.startsWith('/')) {
-      throw new SecretRefError(
-        ref.key,
-        ref.toString(),
-        'se espera una ruta absoluta con la forma file:///ruta/al/secreto (tres barras: el host va vacío)',
-      )
+    const absolute = () => new SecretRefError(
+      ref.key,
+      ref.toString(),
+      'se espera una ruta absoluta con la forma file:///ruta/al/secreto (tres barras: el host va vacío)',
+    )
+    if (!raw.startsWith('/')) throw absolute()
+    try {
+      return secretFilePath(raw)
+    } catch {
+      throw absolute()
     }
-    return raw
   }
 }

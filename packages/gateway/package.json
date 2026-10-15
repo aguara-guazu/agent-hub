@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/gateway",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "private": true,
   "type": "module",
   "bin": {
@@ -8,7 +8,8 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./headless": "./dist/headless.js"
+    "./headless": "./dist/headless.js",
+    "./platform": "./dist/platform.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {
@@ -17,10 +18,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/shared": "0.7.7",
+    "@agenthub/shared": "0.7.8",
     "@modelcontextprotocol/sdk": "1.30.0"
   },
   "devDependencies": {
-    "@agenthub/testdata": "0.7.7"
+    "@agenthub/testdata": "0.7.8"
   }
 }

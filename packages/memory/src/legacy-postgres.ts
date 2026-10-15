@@ -1,10 +1,11 @@
 // One-way import of a PostgreSQL memory (schema versions 1–4) into the SQLite file.
 // The PostgreSQL cluster, its data directory and the `database` credential are never modified;
 // the SQLite file only appears at its final path after every table count and foreign key verifies.
-import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { join } from 'node:path'
 import pg from 'pg'
+import { renameRetrySync } from '@agenthub/gateway/platform'
 import { MemoryDatabase, storageConverter } from './database.js'
 import type { Vault } from './config.js'
 import { startManagedDatabase, stopManagedDatabase } from './runtime.js'
@@ -45,7 +46,7 @@ export function migrationState(directory: string): MigrationState | null {
 function saveState(directory: string, state: MigrationState): void {
   const path = join(directory, STATE_FILE), temp = `${path}.tmp`
   writeFileSync(temp, JSON.stringify({ ...state, updated_at: new Date().toISOString() }), { mode: 0o600 })
-  renameSync(temp, path)
+  try { renameRetrySync(temp, path) } catch (error) { rmSync(temp, { force: true }); throw error }
 }
 /** Lets the next worker iteration retry a failed migration immediately. */
 export function requestMigrationRetry(directory: string): void {
@@ -157,7 +158,7 @@ export async function migrateLegacyMemory(directory: string, vault: Vault, signa
     for (const suffix of ['-wal', '-shm']) rmSync(`${temp}${suffix}`, { force: true })
     if (hasDatabase(directory)) throw new Error('Ya existe una memoria SQLite; la migración no la reemplaza')
     for (const suffix of ['', '-wal', '-shm']) rmSync(`${databaseFile(directory)}${suffix}`, { force: true })
-    renameSync(temp, databaseFile(directory))
+    renameRetrySync(temp, databaseFile(directory))
     await stopManagedDatabase(directory).catch(() => undefined)
     const completed: MigrationState = { ...state, state: 'completed' }
     delete completed.table
