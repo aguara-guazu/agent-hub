@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { ConnectionPool, RemoteHttpRuntime, GatewayServer, PolicyStore } from '@agenthub/gateway'
 import { buildApp, type CoreApp } from '../src/app.js'
 import { ensureLocalOwner } from '../src/local.js'
@@ -25,6 +26,7 @@ describe('memoria HTTP y gateway MCP', () => {
     const denied = await app.fastify.inject({ method: 'GET', url: '/api/memory/status' })
     expect(denied.statusCode).toBe(401)
     expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/search', payload: { query: 'privado' } })).statusCode).toBe(401)
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/sharing/call', payload: { operation: 'status' } })).statusCode).toBe(401)
     expect((await app.fastify.inject({ method: 'GET', url: '/api/memory/opencode' })).statusCode).toBe(401)
     expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/opencode/test', payload: { model: 'opencode/big-pickle' } })).statusCode).toBe(401)
     const saved = await app.fastify.inject({ method: 'PUT', url: '/api/memory/credentials/deepseek', headers: { authorization: `Bearer ${token}` }, payload: { api_key: 'private-mcp-key' } })
@@ -69,7 +71,7 @@ describe('memoria HTTP y gateway MCP', () => {
     expect(skill.body).toContain('memory_search'); expect(skill.body).toContain('memory_review_duplicate'); expect(skill.body).not.toMatch(/^---/)
     const machine = app.store.insertMachine({ user_id: owner.id, hostname: 'skill-test', os: 'test', daemon_version: 'test' })
     const agent = app.store.insertAgent({ machine_id: machine.id, cli_kind: 'kiro', cli_version: 'test', config_path: '' })
-    expect(computeSnapshot(app.store, agent.id).skills.map(s => s.slug).sort()).toEqual(['google-setup', 'memory'])
+    expect(computeSnapshot(app.store, agent.id).skills.map(s => s.slug).sort()).toEqual(['google-setup', 'hub-collaboration', 'memory'])
     // A newer app ships a different body: it replaces the untouched copy and bumps the version.
     app.store.updateSkill(skill.id, { body: 'cuerpo de una versión anterior', content_hash: 'hash-anterior' })
     app.store.setSetting('memory_skill_hash', 'hash-anterior')
@@ -113,8 +115,39 @@ describe('memoria HTTP y gateway MCP', () => {
         arguments: { title: 'Captura del proyecto', filename: 'capture.png', data_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jv1sAAAAASUVORK5CYII=', project_ids: [data.id] } })
       expect(imported.isError, JSON.stringify(imported)).not.toBe(true)
       const file = JSON.parse((imported.content as { text: string }[])[0]!.text)
+      const shared = await app.fastify.inject({ method: 'POST', url: '/api/memory/sharing/call', headers: { authorization: `Bearer ${token}` }, payload: { operation: 'create', project_id: data.id } })
+      expect(shared.statusCode).toBe(200); expect(shared.json().recovery_phrase.split(' ')).toHaveLength(24)
+      expect(shared.headers['cache-control']).toBe('no-store')
+      expect(tools.some(t => /recover|recovery|sharing_create/.test(t.name))).toBe(false)
+      const revealPayload = { operation: 'recovery_phrase', project_id: data.id }
+      expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/sharing/call', payload: revealPayload })).statusCode).toBe(401)
+      const revealed = await app.fastify.inject({ method: 'POST', url: '/api/memory/sharing/call', headers: { authorization: `Bearer ${token}` }, payload: revealPayload })
+      expect(revealed.statusCode).toBe(200)
+      expect(revealed.headers['cache-control']).toBe('no-store')
+      expect(revealed.json().recovery_phrase).toBe(shared.json().recovery_phrase)
+      const ordinaryStatus = await app.fastify.inject({ method: 'POST', url: '/api/memory/sharing/call', headers: { authorization: `Bearer ${token}` }, payload: { operation: 'status' } })
+      expect(ordinaryStatus.body).not.toContain(shared.json().recovery_phrase)
+      const humanMessage = await app.fastify.inject({ method: 'POST', url: '/api/memory/call', headers: { authorization: `Bearer ${token}` }, payload: {
+        operation: 'send_message', input: { project_id: data.id, text: 'Aviso pendiente para el agente', expires_at: new Date(Date.now() + 60_000).toISOString() },
+      } })
+      expect(humanMessage.statusCode).toBe(403)
+      const forumAuthor = new Client({ name: 'forum-author-test', version: '1' })
+      try {
+        await forumAuthor.connect(new StreamableHTTPClientTransport(new URL(`${base}/api/memory/mcp`), {
+          requestInit: { headers: { authorization: readFileSync(join(directory, 'memory/secrets/memory-mcp'), 'utf8') } },
+        }))
+        const agentMessage = await forumAuthor.callTool({ name: 'send_message',
+          arguments: { project_id: data.id, text: 'Aviso pendiente para el agente', expires_at: new Date(Date.now() + 60_000).toISOString() },
+          _meta: { 'agenthub/agent': { agent_id: 'forum-author', cli_kind: 'claude_code', client: 'test', session_id: 'session-forum-author', cwd: null } } })
+        expect(agentMessage.isError).not.toBe(true)
+      } finally { await forumAuthor.close() }
       const image = await client.callTool({ name: tools.find(t => t.name.endsWith('get_file'))!.name, arguments: { version_id: file.version_id, include_content: true } })
       expect(image.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image', mimeType: 'image/png' })]))
+      const notice = (image.content as { text?: string }[]).find(c => c.text?.includes('collaboration_notice'))
+      expect(notice?.text).toContain('memory_read_messages'); expect(notice?.text).not.toContain('Aviso pendiente para el agente')
+      const read = await client.callTool({ name: tools.find(t => t.name.endsWith('read_messages'))!.name, arguments: { project_id: data.id, unread_only: true } })
+      expect(read.isError).not.toBe(true)
+      expect(JSON.parse((read.content as { text: string }[])[0]!.text).items[0].text).toBe('Aviso pendiente para el agente')
       expect((await app.fastify.inject({ method: 'GET', url: file.download_url })).statusCode).toBe(401)
       const download = await app.fastify.inject({ method: 'GET', url: file.download_url, headers: { authorization: `Bearer ${token}` } })
       expect(download.statusCode).toBe(200); expect(download.headers['content-type']).toBe('image/png')

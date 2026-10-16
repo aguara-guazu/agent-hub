@@ -1,3 +1,4 @@
+import { sharingRoutes } from './sharing/routes.js'
 import { pdfPreview } from './pdf.js'
 import { mediaSettings, queueMedia } from './media-processing.js'
 import { MEDIA_MODULES, mediaSettingsInput } from './media-runtime.js'
@@ -39,6 +40,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }
+  sharingRoutes(app, service, options.authorize)
   app.get('/api/memory/status', { preHandler: auth }, () => service.status())
   // Public issue: kind, state, stage, model and the worker lines of this job only. Source titles and payloads stay out
   // because they name clients and projects.
@@ -199,16 +201,19 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: memoryTools.map(tool => ({ ...tool, inputSchema: tool.inputSchema as { type: 'object' } })) }))
     server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       try {
-        const data = await (await service.get()).operations.call(request.params.name, request.params.arguments, 'mcp', agentFromMeta(request.params._meta), extra.signal)
+        const { operations } = await service.get(), agent = agentFromMeta(request.params._meta)
+        const data = await operations.call(request.params.name, request.params.arguments, 'mcp', agent, extra.signal)
+        const notice = await operations.collaborationNotice(request.params.name, request.params.arguments, data, agent)
+        const notices = notice ? [{ type: 'text' as const, text: JSON.stringify({ collaboration_notice: notice }) }] : []
         if (request.params.name === 'get_file' && data.data_base64) {
           const { data_base64, ...metadata } = data
           const summary = { type: 'text' as const, text: JSON.stringify(metadata) }
-          if (data.mime_type === 'text/plain') return { content: [summary, { type: 'resource', resource: { uri: `memory://files/${data.version_id}/${encodeURIComponent(data.filename)}`, mimeType: data.mime_type, text: fileText(Buffer.from(data_base64, 'base64'), data.filename) ?? Buffer.from(data_base64, 'base64').toString('utf8') } }] }
-          if (data.mime_type.startsWith('image/')) return { content: [summary, { type: 'image', mimeType: data.mime_type, data: data_base64 }] }
-          if (data.mime_type.startsWith('audio/')) return { content: [summary, { type: 'audio', mimeType: data.mime_type, data: data_base64 }] }
-          return { content: [summary, { type: 'resource', resource: { uri: `memory://files/${data.version_id}/${encodeURIComponent(data.filename)}`, mimeType: data.mime_type, blob: data_base64 } }] }
+          if (data.mime_type === 'text/plain') return { content: [summary, { type: 'resource', resource: { uri: `memory://files/${data.version_id}/${encodeURIComponent(data.filename)}`, mimeType: data.mime_type, text: fileText(Buffer.from(data_base64, 'base64'), data.filename) ?? Buffer.from(data_base64, 'base64').toString('utf8') } }, ...notices] }
+          if (data.mime_type.startsWith('image/')) return { content: [summary, { type: 'image', mimeType: data.mime_type, data: data_base64 }, ...notices] }
+          if (data.mime_type.startsWith('audio/')) return { content: [summary, { type: 'audio', mimeType: data.mime_type, data: data_base64 }, ...notices] }
+          return { content: [summary, { type: 'resource', resource: { uri: `memory://files/${data.version_id}/${encodeURIComponent(data.filename)}`, mimeType: data.mime_type, blob: data_base64 } }, ...notices] }
         }
-        return { content: [{ type: 'text', text: JSON.stringify(data) }] }
+        return { content: [{ type: 'text', text: JSON.stringify(data) }, ...notices] }
       } catch (error) { return { isError: true, content: [{ type: 'text', text: error instanceof MemoryError ? error.message : 'La operación de memoria no pudo completarse' }] } }
     })
     const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true })
@@ -221,7 +226,8 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   let defaultsTimer: ReturnType<typeof setInterval> | undefined
   if (options.worker) app.addHook('onListen', async () => {
     const prepare = () => { void service.defaults.tick().catch(() => {}) }
-    prepare(); defaultsTimer = setInterval(prepare, 5000); defaultsTimer.unref(); worker.start()
+    prepare(); void service.get().then(({ network }) => network.start()).catch(() => {})
+    defaultsTimer = setInterval(prepare, 5000); defaultsTimer.unref(); worker.start()
   })
   app.addHook('onClose', async () => { clearInterval(defaultsTimer); service.defaults.stop(); await worker.stop(); await service.close() })
   return { service, credentialReference: credential.reference, tools: memoryTools }

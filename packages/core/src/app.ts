@@ -66,7 +66,7 @@ import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRo
 import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
-import { registerMemory, memoryTools, memorySkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
+import { registerMemory, memoryTools, memorySkill, collaborationSkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
 import { createJiraTaskReader } from './memory-jira.js'
 
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
@@ -306,6 +306,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     // `memory` conserva las históricas.
     const factorySkills: { key: string; skill: FactorySkill }[] = [
       { key: 'memory_skill', skill: memorySkill },
+      { key: 'collaboration_skill', skill: collaborationSkill },
       { key: 'google_setup_skill', skill: googleSetupSkill },
     ]
     const registerMemorySkill = () => { for (const entry of factorySkills) applyFactorySkill(store, owner, entry.key, entry.skill) }

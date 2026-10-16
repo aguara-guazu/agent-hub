@@ -1,4 +1,5 @@
 import { processMedia, queueMedia } from './media-processing.js'
+import { prepareSharedProcessing, finishSharedProcessing } from './sharing/processing.js'
 import type { MediaRuntime } from './media-runtime.js'
 import { tidyMemory } from './memory-maintenance.js'
 import { NATIVE_EMBEDDING_ENGINES } from './native-embeddings.js'
@@ -120,11 +121,21 @@ export class JobRunner {
       if (job.kind === 'process') {
         const settings = await this.settings()
         if (job.payload.index_only) { settings.extraction = 'disabled'; await progress({ index_only: true }) }
+        const shared = !job.payload.force && !job.payload.identity_only && !job.payload.projects_only
+          ? await prepareSharedProcessing(this.store, job.payload.version_id, settings) : { work: [], reusable: false, defer: false }
+        if (shared.defer) {
+          await progress({ stage: 'waiting_for_peer' })
+          await this.store.db.query(`UPDATE jobs SET state='waiting',lease_until=NULL,lease_owner=NULL,attempts=max(0,attempts-1),
+            available_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+30 seconds'),updated_at=now() WHERE id=$1 AND lease_owner=$2`, [job.id, this.workerId])
+          return true
+        }
+        if (shared.reusable) { settings.extraction = 'disabled'; await progress({ shared_result_reused: true }) }
         if (job.payload.identity_only) await progress({ identity_only: true })
         if (job.payload.projects_only) await progress({ projects_only: true })
         const result = await processVersion(this.store, this.ai.forJob(settings, controller.signal, progress), job.payload.version_id, settings, progress, controller.signal,
           Boolean(job.payload.force), Boolean(job.payload.identity_only), { runKey: job.id, projectsOnly: Boolean(job.payload.projects_only) })
         await progress(result)
+        await finishSharedProcessing(this.store, shared.work, 'extraction' in result && result.extraction === 'processed')
       } else if (job.kind === 'describe_source') {
         const settings = await this.settings()
         await progress(await inferSourceMetadata(this.store, this.ai.forJob(settings, controller.signal, progress), job.payload.version_id, settings, progress, controller.signal))

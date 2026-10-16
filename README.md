@@ -101,6 +101,8 @@ make dev
 
 El hub incorpora proyectos, empresas, personas, reuniones, documentos, conversaciones y tareas. **Proyectos** muestra el contexto de cada cliente; **Memoria** permite explorar, buscar, seguir citas hasta la intervención original y administrar fuentes. Las colecciones permiten crear tablas con columnas tipadas y reglas persistentes de extracción.
 
+**Proyectos compartidos.** En **Compartir y colaborar** podés invitar otras identidades como owner, maintainer o reader, publicar contenido por P2P y descargar respaldos cifrados recuperables con 24 palabras. Los aportes conservan procedencia y versiones; los agentes reciben avisos al consultar el proyecto y siguen la skill `hub-collaboration` desde `memory`, sin interrupciones. [Uso, recuperación y límites de la sincronización](docs/shared-projects.md).
+
 La memoria usa SQLite en `memory/memory.sqlite` y conserva versiones de los originales en `memory/originals`. Las consultas corren en hilos dedicados, con WAL para permitir lecturas durante las escrituras. El catálogo y las políticas del hub permanecen en su propia base SQLite. El MCP **Memoria de proyectos** se registra automáticamente y sus herramientas pasan por los mismos permisos del gateway.
 
 Al actualizar una instalación con PostgreSQL, el worker copia el esquema compatible (versiones 1–4), verifica tablas, conteos, referencias e integridad y activa SQLite sólo cuando la copia termina correctamente. El clúster anterior y sus credenciales se conservan; el servicio administrado se detiene al terminar. Si la migración falla, Fuentes y ajustes muestra el motivo y permite reintentar. Volver a una release con PostgreSQL no incorpora los cambios realizados después en SQLite.
@@ -312,11 +314,11 @@ El workflow `.github/workflows/release.yml` compila cada plataforma en su propio
 
 ```bash
 # Mantener la misma versión en todos los workspaces, dependencias @agenthub y lockfile.
-# La versión 0.7.7 ya está preparada. Revisar e incluir también los archivos nuevos.
+# Revisar e incluir también los archivos nuevos antes de publicar.
 git add .
-git commit -m "Release 0.7.7"
-git tag v0.7.7
-git push origin main v0.7.7
+git commit -m "Release 0.8.0"
+git tag v0.8.0
+git push origin main v0.8.0
 ```
 
 Artefactos por release: `AgentHub-arm64.dmg`, `AgentHub-x64.dmg`, `AgentHub-Setup-x64.exe`, `AgentHub-Setup-arm64.exe`, `AgentHub-x64.zip`, `AgentHub-arm64.zip` (Windows portable), `AgentHub-x86_64.AppImage`, `AgentHub-arm64.AppImage`, `AgentHub-amd64.deb` y `AgentHub-arm64.deb`. `workflow_dispatch` corre la misma compilación sin publicar, para probar el pipeline. Publicar el tag es todo lo que hace falta para que las instalaciones existentes se actualicen: el updater (`desktop/src/updater.ts`) lee `releases/latest` de la API de GitHub y baja el artefacto de su plataforma por nombre, así que los nombres de arriba no deben cambiar. `ci.yml` corre lint, typecheck, pruebas y la memoria con SQLite y la migración desde PostgreSQL/pgvector en cada push a `main`, pull request y release. El release verifica que el tag coincida con la versión antes de construir instaladores.

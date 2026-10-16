@@ -213,4 +213,46 @@ CREATE TRIGGER fragments_substrings_update AFTER UPDATE OF text ON fragments BEG
   DELETE FROM fragments_substrings WHERE rowid=old.rid;
   INSERT INTO fragments_substrings(rowid,text) VALUES(new.rid,lower(new.text));
 END;
+`, String.raw`
+CREATE TABLE shared_projects (
+  id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+  genesis JSON NOT NULL, policy_hash TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT 1,
+  conflict TEXT, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE TABLE shared_policies (
+  hash TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES shared_projects(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL, document JSON NOT NULL
+);
+CREATE INDEX shared_policies_project ON shared_policies(project_id,revision);
+CREATE TABLE shared_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+  project_id TEXT NOT NULL REFERENCES shared_projects(id) ON DELETE CASCADE,
+  document JSON NOT NULL, payload JSON, received_from TEXT,
+  applied BOOLEAN NOT NULL DEFAULT 0, received_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX shared_events_project ON shared_events(project_id,seq);
+CREATE TABLE shared_items (
+  project_id TEXT NOT NULL REFERENCES shared_projects(id) ON DELETE CASCADE, item_key TEXT NOT NULL,
+  entity_id TEXT REFERENCES entities(id) ON DELETE SET NULL, heads JSON NOT NULL DEFAULT '[]',
+  published_hash TEXT, PRIMARY KEY(project_id,item_key)
+);
+CREATE TABLE shared_objects (
+  project_id TEXT NOT NULL REFERENCES shared_projects(id) ON DELETE CASCADE, item_key TEXT NOT NULL,
+  local_id TEXT NOT NULL, heads JSON NOT NULL DEFAULT '[]', published_hash TEXT,
+  PRIMARY KEY(project_id,item_key)
+);
+CREATE TABLE shared_notices (
+  project_id TEXT NOT NULL REFERENCES shared_projects(id) ON DELETE CASCADE, recipient TEXT NOT NULL,
+  fingerprint TEXT NOT NULL, shown_at TIMESTAMP NOT NULL, PRIMARY KEY(project_id,recipient)
+);
+CREATE TABLE shared_peers (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, last_seen_at TIMESTAMP NOT NULL, error TEXT
+);
+CREATE TABLE shared_source_sync (
+  project_id TEXT NOT NULL REFERENCES shared_projects(id) ON DELETE CASCADE,
+  entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  item_key TEXT, input_hash TEXT, heads JSON NOT NULL DEFAULT '[]',
+  checked_at TIMESTAMP NOT NULL DEFAULT ${NOW}, error TEXT,
+  PRIMARY KEY(project_id,entity_id)
+);
 `]

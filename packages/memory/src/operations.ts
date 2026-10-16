@@ -1,3 +1,4 @@
+import { SharedPublications } from './sharing/publications.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { queueMedia, processFilesInput, mediaSettings } from './media-processing.js'
 import { remember, rememberInput, manageMemory, manageMemoryInput } from './remember.js'
@@ -22,6 +23,15 @@ import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput,
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
+  shared_status: ['Ver miembros, permisos, identidad y versiones de un proyecto compartido; consultar la skill hub-collaboration al trabajar en él.', z.object({ project_id: id }).strict()],
+  shared_version: ['Leer una versión compartida completa y su autor, agente y peer de procedencia antes de resolver un conflicto. No devuelve los bytes del adjunto.', z.object({ project_id: id, event_id: z.string().length(64) }).strict()],
+  publish_source: ['Adelantar la publicación de una fuente (normalmente automática) o compartir una tarea o colección. Conserva procedencia y evita duplicados; sólo comparte fragmentos del proyecto.', z.object({ project_id: id, entity_id: id, key: z.string().max(1000).optional() }).strict()],
+  resolve_shared: ['Resolver versiones concurrentes de una fuente compartida eligiendo un evento después de contrastar su evidencia. Conserva todas las versiones históricas.', z.object({ project_id: id, key: z.string().max(1000), event_id: z.string().length(64) }).strict()],
+  send_message: ['Participar en el foro exclusivo de agentes con un mensaje o respuesta con vencimiento. Requiere identidad de agente. Sin to_member es público; con to_member y opcional to_agent es privado. Requiere autorización para comunicar.', z.object({ project_id: id, text: z.string().trim().min(1).max(8000), expires_at: instant, to_member: z.string().length(64).optional(), to_agent: z.string().max(200).optional(), reply_to: z.string().length(64).optional() }).strict()],
+  read_messages: ['Leer mensajes vigentes de este proyecto destinados al agente o al equipo. Registra lectura; no acepta ni ejecuta los pedidos. Paginar para recorrer todos; con unread_only:true mantener offset:0 al drenar pendientes.', z.object({ project_id: id, unread_only: z.boolean().default(false), ...page }).strict()],
+  ack_message: ['Marcar un mensaje del proyecto como leído o atendido. Atendido significa que se resolvió el pedido, no sólo que se leyó.', z.object({ project_id: id, message_id: z.string().length(64), state: z.enum(['read','handled']) }).strict()],
+  claim_work: ['Reservar trabajo del proyecto por cinco minutos con una clave estable. Coordinación orientativa: las particiones pueden producir intentos concurrentes.', z.object({ project_id: id, key: z.string().min(1).max(200) }).strict()],
+
   process_files: ['Procesar PDF por páginas, imágenes, audio y video con OCR, transcripción y embeddings locales según Ajustes. Sin version_id recorre los archivos actuales; force vuelve a analizarlos conservando versiones. Seguir progreso con list_jobs.', processFilesInput],
   suggest_projects: ['Buscar proyectos por nombre, empresa y significado para preseleccionar una asociación. No guarda vínculos.', suggestProjectsInput],
   draft_profile: ['Generar un borrador de empresa o descripción de proyecto con evidencia de sus fuentes. No guarda cambios: requiere revisión humana.', draftProfileInput],
@@ -93,16 +103,40 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set(['list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set(['shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
+  get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime) {}
+  async collaborationNotice(operation: string, raw: unknown, result: any, agent?: AgentContext) {
+    if (!agent || !READ_OPERATIONS.has(operation) || operation === 'read_messages') return null
+    const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    let project = typeof input.project_id === 'string' ? input.project_id : operation === 'context' ? result?.project?.id
+      : operation === 'get_entity' && result?.entity?.kind === 'project' ? result.entity.id : null
+    if (!project && operation === 'get_entity') {
+      const projects = result?.links?.filter((l: any) => l.type === 'project' && l.entity?.kind === 'project') ?? []
+      if (projects.length === 1) project = projects[0].entity.id
+    }
+    if (!project) {
+      let entityId = typeof input.entity_id === 'string' ? input.entity_id : typeof input.collection_id === 'string' ? input.collection_id : null
+      if (!entityId && typeof input.version_id === 'string') entityId = (await this.store.db.query('SELECT entity_id FROM sources WHERE id IN(SELECT source_id FROM versions WHERE id=$1)', [input.version_id]))[0]?.entity_id ?? null
+      if (!entityId && typeof input.fragment_id === 'string') entityId = (await this.store.db.query('SELECT s.entity_id FROM sources s JOIN versions v ON v.source_id=s.id JOIN fragments f ON f.version_id=v.id WHERE f.id=$1', [input.fragment_id]))[0]?.entity_id ?? null
+      if (operation === 'get_task' && typeof input.id === 'string') project = (await this.store.db.query('SELECT project_id FROM tasks WHERE id=$1', [input.id]))[0]?.project_id
+      if (entityId) {
+        const projects = await this.store.db.query("SELECT to_id FROM links WHERE from_id=$1 AND type='project'", [entityId])
+        if (projects.length === 1) project = projects[0]!.to_id
+      }
+    }
+    if (!project || !(await this.store.db.query('SELECT id FROM shared_projects WHERE id=$1', [project])).length) return null
+    try { return await this.sharing.notice(project, agent) } catch { return null }
+  }
   /** `agent` identifies the calling agent session (from the gateway); it attributes notes and keeps the session alive for the notes board. */
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
     const definition = definitions[operation as keyof typeof definitions]
     check(definition, 'Operación de memoria inexistente', 404)
     const input = parse(definition[1] as z.ZodType, raw ?? {}) as any
+    if (['send_message', 'ack_message'].includes(operation)) check(agent?.agent_id, 'Sólo los agentes pueden participar en el foro del proyecto', 403)
     const { store } = this, db = store.db
     if (agent && !['context', 'write_note', 'finish_notes'].includes(operation)) await touchSession(store, agent)
     const author = agent ? `agent:${agent.cli_kind || 'mcp'}:${agent.session_id.slice(0, 8)}` : actor
@@ -110,15 +144,51 @@ export class MemoryOperations {
       case 'suggest_projects': return suggestProjects(store, this.ai, input)
       case 'draft_profile': return draftProfile(store, this.ai, input, signal)
       case 'save_project_company': return saveProjectCompany(store, input, author)
-      case 'context': return workContext(store, input, agent)
+      case 'context': {
+        const result = await workContext(store, input, agent)
+        const projectId = result.project?.id
+        const shared = projectId && (await db.query('SELECT id FROM shared_projects WHERE id=$1', [projectId])).length > 0
+        return { ...result, ...(shared ? { collaboration: { shared: true, project_id: projectId, skill: 'hub-collaboration' } } : {}) }
+      }
+      case 'shared_status': {
+        const project = await this.sharing.get(input.project_id), who = await this.sharing.identity()
+        return { project_id: input.project_id, identity: { id: who.id, name: who.name }, members: project.policy.members, conflict: project.conflict,
+          enabled: project.enabled, publications: await this.sharing.publications(input.project_id), pending_sources: await this.sharing.sourceSyncStatus(input.project_id), skill: 'hub-collaboration' }
+      }
+      case 'shared_version': return this.sharing.version(input.project_id, input.event_id)
+      case 'publish_source': return this.sharing.publish(input.project_id, input.entity_id, input.key, agent)
+      case 'resolve_shared': return this.sharing.resolve(input.project_id, input.key, input.event_id, agent)
+      case 'send_message': return this.sharing.message(input.project_id, input.text, input.expires_at, input.to_member, input.to_agent, input.reply_to, agent)
+      case 'read_messages': {
+        const result = await this.sharing.messages(input.project_id, agent, input.offset, input.limit, input.unread_only)
+        if (agent) for (const message of result.items) if (message.state === 'unread') await this.sharing.receipt(input.project_id, message.id, 'read', agent)
+        return result
+      }
+      case 'ack_message': return this.sharing.receipt(input.project_id, input.message_id, input.state, agent)
+      case 'claim_work': return this.sharing.claim(input.project_id, input.key, agent)
       case 'list_tasks': return listTasks(store, input)
       case 'get_task': return taskDetail(store, input.id)
       case 'save_task': return saveTask(store, this.requireVault(), input, author, this.fetcher)
       case 'sync_tasks': return syncTasks(store, this.requireVault(), input, author, this.fetcher, this.jiraMcp, agent?.agent_id)
       case 'task_stats': return taskStats(store, input)
       case 'list_notes': return listNotes(store, input)
-      case 'write_note': return writeNote(store, input, actor, agent)
-      case 'finish_notes': return finishNotes(store, input, agent)
+      case 'write_note': {
+        const note = await writeNote(store, input, actor, agent)
+        if (agent && note?.project_id && (await db.query('SELECT id FROM shared_projects WHERE id=$1', [note.project_id])).length) {
+          try { await this.sharing.message(note.project_id, `[${note.state}] ${note.text}`, new Date(Date.now() + 86_400_000).toISOString(), undefined, undefined, undefined, agent) }
+          catch { return { ...note, sharing_status: 'local_only', sharing_detail: 'La nota quedó local; revisá los permisos del proyecto para publicarla.' } }
+        }
+        return note
+      }
+      case 'finish_notes': {
+        const result = await finishNotes(store, input, agent)
+        for (const projectId of new Set(result.notes.map(n => n.project_id).filter(Boolean))) {
+          if (agent && (await db.query('SELECT id FROM shared_projects WHERE id=$1', [projectId])).length) {
+            await this.sharing.message(String(projectId), `[${input.state}] ${input.summary || 'Trabajo finalizado.'}`, new Date(Date.now() + 86_400_000).toISOString(), undefined, undefined, undefined, agent).catch(() => undefined)
+          }
+        }
+        return result
+      }
       case 'list_project_suggestions': return listProjectSuggestions(store, input)
       case 'review_project_suggestion': return reviewProjectSuggestion(store, input, author)
       case 'infer_projects': {

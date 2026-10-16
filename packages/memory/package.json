@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/memory",
-  "version": "0.7.10",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -14,12 +14,16 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/gateway": "0.7.10",
+    "@agenthub/gateway": "0.8.0",
     "@huggingface/transformers": "4.3.1",
     "@hyzyla/pdfium": "2.1.13",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "@scure/bip39": "2.4.0",
     "ajv": "8.20.0",
     "fastify": "5.12.3",
+    "hpke-js": "1.8.0",
+    "hyperdht": "6.34.1",
+    "hyperswarm": "4.17.2",
     "pg": "8.23.0",
     "sharp": "0.35.5",
     "tesseract.js": "7.0.0",

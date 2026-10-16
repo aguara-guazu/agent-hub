@@ -1,4 +1,7 @@
 .memory-page { max-width: 1440px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; padding-bottom: 48px; }
+.memory-page .hub-heading { flex-wrap: wrap; }
+.memory-page .hub-heading > div:first-child { min-width: 0; flex: 1 1 280px; overflow-wrap: anywhere; }
+.memory-page .hub-actions { flex-wrap: wrap; flex-shrink: 1; }
 .memory-nav { display: flex; gap: 6px; padding-bottom: 14px; border-bottom: 1px solid var(--border); overflow-x: auto; }
 .memory-nav a { color: var(--text-muted); white-space: nowrap; padding: 7px 12px; border-radius: 6px; font-size: 13px; }
 .memory-nav a.active { color: var(--accent-text); background: var(--accent-weak); }
@@ -11,6 +14,20 @@
 .memory-stats strong { font-size: 30px; font-weight: 550; letter-spacing: -.04em; }
 .memory-stats span { font-size: 13px; color: var(--text-muted); }
 .memory-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.memory-sharing { display: grid; gap: 20px; }
+.memory-forum { padding: 24px; }
+.memory-forum > p { margin: 12px 0; }
+.memory-sharing > .card { padding: 24px; min-width: 0; }
+.memory-sharing h2 { margin: 0 0 12px; }
+.memory-sharing details { margin-top: 16px; }
+.memory-sharing summary { cursor: pointer; padding: 8px 0; }
+.memory-sharing textarea { overflow-wrap: anywhere; }
+.memory-sharing .spread { flex-wrap: wrap; gap: 12px; }
+.memory-sharing .memory-toolbar { margin: 16px 0; }
+.memory-sharing .memory-toolbar > select { flex: 1; min-width: 180px; }
+.memory-sharing .memory-toolbar input { min-width: 0; }
+.memory-shared-message { padding: 18px 0; border-top: 1px solid var(--border-soft); overflow-wrap: anywhere; }
+.memory-shared-message > .btn { margin-left: 12px; }
 .memory-toolbar input { min-width: 260px; }
 .memory-project-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(280px,1fr)); gap: 20px; }
 .memory-project-card { display: flex; flex-direction: column; gap: 18px; padding: 24px; transition: border-color .15s,transform .15s; min-height: 230px; }

@@ -12,3 +12,5 @@ export * from './identity-inference.js'
 export * from './skill.js'
 export * from './google-setup.js'
 export type { JiraTaskReader } from './tasks.js'
+
+export { collaborationSkill } from './sharing/skill.js'
