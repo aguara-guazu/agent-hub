@@ -10,6 +10,7 @@
   "homepage": "https://github.com/aguara-guazu/agent-hub",
   "type": "module",
   "main": "desktop/dist/entry.js",
+  "desktopName": "io.craftech.agenthub.desktop",
   "workspaces": [
     "packages/*",
     "desktop",

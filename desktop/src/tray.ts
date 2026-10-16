@@ -27,6 +27,7 @@ export interface TrayViewModel {
   coreState: SupervisorState
   windowVisible: boolean
   autostartEnabled: boolean
+  showShortcut?: { label: string; registered: boolean } | null
   update?: TrayUpdateState | null
   checkingUpdates?: boolean
   downloadingUpdate?: { version: string; receivedBytes: number; totalBytes: number | null } | null
@@ -61,6 +62,12 @@ export function buildTrayTemplate(vm: TrayViewModel): TrayItem[] {
     vm.windowVisible
       ? { id: 'hide', label: 'Ocultar ventana', type: 'normal' }
       : { id: 'show', label: 'Abrir Agent Hub', type: 'normal' },
+    ...(vm.showShortcut ? [{
+      label: vm.showShortcut.registered
+        ? `Mostrar/ocultar: ${vm.showShortcut.label}`
+        : `Atajo no disponible: ${vm.showShortcut.label}`,
+      enabled: false,
+    }] : []),
     {
       id: 'toggle-autostart',
       label: 'Iniciar al ingresar',

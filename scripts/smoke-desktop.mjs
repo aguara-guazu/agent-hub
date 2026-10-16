@@ -26,6 +26,10 @@ try {
     app = await electron.launch({ ...(process.argv[2] ? { executablePath: resolve(process.argv[2]), args: [] } : { args: [root] }), env, timeout: 60_000 })
     const page = await app.firstWindow({ timeout: 60_000 })
     await page.waitForLoadState('domcontentloaded')
+    // También se ejecuta en Windows CI: evita que el atajo quede restringido a macOS.
+    // En Wayland confirma la solicitud; la autorización final depende del portal.
+    assert.equal(await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Control+Alt+H')), true,
+      'Global shortcut Ctrl+Alt+H must be registered')
     const result = await page.evaluate(async () => {
       const api = window.agentHub
       const token = await api.getSession()
@@ -58,7 +62,7 @@ try {
     }
     await page.evaluate(() => { window.location.hash = '/clients' })
     await page.getByRole('heading', { name: 'Antigravity', exact: true }).waitFor()
-    console.log(`Desktop smoke ${attempt + 1}: renderer, session, memory and Antigravity integration ready; ${process.platform}/${process.arch}`)
+    console.log(`Desktop smoke ${attempt + 1}: global shortcut, renderer, session, memory and Antigravity integration ready; ${process.platform}/${process.arch}`)
     await app.close(); app = undefined
   }
 } finally {

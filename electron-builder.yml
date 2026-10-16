@@ -59,6 +59,8 @@ nsis:
   buildUniversalInstaller: false
   artifactName: AgentHub-Setup-${arch}.${ext}
 linux:
+  # El portal de atajos de Wayland necesita el mismo ID que el .desktop instalado.
+  syncDesktopName: true
   icon: desktop/assets/icon.png
   executableName: agent-hub
   category: Development

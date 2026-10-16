@@ -5,7 +5,7 @@ import { createServer } from 'node:net'
 import { release } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, shell, Tray } from 'electron'
 import { buildReport, LogFile, tailLog } from '@agenthub/memory/report'
 
 import { waitForDesktopSession } from './session.js'
@@ -21,6 +21,9 @@ import { DaemonApp, loadConfig } from '@agenthub/daemon'
 
 const APP_NAME = 'Agent Hub'
 const APP_BUNDLE_ID = 'io.craftech.agenthub'
+const SHOW_WINDOW_SHORTCUT = 'Control+Alt+H'
+const SHOW_WINDOW_SHORTCUT_LABEL = process.platform === 'darwin' ? '⌃⌥H' : 'Ctrl + Alt + H'
+let showWindowShortcutRegistered = false
 const CORE_HOST = '127.0.0.1'
 const DEFAULT_CORE_PORT = 8765
 /** Alternativas cuando el puerto habitual no se puede usar: Windows reserva rangos para Hyper-V, WSL y Docker. */
@@ -439,6 +442,7 @@ function refreshTray(): void {
     coreState: coreSupervisor.state,
     windowVisible: Boolean(mainWindow?.isVisible()),
     autostartEnabled: safeAutostart(),
+    showShortcut: { label: SHOW_WINDOW_SHORTCUT_LABEL, registered: showWindowShortcutRegistered },
     update: pendingUpdate ? { version: pendingUpdate.version, state: 'ready' } : availableUpdate ? { version: availableUpdate.version, state: 'available' } : null,
     checkingUpdates,
     downloadingUpdate,
@@ -455,7 +459,7 @@ function refreshTray(): void {
     if (item.id) entry.click = () => handleTrayAction(item.id!)
     return entry
   })))
-  tray.setToolTip(TRAY_TOOLTIP)
+  tray.setToolTip(showWindowShortcutRegistered ? `${TRAY_TOOLTIP} — Mostrar/ocultar: ${SHOW_WINDOW_SHORTCUT_LABEL}` : TRAY_TOOLTIP)
 }
 function broadcastCoreState(): void {
   mainWindow?.webContents.send(IPC.coreStateChanged, coreStatus())
@@ -500,12 +504,39 @@ function handleTrayAction(action: TrayAction): void {
   refreshTray()
 }
 function showWindow(): void {
-  if (!mainWindow) return
+  if (quitting || !mainWindow || mainWindow.isDestroyed()) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
   mainWindow.focus()
   // Una app accesoria (sin Dock) no pasa sola al frente al mostrar su ventana.
   if (process.platform === 'darwin') app.focus({ steal: true })
+}
+function toggleWindowFromShortcut(): void {
+  if (quitting || !mainWindow || mainWindow.isDestroyed()) return
+  // Estar visible no implica tener el foco: detrás de otra app debe pasar al frente.
+  if (mainWindow.isVisible() && mainWindow.isFocused() && !mainWindow.isMinimized()) hideWindow()
+  else showWindow()
+}
+function registerShowWindowShortcut(): void {
+  try {
+    showWindowShortcutRegistered = globalShortcut.register(SHOW_WINDOW_SHORTCUT, toggleWindowFromShortcut)
+  } catch (error) {
+    console.error('[shortcut]', error)
+  }
+  if (!showWindowShortcutRegistered) {
+    const message = `No se pudo activar ${SHOW_WINDOW_SHORTCUT_LABEL} para abrir Agent Hub. Puede estar reservado por otra app o no estar permitido por el sistema. Podés abrir Agent Hub desde el menú de aplicaciones del sistema o desde su icono.`
+    coreLog.write(`[shortcut] ${message}`)
+    if (Notification.isSupported()) {
+      try {
+        const notification = new Notification({ title: 'Atajo de Agent Hub no disponible', body: message })
+        notification.on('click', showWindow)
+        notification.show()
+      } catch (error) {
+        console.error('[shortcut notification]', error)
+      }
+    }
+  }
+  refreshTray()
 }
 function hideWindow(): void {
   mainWindow?.hide()
@@ -768,6 +799,7 @@ else {
     registerIpc()
     createTray()
     createWindow(token, hidden)
+    registerShowWindowShortcut()
     if (updated?.bridges) notifyClosedBridges(updated.bridges)
     app.on('activate', showWindow)
     void updater.cleanup()
@@ -784,6 +816,7 @@ else {
     app.quit()
   })
   app.on('window-all-closed', () => undefined)
+  app.on('will-quit', () => globalShortcut.unregisterAll())
   app.on('before-quit', event => {
     if (!stopped) { event.preventDefault(); void quit() }
   })

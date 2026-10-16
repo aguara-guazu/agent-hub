@@ -22,6 +22,12 @@ inicio al ingresar (autostart) y expone un puente IPC mínimo y seguro al render
 La lógica que no importa Electron está cubierta por pruebas unitarias (`*.test.ts`).
 `main.ts` y `preload.ts` son deliberadamente delgados y delegan en esos módulos.
 
+## Atajo global
+
+**Control + Option + H (⌃⌥H)** en macOS y **Ctrl + Alt + H** en Windows y Linux traen la ventana al frente desde cualquier app, aunque esté oculta o minimizada. Si ya está visible y tiene el foco, repetir el atajo la oculta y devuelve el foco a la app anterior en macOS. Si está visible detrás de otra app, la trae al frente. El atajo se registra al crear la ventana y se libera al salir; requiere que Agent Hub esté ejecutándose. El menú y el tooltip lo muestran. Si el registro falla, se avisa por notificación y en el menú, sin impedir el arranque.
+
+En Linux X11 el registro es directo. En Wayland se usa el portal `GlobalShortcuts` del escritorio, que puede pedir autorización o permitir reasignar la combinación. Electron 44 lo habilita por defecto. `package.json.desktopName` y `linux.syncDesktopName` mantienen la identidad `io.craftech.agenthub.desktop` alineada con el lanzador instalado; el portal necesita poder resolver ese archivo. La aceptación del portal puede ser asíncrona: el resultado de `register` no garantiza que el usuario haya autorizado el atajo.
+
 ## Ciclo de vida en macOS
 
 - El bundle declara `LSUIElement` (`electron-builder.yml`, `mac.extendInfo`): la app es de barra de menú, sin ícono en el Dock ni en Cmd+Tab. `main.ts` además llama a `app.dock.hide()` para `npm run dev`.
