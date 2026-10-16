@@ -26,15 +26,21 @@ async function installPinned(lock, root, scope, name) {
 
 // npm ci installs optional native modules for its host. Cross-architecture packages
 // need the target's Sharp binding and libvips, even with npmRebuild disabled.
+// Linux ships the WebAssembly build instead: Electron's Linux binaries link the system glib and leak
+// its symbols into the process, and the native libvips then crashes in g_object_unref while decoding
+// input images (sharp "Known conflicts: Electron and Linux", electron/electron#46323). Without a
+// native package, sharp falls back to @img/sharp-wasm32 by itself.
 exports.prepareSharp = async (projectDir, appDir, platform, arch) => {
   const lock = JSON.parse(readFileSync(join(projectDir, 'package-lock.json'), 'utf8'))
-  const target = `${platform}-${arch}`
-  const names = [`sharp-${target}`, ...(platform === 'win32' ? [] : [`sharp-libvips-${target}`])]
+  const target = `${platform}-${arch}`, wasm = platform === 'linux'
+  const names = wasm ? ['sharp-wasm32'] : [`sharp-${target}`, ...(platform === 'win32' ? [] : [`sharp-libvips-${target}`])]
   const root = join(appDir, 'node_modules', '@img')
   await mkdir(root, { recursive: true })
   for (const name of names) await installPinned(lock, root, '@img', name)
+  if (wasm) await installPinned(lock, join(appDir, 'node_modules', '@emnapi'), '@emnapi', 'runtime')
   for (const name of await readdir(root)) if (name.startsWith('sharp-') && !names.includes(name)) await rm(join(root, name), { recursive: true, force: true })
-  if (!(await readdir(join(root, `sharp-${target}`, 'lib'))).some(name => name.startsWith(`sharp-${target}-`) && name.endsWith('.node'))) throw new Error(`Missing Sharp binary for ${target}`)
+  const binding = names[0]
+  if (!(await readdir(join(root, binding, 'lib'))).some(name => name.startsWith(`${binding}-`) && /\.node(\.wasm)?$/.test(name))) throw new Error(`Missing Sharp binary for ${target}`)
 }
 
 // Same host-only install problem for the password hasher: a Windows arm64 or macOS x64
