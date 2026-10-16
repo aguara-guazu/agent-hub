@@ -34,7 +34,7 @@ Es la versión portable, sin instalar nada. Para Debian y Ubuntu hay `.deb` (`Ag
 
 **Primer arranque.** La app deja un catálogo inicial de MCP servers públicos listos para «Conectar cuenta», detecta los clientes instalados (Claude Code, Codex CLI, Gemini CLI, Kiro, OpenCode, Antigravity y Claude Desktop) y escribe en cada uno una única entrada `hub`. No hace falta cuenta ni otro equipo.
 
-**Actualizaciones automáticas.** La app revisa las releases de GitHub al arrancar y cada seis horas. En macOS, con el instalador de Windows y con el AppImage de Linux baja la versión nueva y se reinstala sola: si la ventana está cerrada lo hace en el acto, y si está abierta espera a que la cierres o a que elijas «Reiniciar para actualizar» en el menú de la barra. El zip portable de Windows y el `.deb` sólo avisan con un enlace a la release. `AGENTHUB_NO_AUTO_UPDATE=1` lo desactiva.
+**Actualizaciones automáticas y silenciosas.** La app revisa las releases de GitHub al arrancar y cada seis horas. En macOS, Windows con instalador y Linux AppImage descarga, instala y reinicia en segundo plano, sin avisos, confirmaciones ni ventanas al terminar. En Windows espera automáticamente mientras haya conexiones MCP activas que NSIS cerraría y vuelve a intentar cada 30 segundos. Las descargas interrumpidas con SHA-256 publicado se reanudan con HTTP Range; los errores se registran y reintentan con backoff. El zip portable de Windows, el `.deb` y las instalaciones sin permisos de escritura siguen requiriendo instalación externa; no generan avisos. `AGENTHUB_NO_AUTO_UPDATE=1` desactiva el proceso.
 
 **Actualizar a mano y desinstalar.** Instalá la versión nueva encima; los datos quedan. Para desinstalar, borrá la app y su directorio de estado: `~/Library/Application Support/Agent Hub` en macOS, `%APPDATA%\Agent Hub` en Windows y `~/.config/Agent Hub` en Linux. La entrada `hub` de cada cliente se puede quitar a mano de su configuración.
 
@@ -355,3 +355,5 @@ El contrato HTTP y la forma exacta del snapshot están en [docs/API_CONTRACT.md]
 | `AGENTHUBD_STATE_DIR` | credenciales y snapshots | directorio del SO |
 | `AGENTHUBD_GATEWAY_TRANSPORT` | `stdio` o `http` | `stdio` |
 | `AGENTHUB_ISOLATION` | `off` desactiva aislamiento | detección automática |
+
+La prueba nativa del actualizador en macOS se ejecuta con `node scripts/test-silent-update-macos.mjs` después de empaquetar. Usa bundles, perfil y servidor de releases temporales: verifica descarga e integridad, reemplazo, reinicio oculto, servicio saludable y ausencia de ventanas/notificaciones, sin modificar la instalación del usuario.

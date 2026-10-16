@@ -32,7 +32,7 @@ BUNDLE="$ROOT/release/$BUNDLE_DIR/${APP_NAME}.app"
 
 # 1. Cerrar la app de escritorio (proceso principal, sin argumentos). Los gateways
 #    headless llevan --agenthub-headless y no se tocan.
-main_pids() { pgrep -f "/Contents/MacOS/${APP_NAME}\$" || true; }
+main_pids() { pgrep -f "/Contents/MacOS/${APP_NAME}( --hidden| --updated)*\$" || true; }
 pids="$(main_pids)"
 if [[ -n "$pids" ]]; then
   log "== Cerrando Agent Hub en ejecución (pid $pids)"
@@ -79,5 +79,9 @@ fi
 
 # 4. Abrir la app instalada.
 log "== Abriendo $TARGET"
-open "$TARGET"
+if [[ "${AGENTHUB_INSTALL_HIDDEN:-0}" == "1" ]]; then
+  open -gj "$TARGET" --args --hidden --updated
+else
+  open "$TARGET"
+fi
 log "Listo. Agent Hub vive en la barra de menú; no aparece en el Dock."

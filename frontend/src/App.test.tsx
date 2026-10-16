@@ -60,6 +60,7 @@ function stubApi(me: User | null): void {
       if (url.endsWith('/api/auth/me')) {
         return me ? jsonResponse(me) : new Response('{"detail":"token invalido"}', { status: 401 })
       }
+      if (url.endsWith('/memory/sharing/call')) return jsonResponse({ identity: { id: 'me', name: 'Dev' }, network: { settings: { enabled: true, bootstrap: [] }, peers: [], connected_peers: 0 }, projects: [] })
       if (url.endsWith('/local/overview')) return jsonResponse({hostname:'Mi Mac', clients:[], rows:[]})
       return jsonResponse([])
     }),

@@ -16,24 +16,31 @@ interface Swarm {
   on(event: 'connection', handler: (socket: PeerSocket) => void): this
   on(event: 'error', handler: (error: Error) => void): this
 }
-export const networkSettingsSchema = z.object({ enabled: z.boolean(), bootstrap: z.array(z.string().min(1).max(300)).max(20), bind_host: z.ipv4().default('0.0.0.0') }).strict()
+export const networkSettingsSchema = z.object({ enabled: z.boolean().optional().transform(() => true), bootstrap: z.array(z.string().min(1).max(300)).max(20), bind_host: z.ipv4().default('0.0.0.0') }).strict()
 const MAX_FRAME = 55_000_000
 const helloSchema = z.object({ type: z.literal('hello'), identity: z.object({ id: z.string(), signing: z.string(), encryption: z.string(), name: z.string() }),
   noise_key: z.string(), created_at: z.string(), projects: z.array(z.string().uuid()).max(1000), signature: z.string() }).strict()
+
+interface Transfer { acknowledged: number; served: number; pulling: boolean }
+interface Connection {
+  socket: PeerSocket; offer: () => Promise<void>; idle: () => Promise<void>; projects: () => string[]
+  identity: () => string | undefined; transfers: Map<string, Transfer>
+}
 
 export class SharedNetwork {
   private swarm: Swarm | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private joined = new Set<string>()
   private discoveries = new Map<string, { handle: Discovery; next: number; refreshing: boolean }>()
-  private connections = new Set<{ socket: PeerSocket; offer: () => Promise<void>; idle: () => Promise<void>; projects: () => string[] }>()
+  private connections = new Set<Connection>()
   private running: Promise<void> | null = null
   private stopped = false
   private lastError: string | null = null
   constructor(readonly sharing: SharedPublications) {}
   async settings() {
     const row = (await this.sharing.store.db.query("SELECT value FROM settings WHERE key='sharing-network'"))[0]
-    return row?.value ?? { enabled: false, bootstrap: [] }
+    // Older installs may have saved enabled=false. Networking is now always on.
+    return parse(networkSettingsSchema, row?.value ?? { bootstrap: [] })
   }
   async configure(raw: unknown) {
     const settings = parse(networkSettingsSchema, raw)
@@ -57,7 +64,8 @@ export class SharedNetwork {
   private async update() {
     await this.sharing.syncSources()
     const settings = await this.settings()
-    if (!settings.enabled) return
+    const projects = await this.sharing.store.db.query<{ id: string }>('SELECT id FROM shared_projects WHERE enabled=1')
+    if (!this.swarm && !projects.length) return
     if (!this.swarm) {
       const Hyperswarm = require('hyperswarm'), DHT = require('hyperdht'), who = await this.sharing.identity()
       // Each network lifetime gets a fresh transport key. Reusing a crashed
@@ -72,7 +80,6 @@ export class SharedNetwork {
         void this.connect(socket, who).catch(() => socket.destroy())
       })
     }
-    const projects = await this.sharing.store.db.query<{ id: string }>('SELECT id FROM shared_projects WHERE enabled=1')
     const wanted = new Set(projects.map(p => p.id))
     const changed = wanted.size !== this.joined.size || [...wanted].some(id => !this.joined.has(id))
     for (const id of wanted) if (!this.joined.has(id)) {
@@ -96,6 +103,7 @@ export class SharedNetwork {
     if (this.stopped || socket.destroyed || !swarm) { socket.destroy(); return }
     let remote: z.infer<typeof helloSchema> | null = null, buffer = Buffer.alloc(0), queue = Promise.resolve(), pending = 0, queuedBytes = 0
     const cursors = new Map<string, number>(), offered = new Map<string, string>(), requested = new Set<string>()
+    const transfers = new Map<string, Transfer>()
     const timeout = setTimeout(() => socket.destroy(), 15_000); timeout.unref()
     let outgoing = Promise.resolve()
     const send = (value: unknown) => {
@@ -141,6 +149,7 @@ export class SharedNetwork {
         const revision = digest({ last: packet.policies.at(-1), seq: row!.seq })
         if (offered.get(id) === revision) continue
         offered.set(id, revision)
+        if (!transfers.has(id)) transfers.set(id, { acknowledged: 0, served: 0, pulling: false })
         await send({ type: 'offer', packet, last: row!.seq })
       }
     }
@@ -157,7 +166,7 @@ export class SharedNetwork {
       }
       return project
     }
-    const entry = { socket, offer, idle: () => queue, projects: () => remote?.projects ?? [] }; this.connections.add(entry)
+    const entry = { socket, offer, idle: () => queue, projects: () => remote?.projects ?? [], identity: () => remote?.identity.id, transfers }; this.connections.add(entry)
     socket.once('close', () => { clearTimeout(timeout); void queue.finally(() => this.connections.delete(entry)) })
     const receive = async (frame: any) => {
       if (!remote) {
@@ -176,13 +185,20 @@ export class SharedNetwork {
         await this.sharing.importInvitation(frame.packet)
         if (!await dataAccess(id)) return
         await offer()
-        if (!requested.has(id) && Number(frame.last) > (cursors.get(id) ?? 0)) {
+        if (!requested.has(id) && (!cursors.has(id) || Number(frame.last) > cursors.get(id)!)) {
           requested.add(id); await send({ type: 'pull', project: id, after: cursors.get(id) ?? 0 })
         }
       } else if (frame.type === 'pull') {
         const project = String(frame.project), state = await dataAccess(project)
         if (!state) return
         check(Number.isSafeInteger(frame.after) && frame.after >= 0, 'Cursor inválido')
+        const transfer = transfers.get(project) ?? { acknowledged: 0, served: 0, pulling: false }
+        // The next pull acknowledges the previous page was accepted into the peer's
+        // event log. This works with 0.8.0 peers, without introducing new wire frames.
+        // Never interpret merely writing a page to a socket as remote receipt.
+        check(frame.after <= transfer.served, 'Cursor no enviado')
+        transfer.acknowledged = frame.after; transfer.pulling = true
+        transfers.set(project, transfer)
         // One event may include a 25 MB attachment; frame bounds also cap memory usage.
         const rows = await this.sharing.events(project, frame.after, 1)
         // A peer may hold offline contributions that an owner later revoked without
@@ -191,7 +207,8 @@ export class SharedNetwork {
           const author = state.policy.members.find(m => m.identity.id === r.document.author)
           return state.policy.history.includes(r.document.id) || active(author) && (author!.role !== 'reader' || r.payload.kind === 'receipt')
         })
-        await send({ type: 'page', project, cursor: rows.at(-1)?.seq ?? frame.after, rows: transferable.map(r => ({ seq: r.seq, document: r.document })) })
+        transfer.served = rows.at(-1)?.seq ?? frame.after
+        await send({ type: 'page', project, cursor: transfer.served, rows: transferable.map(r => ({ seq: r.seq, document: r.document })) })
       } else if (frame.type === 'page') {
         const project = String(frame.project)
         if (!await dataAccess(project)) return
@@ -225,7 +242,26 @@ export class SharedNetwork {
     const body = { type: 'hello' as const, identity: publicIdentity(who), noise_key: swarm.keyPair.publicKey.toString('hex'), created_at: new Date().toISOString(), projects: [...this.joined] }
     await send({ ...body, signature: signature(body, who) })
   }
-  async status() { return { settings: await this.settings(), connected_peers: this.connections.size, projects: this.joined.size, error: this.lastError } }
+  async status() {
+    const connections = [...this.connections].filter(c => !c.socket.destroyed && c.identity())
+    const peers = [], localId = (await this.sharing.identity()).id
+    for (const connection of connections) for (const projectId of connection.projects()) {
+      if (!this.joined.has(projectId)) continue
+      const project = await this.sharing.get(projectId).catch(() => null)
+      const member = project?.policy.members.find(m => m.identity.id === connection.identity())
+      const me = project?.policy.members.find(m => m.identity.id === localId)
+      if (!project || !active(member) || !active(me) || project.conflict || !project.enabled) continue
+      const transfer = connection.transfers.get(projectId)
+      // seq is global across projects: count rows, never divide sequence numbers.
+      const [counts] = await this.sharing.store.db.query(`SELECT count(*) AS total,
+        COALESCE(sum(CASE WHEN seq <= $2 THEN 1 ELSE 0 END),0) AS confirmed
+        FROM shared_events WHERE project_id=$1`, [projectId, transfer?.acknowledged ?? 0])
+      const total = Number(counts!.total), confirmed = Number(counts!.confirmed)
+      peers.push({ project_id: projectId, member_id: connection.identity()!, total, confirmed,
+        state: !transfer?.pulling ? 'waiting' : confirmed < total ? 'syncing' : 'synced' })
+    }
+    return { settings: await this.settings(), connected_peers: connections.length, projects: this.joined.size, peers, error: this.lastError }
+  }
   async stop() {
     this.stopped = true
     if (this.timer) clearInterval(this.timer)

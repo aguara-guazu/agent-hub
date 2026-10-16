@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { once } from 'node:events'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -176,7 +177,7 @@ describe('instalación', () => {
     await installDmg(join(dmgDir, 'AgentHub-arm64.dmg'), bundle, 'io.craftech.agenthub', run)
     expect(readFileSync(join(bundle, 'Contents', 'Info.plist'), 'utf8')).toContain('0.3.0')
     expect(existsSync(`${bundle}.incoming`)).toBe(false)
-    expect(existsSync(`${bundle}.previous`)).toBe(false)
+    expect(existsSync(`${bundle}.previous`)).toBe(true)
     expect(existsSync(dmgDir)).toBe(false)
     expect(commands.some((c) => c.startsWith('hdiutil detach'))).toBe(true)
     expect(commands.some((c) => c.startsWith('xattr -dr com.apple.quarantine'))).toBe(true)
@@ -323,6 +324,28 @@ describe('orquestación', () => {
     const linux = new AutoUpdater({ ...base, platform: 'linux', arch: 'x64', execPath: '/tmp/.mount_x/agent-hub', env: { APPIMAGE: appImage }, spawnFn: (c, a) => { spawned.push([c, a]) } })
     expect(await linux.apply({ state: 'downloaded', version: '0.3.0', path: downloaded, strategy: 'appimage' })).toBe('external')
     expect(readFileSync(appImage, 'utf8')).toBe('nuevo')
-    expect(spawned[1]).toEqual([appImage, []])
+    expect(spawned[1]).toEqual([appImage, ['--hidden', '--updated']])
   })
+})
+
+it('reanuda una descarga truncada con Range y verifica SHA-256 sin descargar el prefijo otra vez', async () => {
+  const body = Buffer.from('abcdefgh'), calls: RequestInit[] = [], target = join(tmp('hub-resume-'), 'asset')
+  await downloadAsset('https://test/asset', target, { minBytes: 1, expectedBytes: body.length, digest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+    fetchFn: async (_url, init) => {
+      calls.push(init!)
+      return calls.length === 1 ? fakeResponse(body.subarray(0, 3), { headers: { 'Content-Length': '8' } })
+        : fakeResponse(body.subarray(3), { status: 206, headers: { 'Content-Length': '5', 'Content-Range': 'bytes 3-7/8' } })
+    },
+  })
+  expect(calls).toHaveLength(2); expect(calls[1]!.headers).toEqual({ Range: 'bytes=3-' }); expect(readFileSync(target)).toEqual(body)
+})
+it('si el servidor ignora Range reinicia limpio; nunca instala bytes con otro digest', async () => {
+  const body = Buffer.from('abcdefgh'), target = join(tmp('hub-resume-'), 'asset'), digest = `sha256:${createHash('sha256').update(body).digest('hex')}`
+  let calls = 0
+  await downloadAsset('https://test/asset', target, { minBytes: 1, digest, expectedBytes: body.length,
+    fetchFn: async () => ++calls === 1 ? fakeResponse(body.subarray(0, 3), { headers: { 'Content-Length': '8' } }) : fakeResponse(body),
+  })
+  expect(readFileSync(target)).toEqual(body)
+  await expect(downloadAsset('https://test/asset', target, { minBytes: 1, digest, fetchFn: async () => fakeResponse(Buffer.from('badbytes')) })).rejects.toThrow('SHA-256')
+  expect(existsSync(target)).toBe(false)
 })

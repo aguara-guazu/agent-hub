@@ -12,10 +12,11 @@
  * - Windows con instalador NSIS: corre el instalador nuevo en modo silencioso cuando la
  *   app ya detuvo core y daemon; él reemplaza la instalación y vuelve a abrir la app.
  * - Linux AppImage: reemplaza el archivo .AppImage en su lugar y lo vuelve a abrir.
- * - Otros formatos (zip de Windows, .deb): sólo avisa, con enlace a la release.
+ * - Otros formatos (zip de Windows, .deb): deja el resultado en logs, sin notificaciones.
  *
  * Nada acá importa Electron; red, procesos y disco son inyectables para probarlo.
  */
+import { createHash } from 'node:crypto'
 import { spawn as nodeSpawn, execFile } from 'node:child_process'
 import { accessSync, constants as fsConstants, createReadStream, createWriteStream, existsSync } from 'node:fs'
 import { chmod, mkdtemp, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
@@ -41,7 +42,7 @@ export interface ReleaseInfo {
   version: string
   notes: string
   page: string
-  assets: Array<{ name: string; url: string }>
+  assets: Array<{ name: string; url: string; size?: number; digest?: string }>
 }
 
 export interface DownloadProgress { receivedBytes: number; totalBytes: number | null }
@@ -134,7 +135,7 @@ export async function fetchLatestRelease(options: {
       tag_name?: string
       body?: string
       html_url?: string
-      assets?: Array<{ name?: string; browser_download_url?: string }>
+      assets?: Array<{ name?: string; browser_download_url?: string; size?: number; digest?: string }>
     }
     if (!release.tag_name || !/^v?\d+(\.\d+)*/.test(release.tag_name)) throw new Error('GitHub devolvió información de versión inválida.')
     return {
@@ -143,7 +144,7 @@ export async function fetchLatestRelease(options: {
       page: release.html_url ?? `https://github.com/${repo}/releases/latest`,
       assets: (release.assets ?? [])
         .filter((asset) => asset.name && asset.browser_download_url)
-        .map((asset) => ({ name: asset.name!, url: asset.browser_download_url! })),
+        .map((asset) => ({ name: asset.name!, url: asset.browser_download_url!, ...(asset.size ? { size: asset.size } : {}), ...(asset.digest ? { digest: asset.digest } : {}) })),
     }
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('GitHub')) throw error
@@ -151,7 +152,7 @@ export async function fetchLatestRelease(options: {
   }
 }
 
-/** Baja el artefacto a `target` y rechaza descargas truncadas o que no sean un binario. */
+/** Stream directly to disk; resume interrupted transfers only with a pinned SHA-256. */
 export async function downloadAsset(url: string, target: string, options: {
   fetchFn?: FetchFn
   onProgress?: (progress: DownloadProgress) => void
@@ -159,42 +160,62 @@ export async function downloadAsset(url: string, target: string, options: {
   minBytes?: number
   timeoutMs?: number
   idleTimeoutMs?: number
+  expectedBytes?: number
+  digest?: string
 } = {}): Promise<void> {
   const fetchFn = options.fetchFn ?? fetch
-  const idle = new AbortController(), timeout = AbortSignal.timeout(options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS)
-  const signal = AbortSignal.any([idle.signal, timeout, ...(options.signal ? [options.signal] : [])])
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const touch = () => {
-    clearTimeout(timer)
-    timer = setTimeout(() => idle.abort(), options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS)
-    timer.unref()
-  }
-  try {
-    touch()
-    const response = await fetchFn(url, { redirect: 'follow', signal })
-    if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error(`La descarga falló con HTTP ${response.status}.`) }
-    const length = Number(response.headers.get('content-length') ?? 0)
-    const totalBytes = Number.isFinite(length) && length > 0 ? length : null
-    let receivedBytes = 0
-    options.onProgress?.({ receivedBytes, totalBytes })
-    const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
-    source.on('data', (chunk: Buffer) => {
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS)
+  const expectedHash = options.digest?.match(/^sha256:([a-f0-9]{64})$/i)?.[1]?.toLowerCase()
+  for (let attempt = 0; ; attempt++) {
+    const idle = new AbortController()
+    const signal = AbortSignal.any([idle.signal, timeout, ...(options.signal ? [options.signal] : [])])
+    let timer: ReturnType<typeof setTimeout> | undefined, transport = true
+    const touch = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => idle.abort(), options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS)
+      timer.unref()
+    }
+    try {
+      let offset = attempt ? (await stat(target).catch(() => ({ size: 0 }))).size : 0
+      let hash = createHash('sha256')
+      // Only after an interrupted transfer: disk writes can lag stream chunks, so
+      // seed the hash from the actual file, not the failed stream's byte counter.
+      if (offset) for await (const chunk of createReadStream(target)) hash.update(chunk)
       touch()
-      receivedBytes += chunk.length
+      const response = await fetchFn(url, { redirect: 'follow', signal, ...(offset ? { headers: { Range: `bytes=${offset}-` } } : {}) })
+      if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error(`La descarga falló con HTTP ${response.status}.`) }
+      if (response.status === 206) {
+        const range = response.headers.get('content-range')?.match(/^bytes (\d+)-(\d+)\/(\d+)$/)
+        if (!range || Number(range[1]) !== offset || (options.expectedBytes && Number(range[3]) !== options.expectedBytes)) {
+          await response.body.cancel(); transport = false; throw new Error('El servidor devolvió un rango de descarga inválido.')
+        }
+      } else { offset = 0; hash = createHash('sha256') } // Server ignored Range; start clean.
+      const length = Number(response.headers.get('content-length') ?? 0)
+      const totalBytes = options.expectedBytes ?? (Number.isFinite(length) && length > 0 ? offset + length : null)
+      let receivedBytes = offset
       options.onProgress?.({ receivedBytes, totalBytes })
-    })
-    await pipeline(source, createWriteStream(target), { signal })
-    const written = await stat(target)
-    if (totalBytes !== null && written.size !== totalBytes) throw new Error('La descarga quedó incompleta. Volvé a intentar.')
-    if (written.size < (options.minBytes ?? MIN_ASSET_BYTES))
-      throw new Error(`El archivo descargado pesa ${written.size} bytes; no parece un instalador.`)
-  } catch (error) {
-    await rm(target, { force: true }).catch(() => undefined)
-    if (options.signal?.aborted) throw options.signal.reason
-    if (idle.signal.aborted) throw new Error('La descarga se detuvo por falta de datos. Revisá la conexión y volvé a intentar.')
-    if (timeout.aborted) throw new Error('La descarga superó el tiempo máximo. Volvé a intentar.')
-    throw error
-  } finally { clearTimeout(timer) }
+      const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0])
+      source.on('data', (chunk: Buffer) => {
+        touch(); hash.update(chunk); receivedBytes += chunk.length
+        options.onProgress?.({ receivedBytes, totalBytes })
+      })
+      await pipeline(source, createWriteStream(target, { flags: offset ? 'a' : 'w' }), { signal })
+      const written = await stat(target)
+      if (totalBytes !== null && written.size !== totalBytes) throw new Error('La descarga quedó incompleta. Volvé a intentar.')
+      transport = false
+      if (written.size < (options.minBytes ?? MIN_ASSET_BYTES)) throw new Error(`El archivo descargado pesa ${written.size} bytes; no parece un instalador.`)
+      if (expectedHash && hash.digest('hex') !== expectedHash) throw new Error('La descarga no coincide con el SHA-256 publicado.')
+      return
+    } catch (error) {
+      const partial = (await stat(target).catch(() => ({ size: 0 }))).size
+      if (transport && expectedHash && partial > 0 && attempt < 2 && !timeout.aborted && !options.signal?.aborted && (!options.expectedBytes || partial < options.expectedBytes)) continue
+      await rm(target, { force: true }).catch(() => undefined)
+      if (options.signal?.aborted) throw options.signal.reason
+      if (idle.signal.aborted) throw new Error('La descarga se detuvo por falta de datos. Se reintentará automáticamente.')
+      if (timeout.aborted) throw new Error('La descarga superó el tiempo máximo. Se reintentará automáticamente.')
+      throw error
+    } finally { clearTimeout(timer) }
+  }
 }
 
 const defaultRun: RunFn = async (command, args) => {
@@ -247,9 +268,8 @@ export async function installDmg(dmgPath: string, bundlePath: string, expectedBu
       await run('/bin/mv', [backup, bundlePath]).catch(() => undefined)
       throw error
     }
-    // El respaldo es el bundle desde el que corre este proceso: macOS puede negarse a
-    // borrar partes; no debe hacer fallar la actualización (se limpia al próximo arranque).
-    await removeTree(run, backup)
+    // Keep the mapped old bundle until the next startup. Recursive deletion here
+    // adds latency to the restart and may leave partial leftovers on macOS.
   } finally {
     await run('hdiutil', ['detach', mountPoint, '-force']).catch(() => undefined)
     await rm(mountPoint, { recursive: true, force: true }).catch(() => undefined)
@@ -272,7 +292,7 @@ export async function installNsis(installerPath: string, spawnFn: SpawnFn = defa
 /**
  * Windows: puentes MCP (`--agenthub-headless`) que Claude Desktop, Claude Code u otro
  * cliente lanzaron con el ejecutable de esta instalación. El instalador NSIS los cierra
- * y el cliente pierde el hub hasta reiniciarlos. Devuelve 0 si no se pudo consultar.
+ * y el cliente pierde el hub hasta reiniciarlos. Si no se puede consultar, pospone la instalación para proteger las conexiones.
  */
 export async function liveBridges(execPath: string, run: RunFn = defaultRun): Promise<number> {
   const literal = (value: string) => `'${value.replace(/'/g, "''")}'`
@@ -281,9 +301,10 @@ export async function liveBridges(execPath: string, run: RunFn = defaultRun): Pr
   const powershell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   try {
     const { stdout } = await run(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')])
-    return Number.parseInt(stdout.trim(), 10) || 0
+    const count = Number(stdout.trim())
+    return stdout.trim() && Number.isSafeInteger(count) && count >= 0 ? count : Infinity
   } catch {
-    return 0
+    return Infinity
   }
 }
 
@@ -298,7 +319,7 @@ export async function installAppImage(downloadedPath: string, appImagePath: stri
   })
   await chmod(staged, 0o755)
   await rename(staged, appImagePath)
-  await spawnFn(appImagePath, [])
+  await spawnFn(appImagePath, ['--hidden', '--updated'])
 }
 
 export interface AutoUpdaterDeps {
@@ -369,6 +390,8 @@ export class AutoUpdater {
       this.deps.onProgress?.({ state: 'downloading', version: release.version, page: release.page, receivedBytes: 0, totalBytes: null })
       await downloadAsset(asset.url, target, {
         ...(this.deps.fetchFn ? { fetchFn: this.deps.fetchFn } : {}),
+        ...(asset.size ? { expectedBytes: asset.size } : {}),
+        ...(asset.digest ? { digest: asset.digest } : {}),
         ...(this.deps.minAssetBytes !== undefined ? { minBytes: this.deps.minAssetBytes } : {}),
         ...(this.deps.downloadTimeoutMs !== undefined ? { timeoutMs: this.deps.downloadTimeoutMs } : {}),
         ...(this.deps.downloadIdleTimeoutMs !== undefined ? { idleTimeoutMs: this.deps.downloadIdleTimeoutMs } : {}),

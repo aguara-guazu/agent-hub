@@ -15,7 +15,8 @@ import { windowOptions, isAllowedNavigation } from './window.js'
 import { buildTrayTemplate, TRAY_TOOLTIP, type TrayAction } from './tray.js'
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus, type OpenFileResult } from './ipc.js'
-import { AutoUpdater, CHECK_INTERVAL_MS, type UpdateStatus, type UpdateProgress } from './updater.js'
+import { AutoUpdater, type UpdateStatus } from './updater.js'
+import { SilentUpdates, hiddenUpdateLaunch, updateRelaunchArgs } from './silent-updates.js'
 import { defaultClientDeps, isClientRunning, restartClient, supportsClientRestart } from './clients.js'
 import { DaemonApp, loadConfig } from '@agenthub/daemon'
 
@@ -48,20 +49,9 @@ let stopped = false
 let maintenance: Promise<void> | null = null
 /** Tope para el apagado ordenado; pasado este tiempo la app sale igual. */
 const QUIT_DEADLINE_MS = 20_000
-/** Actualización ya descargada, pendiente de reiniciar. */
-let pendingUpdate: Extract<UpdateStatus, { state: 'downloaded' }> | null = null
-/** Hay versión nueva pero esta instalación (zip, .deb, bundle sin permisos) sólo puede avisar. */
-let availableUpdate: { version: string; page: string } | null = null
-let checkingUpdates = false
-let downloadingUpdate: Extract<UpdateProgress, { state: 'downloading' }> | null = null
-let installingUpdate: string | null = null
-let updateError: string | null = null
-let lastDownloadRefresh = 0
 let relaunchAfterQuit = false
-/** Instalador NSIS que corre recién después de detener core y daemon (ver `installNsis`). */
+/** Instaladores externos corren después de detener core y daemon. */
 let installOnQuit: Extract<UpdateStatus, { state: 'downloaded' }> | null = null
-/** Ya se avisó que la instalación automática espera por puentes MCP abiertos. */
-let bridgesNotified = false
 
 /** Forma de `GET /api/local/pending-restarts`, calcada de `packages/core/src/restart.ts`. */
 interface PendingRestart {
@@ -102,8 +92,6 @@ const SESSION_TIMEOUT_MS = 60_000
 const portFile = join(stateDir, 'hub-port')
 const CORE_PORT = Number.parseInt(process.env.AGENTHUB_HUB_PORT ?? (existsSync(portFile) ? readFileSync(portFile, 'utf8') : ''), 10) || DEFAULT_CORE_PORT
 const CORE_BASE_URL = `http://${CORE_HOST}:${CORE_PORT}`
-/** Estado de la ventana y de los puentes MCP al lanzar el instalador NSIS; lo lee el arranque con `--updated`. */
-const updateMarker = join(stateDir, 'update-relaunch.json')
 
 function persistentSecret(path: string): string {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -190,16 +178,6 @@ const updater = new AutoUpdater({
   ...(process.env.AGENTHUB_UPDATE_API ? { apiBase: process.env.AGENTHUB_UPDATE_API } : {}),
   ...(process.env.AGENTHUB_UPDATE_REPO ? { repo: process.env.AGENTHUB_UPDATE_REPO } : {}),
   log: (line) => console.error(line),
-  onProgress: progress => {
-    availableUpdate = { version: progress.version, page: progress.page }
-    if (progress.state === 'downloading') {
-      downloadingUpdate = progress
-      const now = Date.now()
-      if (progress.receivedBytes > 0 && progress.receivedBytes !== progress.totalBytes && now - lastDownloadRefresh < 500) return
-      lastDownloadRefresh = now
-    }
-    refreshTray()
-  },
 })
 
 function notify(title: string, body: string): void {
@@ -210,99 +188,26 @@ function notify(title: string, body: string): void {
   }
 }
 
-/**
- * Busca una versión nueva y, si esta instalación puede autoinstalarla, la baja. Con la
- * ventana oculta se instala en el acto; con la ventana visible queda pendiente hasta
- * que se cierre o hasta que la persona lo elija en el menú.
- */
-async function checkForUpdates(reason: 'startup' | 'timer' | 'manual'): Promise<void> {
-  if (checkingUpdates || installingUpdate || quitting) return
-  if (pendingUpdate) {
-    if (reason === 'manual') notify('Actualización lista', `Agent Hub v${pendingUpdate.version}. Elegí «Reiniciar para actualizar» en el menú de la barra.`)
-    return
-  }
-  checkingUpdates = true
-  updateError = null
-  downloadingUpdate = null
-  refreshTray()
-  try {
-    const status = await updater.check()
-    if (status.state === 'downloaded') {
-      pendingUpdate = status
-      availableUpdate = null
-      if (!mainWindow?.isVisible()) {
-        await applyUpdate('auto')
-        return
-      }
-      notify('Actualización lista', `Agent Hub v${status.version} se instala al cerrar la ventana o desde el menú de la barra.`)
-    } else if (status.state === 'available') {
-      availableUpdate = { version: status.version, page: status.page }
-      if (reason !== 'timer') notify('Nueva versión disponible', `Agent Hub v${status.version}. Esta instalación no se actualiza sola: abrí la release desde el menú de la barra.`)
-    } else if (status.state === 'failed') {
-      updateError = status.error
-      console.error(`[updater] v${status.version}: ${status.error}`)
-      if (reason === 'manual') notify('No se pudo completar la actualización', status.error)
-    } else if (reason === 'manual') {
-      notify('Agent Hub está al día', `Versión ${app.getVersion()}.`)
-    }
-  } finally {
-    checkingUpdates = false
-    downloadingUpdate = null
-    refreshTray()
-  }
-}
+const silentUpdates = new SilentUpdates({
+  check: () => updater.check(),
+  apply: applyUpdate,
+  log: message => console.error('[updater]', message),
+})
 
-/**
- * `auto` viene de la ventana oculta o recién cerrada. En Windows el instalador cierra los
- * puentes MCP que los clientes lanzaron desde la carpeta de instalación, así que con
- * puentes vivos la instalación automática espera a que la persona la elija en el menú.
- */
-async function applyUpdate(origin: 'auto' | 'manual' = 'manual'): Promise<void> {
-  const update = pendingUpdate
-  if (!update || installingUpdate || quitting) return
-  if (update.strategy === 'nsis') {
-    const bridges = await updater.bridgesAtRisk()
-    if (bridges > 0 && origin === 'auto') {
-      if (!bridgesNotified) notify('Actualización lista', `Agent Hub v${update.version} se instala cuando la elija en el menú de la barra. ` +
-        `Instalarla cierra la conexión de ${bridges === 1 ? 'un agente abierto' : `${bridges} agentes abiertos`} con el hub.`)
-      bridgesNotified = true
-      return
-    }
-    writeFileSync(updateMarker, JSON.stringify({ window: Boolean(mainWindow?.isVisible()), bridges }))
+async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<boolean> {
+  if (quitting) return false
+  // NSIS closes executables in the installation folder. Wait automatically rather
+  // than breaking a client's live stdio MCP connection or asking the user to act.
+  if (update.strategy === 'nsis' && await updater.bridgesAtRisk() > 0) return false
+  if (update.strategy === 'nsis' || update.strategy === 'appimage') {
     installOnQuit = update
-    installingUpdate = update.version
-    refreshTray()
-    console.error(`[updater] v${update.version} se instala al terminar el apagado`)
-    await quit()
-    return
+  } else {
+    await updater.apply(update)
+    relaunchAfterQuit = true
   }
-  installingUpdate = update.version
-  downloadingUpdate = null
-  refreshTray()
-  try {
-    const outcome = await updater.apply(update)
-    relaunchAfterQuit = outcome === 'relaunch'
-    console.error(`[updater] v${update.version} instalada; ${relaunchAfterQuit ? 'reiniciando' : 'el instalador vuelve a abrir la app'}`)
-    await quit()
-  } catch (error) {
-    pendingUpdate = null
-    const message = error instanceof Error ? error.message : String(error)
-    updateError = message
-    console.error('[updater] la instalación falló:', message)
-    notify('No se pudo instalar la actualización', message)
-  } finally {
-    installingUpdate = null
-    refreshTray()
-  }
-}
-
-/** Tras una actualización, avisa una sola vez con qué versión quedó la app. */
-function announceVersionChange(): void {
-  const marker = join(stateDir, 'last-version')
-  const previous = existsSync(marker) ? readFileSync(marker, 'utf8').trim() : ''
-  const current = app.getVersion()
-  if (previous && previous !== current) notify('Agent Hub se actualizó', `Ahora corre la versión ${current}.`)
-  if (previous !== current) writeFileSync(marker, current)
+  console.error(`[updater] v${update.version}: reinicio silencioso`)
+  await quit()
+  return true
 }
 
 function coreStatus(): CoreStatus {
@@ -390,7 +295,9 @@ async function pollPendingRestarts(): Promise<void> {
     offeredRestarts.clear()
     return
   }
-  if (!desktop.changes || desktop.changes.skills.auto.length === 0) return
+  // Updated factory skills must not turn a silent relaunch into a notification.
+  // The explicit restart action remains available when the person opens the tray.
+  if (process.argv.includes('--updated') || !desktop.changes || desktop.changes.skills.auto.length === 0) return
   const offered = offeredRestarts.get(desktop.agent_id) ?? new Set<string>()
   const fresh = desktop.changes.skills.auto.filter((slug) => !offered.has(slug))
   if (fresh.length === 0) return
@@ -443,11 +350,6 @@ function refreshTray(): void {
     windowVisible: Boolean(mainWindow?.isVisible()),
     autostartEnabled: safeAutostart(),
     showShortcut: { label: SHOW_WINDOW_SHORTCUT_LABEL, registered: showWindowShortcutRegistered },
-    update: pendingUpdate ? { version: pendingUpdate.version, state: 'ready' } : availableUpdate ? { version: availableUpdate.version, state: 'available' } : null,
-    checkingUpdates,
-    downloadingUpdate,
-    installingUpdate,
-    updateError,
     clientRestart: pendingClientRestart ? { label: 'Reiniciar Claude Desktop (cambios sin cargar)' } : null,
   })
   tray.setContextMenu(Menu.buildFromTemplate(template.map((item): Electron.MenuItemConstructorOptions => {
@@ -497,9 +399,6 @@ function handleTrayAction(action: TrayAction): void {
   else if (action === 'toggle-autostart') autostart.setEnabled(!safeAutostart())
   else if (action === 'restart-core') void restartCore()
   else if (action === 'restart-client') void confirmAndRestartClient()
-  else if (action === 'check-updates') void checkForUpdates('manual')
-  else if (action === 'apply-update') void applyUpdate('manual')
-  else if (action === 'open-release' && availableUpdate) void shell.openExternal(availableUpdate.page)
   else if (action === 'quit') void quit()
   refreshTray()
 }
@@ -526,7 +425,7 @@ function registerShowWindowShortcut(): void {
   if (!showWindowShortcutRegistered) {
     const message = `No se pudo activar ${SHOW_WINDOW_SHORTCUT_LABEL} para abrir Agent Hub. Puede estar reservado por otra app o no estar permitido por el sistema. Podés abrir Agent Hub desde el menú de aplicaciones del sistema o desde su icono.`
     coreLog.write(`[shortcut] ${message}`)
-    if (Notification.isSupported()) {
+    if (!process.argv.includes('--updated') && Notification.isSupported()) {
       try {
         const notification = new Notification({ title: 'Atajo de Agent Hub no disponible', body: message })
         notification.on('click', showWindow)
@@ -544,8 +443,6 @@ function hideWindow(): void {
   // teclado; devolver el foco a la app anterior evita esa sensación de bloqueo.
   if (process.platform === 'darwin') app.hide()
   refreshTray()
-  // La ventana se cerró: buen momento para aplicar una actualización ya descargada.
-  if (pendingUpdate) void applyUpdate('auto')
 }
 function consoleUrl(token: string): string {
   const base = paths.renderer.kind === 'url' ? paths.renderer.url : CORE_BASE_URL
@@ -706,40 +603,16 @@ function migrateWindowsLoginItem(): void {
   for (const item of legacy) app.setLoginItemSettings({ openAtLogin: false, path: item.path, args: item.args, name: item.name })
   if (legacy.length) app.setLoginItemSettings({ openAtLogin: true, ...loginItemOptions })
 }
-/** Lo que dejó `applyUpdate` antes de lanzar el instalador NSIS; se consume una sola vez. */
-function readUpdateMarker(): { window: boolean; bridges: number } | null {
-  if (!existsSync(updateMarker)) return null
-  try {
-    const value = JSON.parse(readFileSync(updateMarker, 'utf8')) as { window?: unknown; bridges?: unknown }
-    return { window: value.window === true, bridges: typeof value.bridges === 'number' ? value.bridges : 0 }
-  } catch {
-    return null
-  } finally {
-    rmSync(updateMarker, { force: true })
-  }
-}
-function notifyClosedBridges(count: number): void {
-  try {
-    if (!Notification.isSupported()) return
-    const notification = new Notification({
-      title: 'Agent Hub se actualizó',
-      body: `La actualización cerró la conexión de ${count === 1 ? 'un agente' : `${count} agentes`} con el hub. ` +
-        'Haga clic aquí para reiniciar Claude Desktop; las sesiones abiertas de Claude Code u otros agentes se reconectan al reiniciarlas.',
-    })
-    notification.on('click', () => void confirmAndRestartClient())
-    notification.show()
-  } catch {
-    // Sin centro de notificaciones no hay a quién avisar; los clientes muestran el servidor desconectado.
-  }
-}
 async function quit(): Promise<void> {
   if (quitting) return
   quitting = true
+  silentUpdates.stop()
   // Si algo se cuelga al cerrar, la app sale igual: un proceso que no termina obliga a
   // forzar el cierre y dejaba core y daemon huérfanos bloqueando el próximo arranque.
   const deadline = setTimeout(() => {
     console.error(`[quit] apagado ordenado excedió ${QUIT_DEADLINE_MS} ms; saliendo`)
     stopped = true
+    if (relaunchAfterQuit || installOnQuit) app.relaunch({ args: updateRelaunchArgs(process.argv.slice(1)) })
     app.exit(1)
   }, QUIT_DEADLINE_MS)
   try {
@@ -750,11 +623,12 @@ async function quit(): Promise<void> {
     await coreSupervisor.stop()
     if (installOnQuit) {
       try {
+        // External installers relaunch themselves; release the lock only after services stop.
+        app.releaseSingleInstanceLock()
         await updater.apply(installOnQuit)
       } catch (error) {
         // The installed version stays; reopen it instead of leaving the person without the hub.
         console.error('[updater] no se pudo iniciar el instalador:', error instanceof Error ? error.message : String(error))
-        rmSync(updateMarker, { force: true })
         relaunchAfterQuit = true
       }
     }
@@ -762,7 +636,7 @@ async function quit(): Promise<void> {
     clearTimeout(deadline)
     stopped = true
     // Tras intercambiar el bundle en macOS, la misma ruta ya es la versión nueva.
-    if (relaunchAfterQuit) app.relaunch()
+    if (relaunchAfterQuit) app.relaunch({ args: updateRelaunchArgs(process.argv.slice(1)) })
     app.quit()
   }
 }
@@ -772,7 +646,7 @@ if (!gotLock) app.quit()
 else {
   process.once('SIGTERM', () => { void quit() })
   process.once('SIGINT', () => { void quit() })
-  app.on('second-instance', showWindow)
+  app.on('second-instance', (_event, argv) => { if (!hiddenUpdateLaunch(argv)) showWindow() })
   app.whenReady().then(async () => {
     coreSupervisor.on('state', broadcastCoreState)
     daemonSupervisor.on('state', broadcastCoreState)
@@ -785,10 +659,7 @@ else {
       supervisor.on('exit', (code, signal) => log.write(`[supervisor] el proceso terminó (código ${code ?? '-'}, señal ${signal ?? '-'})`))
     }
     coreLog.write(`[desktop] Agent Hub ${app.getVersion()} en ${process.platform} ${release()} (${process.arch})`)
-    const updated = readUpdateMarker()
-    // `--hidden`: autostart y pruebas. `--updated`: el instalador NSIS reabre la app tras una
-    // actualización, que corre justamente con la ventana oculta salvo que se haya pedido con ella abierta.
-    const hidden = process.argv.includes('--hidden') || (process.argv.includes('--updated') && !updated?.window)
+    const hidden = hiddenUpdateLaunch(process.argv)
     migrateWindowsLoginItem()
     await ensureCorePort()
     syncDaemonUrl()
@@ -800,19 +671,16 @@ else {
     createTray()
     createWindow(token, hidden)
     registerShowWindowShortcut()
-    if (updated?.bridges) notifyClosedBridges(updated.bridges)
     app.on('activate', showWindow)
-    void updater.cleanup()
-    announceVersionChange()
-    void checkForUpdates('startup')
-    setInterval(() => void checkForUpdates('timer'), CHECK_INTERVAL_MS).unref()
+    // Finish cleanup before a new download can create a directory it might remove.
+    void updater.cleanup().catch(error => console.error('[updater cleanup]', error)).then(() => silentUpdates.start())
     setInterval(() => void pollPendingRestarts(), PENDING_RESTART_POLL_MS).unref()
   }).catch(async (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error(message)
     coreLog.write(`[desktop] no pudo iniciar: ${message}`)
     // Sin esto la app desaparecía en silencio y parecía que "no abría".
-    await showStartupFailure(message).catch(() => dialog.showErrorBox('Agent Hub no pudo iniciar', message))
+    if (!process.argv.includes('--updated')) await showStartupFailure(message).catch(() => dialog.showErrorBox('Agent Hub no pudo iniciar', message))
     app.quit()
   })
   app.on('window-all-closed', () => undefined)

@@ -104,12 +104,14 @@ function EntityPage({ entityId }: { entityId: string }) {
     {entity.kind === 'collection' && <MemoryCollection entity={entity} />}
     {['meeting','document','person'].includes(entity.kind) && <IdentityProposals entityId={entityId} canInfer={entity.kind !== 'person'} />}
     {entity.kind === 'person' && !entity.data.merged_into && <DuplicateProposals entityId={entityId} />}
+    {(!isProject || !['sharing', 'forum'].includes(tab)) && <>
     {detail.data.sources.length > 0 && <SourceReader entity={entity} source={detail.data.sources[0]} />}
     {detail.data.evidence.length > 0 && <section className="memory-section"><h2>Evidencia</h2>{detail.data.evidence.map((f: any) => <EvidenceCard key={f.id} fragment={f} />)}</section>}
     <section className="memory-section"><div className="spread"><h2>Conexiones</h2><button className="btn btn-sm" onClick={() => setLinking(true)}>Agregar vínculo</button></div>
       <div className="memory-links">{detail.data.links.map((link: any) => <Link key={link.id} to={entityPath(link.entity)} className="card"><span className="muted">{entityLabels[link.entity.kind]} · {link.type}</span><strong>{link.entity.title}</strong></Link>)}{!detail.data.links.length && <p className="muted">Todavía no tiene conexiones.</p>}</div></section>
     {entity.kind === 'event' && <section className="memory-section card memory-panel"><h2>Invitados del calendario</h2><p className="muted">La invitación y su respuesta no prueban asistencia.</p>{(entity.data.attendees ?? []).map((p: any, i: number) => <div key={i} className="spread"><span>{p.displayName ?? p.email ?? 'Sin identificar'}</span><span className="muted">{p.email} · {p.responseStatus}</span></div>)}</section>}
     <details className="memory-details"><summary>Información adicional e historial</summary><pre>{JSON.stringify(entity.data, null, 2)}</pre>{detail.data.changes.map((c: any) => <p key={c.id}>{formatTime(c.created_at)} · {c.action} · {c.actor}</p>)}<button className="btn btn-danger" onClick={() => setDeleting(true)}>Eliminar de la memoria</button></details>
+    </>}
     {editing && <EditEntity entity={entity} onClose={() => setEditing(false)} />}{linking && <LinkEntity entity={entity} links={detail.data.links} onClose={() => setLinking(false)} />}
     {companyForm && <ProjectCompanyForm project={entity} onClose={() => setCompanyForm(false)} />}
     {importing && isProject && <ImportForm open projectId={entityId} onClose={() => setImporting(false)} />}{form && <EntityForm kind={form} open projectId={entityId} onClose={() => setForm('')} />}

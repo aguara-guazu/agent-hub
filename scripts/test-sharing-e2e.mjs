@@ -80,6 +80,7 @@ async function newHub(name) {
   hub.memory = (operation, input = {}, expected) => hub.request('memory/call', { operation, input }, expected)
   hub.status = () => hub.memory('shared_status', { project_id: projectId })
   await hub.start()
+  await network(hub, false) // isolated discovery until the test connects the partitions
   await hub.request('memory/ai', { extraction: 'disabled', extraction_model: '', extraction_reasoning_effort: '', embeddings_enabled: false, embedding_model: 'google/embeddinggemma-300m', ollama_url: 'http://127.0.0.1:11434', remote_processing_enabled: false, identity_auto_merge: false, project_auto_assign: false }, 200, 'PUT')
   await hub.request('memory/embeddings/native/cancel', {})
   for (const module of ['ocr', 'decoder', 'vision', 'audio', 'speech']) await hub.request(`memory/media/${module}/cancel`, {})
@@ -102,7 +103,7 @@ async function mcp(hub, agentId) {
     return result.content.filter(c => c.type === 'text').map(c => JSON.parse(c.text))
   }
 }
-async function network(hub, enabled) { return hub.admin('network', { settings: { enabled, bind_host: '127.0.0.1', bootstrap: [`127.0.0.1:${bootstrap.address().port}`] } }) }
+async function network(hub, reachable) { return hub.admin('network', { settings: { bind_host: '127.0.0.1', bootstrap: [reachable ? `127.0.0.1:${bootstrap.address().port}` : '127.0.0.1:1'] } }) }
 async function projectPage(hub) { await hub.page.goto(`${hub.base}/#/projects/${projectId}?tab=sharing`) }
 async function visibleAction(hub, name) {
   const button = hub.page.getByRole('button', { name, exact: true })
@@ -144,10 +145,11 @@ try {
     const input = a.page.getByLabel('Frase de recuperación del proyecto', { exact: true }); await input.waitFor()
     phrase = await input.inputValue(); secrets.push(phrase); assert.equal(phrase.split(' ').length, 24)
     await a.page.getByRole('button', { name: 'Ya guardé la frase' }).click()
-    await a.page.reload()
+    await a.page.goto(`${a.base}/#/settings`)
     await a.page.getByRole('button', { name: 'Ver palabras de recuperación' }).click()
     await until('owner can reveal saved phrase after reload', async () => await a.page.getByLabel('Frase de recuperación del proyecto', { exact: true }).inputValue() === phrase)
     await a.page.getByRole('dialog').getByRole('button', { name: 'Cerrar', exact: true }).first().click()
+    await projectPage(a)
     await a.page.getByText('Invitar o cambiar permisos', { exact: true }).click()
     await a.page.getByLabel('Identidad pública del invitado').fill(JSON.stringify(b.identity))
     await a.page.getByRole('button', { name: 'Crear invitación' }).click()
@@ -163,7 +165,7 @@ try {
     assert.equal((await b.status()).members.find(m => m.identity.id === b.identity.id).role, 'maintainer')
     await b.admin('recovery_phrase', { project_id: projectId }, 403)
     await projectPage(b)
-    await b.page.getByRole('heading', { name: 'Proyecto compartido', exact: true }).waitFor()
+    await b.page.getByRole('heading', { name: 'Participantes', exact: true }).waitFor()
     assert.equal(await b.page.getByRole('button', { name: 'Ver palabras de recuperación' }).count(), 0)
     await b.admin('member', { project_id: projectId, identity: a.identity, role: 'owner', invite: true }, 403)
   })
@@ -175,16 +177,22 @@ try {
       await hub.memory('import_source', { kind: 'note', title: `Aporte ${hub.name}`, external_id: `contribution-${index}`, text: index ? 'Ana revisa.' : 'La entrega es el viernes.', project_ids: [projectId] })
     }
     // Configure discovery through the UI on one participant, API on the other.
-    await a.page.getByText('Identidad y conexión P2P', { exact: true }).click()
+    await a.page.goto(`${a.base}/#/settings`)
+    await a.page.getByText('Red P2P · opciones avanzadas', { exact: true }).click()
     await a.page.getByLabel('Nodos de descubrimiento propios', { exact: false }).fill(`127.0.0.1:${bootstrap.address().port}`)
     await a.page.getByLabel('Dirección IPv4 de escucha').fill('127.0.0.1')
-    await a.page.getByRole('button', { name: 'Conectar P2P', exact: true }).click(); await network(b, true)
+    await a.page.getByRole('button', { name: 'Guardar descubrimiento', exact: true }).click(); await network(b, true)
     await until('both hubs converge', async () => {
       const counts = [(await entities(a, 'note')).total, (await entities(b, 'note')).total]
       if (counts.every(n => n === 2)) return true
       const states = await Promise.all([a, b].map(async h => ({ name: h.name, network: (await h.admin('status')).network })))
       throw new Error(JSON.stringify({ counts, states }))
     })
+    await until('per-member receipt is confirmed', async () => (await a.admin('status')).network.peers.some(p => p.project_id === projectId && p.member_id === b.identity.id && p.state === 'synced' && p.total > 0))
+    await projectPage(a)
+    await until('progress bar reaches 100', async () => await a.page.getByRole('progressbar', { name: 'Recepción de Bruno' }).getAttribute('value') === '100')
+    assert.equal(await a.page.getByText('Identidad y conexión P2P', { exact: true }).count(), 0)
+    await screenshot(a, 'member-progress.png')
     for (const hub of [a, b]) {
       assert.equal((await entities(hub, 'meeting')).total, 1)
       const publication = (await hub.status()).publications.find(p => p.versions[0]?.title === 'Planificación compartida'); assert.equal(publication.conflict, false)
@@ -273,13 +281,13 @@ try {
     await until('ephemeral message disappears', async () => Date.now() > Date.parse(expires) && !(await b.memory('read_messages', { project_id: projectId })).items.some(m => m.id === ephemeral.id), 30_000)
   })
   await step('UI downloads encrypted archive and exporter reopens without phrase', async () => {
-    await projectPage(a)
+    await a.page.goto(`${a.base}/#/settings`)
     const downloading = a.page.waitForEvent('download'); await a.page.getByRole('button', { name: 'Descargar respaldo cifrado' }).click()
     backupFile = join(state, 'project.hubproject'); await (await downloading).saveAs(backupFile)
     const raw = await readFile(backupFile, 'utf8'), archive = JSON.parse(raw)
     assert.ok(!raw.includes('Dato generado mientras')); assert.ok(!raw.includes(phrase))
     assert.equal((await a.admin('restore', { archive })).recovered_as_owner, false)
-    await a.page.getByRole('heading', { name: 'Participantes', exact: true }).scrollIntoViewIfNeeded(); await screenshot(a, 'sharing-settings.png')
+    await screenshot(a, 'sharing-settings.png')
   })
   let c, d
   await step('With zero peers, a new identity restores through UI as owner', async () => {
@@ -300,7 +308,7 @@ try {
     assert.equal((await c.memory('list_tasks', { project_id: projectId })).total, 1)
     const messages = (await c.memory('read_messages', { project_id: projectId })).items
     assert.ok(messages.some(m => m.id === publicMessage.id)); assert.ok(!messages.some(m => m.id === privateMessage.id))
-    await projectPage(c)
+    await c.page.goto(`${c.base}/#/settings`)
     await c.page.getByRole('button', { name: 'Ver palabras de recuperación' }).click()
     await until('restored owner retains phrase', async () => await c.page.getByLabel('Frase de recuperación del proyecto', { exact: true }).inputValue() === phrase)
     await c.page.getByRole('dialog').getByRole('button', { name: 'Cerrar', exact: true }).first().click()

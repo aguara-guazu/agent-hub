@@ -22,6 +22,8 @@ const agent = (id: string): AgentContext => ({ agent_id: id, cli_kind: 'codex_cl
 async function hub(name: string) {
   const directory = await mkdtemp(join(tmpdir(), 'hub-sharing-test-')), db = new MemoryDatabase(join(directory, 'memory.sqlite'))
   await db.migrate()
+  // Unit tests never join the public DHT, including when tick starts networking.
+  await db.query("INSERT INTO settings(key,value) VALUES('sharing-network',$1)", [JSON.stringify({ enabled: false, bootstrap: ['127.0.0.1:1'], bind_host: '127.0.0.1' })])
   const store = new MemoryStore(db, directory), sharing = new SharedPublications(store), network = new SharedNetwork(sharing)
   resources.push({ directory, db, network }); await sharing.rename(name)
   const vault = new Vault(directory), ops = new MemoryOperations(store, new MemoryAI(async () => defaultAI, vault), undefined, vault)
@@ -302,13 +304,27 @@ describe('proyectos compartidos cifrados', () => {
           fragments: Array.from({ length: 300 }, (_, i) => ({ text: `Documento ${index}, parte ${i}. ` + 'contenido '.repeat(5000) })) })
         await peer.sharing.publish(id, source.entity_id)
       }
-      await a.network.configure({ enabled: true, bind_host: '127.0.0.1', bootstrap: [address] }); await b.network.configure({ enabled: true, bind_host: '127.0.0.1', bootstrap: [address] })
+      expect((await a.network.settings()).enabled).toBe(true) // ignores a pre-upgrade saved false
+      await a.network.configure({ enabled: false, bind_host: '127.0.0.1', bootstrap: [address] }); await b.network.configure({ enabled: true, bind_host: '127.0.0.1', bootstrap: [address] })
       await vi.waitFor(async () => { expect((await b.sharing.messages(id)).items.some(m => m.text === 'Mensaje transportado por P2P'), JSON.stringify({ a: await a.network.status(), b: await b.network.status() })).toBe(true) }, { timeout: 30_000, interval: 300 })
       await vi.waitFor(async () => {
         expect((await a.store.list({ kind: 'document', project_id: id })).total).toBe(2)
         expect((await b.store.list({ kind: 'document', project_id: id })).total).toBe(2)
       }, { timeout: 30_000, interval: 300 })
       expect((await a.sharing.messages(id)).items.some(m => m.text === 'No debe propagarse después de revocar')).toBe(false)
+      const remoteId = (await b.sharing.identity()).id
+      const progress = async () => (await a.network.status()).peers.find(p => p.project_id === id && p.member_id === remoteId)
+      await vi.waitFor(async () => { expect(await progress()).toMatchObject({ state: 'synced' }) }, { timeout: 30_000 })
+      const previous = (await progress())!
+      expect(previous.confirmed).toBe(previous.total)
+      // Unrelated events leave holes in the global sequence, not in project progress.
+      const other = await a.store.create({ kind: 'project', title: 'Otro' }); await a.sharing.create(other.id)
+      for (let i = 0; i < 3; i++) await a.sharing.message(other.id, `Otro ${i}`, new Date(Date.now() + 120_000).toISOString())
+      await a.sharing.message(id, 'Nuevo cambio pendiente', new Date(Date.now() + 120_000).toISOString())
+      expect(await progress()).toMatchObject({ state: 'syncing', confirmed: previous.confirmed, total: previous.total + 1 })
+      await a.network.tick()
+      await vi.waitFor(async () => { expect(await progress()).toMatchObject({ state: 'synced', total: previous.total + 1 }) }, { timeout: 30_000 })
+
       const recovered = await hub('Nuevo owner con masterkey'), recoveredId = (await recovered.sharing.identity()).id
       await recovered.sharing.join(await a.sharing.invitation(id), phrase)
       await recovered.network.configure({ enabled: true, bind_host: '127.0.0.1', bootstrap: [address] })
@@ -316,8 +332,10 @@ describe('proyectos compartidos cifrados', () => {
         expect((await a.sharing.get(id)).policy.members.find(m => m.identity.id === recoveredId)?.role).toBe('owner')
         expect((await recovered.store.list({ kind: 'document', project_id: id })).total).toBe(2)
       }, { timeout: 30_000, interval: 300 })
+      await b.network.stop()
+      await vi.waitFor(async () => { expect((await a.network.status()).peers.some(p => p.member_id === remoteId)).toBe(false) })
     } finally { for (const r of resources) await r.network.stop(); await bootstrap.destroy() }
-  }, 40_000)
+  }, 90_000)
   it('cuatro hubs que importan la misma fuente convergen sin multiplicar reuniones ni hechos', async () => {
     const { a, b, c, id } = await fixture(), d = await hub('Diego')
     await a.sharing.changeMember(id, publicIdentity(await c.sharing.identity()), 'maintainer', false)
