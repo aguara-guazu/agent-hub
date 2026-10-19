@@ -17,6 +17,10 @@
  * ese comando lo sirve `@agenthub/gateway`; acá se limita a señalarlo.
  */
 
+import { localChatHook } from './local-chat-hook.js'
+import { runChatTui } from './chat-tui.js'
+import { runChatTerminal } from './chat-terminal.js'
+import { runChatBridge } from './chat-bridge.js'
 import { runHeadless, recordLifecycle, integrationDirectory } from '@agenthub/gateway'
 
 import { realpathSync } from 'node:fs'
@@ -65,6 +69,8 @@ interface ParsedArgs {
   tool?: string
   agent?: string
   hookEvent?: string
+  resume?: string
+  extra?: string[]
   once: boolean
   local: boolean
   maxCycles: number
@@ -99,6 +105,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i]!
     switch (arg) {
+      case '--':
+        args.extra=argv.slice(i+1)
+        return args
+      case '--resume':
+        args.resume=take(++i)
+        break
       case '--home':
         args.home = take(++i)
         break
@@ -470,7 +482,8 @@ async function cmdGateway(app: DaemonApp, args: ParsedArgs): Promise<number> {
 
 function printHelp(): void {
   say('agenthub — daemon local de Agent Hub')
-  say('Comandos: enroll, run, sync, status, plan, why, gateway')
+  say('Comandos: enroll, run, sync, status, plan, why, gateway, chat')
+  say('chat --agent <id> --state-dir <ruta> -- <opciones de la TUI nativa>')
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -481,6 +494,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   try {
+    if(args.command==='chat') {
+      if(!args.agent || !args.stateDir)throw new Error('chat requiere --agent y --state-dir.')
+      return await runChatTui(expand(args.stateDir),args.agent,args.extra)
+    }
+    if(args.command==='chat-protocol') {
+      if(!args.agent || !args.stateDir)throw new Error('chat-protocol requiere --agent y --state-dir.')
+      return await runChatTerminal(expand(args.stateDir),args.agent,args.extra,args.resume)
+    }
+    if(args.command==='chat-bridge') {
+      if(!args.agent || !args.stateDir)throw new Error('chat-bridge requiere --agent y --state-dir.')
+      return await runChatBridge(expand(args.stateDir),args.agent)
+    }
     if (args.command === 'memory-hook') {
       if (!args.agent || !args.stateDir) return EXIT_ERROR
       const state = new DaemonState(args.stateDir), snapshot = state.loadSnapshot(args.agent)
@@ -490,8 +515,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       const event = JSON.parse(raw || '{}') as Record<string, unknown>
       if (snapshot['cli_kind'] === 'antigravity') event['hook_event_name'] = args.hookEvent
       await recordLifecycle(integrationDirectory(args.stateDir, args.agent), args.agent, String(snapshot['cli_kind'] ?? ''), event)
+      const chat = await localChatHook(state,args.agent,String(snapshot['cli_kind'] ?? ''),event,args.hookEvent)
+      if (chat.error) warn(chat.error)
+      if (chat.code) return chat.code
+      if (chat.output) { say(JSON.stringify(chat.output)); return EXIT_OK }
       // "allow" delegates to the client's normal approval policy; never auto-approve a tool.
-      say(snapshot['cli_kind'] === 'antigravity' ? JSON.stringify({ decision: args.hookEvent === 'PreToolUse' ? 'allow' : 'stop' }) : '{}')
+      say(snapshot['cli_kind'] === 'antigravity' && ['PreToolUse','Stop'].includes(args.hookEvent ?? '')
+        ? JSON.stringify({ decision: args.hookEvent === 'PreToolUse' ? 'allow' : 'stop' }) : '{}')
       return EXIT_OK
     }
     const app = buildApp(args)

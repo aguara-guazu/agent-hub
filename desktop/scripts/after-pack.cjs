@@ -2,7 +2,7 @@ const { execFileSync } = require('node:child_process')
 const { dirname, join } = require('node:path')
 const { copyFileSync, readdirSync, readFileSync, rmSync, existsSync } = require('node:fs')
 const { Arch } = require('builder-util')
-const { prepareArgon2, prepareSharp } = require('./prepare-sharp.cjs')
+const { prepareArgon2, prepareSharp, preparePty } = require('./prepare-sharp.cjs')
 
 const CRT = /^(?:msvcp140|vcruntime140)[\w]*\.dll$/i
 
@@ -59,6 +59,7 @@ exports.default = async (context) => {
   const resources = context.electronPlatformName === 'darwin'
     ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
     : join(context.appOutDir, 'resources')
+  await preparePty(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   await prepareSharp(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   await prepareArgon2(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   const binaries = join(resources, 'app', 'node_modules', 'onnxruntime-node', 'bin', 'napi-v6')

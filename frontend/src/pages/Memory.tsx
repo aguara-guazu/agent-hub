@@ -1,3 +1,4 @@
+import { ProjectCollaboration } from './MemoryCollaboration'
 import { ProjectSharing, SharedProjectImport, ProjectForum } from './MemorySharing'
 import { MemoryRemember } from './MemoryRemember'
 import { MemoryAttachment } from './MemoryAttachment'
@@ -74,7 +75,7 @@ function EntityPage({ entityId }: { entityId: string }) {
   const remove = useMemoryMutation('delete_entity', () => navigate('/memory'))
   const reprocess = useMemoryMutation('reprocess'), update = useMemoryMutation('update_entity'), reviewIdentity = useMemoryMutation('review_identity'), reviewDuplicate = useMemoryMutation('review_duplicate')
   const entity: MemoryEntity | undefined = detail.data?.entity
-  const related = useMemory<Page<MemoryEntity>>('list_entities', { project_id: entityId, ...(tab !== 'all' ? { kind: tab } : {}), limit: 100, offset: relatedOffset }, entity?.kind === 'project' && !['tasks', 'sharing', 'forum'].includes(tab))
+  const related = useMemory<Page<MemoryEntity>>('list_entities', { project_id: entityId, ...(tab !== 'all' ? { kind: tab } : {}), limit: 100, offset: relatedOffset }, entity?.kind === 'project' && !['tasks', 'sharing', 'forum', 'collaboration'].includes(tab))
   if (detail.isPending) return <p role="status">Abriendo contexto…</p>
   if (detail.error || !entity) return <ErrorBox error={detail.error} retry={detail.refetch} />
   const isProject = entity.kind === 'project'
@@ -99,12 +100,12 @@ function EntityPage({ entityId }: { entityId: string }) {
       {!!entity.data.email_candidates?.length && !entity.data.email && <p>Correos disponibles para verificar: {entity.data.email_candidates.join(', ')}</p>}
       {!!entity.data.merged_from?.length && <p>Incluye {entity.data.merged_from.length} {entity.data.merged_from.length === 1 ? 'identidad unificada' : 'identidades unificadas'}. El historial de cada unificación está en la información adicional.</p>}
       {entity.data.merged_into ? <Link className="btn btn-primary btn-sm" to={`/memory/entities/${entity.data.merged_into}`}>Ver identidad vigente</Link> : <><Link className="btn btn-sm" to={`/memory/search?person=${entityId}`}>Ver intervenciones</Link><MergePerson person={entity} /></>}</div>}
-    {isProject && <><div className="memory-project-tabs">{[['all','Línea de tiempo'],['meeting','Reuniones'],['document','Documentos'],['tasks','Tareas'],['fact','Decisiones y hallazgos'],['collection','Colecciones'],['forum','Foro de agentes'],['sharing','Compartir y colaborar']].map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key!)}>{label}</button>)}<button onClick={() => setForm('collection')}>＋ Colección</button></div>
-      {tab === 'sharing' ? <ProjectSharing project={entity} /> : tab === 'forum' ? <ProjectForum projectId={entityId} /> : tab === 'tasks' ? <ProjectTasks project={entity} /> : <><div className="spread memory-section-bar"><p className="memory-section-note">Estado según las fuentes importadas. Las fechas corresponden al contenido cuando están disponibles.</p>{tab === 'document' && <button className="btn btn-primary" onClick={() => setImporting(true)}>Adjuntar archivos</button>}</div><ErrorBox error={related.error} /><div className="card"><EntityRows items={related.data?.items ?? []} /></div>{related.data && <Pager total={related.data.total} offset={relatedOffset} limit={100} setOffset={setRelatedOffset} />}</>}</>}
+    {isProject && <><div className="memory-project-tabs">{[['all','Línea de tiempo'],['meeting','Reuniones'],['document','Documentos'],['tasks','Tareas'],['fact','Decisiones y hallazgos'],['collection','Colecciones'],['collaboration','Colaboración'],['forum','Foro compartido'],['sharing','Compartir y colaborar']].map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key!)}>{label}</button>)}<button onClick={() => setForm('collection')}>＋ Colección</button></div>
+      {tab === 'collaboration' ? <ProjectCollaboration projectId={entityId} /> : tab === 'sharing' ? <ProjectSharing project={entity} /> : tab === 'forum' ? <ProjectForum projectId={entityId} /> : tab === 'tasks' ? <ProjectTasks project={entity} /> : <><div className="spread memory-section-bar"><p className="memory-section-note">Estado según las fuentes importadas. Las fechas corresponden al contenido cuando están disponibles.</p>{tab === 'document' && <button className="btn btn-primary" onClick={() => setImporting(true)}>Adjuntar archivos</button>}</div><ErrorBox error={related.error} /><div className="card"><EntityRows items={related.data?.items ?? []} /></div>{related.data && <Pager total={related.data.total} offset={relatedOffset} limit={100} setOffset={setRelatedOffset} />}</>}</>}
     {entity.kind === 'collection' && <MemoryCollection entity={entity} />}
     {['meeting','document','person'].includes(entity.kind) && <IdentityProposals entityId={entityId} canInfer={entity.kind !== 'person'} />}
     {entity.kind === 'person' && !entity.data.merged_into && <DuplicateProposals entityId={entityId} />}
-    {(!isProject || !['sharing', 'forum'].includes(tab)) && <>
+    {(!isProject || !['sharing', 'forum', 'collaboration'].includes(tab)) && <>
     {detail.data.sources.length > 0 && <SourceReader entity={entity} source={detail.data.sources[0]} />}
     {detail.data.evidence.length > 0 && <section className="memory-section"><h2>Evidencia</h2>{detail.data.evidence.map((f: any) => <EvidenceCard key={f.id} fragment={f} />)}</section>}
     <section className="memory-section"><div className="spread"><h2>Conexiones</h2><button className="btn btn-sm" onClick={() => setLinking(true)}>Agregar vínculo</button></div>

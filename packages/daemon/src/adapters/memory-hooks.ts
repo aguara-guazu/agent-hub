@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { driftItem, Manifest, planFileWrite, planJsonHooks, planJsonValue, type DriftItem, type FileChange } from './atomic.js'
 import type { GatewayEndpoint, Snapshot } from './base.js'
 import { OpenCodeAdapter } from './opencode.js'
+import { openCodeMemoryPlugin } from './opencode-chat.js'
 
 const WINDOWS = process.platform === 'win32'
 
@@ -38,8 +39,24 @@ export function planMemoryHooks(snapshot: Snapshot, endpoint: GatewayEndpoint, h
   const args = endpoint.args.map(a => a === 'gateway' ? 'memory-hook' : a)
   if (!args.includes('--state-dir')) return [[], []]
   args.push('--agenthub-memory-hook')
-  const enabled = snapshot.servers.some(server => server.tools.some(tool => tool.name === 'finish_notes'))
+  const enabled = snapshot.servers.some(server => server.tools.some(tool => ['finish_notes','chat_join'].includes(tool.name)))
+  const chat = snapshot.servers.some(server => server.tools.some(tool => tool.name === 'chat_join'))
   const manifest = Manifest.load(home)
+  const launchChanges:FileChange[]=[],launchDrift:DriftItem[]=[]
+  if (chat && ['claude_code','codex_cli','gemini_cli','kiro','opencode','antigravity'].includes(kind)) {
+    const name=kind==='claude_code'?'claude':kind==='opencode'?'opencode':kind==='codex_cli'?'codex':kind==='gemini_cli'?'gemini':kind==='antigravity'?'agy':'kiro'
+    const path=join(home,WINDOWS?'.agenthub/bin':'.local/bin',`agenthub-${name}${WINDOWS?'.ps1':''}`)
+    try {
+      const launchArgs=endpoint.args.map(a=>a==='gateway'?'chat':a).concat('--')
+      const content=WINDOWS
+        ? `$env:ELECTRON_RUN_AS_NODE='1'\n& ${[endpoint.command,...launchArgs].map(powershellWord).join(' ')} @args\nexit $LASTEXITCODE\n`
+        : `#!/bin/sh\nexport ELECTRON_RUN_AS_NODE=1\nexec ${[endpoint.command,...launchArgs].map(shellWord).join(' ')} "$@"\n`
+      const [change,drift]=planFileWrite({home,path,content,manifest,cliKind:kind,mode:0o700})
+      if(change)launchChanges.push(change)
+      launchDrift.push(...drift)
+    } catch(error) {launchDrift.push(driftItem(path,'launcher',(error as Error).message))}
+  }
+  const withLauncher=(changes:FileChange[],drift:DriftItem[]):[FileChange[],DriftItem[]]=>[[...launchChanges,...changes],[...launchDrift,...drift]]
   if (kind === 'antigravity') {
     const path = join(home, '.gemini/config/hooks.json')
     try {
@@ -50,25 +67,26 @@ export function planMemoryHooks(snapshot: Snapshot, endpoint: GatewayEndpoint, h
       const value = enabled ? {
         PreToolUse: [{ matcher: '^mcp_hub_.*', hooks: [handler('PreToolUse')] }],
         Stop: [handler('Stop')],
+        ...(chat ? {SessionStart:[handler('SessionStart')],PreInvocation:[handler('PreInvocation')]} : {}),
       } : { enabled: false }
       const [change, drift] = planJsonValue({ home, path, keyPath: ['agenthub-memory'], value, manifest, cliKind: kind,
         summary: 'Eventos de conversación de Antigravity para la memoria' })
-      return [change ? [change] : [], drift]
-    } catch (error) { return [[], [driftItem(path, 'agenthub-memory', (error as Error).message)]] }
+      return withLauncher(change ? [change] : [], drift)
+    } catch (error) { return withLauncher([], [driftItem(path, 'agenthub-memory', (error as Error).message)]) }
   }
   if (kind === 'opencode') {
-    const content = `// Managed by Agent Hub. Native session events close only this session's notes.\nimport { spawnSync } from 'node:child_process'\nexport const AgentHubMemory = async ({ directory }) => {\n  const emit = event => { if (!${JSON.stringify(enabled)}) return; spawnSync(${JSON.stringify(endpoint.command)}, ${JSON.stringify(args)}, { input: JSON.stringify({ cwd: directory, ...event }), env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 2500, windowsHide: true, stdio: ['pipe','ignore','ignore'] }) }\n  return {\n    'tool.execute.before': async (input, output) => { if (input.tool.startsWith('hub_')) emit({ hook_event_name: 'PreToolUse', session_id: input.sessionID, tool_name: input.tool, tool_input: output.args }) },\n    event: async ({ event }) => { if (['session.idle','session.error','session.deleted'].includes(event.type)) emit({ hook_event_name: event.type === 'session.error' ? 'StopFailure' : event.type === 'session.deleted' ? 'SessionEnd' : 'Stop', session_id: event.properties.sessionID ?? event.properties.info?.id }) }\n  }\n}\n`
+    const content = openCodeMemoryPlugin(endpoint.command,args,enabled,chat)
     const [change, drift] = planFileWrite({ home, path: join(new OpenCodeAdapter().configDir(home), 'plugins', 'agenthub-memory.js'), content, manifest, cliKind: kind, mode: 0o600 })
-    return [change ? [change] : [], drift]
+    return withLauncher(change ? [change] : [], drift)
   }
   const path = kind === 'codex_cli' ? join(home, '.codex', 'hooks.json') : kind === 'claude_code' ? join(home, '.claude', 'settings.json')
     : kind === 'gemini_cli' ? join(home, '.gemini', 'settings.json') : null
-  if (!path) return [[], []]
+  if (!path) return withLauncher([], [])
   let command = ''
   try {
     if (enabled) command = hookCommand(endpoint.command, args, kind === 'codex_cli')
   } catch (error) {
-    return [[], [driftItem(path, 'hooks', (error as Error).message)]]
+    return withLauncher([], [driftItem(path, 'hooks', (error as Error).message)])
   }
   const handler = (timeout: number) => kind === 'codex_cli' && WINDOWS ? { type: 'command', command, commandWindows: command, timeout }
     : { type: 'command', command, timeout, ...(kind === 'claude_code' && WINDOWS ? { shell: 'powershell' } : {}) }
@@ -79,11 +97,12 @@ export function planMemoryHooks(snapshot: Snapshot, endpoint: GatewayEndpoint, h
   const stop = kind === 'gemini_cli' ? 'AfterAgent' : 'Stop'
   const hooks: Record<string, unknown[]> = enabled ? {
     [before]: [{ matcher: '.*hub.*', hooks: [handler(timeout)] }],
-    [stop]: [{ hooks: [handler(timeout)] }],
+    [stop]: [{ hooks: [handler(timeout), ...(chat && kind === 'claude_code' ? [{ ...handler(604800), command: hookCommand(endpoint.command,[...args,'--hook-event','Watch'],false), asyncRewake:true }] : [])] }],
+    ...(chat ? { SessionStart:[{ hooks:[handler(timeout), ...(kind==='claude_code' ? [{ ...handler(604800), command:hookCommand(endpoint.command,[...args,'--hook-event','Watch'],false), asyncRewake:true }] : [])] }], [kind==='gemini_cli' ? 'BeforeAgent' : 'UserPromptSubmit']:[{ hooks:[handler(timeout)] }] } : {}),
     SessionEnd: [{ hooks: [handler(kind === 'codex_cli' ? 3 : timeout)] }],
     ...(kind === 'codex_cli' ? { Interrupt: [{ hooks: [handler(3)] }] } : {}),
     ...(kind === 'claude_code' ? { StopFailure: [{ hooks: [handler(timeout)] }] } : {}),
   } : {}
   const [change, drift] = planJsonHooks({ home, path, keyPath: ['hooks'], value: hooks, manifest, cliKind: kind })
-  return [change ? [change] : [], drift]
+  return withLauncher(change ? [change] : [], drift)
 }

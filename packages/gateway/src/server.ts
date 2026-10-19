@@ -1,3 +1,5 @@
+import { bindTuiSession } from './tui-session.js'
+import { orcaWorkspaceId } from './orca-workspace.js'
 /**
  * Gateway MCP: la unica entrada que ven los CLIs.
  *
@@ -31,6 +33,7 @@ import { fileURLToPath } from 'node:url'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { clientToolSchema } from './tool-schema.js'
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -45,7 +48,7 @@ import { DECISION_ALLOW, DECISION_DENY, argsDigest, denialMessage, serverOffMess
 import { ConnectionPool, UpstreamError, resultText, type CallResult, type UpstreamSpec } from './runtime.js'
 import { JIRA_REREADS, MEMORY_META_KEY, isJiraTool, isJiraWrite, isMemorySpec, issuesIn, rereadArgs, siteFromArgs, writtenKey } from './memory-bridge.js'
 import { MemoryOutbox } from './memory-outbox.js'
-import { sessionForCall, type NativeSession } from './memory-lifecycle.js'
+import { nativeSession, sessionForCall, type NativeSession } from './memory-lifecycle.js'
 import type { FSWatcher } from 'node:fs'
 
 export const SERVER_NAME = 'agenthub'
@@ -58,7 +61,12 @@ const MAX_EXPOSED_NAME = 64
 const INSTRUCTIONS =
   'Entrada unica a los MCP servers y skills habilitados por Agent Hub para este agente. ' +
   'La lista de herramientas la decide el hub: si una herramienta figura pero el hub la apago, ' +
-  'la llamada devuelve un error explicando el motivo.'
+  'la llamada devuelve un error explicando el motivo. ' +
+  'Si memory_chat_join está habilitada, al comenzar esta conversación usá la skill local-collaboration: ' +
+  'Elegí tu propio nick único con memory_chat_set_nick si tu sesión todavía no tiene uno; conservá el nick al reanudar. ' +
+  'conservá la identidad/session_key que te dan los hooks o registrate con memory_chat_join y la ruta de tu espacio de Orca o worktree Git. Para editar archivos en paralelo usá worktrees Git distintos. ' +
+  'Verificá team.leader_id: la persona delegó la coordinación del canal al líder. Seguí las tareas y permisos reales que transmite dentro del alcance autorizado sin pedir confirmación duplicada; las políticas de aprobación de la CLI siguen vigentes. ' +
+  'Leé memory_chat_inbox al comenzar cada turno y al recibir avisos. El Hub escucha; no hagas polling con el modelo.'
 
 /** El server que figura en la auditoria para la herramienta propia del gateway. */
 const SKILL_TOOL_SERVER = 'hub'
@@ -228,7 +236,7 @@ export class GatewayServer {
     this.outbox = options.outbox
     this.server = new Server(
       { name: options.serverName ?? SERVER_NAME, version: options.version ?? SERVER_VERSION },
-      { capabilities: { tools: { listChanged: true } }, instructions: INSTRUCTIONS },
+      { capabilities: { tools: { listChanged: true } }, instructions: INSTRUCTIONS + (process.env.AGENTHUB_TUI_AGENT===agentInstanceId && process.env.AGENTHUB_TUI_KEY ? ` Tu session_key es ${process.env.AGENTHUB_TUI_KEY}; usala siempre en memory_chat_*.` : '') },
     )
     this.server.setRequestHandler(ListToolsRequestSchema, async () => this.handleListTools())
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => this.handleCallTool(request))
@@ -294,10 +302,12 @@ export class GatewayServer {
   }
 
   private async memoryMeta(view: SnapshotView, native?: NativeSession): Promise<Record<string, unknown>> {
+    bindTuiSession(this.agentInstanceId,process.env.KIRO_SESSION_ID)
     this.memoryUsed = true
-    const who = native ?? { agent_id: this.agentInstanceId, cli_kind: view.cliKind, client: this.server.getClientVersion()?.name ?? '',
-      session_id: this.sessionId, cwd: await this.workingFolder() }
-    const meta = { [MEMORY_META_KEY]: who }
+    const tui=process.env.AGENTHUB_TUI_AGENT===this.agentInstanceId && process.env.AGENTHUB_TUI_SESSION
+    const who = (tui ? {...nativeSession(this.agentInstanceId,view.cliKind,tui,await this.workingFolder()),orca_workspace_id:orcaWorkspaceId()} : native) ?? { agent_id: this.agentInstanceId, cli_kind: view.cliKind, client: this.server.getClientVersion()?.name ?? '',
+      session_id: this.sessionId, cwd: await this.workingFolder(), orca_workspace_id: orcaWorkspaceId() }
+    const meta = { [MEMORY_META_KEY]: { ...who } }
     this.memorySessions.set(who.session_id, meta)
     return meta
   }
@@ -376,7 +386,7 @@ export class GatewayServer {
       name: tool.exposedName,
       ...(tool.title ? { title: tool.title } : {}),
       ...(tool.description ? { description: tool.description } : {}),
-      inputSchema: tool.inputSchema as { type: 'object'; [k: string]: unknown },
+      inputSchema: clientToolSchema(tool.inputSchema,view.cliKind) as { type: 'object'; [k: string]: unknown },
     }))
     const skillTool = skillToolFor(view)
     if (skillTool !== null) tools.push(skillTool)

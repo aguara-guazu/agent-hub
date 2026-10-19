@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +10,7 @@ import { ConnectionPool, RemoteHttpRuntime, GatewayServer, PolicyStore } from '@
 import { buildApp, type CoreApp } from '../src/app.js'
 import { ensureLocalOwner } from '../src/local.js'
 import { computeSnapshot } from '../src/policy/resolver.js'
-import { createAccessToken } from '../src/security.js'
+import { createAccessToken, generateDaemonToken } from '../src/security.js'
 
 describe('memoria HTTP y gateway MCP', () => {
   let app: CoreApp, directory: string, token: string, owner: ReturnType<typeof ensureLocalOwner>
@@ -71,7 +72,7 @@ describe('memoria HTTP y gateway MCP', () => {
     expect(skill.body).toContain('memory_search'); expect(skill.body).toContain('memory_review_duplicate'); expect(skill.body).not.toMatch(/^---/)
     const machine = app.store.insertMachine({ user_id: owner.id, hostname: 'skill-test', os: 'test', daemon_version: 'test' })
     const agent = app.store.insertAgent({ machine_id: machine.id, cli_kind: 'kiro', cli_version: 'test', config_path: '' })
-    expect(computeSnapshot(app.store, agent.id).skills.map(s => s.slug).sort()).toEqual(['google-setup', 'hub-collaboration', 'memory'])
+    expect(computeSnapshot(app.store, agent.id).skills.map(s => s.slug).sort()).toEqual(['google-setup', 'hub-collaboration', 'local-collaboration', 'memory'])
     // A newer app ships a different body: it replaces the untouched copy and bumps the version.
     app.store.updateSkill(skill.id, { body: 'cuerpo de una versión anterior', content_hash: 'hash-anterior' })
     app.store.setSetting('memory_skill_hash', 'hash-anterior')
@@ -163,4 +164,48 @@ describe('memoria HTTP y gateway MCP', () => {
       expect(list.json().total).toBe(0)
     } finally { await client.close(); await gateway.close(); await pool.close() }
   }, 20_000)
+  it('el puente nativo exige daemon de la máquina y respeta el apagado del chat', async () => {
+    const machine=app.store.insertMachine({user_id:owner.id,hostname:'native-one',os:'test',daemon_version:'test'})
+    const other=app.store.insertMachine({user_id:owner.id,hostname:'native-two',os:'test',daemon_version:'test'})
+    const agent=app.store.insertAgent({machine_id:machine.id,cli_kind:'codex_cli',cli_version:'test',config_path:''})
+    const foreign=app.store.insertAgent({machine_id:other.id,cli_kind:'codex_cli',cli_version:'test',config_path:''})
+    const [daemon,digest]=generateDaemonToken()
+    app.store.insertToken({user_id:owner.id,machine_id:machine.id,name:'native-test',token_hash:digest})
+    execFileSync('git',['init','-q',directory])
+    const payload={agent_id:agent.id,native_id:'native-session',session_key:'a'.repeat(64),cwd:directory,event:'SessionStart',at:new Date().toISOString()}
+    const invoke=(auth:string,body=payload)=>app.fastify.inject({method:'POST',url:'/api/memory/chat/native',headers:{authorization:`Bearer ${auth}`},payload:body})
+    expect((await invoke(token)).statusCode).toBe(401)
+    expect((await invoke(daemon,{...payload,transport:'opencode_prompt'})).statusCode).toBe(400)
+    expect((await invoke(daemon,{...payload,agent_id:foreign.id})).statusCode).toBe(403)
+    const registered=await invoke(daemon);expect(registered.statusCode).toBe(200)
+    expect((await invoke(daemon)).json().session.id).toBe(registered.json().session.id)
+    expect(registered.json().channel.orca_workspace_id).toBeNull() // Never inherit the Hub process's own Orca context.
+    const workspace='folder:12345678-1234-1234-1234-123456789abc'
+    const scoped=await invoke(daemon,{...payload,native_id:'space-a',session_key:'b'.repeat(64),orca_workspace_id:workspace})
+    expect(scoped.statusCode).toBe(200)
+    const scoped2=await invoke(daemon,{...payload,native_id:'space-b',session_key:'c'.repeat(64),orca_workspace_id:'folder:22345678-1234-1234-1234-123456789abc'})
+    expect(scoped2.statusCode).toBe(200)
+    expect(scoped.json().channel.path).toBe(scoped2.json().channel.path)
+    expect(scoped.json().channel.id).not.toBe(scoped2.json().channel.id)
+    expect(scoped.json().channel.id).not.toBe(registered.json().channel.id)
+    const userCall=(operation:string,input:any)=>app.fastify.inject({method:'POST',url:'/api/memory/call',headers:{authorization:`Bearer ${token}`},payload:{operation,input}})
+    const project=await userCall('create_entity',{kind:'project',title:'Prueba de expulsión',data:{folders:[directory]}})
+    await userCall('chat_channels',{}) // Refresh folder-to-project association.
+    const kick={project_id:project.json().id,channel_id:registered.json().channel.id,participant_id:registered.json().session.id,reason:'Retiro manual de prueba'}
+    const remove=(auth?:string,body=kick)=>app.fastify.inject({method:'POST',url:'/api/memory/chat/kick',headers:auth?{authorization:`Bearer ${auth}`}:{},payload:body})
+    expect((await remove()).statusCode).toBe(401)
+    expect((await remove(daemon)).statusCode).toBe(401)
+    expect((await userCall('chat_kick',{channel_id:kick.channel_id,participant_id:kick.participant_id,reason:kick.reason})).statusCode).toBe(403)
+    expect((await remove(token,{...kick,channel_id:scoped.json().channel.id})).statusCode).toBe(404)
+    const removed=await remove(token);expect(removed.statusCode).toBe(200)
+    expect(removed.json().session).toMatchObject({state:'removed',removed_by:`user:${owner.id}`})
+    expect((await invoke(daemon)).statusCode).toBe(410)
+    expect((await invoke(daemon,{...payload,event:'Heartbeat'})).statusCode).toBe(410)
+    expect((await invoke(daemon,{...payload,session_key:'d'.repeat(64)})).statusCode).toBe(410)
+    const server=computeSnapshot(app.store,agent.id).servers.find(s=>s.tools.some(t=>t.name==='chat_join'))!
+    const tool=app.store.toolsOfServer(server.id).find(t=>t.name==='chat_join')!
+    expect((await app.fastify.inject({method:'PUT',url:'/api/policy/rules',headers:{authorization:`Bearer ${token}`},payload:{scope:'user',resource_type:'mcp_tool',resource_id:tool.id,state:'off'}})).statusCode).toBe(204)
+    expect((await invoke(daemon)).statusCode).toBe(403)
+  })
+
 })

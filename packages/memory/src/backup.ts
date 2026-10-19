@@ -12,10 +12,10 @@ import { storageConverter, vectorValues } from './database.js'
 const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identities', 'fragments', 'fragment_projects', 'links', 'evidence', 'link_evidence',
   'embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'changes'] as const
 // Added by schema version 3; backups taken before it restore without them.
-const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes'] as const
+const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1 (tables and columns of PostgreSQL schema 4); backups from 1–4 restore. */
-const BACKUP_SCHEMA_VERSION = 4
+/** Data-model version of agenthub-memory-v1; backups from 1–10 restore. */
+const BACKUP_SCHEMA_VERSION = 10
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -37,6 +37,8 @@ async function exportOriginals(store: MemoryStore) {
         let first = true
         for await (const rows of sql.batches(`SELECT * FROM ${table}`)) {
           for (const row of rows) {
+            // Session routing keys and process bindings are local credentials, not portable history.
+            if (table === 'chat_sessions') Object.assign(row, { key_hash: `restored:${randomUUID()}`, native_id: null, gateway_session_id:null, process_id: null, process_started: null, lease_until: null, state: 'offline', closed_at: exportedAt, capability: 'next_turn', orca_terminal: null, team_seen:false, bootstrap_sent_at:null, bootstrap_attempts:0 })
             // Vectors keep the pgvector text form so backups stay interchangeable with earlier versions.
             if (row.embedding instanceof Uint8Array) row.embedding = `[${vectorValues(row.embedding).join(',')}]`
             await file.writeFile(`${first ? '' : ','}${JSON.stringify(row)}`); first = false
@@ -82,7 +84,7 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
     await sql.query('PRAGMA defer_foreign_keys=ON')
     for (const table of tables) {
       const columns = await sql.query<{ name: string; type: string }>(`SELECT name,type FROM pragma_table_info('${table}') WHERE name<>'rid'`)
-      const rows = backup.tables[table] ?? []
+      const rows = (backup.tables[table] ?? []).map(row => table === 'chat_channels' && backup.schema_version < 7 ? {...row,scope_key:`git:${row.path}`,orca_workspace_id:null} : row)
       const keys = [...new Set(rows.flatMap(row => Object.keys(row)))].filter(k => k !== 'search_text')
       check(keys.every(k => columns.some(c => c.name === k)), 'El respaldo contiene columnas desconocidas')
       if (!rows.length) continue
@@ -91,6 +93,7 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
       // Connectors need their own authorization after restore; credentials never travel in a backup.
       await sql.many(insert, rows.map(row => keys.map((k, i) => converters[i]!(table === 'connectors' && k === 'enabled' ? false : row[k]))))
     }
+    await sql.query("UPDATE chat_sessions SET label='Sin nick todavía' WHERE nickname IS NULL")
     await mkdir(join(store.directory, 'originals'), { recursive: true, mode: 0o700 })
     for (const version of backup.tables.versions ?? []) {
       const path = String(version.original_path)

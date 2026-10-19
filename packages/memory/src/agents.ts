@@ -7,9 +7,10 @@ import type { Sql } from './database.js'
 import { requireEntity, type MemoryStore } from './store.js'
 
 /** Identity the gateway attaches to every memory call (MCP `_meta`). Absent for the hub UI and for older gateways. */
-export interface AgentContext { agent_id: string; cli_kind: string; client: string; session_id: string; cwd: string | null }
+export interface AgentContext { agent_id: string; cli_kind: string; client: string; session_id: string; cwd: string | null; orca_workspace_id?: string | undefined }
+export const orcaWorkspaceSchema = z.string().max(4000).regex(/^(?:folder:[a-f0-9-]{36}|[a-f0-9-]{36}::[^\r\n]+)$/i)
 export const agentMetaSchema = z.object({ agent_id: z.string().min(1).max(200), cli_kind: z.string().max(60).default(''),
-  client: z.string().max(200).default(''), session_id: z.string().min(8).max(200), cwd: z.string().max(4000).nullable().default(null) }).strip()
+  client: z.string().max(200).default(''), session_id: z.string().min(8).max(200), cwd: z.string().max(4000).nullable().default(null), orca_workspace_id: orcaWorkspaceSchema.optional() }).strip()
 export const AGENT_META_KEY = 'agenthub/agent'
 
 /** A working note without activity from its session for this long is shown as finished. */

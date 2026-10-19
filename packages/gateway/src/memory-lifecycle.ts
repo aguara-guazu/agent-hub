@@ -1,11 +1,13 @@
+import { bindTuiSession } from './tui-session.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { MEMORY_META_KEY } from './memory-bridge.js'
 import { MemoryOutbox } from './memory-outbox.js'
 import { renameRetry } from './platform.js'
+import { orcaWorkspaceId } from './orca-workspace.js'
 
-export interface NativeSession { agent_id: string; cli_kind: string; client: string; session_id: string; cwd: string | null }
+export interface NativeSession { agent_id: string; cli_kind: string; client: string; session_id: string; cwd: string | null; orca_workspace_id?: string | undefined }
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
   if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`
@@ -30,7 +32,8 @@ export async function recordLifecycle(directory: string, agentId: string, cliKin
   }
   const session = event.session_id ?? event.sessionID
   if (typeof session !== 'string' || !session || session.length > 300) return
-  const who = nativeSession(agentId, cliKind, session, event.cwd)
+  bindTuiSession(agentId,session)
+  const who = { ...nativeSession(agentId, cliKind, process.env.AGENTHUB_TUI_AGENT===agentId ? process.env.AGENTHUB_TUI_SESSION || session : session, event.cwd), orca_workspace_id: orcaWorkspaceId() }
   const name = String(event.hook_event_name ?? '')
   if (['PreToolUse', 'BeforeTool'].includes(name) && typeof event.tool_name === 'string') {
     const receipts = join(directory, 'calls'); await mkdir(receipts, { recursive: true, mode: 0o700 })

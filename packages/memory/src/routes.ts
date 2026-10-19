@@ -1,3 +1,7 @@
+import { orcaWorkspaceSchema } from './agents.js'
+import { chatKickInput } from './local-chat.js'
+import { LocalChatRuntime } from './local-chat-runtime.js'
+import { nativeSession } from '@agenthub/gateway'
 import { sharingRoutes } from './sharing/routes.js'
 import { pdfPreview } from './pdf.js'
 import { mediaSettings, queueMedia } from './media-processing.js'
@@ -32,6 +36,8 @@ const VERSION = String((createRequire(import.meta.url)('../package.json') as { v
 export interface MemoryRouteOptions {
   directory: string; baseUrl: string;
   authorize(request: FastifyRequest): Promise<{ id: string }>
+  chatAgentEnabled?(agentId: string): boolean
+  authorizeChatAgent?(request: FastifyRequest, agentId: string): Promise<{ cli_kind: string }>
   worker?: boolean
   jiraMcp?: import('./tasks.js').JiraTaskReader
 }
@@ -40,6 +46,36 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }
+  let chatRuntime: LocalChatRuntime | undefined
+  const runtime = async () => {
+    const { operations } = await service.get()
+    if (!chatRuntime) { chatRuntime = new LocalChatRuntime(operations.chat, undefined, options.chatAgentEnabled); chatRuntime.start() }
+    return chatRuntime
+  }
+  if (options.authorizeChatAgent) app.post('/api/memory/chat/native', { bodyLimit: 16384 }, async (request, reply) => {
+    const input = parse(z.object({ agent_id: z.string().min(1).max(200), native_id: z.string().min(1).max(300),
+      orca_workspace_id: orcaWorkspaceSchema.optional(), session_key: z.string().min(32).max(200), cwd: z.string().min(1).max(4000), at: z.iso.datetime(),
+      event: z.enum(['SessionStart','HubPromptSubmit','UserPromptSubmit','BeforeAgent','PreToolUse','BeforeTool','Stop','AfterAgent','SessionEnd','Interrupt','StopFailure','Heartbeat','Watch']),
+      process_id: z.number().int().min(1).optional(), process_started: z.string().max(100).optional(), watch_started:z.iso.datetime().optional(),
+      transport:z.enum(['opencode_prompt','acp_prompt','antigravity_stream','codex_appserver','tui_prompt']).optional() }).strict(), request.body)
+    const client = await options.authorizeChatAgent!(request,input.agent_id)
+    const allowed = client.cli_kind==='codex_cli' ? 'codex_appserver' : client.cli_kind==='opencode' ? 'opencode_prompt' : ['gemini_cli','kiro'].includes(client.cli_kind) ? 'acp_prompt' : client.cli_kind==='antigravity' ? 'antigravity_stream' : undefined
+    if (input.transport && input.transport!==allowed && !(input.transport==='tui_prompt' && client.cli_kind!=='claude_desktop')) return reply.code(400).send({error:'Transporte incompatible con este cliente'})
+    const bridge = await runtime()
+    const result = await bridge.chat.lifecycle({...nativeSession(input.agent_id,client.cli_kind,input.native_id,input.cwd),orca_workspace_id:input.orca_workspace_id},input)
+    reply.header('Cache-Control','no-store')
+    if (input.event !== 'Watch' || (client.cli_kind !== 'claude_code' && !input.transport)) return result
+    const controller = new AbortController(), abort = () => controller.abort()
+    reply.raw.once('close',abort)
+    try { return { ...result, ...await bridge.wait(result.session.id,controller.signal,input.watch_started) } }
+    finally { reply.raw.off('close',abort) }
+  })
+  app.post('/api/memory/chat/kick', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    const input=parse(chatKickInput.extend({project_id:id}).strict(),request.body)
+    return (await service.get()).operations.chat.kick(input,{user_id:user.id})
+  })
+  app.addHook('onListen', async () => { void runtime().catch(() => {}) })
   sharingRoutes(app, service, options.authorize)
   app.get('/api/memory/status', { preHandler: auth }, () => service.status())
   // Public issue: kind, state, stage, model and the worker lines of this job only. Source titles and payloads stay out
@@ -229,6 +265,6 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     prepare(); void service.get().then(({ network }) => network.start()).catch(() => {})
     defaultsTimer = setInterval(prepare, 5000); defaultsTimer.unref(); worker.start()
   })
-  app.addHook('onClose', async () => { clearInterval(defaultsTimer); service.defaults.stop(); await worker.stop(); await service.close() })
+  app.addHook('onClose', async () => { clearInterval(defaultsTimer); await chatRuntime?.close(); service.defaults.stop(); await worker.stop(); await service.close() })
   return { service, credentialReference: credential.reference, tools: memoryTools }
 }

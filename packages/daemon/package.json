@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/daemon",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -18,8 +18,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/gateway": "0.8.1",
-    "@agenthub/shared": "0.8.1",
-    "@iarna/toml": "2.2.5"
+    "@agenthub/gateway": "0.9.0",
+    "@agenthub/shared": "0.9.0",
+    "@iarna/toml": "2.2.5",
+    "@lydell/node-pty": "1.2.0-beta.15",
+    "@xterm/headless": "6.0.0"
   }
 }

@@ -8,8 +8,8 @@ import { SnapshotView } from './policy.js'
 import type { ConnectionPool } from './runtime.js'
 
 let directory: string
-beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'memory-delivery-test-')) })
-afterEach(async () => { await rm(directory, { recursive: true, force: true }) })
+beforeEach(async () => { vi.stubEnv('ORCA_WORKTREE_ID',undefined); vi.stubEnv('ORCA_TERMINAL_HANDLE',undefined); directory = await mkdtemp(join(tmpdir(), 'memory-delivery-test-')) })
+afterEach(async () => { vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }) })
 function view(enabled = true) {
   return SnapshotView.fromSnapshot({ agent_instance_id: 'agent', cli_kind: 'codex_cli', servers: [
     { id: 'm', slug: 'memory', transport: 'http', url: 'http://localhost:8765/api/memory/mcp', tools: enabled ? ['sync_tasks','finish_notes'].map(name => ({ name, exposed_name: `memory_${name}` })) : [] },
@@ -99,4 +99,12 @@ it('marca bloqueadas las notas de una conversación Antigravity que termina por 
   await new MemoryOutbox(directory).flush(() => view(), { callTool } as unknown as ConnectionPool)
   expect(callTool).toHaveBeenCalledWith('agent', expect.anything(), 'finish_notes',
     expect.objectContaining({ state: 'blocked' }), { 'agenthub/agent': nativeSession('ag', 'antigravity', 'failed-session', undefined) })
+})
+
+
+it('atribuye el espacio de Orca del hook sin confundir terminales del mismo espacio',async()=> {
+  const id='folder:12345678-1234-1234-1234-123456789abc'
+  vi.stubEnv('ORCA_WORKTREE_ID',id)
+  await recordLifecycle(directory,'agent','codex_cli',{session_id:'orca',cwd:'/same',hook_event_name:'PreToolUse',tool_name:'memory_chat_join',tool_input:{}})
+  expect(await sessionForCall(directory,'memory_chat_join',{})).toMatchObject({orca_workspace_id:id,cwd:'/same'})
 })

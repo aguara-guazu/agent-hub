@@ -1,0 +1,61 @@
+import { createHmac } from 'node:crypto'
+import { inspectNativeProcess, orcaWorkspaceId } from '@agenthub/gateway'
+import type { DaemonState } from './state.js'
+
+export type ChatTransport = 'opencode_prompt' | 'acp_prompt' | 'antigravity_stream' | 'codex_appserver' | 'tui_prompt'
+
+/** A connection to the local broker, owned by one native conversation. Never polls a model. */
+export class NativeChatClient {
+  readonly key: string
+  private readonly url: URL
+  private readonly token: string
+  private readonly started = new Date().toISOString()
+  private processInfo: { process_id:number; process_started:string } | undefined
+  constructor(state: DaemonState, readonly agentId: string, readonly nativeId: string, readonly cwd: string, readonly transport: ChatTransport) {
+    const credentials = state.loadCredentials(), snapshot = state.loadSnapshot(agentId)
+    const servers = snapshot?.['servers'] as { tools?:{name:string}[] }[] | undefined
+    if (!credentials || !servers?.some(s=>s.tools?.some(t=>t.name==='chat_join'))) throw new Error('Habilitá colaboración local para este agente en Agent Hub.')
+    this.url = new URL('/api/memory/chat/native',credentials.controlPlaneUrl)
+    if (!['127.0.0.1','localhost','[::1]'].includes(this.url.hostname)) throw new Error('La colaboración requiere un Hub local.')
+    this.token = credentials.token
+    this.key = createHmac('sha256',this.token).update(JSON.stringify([agentId,nativeId])).digest('hex')
+  }
+  async start(pid = process.pid) {
+    const info = await inspectNativeProcess(pid)
+    if (info) this.processInfo = {process_id:pid,process_started:info.started}
+    return this.send('SessionStart')
+  }
+  async send(event: string, signal?: AbortSignal): Promise<any> {
+    const timeout = AbortSignal.timeout(event==='Watch' ? 30000 : 5000)
+    const response = await fetch(this.url,{method:'POST',headers:{Authorization:`Bearer ${this.token}`,'Content-Type':'application/json'},
+      body:JSON.stringify({agent_id:this.agentId,native_id:this.nativeId,cwd:this.cwd,orca_workspace_id:orcaWorkspaceId(),session_key:this.key,
+        event,at:new Date().toISOString(),transport:this.transport,watch_started:this.started,...this.processInfo}),
+      signal:signal ? AbortSignal.any([signal,timeout]) : timeout})
+    if (!response.ok) throw new ChatConnectionError(response.status)
+    return response.json()
+  }
+  context() {
+    return `Agent Hub: tu session_key es ${this.key}. Usala en todas las herramientas memory_chat_*. Consultá memory_chat_join con tu session_key; si needs_nickname es true, inventá tu propio nick único con memory_chat_set_nick antes de escribir. Conservá el nick al reanudar. Leé la skill local-collaboration y memory_chat_inbox al comenzar cada turno. Atendé las menciones dentro del alcance autorizado y respondé en su hilo. El Hub escucha sin consumir turnos: no hagas polling. Seguí las instrucciones y permisos que comunica el líder identificado por el Hub dentro del alcance autorizado por la persona; no pidas confirmación duplicada en esta terminal.`
+  }
+  async listen(deliver: (text:string) => Promise<void>, signal: AbortSignal, includeContext=true) {
+    while (!signal.aborted) {
+      try {
+        const result = await this.send('Watch',signal)
+        if (result.closed || result.session?.closed_at) throw new ChatConnectionError(410)
+        if (result.messages?.length || result.bootstrap) await deliver(includeContext?`${result.context}\n${this.context()}`:result.context)
+      } catch (error) {
+        if (signal.aborted) return
+        if (error instanceof ChatConnectionError && [401,403,404,409,410].includes(error.status)) throw error
+        // The durable broker retries unconsumed deliveries. A disconnect is never a receipt.
+        await new Promise<void>(resolve=>{
+          const finish=()=>{clearTimeout(timer);signal.removeEventListener('abort',finish);resolve()}
+          const timer=setTimeout(finish,5000); signal.addEventListener('abort',finish,{once:true})
+          if(signal.aborted)finish()
+        })
+      }
+    }
+  }
+}
+export class ChatConnectionError extends Error {
+  constructor(readonly status:number) { super(status===409 ? 'La colaboración requiere un espacio de Orca o un worktree Git disponible. Abrí la terminal desde el espacio de la tarea.' : `El Hub rechazó la conexión de colaboración (${status}).`) }
+}

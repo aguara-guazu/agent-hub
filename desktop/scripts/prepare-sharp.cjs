@@ -53,3 +53,12 @@ exports.prepareArgon2 = async (projectDir, appDir, platform, arch) => {
   await installPinned(lock, root, '@node-rs', name)
   for (const entry of await readdir(root)) if (entry.startsWith('argon2-') && entry !== name) await rm(join(root, entry), { recursive: true, force: true })
 }
+
+// The terminal transport also needs the target platform's prebuilt N-API binding.
+exports.preparePty = async (projectDir, appDir, platform, arch) => {
+  const lock = JSON.parse(readFileSync(join(projectDir, 'package-lock.json'), 'utf8'))
+  const root = join(appDir, 'node_modules', '@lydell'), name = `node-pty-${platform}-${arch}`
+  if (!existsSync(join(root, 'node-pty'))) return
+  await installPinned(lock, root, '@lydell', name)
+  for (const entry of await readdir(root)) if (entry.startsWith('node-pty-') && entry !== name) await rm(join(root, entry), { recursive: true, force: true })
+}

@@ -66,7 +66,7 @@ import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRo
 import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
-import { registerMemory, memoryTools, memorySkill, collaborationSkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
+import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
 import { createJiraTaskReader } from './memory-jira.js'
 
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
@@ -276,6 +276,15 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     fastify.addHook('onClose', async () => { await jiraPool.close() })
     const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
       jiraMcp: createJiraTaskReader(store, owner.id, jiraPool, oauthStore),
+      chatAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='chat_join') && s.tools.some(t=>t.name==='chat_inbox')),
+      authorizeChatAgent: async (request, agentId) => {
+        const principal = currentDaemon(request), agent = store.agent(agentId)
+        if (!agent || principal.user.id !== owner.id || agent.machine_id !== principal.machine.id || (principal.agent && principal.agent.id !== agentId))
+          throw new HttpError(403, 'La sesión no pertenece a este daemon local')
+        if (!computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='chat_join')))
+          throw new HttpError(403, 'La colaboración local está deshabilitada para este agente')
+        return { cli_kind: agent.cli_kind }
+      },
       worker: process.env.AGENTHUB_MEMORY_WORKER !== '0',
       authorize: async request => {
         const user = await currentUser(request)
@@ -307,6 +316,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const factorySkills: { key: string; skill: FactorySkill }[] = [
       { key: 'memory_skill', skill: memorySkill },
       { key: 'collaboration_skill', skill: collaborationSkill },
+      { key: 'local_collaboration_skill', skill: localCollaborationSkill },
       { key: 'google_setup_skill', skill: googleSetupSkill },
     ]
     const registerMemorySkill = () => { for (const entry of factorySkills) applyFactorySkill(store, owner, entry.key, entry.skill) }

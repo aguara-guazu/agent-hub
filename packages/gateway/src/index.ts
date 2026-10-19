@@ -8,3 +8,8 @@ export * from './audit.js'
 export * from './headless.js'
 export * from './memory-outbox.js'
 export * from './memory-lifecycle.js'
+
+export * from './native-process.js'
+export * from './orca-workspace.js'
+
+export { bindTuiSession, resumedTuiSession } from './tui-session.js'

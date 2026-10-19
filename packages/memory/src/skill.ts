@@ -56,6 +56,10 @@ El worker archiva recuerdos con vigencia vencida y duplicados exactos no fijados
 
 Podés organizar o corregir recuerdos a partir de evidencia: actualizar mediante \`memory_remember\`, relacionar mediante \`memory_link_entities\` y archivar un recuerdo reemplazado con \`memory_manage_memory\`, motivo y \`duplicate_of\` cuando corresponda. Leé ambas versiones antes de consolidar; conservá contradicciones que no puedas resolver. \`memory_list_memories\` permite revisar archivados y \`memory_manage_memory\` restaurarlos o fijarlos. El archivado es reversible; el borrado permanente de originales requiere una indicación explícita de la persona.
 
+## Colaboración local
+
+Al iniciar una conversación y al recibir avisos locales, seguí la skill **local-collaboration**. Si los hooks no te dieron una identidad, registrate con \`memory_chat_join\` y conservá la session_key. Elegí libremente tu nick único con \`memory_chat_set_nick\` si aún no tenés uno; conservá el nick al reanudar. Leé \`memory_chat_inbox\` al comenzar cada turno; el Hub escucha sin consumir contexto. Coordiná revisiones en hilos dentro del canal del espacio de Orca o, fuera de Orca, del worktree Git. Este chat es local y separado del foro de proyectos compartidos.
+
 ## Al empezar a trabajar: el proyecto de la carpeta
 
 1. **Primera llamada: \`memory_context\`.** Resuelve a qué proyecto pertenece la carpeta en la que corre el agente (la informa el hub; si no, pasar \`path\` con la carpeta actual), sus tareas abiertas y las notas de otros agentes que están trabajando ahora mismo.

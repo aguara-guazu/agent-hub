@@ -255,4 +255,74 @@ CREATE TABLE shared_source_sync (
   checked_at TIMESTAMP NOT NULL DEFAULT ${NOW}, error TEXT,
   PRIMARY KEY(project_id,entity_id)
 );
+`, String.raw`
+-- Local collaboration never enters the shared/P2P project event log.
+CREATE TABLE chat_channels (
+ id TEXT PRIMARY KEY, project_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+ path TEXT NOT NULL UNIQUE, name TEXT NOT NULL, branch TEXT, repository TEXT,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE TABLE chat_sessions (
+ id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, native_id TEXT, key_hash TEXT NOT NULL UNIQUE,
+ label TEXT NOT NULL, cli_kind TEXT NOT NULL, channel_id TEXT NOT NULL REFERENCES chat_channels(id),
+ state TEXT NOT NULL DEFAULT 'idle', capability TEXT NOT NULL DEFAULT 'next_turn',
+ process_id INTEGER, process_started TEXT, lease_until TIMESTAMP, event_at TIMESTAMP NOT NULL,
+ last_seen_at TIMESTAMP NOT NULL DEFAULT ${NOW}, created_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ closed_at TIMESTAMP, wake_error TEXT
+);
+CREATE INDEX chat_sessions_channel ON chat_sessions(channel_id,last_seen_at);
+CREATE TABLE chat_threads (
+ id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES chat_channels(id),
+ title TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open', created_by TEXT NOT NULL REFERENCES chat_sessions(id),
+ task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX chat_threads_channel ON chat_threads(channel_id,updated_at);
+CREATE TABLE chat_messages (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, thread_id TEXT NOT NULL REFERENCES chat_threads(id),
+ author_id TEXT NOT NULL REFERENCES chat_sessions(id), text TEXT NOT NULL,
+ reply_to TEXT REFERENCES chat_messages(id), request_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, UNIQUE(author_id,request_id)
+);
+CREATE INDEX chat_messages_thread ON chat_messages(thread_id,seq);
+CREATE TABLE chat_deliveries (
+ message_id TEXT NOT NULL REFERENCES chat_messages(id), recipient_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ notified_at TIMESTAMP, read_at TIMESTAMP, handled_at TIMESTAMP,
+ attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TIMESTAMP NOT NULL DEFAULT ${NOW}, error TEXT,
+ PRIMARY KEY(message_id,recipient_id)
+);
+CREATE INDEX chat_deliveries_pending ON chat_deliveries(recipient_id,read_at,next_attempt_at);
+`, String.raw`
+ALTER TABLE chat_sessions ADD COLUMN nickname TEXT;
+ALTER TABLE chat_sessions ADD COLUMN nickname_key TEXT;
+CREATE UNIQUE INDEX chat_sessions_nickname ON chat_sessions(nickname_key);
+UPDATE chat_sessions SET label='Sin nick todavía';
+`, String.raw`
+-- Identity and location are separate: two Orca spaces may share a directory.
+-- Renaming the unique column preserves every channel FK without rebuilding tables.
+ALTER TABLE chat_channels RENAME COLUMN path TO scope_key;
+ALTER TABLE chat_channels ADD COLUMN path TEXT NOT NULL DEFAULT '';
+ALTER TABLE chat_channels ADD COLUMN orca_workspace_id TEXT;
+UPDATE chat_channels SET path=scope_key,scope_key='git:'||scope_key;
+CREATE UNIQUE INDEX chat_channels_orca ON chat_channels(orca_workspace_id);
+`, String.raw`
+ALTER TABLE chat_sessions ADD COLUMN orca_terminal JSON;
+`, String.raw`
+ALTER TABLE chat_channels ADD COLUMN leader_id TEXT REFERENCES chat_sessions(id);
+ALTER TABLE chat_sessions ADD COLUMN team_seen BOOLEAN NOT NULL DEFAULT 0;
+ALTER TABLE chat_sessions ADD COLUMN bootstrap_sent_at TIMESTAMP;
+-- Existing teams retain their first participating conversation as coordinator.
+UPDATE chat_channels SET leader_id=(SELECT s.id FROM chat_sessions s WHERE s.channel_id=chat_channels.id AND s.nickname IS NOT NULL ORDER BY s.created_at,s.id LIMIT 1);
+ALTER TABLE chat_sessions ADD COLUMN bootstrap_attempts INTEGER NOT NULL DEFAULT 0;
+-- Terminal hosts are optional metadata, never a delivery transport.
+UPDATE chat_sessions SET capability='next_turn',orca_terminal=NULL,
+ wake_error='Reabrí esta conversación con agenthub-kiro para activar la escucha independiente del Hub.' WHERE capability='orca_prompt';
+`, String.raw`
+ALTER TABLE chat_sessions ADD COLUMN removed_at TIMESTAMP;
+ALTER TABLE chat_sessions ADD COLUMN removed_by TEXT;
+ALTER TABLE chat_sessions ADD COLUMN removal_reason TEXT;
+ALTER TABLE chat_sessions ADD COLUMN gateway_session_id TEXT;
+UPDATE chat_sessions SET gateway_session_id=id WHERE native_id IS NOT NULL;
+CREATE INDEX chat_sessions_gateway ON chat_sessions(agent_id,gateway_session_id);
+ALTER TABLE chat_deliveries ADD COLUMN cancelled_at TIMESTAMP;
 `]
