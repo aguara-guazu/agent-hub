@@ -98,7 +98,38 @@ it('entrega al master de un equipo vinculado y revoca la entrega al cerrar el eq
     VALUES($1,$2,0,'child','codex_cli','real-model','implementer','task','prompt','{}','joined',$3,$4)`,[randomUUID(),team,child.session.id,child.channel.id])
   await report(child,await observation(child))
   expect(await operations.usageNotices.pending(master.session.id)).toHaveLength(1)
+  // Notices persisted by the previous single-team format retain their revocation rules.
+  await db.query("UPDATE usage_quota_notices SET payload=json_remove(payload,'$.routing') WHERE recipient_id=$1",[master.session.id])
+  expect(await operations.usageNotices.pending(master.session.id)).toHaveLength(1)
   await db.query("UPDATE chat_team_plans SET state='cancelled' WHERE id=$1",[team])
+  expect(await operations.usageNotices.pending(master.session.id)).toEqual([])
+  expect(await operations.usageNotices.claim(master.session.id)).toEqual([])
+})
+
+it('conserva un único aviso mientras alguno de los equipos asociados del master siga activo',async()=>{
+  const master=await session('multi-master'),childA=await session('multi-child-a','client-shared'),childB=await session('multi-child-b','client-shared')
+  const {operations,db}=await service.get(),teams:string[]=[]
+  for(const child of [childA,childB]){
+    const team=randomUUID(),thread=randomUUID();teams.push(team)
+    await db.query('INSERT INTO chat_threads(id,channel_id,title,created_by) VALUES($1,$2,$3,$4)',[thread,master.channel.id,'Equipo de cuota',master.session.id])
+    await db.query(`INSERT INTO chat_team_plans(id,master_channel_id,root_thread_id,created_by,objective,parent,base_revision,plan,digest,state)
+      VALUES($1,$2,$3,$4,'Quota test','{}',$5,'{}',$6,'active')`,[team,master.channel.id,thread,master.session.id,'a'.repeat(40),randomUUID()])
+    await db.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,role,task,prompt,capabilities,state,session_id,channel_id)
+      VALUES($1,$2,0,'child','codex_cli','real-model','implementer','task','prompt','{}','joined',$3,$4)`,[randomUUID(),team,child.session.id,child.channel.id])
+  }
+  const payload=await observation(childA)
+  expect((await report(childA,payload)).json().accepted).toBe(true)
+  expect((await report(childA,payload)).json().accepted).toBe(false)
+  const pending=await operations.usageNotices.pending(master.session.id)
+  expect(pending).toHaveLength(1)
+  expect(pending[0].payload.routing).toEqual({direct_channel:false,team_ids:[...teams].sort()})
+  expect((await db.query('SELECT count(*) AS n FROM usage_quota_notices WHERE recipient_id=$1',[master.session.id]))[0].n).toBe(1)
+  // Close precisely the legacy first-team field, exposing the previous loss of the other association.
+  const first=(await db.query('SELECT team_id FROM usage_quota_notices WHERE recipient_id=$1',[master.session.id]))[0].team_id
+  await db.query("UPDATE chat_team_plans SET state='cancelled' WHERE id=$1",[first])
+  expect(await operations.usageNotices.pending(master.session.id)).toHaveLength(1)
+  expect(await operations.usageNotices.claim(master.session.id)).toHaveLength(1)
+  await db.query("UPDATE chat_team_plans SET state='cancelled' WHERE created_by=$1",[master.session.id])
   expect(await operations.usageNotices.pending(master.session.id)).toEqual([])
   expect(await operations.usageNotices.claim(master.session.id)).toEqual([])
 })
