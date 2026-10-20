@@ -15,6 +15,16 @@ Los rechazos de autenticación detienen la tarea. Los límites y fallos temporal
 
 El esfuerzo se pasa mediante opciones nativas: `--effort` en Claude Code y Kiro, `model_reasoning_effort` en Codex y `variant` en OpenCode. Se rechazan niveles que no estén en el catálogo admitido. El catálogo de Kiro actualmente omite los niveles; se utiliza una lista explícita de modelos documentados, sin asumir compatibilidad en modelos desconocidos. Las políticas de la organización y los límites del proveedor siguen teniendo precedencia.
 
+## Catálogo para equipos interactivos
+
+El catálogo de equipos reutiliza discovery local para `ExtractionCli` —Claude Code, Codex y Kiro—, pero no convierte automáticamente una capacidad headless de extracción en capacidad de lanzamiento interactivo. Cada entrada informa por separado, con procedencia y `observed_at`, si la CLI está instalada, si Orca puede lanzarla en este host, si admite crear un worktree, seleccionar modelo, seleccionar esfuerzo y qué clase de outcome puede devolver.
+
+Un modelo anunciado por una CLI no demuestra acceso, cuota ni permiso de la cuenta. La preparación puede mostrarlo con esa advertencia; el lanzamiento vuelve a validarlo y falla cerrado si la combinación quedó ausente, vencida o desconocida. No se resuelven aliases ambiguos, no se inventan precios o benchmarks y no se elige otro modelo para completar el equipo.
+
+El esfuerzo conserva la semántica de cada cliente. `--effort` sólo se envía junto con un modelo cuando el catálogo de ese cliente admite el valor; no hay una escala universal que convierta niveles entre Claude Code, Codex y Kiro. El adaptador de Orca recibe argumentos separados y nunca agrega opciones de confianza o aprobación. La preferencia **Chat UI** de la persona determina si el resultado real es chat estructurado o terminal; el recibo registra ese outcome en vez de asumirlo.
+
+Orca sólo provee worktrees y launch en el host local. Agent Hub persiste intención, recibos, invitaciones y estado. `launch_handle` y `operation_id` aparecen en status para inspección y no son secretos; si el adaptador devuelve un `operation_id` con el error, se conserva al marcar `unknown`. La recuperación inspecciona handle, workspace y operación, pero no existe una tool que relance automáticamente; tras reiniciar, estados con efectos en vuelo pasan a incierto/paused y requieren recovery manual. Este flujo no usa `worker-start`. La invitación scoped forma parte del contenido del prompt y Orca la pasa mediante `--prompt` en argv transitorio, visible dentro del threat model del usuario local; no es una `session_key` y sólo su hash se persiste. El adaptador limpia variables `AGENTHUB_*`, Electron y routing heredado, conserva el PATH necesario para launches GUI y sanitiza errores sin copiar stdout o stderr crudos. Cerrar el equipo revoca ACL/invitaciones, pero no mata procesos ni borra worktrees.
+
 ## Referencias oficiales
 
 - [Claude Code: ejecución programática](https://code.claude.com/docs/en/headless), [condiciones para integrarlo en productos](https://code.claude.com/docs/en/legal-and-compliance) y [esfuerzo por modelo](https://code.claude.com/docs/en/model-config).

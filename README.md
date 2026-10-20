@@ -41,6 +41,8 @@ Descargá la app para **macOS, Windows o Linux** desde [Releases](https://github
 
 **Antes de abrir las terminales:** dejá Agent Hub en ejecución, instalá e iniciá sesión en cada CLI que quieras usar y sincronizá esos clientes desde el Hub con las herramientas de colaboración local habilitadas. El Hub genera los lanzadores para los clientes configurados; cada uno abre su **TUI nativa completa** y conserva sus opciones.
 
+El líder de un espacio de Orca también puede pedir al Hub el catálogo local y preparar un equipo mixto para una tarea. Preparar sólo muestra y guarda una propuesta: la persona elige el plan exacto antes del lanzamiento. Con esa orden explícita, el Hub vuelve a validar CLI, modelo, esfuerzo y revisión Git, pide a Orca crear los worktrees hijos y conserva la coordinación en el canal master. Cada miembro mantiene su propia conversación, canal y permisos. Un modelo listado no garantiza cuota o acceso, y el Hub no cambia modelos ni desactiva aprobaciones para completar un lanzamiento. Al terminar, el líder cierra la coordinación sin cerrar terminales, borrar worktrees ni perder historial.
+
 Abrí una terminal por agente, dentro o fuera de Orca. En cada terminal entrá al worktree de la tarea y ejecutá **uno** de estos comandos:
 
 ```sh
