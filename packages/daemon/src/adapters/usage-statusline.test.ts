@@ -6,7 +6,7 @@ import { planUsageStatusline } from './usage-statusline.js'
 import { applyChanges } from './atomic.js'
 import { gatewayEndpoint, type Snapshot } from './base.js'
 let home:string
-const snapshot={cli_kind:'claude_code',servers:[{tools:[{name:'chat_join'}]}]} as Snapshot
+const snapshot={cli_kind:'claude_code',servers:[{tools:[{name:'chat_join'},{name:'usage_status'}]}]} as Snapshot
 const endpoint=gatewayEndpoint({command:'/a path/node',args:['/app/cli.js','gateway','--agent','agent','--state-dir','/state']})
 beforeEach(()=>{home=mkdtempSync(join(tmpdir(),'quota-statusline-'));mkdirSync(join(home,'.claude'))})
 afterEach(()=>rmSync(home,{recursive:true,force:true}))
@@ -30,4 +30,7 @@ it('no reclama statusline al desactivar colaboración y retira sólo la propia',
  const disabled={...snapshot,servers:[]};expect(planUsageStatusline(disabled,endpoint,home)).toEqual([[],[]])
  applyChanges(planUsageStatusline(snapshot,endpoint,home)[0]);applyChanges(planUsageStatusline(disabled,endpoint,home)[0])
  expect(JSON.parse(readFileSync(join(home,'.claude/settings.json'),'utf8')).statusLine).toBeNull()
+})
+it('chat_join sin usage_status no instala el observador',()=>{
+ expect(planUsageStatusline({...snapshot,servers:[{tools:[{name:'chat_join'}]}]} as Snapshot,endpoint,home)).toEqual([[],[]])
 })

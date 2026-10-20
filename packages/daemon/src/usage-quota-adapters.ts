@@ -7,7 +7,7 @@ const epoch=(value:unknown):string|undefined=>finite(value) && value>0 && value<
 export const quotaProvider=(cli:string)=>({codex_cli:'openai',claude_code:'anthropic',kiro:'kiro'}[cli] ?? cli)
 export function unknownQuota(cli:string,adapter:string,reason:string,now=Date.now()):UsageQuotaObservation {
   return {cli,provider:quotaProvider(cli),pool_id:'subscription',observed_at:new Date(now).toISOString(),
-    expires_at:new Date(now+300000).toISOString(),source:{kind:'native',adapter},windows:[],status:'unknown',complete:false,reason}
+    expires_at:new Date(now+300000).toISOString(),source:{kind:'native',adapter},model_scope:'unknown',windows:[],status:'unknown',complete:false,reason}
 }
 function percentWindow(id:string,raw:unknown,field:string,reset:string):UsageQuotaWindow|undefined {
   const value=record(raw),used=value[field]
@@ -34,11 +34,15 @@ export function codexQuotas(raw:unknown,accountRef?:string,now=Date.now()):Usage
     for(const name of ['primary','secondary']) {
       if(bucket[name]===null)continue
       const window=percentWindow(name,bucket[name],'usedPercent','resetsAt')
-      if(window && (!window.resets_at || Date.parse(window.resets_at)>now))windows.push(window);else complete=false
+      if(window && (!window.resets_at || Date.parse(window.resets_at)>now)) {
+        const duration=record(bucket[name]).windowDurationMins
+        if(finite(duration) && duration>0)window.duration_minutes=duration
+        windows.push(window)
+      } else complete=false
     }
     if(!windows.length)complete=false
     const observation:UsageQuotaObservation={...unknownQuota('codex_cli','codex-app-server','native_windows_incomplete',now),
-      pool_id:id,...(accountRef?{account_ref:accountRef}:{}),windows,complete,
+      pool_id:id,model_scope:id==='codex'?'all':'unknown',...(accountRef?{account_ref:accountRef}:{}),windows,complete,
       source:{kind:'native',adapter:'codex-app-server',reference:'https://learn.chatgpt.com/docs/app-server'}}
     delete observation.status
     if(complete)delete observation.reason
@@ -54,14 +58,14 @@ export function claudeQuotas(raw:unknown,now=Date.now()):UsageQuotaObservation[]
   let complete=true
   for(const id of ['five_hour','seven_day']) {
     const window=percentWindow(id,limits[id],'used_percentage','resets_at')
-    if(window && window.resets_at && Date.parse(window.resets_at)>now)windows.push(window)
+    if(window && window.resets_at && Date.parse(window.resets_at)>now)windows.push({...window,duration_minutes:id==='five_hour'?300:10080})
     else complete=false
   }
   if(limits.spend_limit!==undefined) {
     const spend=percentWindow('spend_limit',limits.spend_limit,'used_percentage','resets_at')
     if(spend && spend.resets_at && Date.parse(spend.resets_at)>now)windows.push(spend);else complete=false
   }
-  const observation:UsageQuotaObservation={...unknownQuota('claude_code','claude-statusline','native_windows_incomplete',now),windows,complete,
+  const observation:UsageQuotaObservation={...unknownQuota('claude_code','claude-statusline','native_windows_incomplete',now),windows,complete,model_scope:'all',
     source:{kind:'native',adapter:'claude-statusline',reference:'https://code.claude.com/docs/en/statusline'}}
   delete observation.status
   if(complete)delete observation.reason

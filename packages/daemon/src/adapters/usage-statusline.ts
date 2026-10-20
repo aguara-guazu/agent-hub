@@ -7,7 +7,7 @@ import { hookCommand } from './memory-hooks.js'
 export function planUsageStatusline(snapshot:Snapshot,endpoint:GatewayEndpoint,home:string):[FileChange[],DriftItem[]] {
   if(snapshot.cli_kind!=='claude_code' || endpoint.transport!=='stdio' || !endpoint.args.includes('gateway') || !endpoint.args.includes('--state-dir'))return [[],[]]
   const path=join(home,'.claude/settings.json'),manifest=Manifest.load(home),keyPath=['statusLine']
-  const enabled=snapshot.servers.some(server=>server.tools.some(tool=>tool.name==='chat_join'))
+  const enabled=['chat_join','usage_status'].every(name=>snapshot.servers.some(server=>server.tools.some(tool=>tool.name===name)))
   if(!enabled && manifest.digestFor(path,region('json_value',keyPath))===null)return [[],[]]
   const args=endpoint.args.map(arg=>arg==='gateway'?'usage-statusline':arg)
   const value=enabled?{type:'command',command:hookCommand(endpoint.command,args,true)}:null

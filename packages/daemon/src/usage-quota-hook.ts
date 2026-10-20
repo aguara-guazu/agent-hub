@@ -7,7 +7,7 @@ import { NativeChatClient } from './local-chat-client.js'
 import { DaemonState } from './state.js'
 import { ChatProtocol } from './chat-protocol.js'
 import { chatExecutable } from './chat-terminal.js'
-import { collectProtocolQuota, quotaProfileKey, withQuotaLease } from './usage-quota-collector.js'
+import { collectProtocolQuota, quotaProfileKey, quotaProfileRef, withQuotaLease } from './usage-quota-collector.js'
 
 /** A hook does not expose argv structurally. Refuse known account/routing overrides rather than guess them. */
 export function quotaHookProfileSafe(command:string):boolean {
@@ -32,11 +32,14 @@ export async function runQuotaHookProbe(stateDir:string,agentId:string,raw:unkno
   const state=new DaemonState(stateDir)
   if(state.loadSnapshot(agentId)?.['cli_kind']!=='codex_cli')return
   const broker=new NativeChatClient(state,agentId,input.native_id,input.cwd,'tui_prompt')
+  if(!broker.usageEnabled())return
   const searchPath=[process.env.PATH,join(homedir(),'.local/bin'),...(process.platform==='win32'?[process.env.APPDATA&&join(process.env.APPDATA,'npm')]:['/opt/homebrew/bin','/usr/local/bin'])].filter(Boolean).join(delimiter)
   const executable=chatExecutable('codex',searchPath),env={...process.env,PATH:searchPath,...(executable.prefix.length?{ELECTRON_RUN_AS_NODE:'1'}:{})}
   await withQuotaLease(stateDir,quotaProfileKey('codex_cli',executable.command,env,input.cwd),async()=>{
+    if(!broker.usageEnabled())return
     const protocol=new ChatProtocol('codex',executable.command,[...executable.prefix,'app-server'],input.cwd as string,()=>{},async()=>({}),env)
-    const deadline=setTimeout(()=>{void protocol.close()},25000)
-    try {await collectProtocolQuota(protocol,'codex_cli',broker)} finally {clearTimeout(deadline);await protocol.close()}
+    const budget=AbortSignal.timeout(25000),cancel=()=>{void protocol.close()}
+    budget.addEventListener('abort',cancel,{once:true})
+    try {await collectProtocolQuota(protocol,'codex_cli',broker,quotaProfileRef('codex_cli',executable.command,env,input.cwd as string),budget)} finally {budget.removeEventListener('abort',cancel);await protocol.close()}
   })
 }

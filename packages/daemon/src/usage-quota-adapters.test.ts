@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto'
 import { afterEach, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, readdirSync, mkdirSync, writeFileSync, utimesSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { codexQuotas, claudeQuotas, kiroQuotas, kiroUsageAdvertised, kiroRateLimit, opaqueQuotaAccount } from './usage-quota-adapters.js'
-import { collectProtocolQuota, quotaProbeCompatibleArgs, withQuotaLease } from './usage-quota-collector.js'
+import { collectProtocolQuota, quotaProbeCompatibleArgs, quotaProfileRef, quotaProfileKey, startQuotaCollector, withQuotaLease } from './usage-quota-collector.js'
 import { ChatProtocol } from './chat-protocol.js'
 import type { NativeChatClient } from './local-chat-client.js'
 const now=Date.parse('2026-10-20T00:00:00Z'),reset=now/1000+3600
@@ -48,21 +49,23 @@ it('deduplica probes entre procesos por perfil y respeta backoff',async()=>{
  const files=readdirSync(join(root,'usage-probes')).map(name=>readFileSync(join(root,'usage-probes',name),'utf8'))
  expect(files.some(file=>JSON.parse(file).failures===1)).toBe(true)
 })
-const broker=()=>({bindUsage:vi.fn(async()=>({binding_id:'installed',binding_version:1,cli:'codex_cli',provider:'openai'})),reportUsage:vi.fn(async()=>{})})
+const broker=()=>({usageEnabled:()=>true,bindUsage:vi.fn(async()=>({binding_id:'installed',binding_version:1,cli:'codex_cli',provider:'openai'})),reportUsage:vi.fn(async()=>{})})
 it('probe Codex real de protocolo sólo inicializa/lee metadatos y descarta cambio de cuenta',async()=>{
  for(const changes of [false,true]){
  const code=`const r=require('node:readline').createInterface({input:process.stdin});let reads=0;const send=x=>console.log(JSON.stringify(x));r.on('line',line=>{const p=JSON.parse(line);if(p.method==='initialized')return;if(p.method==='initialize')return send({id:p.id,result:{}});if(p.method==='account/read')return send({id:p.id,result:{workspaceRouting:{chatgptAccountId:${changes}&&reads++?'changed':'account'}}});if(p.method==='account/rateLimits/read')return send({id:p.id,result:{accountId:'account',rateLimits:{limitId:'codex',primary:{usedPercent:20,resetsAt:${reset}},secondary:null}}});send({id:p.id,error:{code:-1,message:'Unexpected operation'}})});`
  const protocol=new ChatProtocol('codex',process.execPath,['-e',code],process.cwd(),()=>{},async()=>({}));processes.push(protocol)
- const b=broker();await collectProtocolQuota(protocol,'codex_cli',b as unknown as NativeChatClient)
- expect(protocol.sessionId).toBe('');expect(b.bindUsage).toHaveBeenCalledWith('openai',opaqueQuotaAccount('openai','account'),expect.any(String))
+ const b=broker();await collectProtocolQuota(protocol,'codex_cli',b as unknown as NativeChatClient,'profile-ref')
+ expect(protocol.sessionId).toBe('');expect(b.bindUsage).toHaveBeenCalledWith('openai',opaqueQuotaAccount('openai','account'),expect.any(String),'profile-ref',undefined)
  expect(b.reportUsage).toHaveBeenCalledTimes(changes?0:1)
+ expect(b.bindUsage).toHaveBeenCalledTimes(changes?2:1)
+ if(changes)expect(b.bindUsage).toHaveBeenLastCalledWith('openai',opaqueQuotaAccount('openai','changed'),expect.any(String),'profile-ref',undefined)
  }
 })
 it('no llama getUsage cuando Kiro no anuncia la extensión',async()=>{
  const code=`const r=require('node:readline').createInterface({input:process.stdin});r.on('line',line=>{const p=JSON.parse(line);console.log(JSON.stringify(p.method==='initialize'?{id:p.id,result:{agentCapabilities:{}}}:{id:p.id,error:{code:-1,message:'Unexpected call'}}))});`
  const protocol=new ChatProtocol('acp',process.execPath,['-e',code],process.cwd(),()=>{},async()=>({}));processes.push(protocol)
  const b=broker();await collectProtocolQuota(protocol,'kiro',b as unknown as NativeChatClient)
- expect(b.reportUsage.mock.calls[0]).toEqual([expect.anything(),expect.objectContaining({reason:'native_usage_not_advertised'})])
+ expect(b.reportUsage.mock.calls[0]).toEqual([expect.anything(),expect.objectContaining({reason:'native_usage_not_advertised'}),undefined])
 })
 
 it('Codex respeta el bloqueo nativo aunque el porcentaje de ventana parezca libre',()=>{
@@ -73,4 +76,68 @@ it('Claude incluye spend_limit y no descarta una restricción adicional malforme
  const base={five_hour:{used_percentage:5,resets_at:reset},seven_day:{used_percentage:5,resets_at:reset}}
  expect(claudeQuotas({rate_limits:{...base,spend_limit:{used_percentage:100,resets_at:reset}}},now)[0]?.windows).toHaveLength(3)
  expect(claudeQuotas({rate_limits:{...base,spend_limit:{used_percentage:'100'}}},now)[0]?.complete).toBe(false)
+})
+
+it.each(['codex_cli','claude_code'])('perfil %s comparte binding por defecto y separa configuración de proyecto sin depender de sesión ni mtime',cli=>{
+ const root=mkdtempSync(join(tmpdir(),'quota-profile-'));paths.push(root)
+ const one=join(root,'one'),two=join(root,'two');mkdirSync(one);mkdirSync(two)
+ const env={HOME:root},base=quotaProfileRef(cli,'/cli',env,one)
+ expect(base).toMatch(/^[a-f0-9]{64}$/)
+ expect(quotaProfileRef(cli,'/cli',env,two)).toBe(base)
+ const subdir=cli==='codex_cli'?'.codex':'.claude',config=join(one,subdir,cli==='codex_cli'?'config.toml':'settings.local.json')
+ mkdirSync(join(one,subdir));writeFileSync(config,'private contents never read')
+ const scoped=quotaProfileRef(cli,'/cli',env,one),lease=quotaProfileKey(cli,'/cli',env,one)
+ expect(scoped).not.toBe(base);expect(quotaProfileRef(cli,'/cli',env,two)).toBe(base)
+ mkdirSync(join(one,'nested'));expect(quotaProfileRef(cli,'/cli',env,join(one,'nested'))).toBe(scoped)
+ utimesSync(config,new Date(),new Date(Date.now()+10000))
+ expect(quotaProfileRef(cli,'/cli',env,one)).toBe(scoped)
+ expect(quotaProfileKey(cli,'/cli',env,one)).not.toBe(lease)
+ expect(quotaProfileRef(cli,'/cli',{HOME:root,CODEX_HOME:'/alternative'},two)).not.toBe(base)
+})
+it('preserva duración nativa de Codex sin inferirla del nombre primary',()=>{
+ const raw={rateLimits:{limitId:'codex',primary:{usedPercent:20,resetsAt:reset,windowDurationMins:15},secondary:null}}
+ expect(codexQuotas(raw,undefined,now)[0]?.windows[0]?.duration_minutes).toBe(15)
+ expect(codexQuotas({rateLimits:{...raw.rateLimits,primary:{usedPercent:20,resetsAt:reset}}},undefined,now)[0]?.windows[0]?.duration_minutes).toBeUndefined()
+})
+
+it('desvincula disponibilidad anterior si el accountId de la cuota contradice identidad nativa',async()=>{
+ const protocol={initialize:async()=>({}),request:vi.fn(async(method:string)=>method==='account/read'?{workspaceRouting:{chatgptAccountId:'A'}}:{accountId:'B'})} as unknown as ChatProtocol
+ const b=broker();await collectProtocolQuota(protocol,'codex_cli',b as unknown as NativeChatClient,'profile')
+ expect(b.bindUsage).toHaveBeenNthCalledWith(1,'openai',opaqueQuotaAccount('openai','A'),expect.any(String),'profile',undefined)
+ expect(b.bindUsage).toHaveBeenNthCalledWith(2,'openai',undefined,expect.any(String),'profile',undefined)
+ expect(b.reportUsage).not.toHaveBeenCalled()
+})
+
+it('el propietario anterior no borra el lease de un reemplazo después de expiración',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'quota-lease-owner-'));paths.push(root)
+ const key=createHash('sha256').update('same').digest('hex'),directory=join(root,'usage-probes'),lock=join(directory,key+'.lock')
+ let releaseFirst:()=>void=()=>{},releaseSecond:()=>void=()=>{}
+ const first=withQuotaLease(root,'same',()=>new Promise<void>(resolve=>{releaseFirst=resolve}))
+ const originalToken=readdirSync(lock)[0]
+ utimesSync(lock,new Date(0),new Date(0));rmSync(join(directory,key+'.json'))
+ const second=withQuotaLease(root,'same',()=>new Promise<void>(resolve=>{releaseSecond=resolve}))
+ const replacementToken=readdirSync(lock)[0];expect(replacementToken).not.toBe(originalToken)
+ releaseFirst();await first
+ expect(existsSync(lock)).toBe(true);expect(readdirSync(lock)).toEqual([replacementToken])
+ releaseSecond();await second;expect(existsSync(lock)).toBe(false)
+})
+it('OFF evita inicializar protocolo y procesos de probe aunque colaboración siga habilitada',async()=>{
+ const p={initialize:vi.fn(async()=>({}))} as unknown as ChatProtocol,b={...broker(),usageEnabled:()=>false}
+ await collectProtocolQuota(p,'codex_cli',b as unknown as NativeChatClient)
+ expect(p.initialize).not.toHaveBeenCalled();expect(b.bindUsage).not.toHaveBeenCalled()
+ const root=mkdtempSync(join(tmpdir(),'quota-off-'));paths.push(root)
+ const stop=startQuotaCollector({root,cli:'codex_cli',command:'/must-not-run',prefix:[],args:[],cwd:root,env:{},broker:b as unknown as NativeChatClient,signal:new AbortController().signal})
+ await stop();expect(existsSync(join(root,'usage-probes'))).toBe(false)
+})
+it('declara scope de modelos desconocido para pools dedicados sin mapping nativo',()=>{
+ const pool=(limitId:string)=>({limitId,primary:{usedPercent:100,resetsAt:reset},secondary:null})
+ expect(codexQuotas({rateLimitsByLimitId:{codex:pool('codex'),special:pool('special')}},undefined,now).map(p=>[p.pool_id,p.model_scope])).toEqual([['codex','all'],['special','unknown']])
+})
+it('la cancelación de metadata no cierra una conversación del protocolo existente',async()=>{
+ const code=`require('node:readline').createInterface({input:process.stdin}).on('line',()=>{});`
+ const protocol=new ChatProtocol('codex',process.execPath,['-e',code],process.cwd(),()=>{},async()=>({}));processes.push(protocol)
+ const controller=new AbortController(),request=protocol.request('account/rateLimits/read',{},5000,controller.signal)
+ controller.abort(new Error('absolute deadline'))
+ await expect(request).rejects.toThrow('absolute deadline')
+ expect(protocol.child.killed).toBe(false)
 })

@@ -47,16 +47,19 @@ export class ChatProtocol {
     if(this.dead || !this.child.stdin.writable)throw new Error('La sesión de CLI está cerrada.')
     this.child.stdin.write(JSON.stringify(packet)+'\n')
   }
-  async request(method:string,params:Packet,timeout=30000):Promise<any> {
+  async request(method:string,params:Packet,timeout=30000,signal?:AbortSignal):Promise<any> {
+    signal?.throwIfAborted()
     const id=++this.seq
+    const abort=()=>{const pending=this.pending.get(id);this.pending.delete(id);pending?.reject(signal?.reason ?? new Error('Consulta cancelada.'))}
     let timer:ReturnType<typeof setTimeout>|undefined
     try {
       return await new Promise((resolve,reject)=>{
         this.pending.set(id,{resolve,reject})
+        signal?.addEventListener('abort',abort,{once:true})
         if(timeout)timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(`La CLI no respondió a ${method}.`))},timeout)
         try { this.write({jsonrpc:'2.0',id,method,params}) } catch(error) {this.pending.delete(id);reject(error)}
       })
-    } finally { clearTimeout(timer) }
+    } finally { clearTimeout(timer);signal?.removeEventListener('abort',abort) }
   }
   private async receive(packet:Packet) {
     if(packet.id===undefined && ['account/rateLimits/updated','_kiro/error/rate_limit'].includes(packet.method)) {
@@ -120,12 +123,12 @@ export class ChatProtocol {
     }
   }
   /** Initialize only: no conversation, MCP servers or inference are started. */
-  async initialize(timeout=10000):Promise<Packet> {
+  async initialize(timeout=10000,signal?:AbortSignal):Promise<Packet> {
     if(this.initialized)return this.initialized
     if(this.format==='antigravity')throw new Error('No hay consulta de cuotas documentada para este transporte.')
     this.initialized=await this.request('initialize',this.format==='codex'
       ? {clientInfo:{name:'agent-hub',version:'0.10.1'},capabilities:{experimentalApi:false}}
-      : {protocolVersion:1,clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false},clientInfo:{name:'agent-hub',version:'0.10.1'}},timeout)
+      : {protocolVersion:1,clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false},clientInfo:{name:'agent-hub',version:'0.10.1'}},timeout,signal)
     if(this.format==='codex')this.write({method:'initialized'})
     return this.initialized!
   }
