@@ -50,7 +50,8 @@ export function codexQuotas(raw:unknown,accountRef?:string,now=Date.now()):Usage
     else if(response.ordinaryUsageAllowed===false || bucket.spendControlReached===true) {observation.complete=false;observation.reason='native_usage_unavailable'}
     result.push(observation)
   }
-  return result.length ? result : [{...unknownQuota('codex_cli','codex-app-server','native_windows_unavailable',now),...(accountRef?{account_ref:accountRef}:{})}]
+  // Without a native pool identity there is no quota observation. Do not invent a persistent placeholder.
+  return result
 }
 /** Statusline data is explicitly optional until the first API response. Never trigger one to measure. */
 export function claudeQuotas(raw:unknown,now=Date.now()):UsageQuotaObservation[] {

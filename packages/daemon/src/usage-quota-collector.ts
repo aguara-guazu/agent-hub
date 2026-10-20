@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync, statSync, renameSync, u
 import { dirname, join, resolve } from 'node:path'
 import { ChatProtocol } from './chat-protocol.js'
 import type { NativeChatClient } from './local-chat-client.js'
-import { codexAccountId, codexQuotas, kiroQuotas, kiroRateLimit, kiroUsageAdvertised, opaqueQuotaAccount, quotaProvider, unknownQuota } from './usage-quota-adapters.js'
+import { codexAccountId, codexQuotas, kiroQuotas, kiroRateLimit, kiroUsageAdvertised, opaqueQuotaAccount, unknownQuota } from './usage-quota-adapters.js'
 
 /** Cross-process lease: four agents sharing one profile do not run four account probes. */
 export async function withQuotaLease(root:string,profile:string,collect:()=>Promise<void>,now=Date.now()):Promise<boolean> {
@@ -59,7 +59,9 @@ export async function collectProtocolQuota(protocol:ChatProtocol,cli:string,brok
       await broker.bindUsage('openai',finalRef,new Date(Math.max(Date.now(),Date.parse(sampleStartedAt)+1)).toISOString(),profileRef,signal)
       return
     }
-    for(const observation of codexQuotas(raw,accountRef)){signal?.throwIfAborted();await broker.reportUsage(binding,observation,signal)}
+    const observations=codexQuotas(raw,accountRef)
+    if(!observations.length)throw new Error('native_usage_unavailable')
+    for(const observation of observations){signal?.throwIfAborted();await broker.reportUsage(binding,observation,signal)}
   } else if(cli==='kiro') {
     const binding=await broker.bindUsage('kiro',undefined,sampleStartedAt,profileRef,signal)
     const observations=kiroUsageAdvertised(init)
@@ -121,9 +123,8 @@ export function startQuotaCollector(options:{root:string;cli:string;command:stri
       budget.throwIfAborted()
       const supported=['codex_cli','kiro'].includes(cli) && (options.protocol || quotaProbeCompatibleArgs(cli,options.args))
       if(!supported) {
-        const binding=await broker.bindUsage(quotaProvider(cli),undefined,new Date().toISOString(),profileRef,budget)
-        await broker.reportUsage(binding,unknownQuota(cli,cli==='codex_cli'?'codex-app-server':'kiro-acp','native_probe_unsupported'),budget)
-        return
+        // No native pool was read. A transport limitation is not an account quota and cannot create one.
+        throw new Error('native_probe_unsupported')
       }
       const protocol=options.protocol ?? new ChatProtocol(cli==='codex_cli'?'codex':'acp',options.command,
         [...options.prefix,...(cli==='codex_cli'?['app-server']:['acp','--agent-engine=v3'])],options.cwd,()=>{},async()=>({outcome:{outcome:'cancelled'}}),options.env)

@@ -17,7 +17,7 @@ it('conserva pools/ventanas simultáneas de Codex y no convierte crédito en por
 })
 it('rechaza tipos no numéricos, NaN, porcentajes imposibles y estructura vacía',()=>{
  for(const usedPercent of ['100',NaN,-1,101,null])expect(codexQuotas({rateLimits:{limitId:'codex',primary:{usedPercent},secondary:null}},undefined,now)[0]).toMatchObject({complete:false,windows:[]})
- expect(codexQuotas({},undefined,now)[0]?.status).toBe('unknown')
+ expect(codexQuotas({},undefined,now)).toEqual([])
 })
 it('Claude ignora transcript/context y marca ventanas ausentes o vencidas incompletas',()=>{
  const raw={transcript_path:'SECRET',context_window:{used_percentage:90},rate_limits:{five_hour:{used_percentage:81,resets_at:reset},seven_day:{used_percentage:51,resets_at:reset+86400}}}
@@ -140,4 +140,11 @@ it('la cancelación de metadata no cierra una conversación del protocolo existe
  controller.abort(new Error('absolute deadline'))
  await expect(request).rejects.toThrow('absolute deadline')
  expect(protocol.child.killed).toBe(false)
+})
+
+it('una lectura Codex vacía activa backoff sin publicar un pool provisional',async()=>{
+ const protocol={initialize:async()=>({}),request:vi.fn(async(method:string)=>method==='account/read'?{workspaceRouting:{chatgptAccountId:'A'}}:{})} as unknown as ChatProtocol
+ const b=broker()
+ await expect(collectProtocolQuota(protocol,'codex_cli',b as unknown as NativeChatClient,'profile')).rejects.toThrow('native_usage_unavailable')
+ expect(b.reportUsage).not.toHaveBeenCalled()
 })
