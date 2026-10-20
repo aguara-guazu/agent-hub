@@ -216,3 +216,6 @@ export function snapshotHash(snapshot: Omit<PolicySnapshot, 'snapshot_hash' | 'g
 export function argsDigest(args: unknown): string {
   return digestJson(args)
 }
+
+export type { UsageQuotaState, UsageQuotaWindow, UsageQuotaObservation, UsageQuotaBinding, UsageQuotaSnapshot,
+  UsageQuotaTransition, UsageQuotaFilter, UsageQuotaAvailability, UsageQuotaIngestResult } from './usage-quota.js'

@@ -223,7 +223,7 @@ it('restaura planes activos pausados, invalida invitaciones y conserva eventos/p
   const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
   const teams=new TeamOrchestration(chat,catalog,orca),prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Backup',base_revision:head,members:members(1)},master.agent)
   await teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Orden explícita'},master.agent)
-  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(12)
+  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(13)
   const target=join(dir,'restore'),restored=new MemoryDatabase(join(target,'memory.sqlite'));await restored.migrate()
   try {await restoreMemory(new MemoryStore(restored,target),backup)
     expect((await restored.query('SELECT state FROM chat_team_plans WHERE id=$1',[prepared.id]))[0].state).toBe('paused')
