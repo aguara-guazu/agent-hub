@@ -32,7 +32,7 @@ Después de actualizar, sincronizá los clientes y volvé a abrir las conexiones
 
 ## Validación y límites
 
-La integración pasó 636 pruebas de backend, daemon y desktop, más 126 del frontend, con 14 pruebas omitidas. También pasó build, tipos, lint y un recorrido de navegador con servidor HTTP y gateways MCP reales. La revisión independiente aprobó los tres cambios.
+La integración tiene cobertura automatizada de backend, daemon, desktop y frontend. También pasó build, tipos, lint y un recorrido de navegador con servidor HTTP y gateways MCP reales. La revisión independiente aprobó los tres cambios. Las pruebas de cancelación y vencimiento de procesos ahora esperan el arranque de la CLI simulada antes de disparar el evento, evitando fallos por carga de la máquina.
 
 El workflow de publicación vuelve a comprobar la versión y las pruebas en Linux y Windows, instala y abre el Hub en Windows y construye los instaladores de macOS, Windows y Linux antes de publicar.
 

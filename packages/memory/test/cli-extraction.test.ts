@@ -130,26 +130,37 @@ it('clasifica acceso y límites sin revelar stderr ni evidencia', async () => {
   await expect(runtime.extract('codex_cli', 'rate-limit', '', {}, schema)).rejects.toMatchObject({ statusCode: 503, transient: true })
   await expect(runtime.test('codex_cli', 'rate-limit')).rejects.toThrow('Volvé a probar')
 })
-it('termina el árbol de procesos al cancelar y al vencer el plazo', async () => {
-  setup(500)
+it.each(['cancelación', 'plazo'] as const)('termina el árbol de procesos por %s después de iniciar la CLI', async cause => {
+  setup(10_000)
   const controller = new AbortController()
-  const pending = runtime.extract('codex_cli', 'hang', '', {}, schema, controller.signal)
-  const assertion = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
-  await vi.waitFor(async () => expect((await requests()).some(c => c.input)).toBe(true))
-  controller.abort(); await assertion
-  expect(children[0]!.exitCode !== null || children[0]!.signalCode !== null).toBe(true)
-  const pid = (await requests())[0].pid
-  expect(() => process.kill(pid, 0)).toThrow()
-  await expect(runtime.extract('claude_code', 'hang', '', {}, schema)).rejects.toMatchObject({ transient: true })
-})
+  // Trigger the deadline only after the fixture has booted; CPU contention is not
+  // part of this assertion. Keep the real process tree and production abort path.
+  const deadline = cause === 'plazo' ? vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(controller.signal) : undefined
+  const result = runtime.extract(cause === 'plazo' ? 'claude_code' : 'codex_cli', 'hang', '', {}, schema,
+    cause === 'cancelación' ? controller.signal : undefined).catch(error => error)
+  try {
+    await vi.waitFor(async () => expect((await requests()).some(c => c.input)).toBe(true), { timeout: 8000 })
+    if (deadline) expect(deadline).toHaveBeenCalledWith(10_000)
+    controller.abort()
+    expect(await result).toMatchObject(cause === 'cancelación' ? { name: 'AbortError' } : { statusCode: 503, transient: true })
+    expect(children[0]!.exitCode !== null || children[0]!.signalCode !== null).toBe(true)
+    const pid = (await requests())[0].pid
+    expect(() => process.kill(pid, 0)).toThrow()
+    expect(await readdir(join(directory, 'cli-extraction'))).toEqual([])
+  } finally {
+    controller.abort()
+    await runtime.close()
+    deadline?.mockRestore()
+  }
+}, 15_000)
 it('espera el cierre del proceso y la limpieza al cerrar el runtime', async () => {
-  setup()
+  setup(10_000)
   const result = runtime.extract('claude_code', 'hang', '', {}, schema).catch(error => error)
-  await vi.waitFor(async () => expect((await requests()).some(c => c.input)).toBe(true))
+  await vi.waitFor(async () => expect((await requests()).some(c => c.input)).toBe(true), { timeout: 8000 })
   await runtime.close()
   expect(await result).toMatchObject({ name: 'AbortError' })
   expect(await readdir(join(directory, 'cli-extraction'))).toEqual([])
-})
+}, 15_000)
 it('no inicia procesos si se cierra mientras prepara la carpeta temporal', async () => {
   const launch = setup()
   const result = runtime.extract('claude_code', 'hang', '', {}, schema).catch(error => error)
