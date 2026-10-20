@@ -17,7 +17,7 @@ El esfuerzo se pasa mediante opciones nativas: `--effort` en Claude Code y Kiro,
 
 ## Catálogo para equipos interactivos
 
-El catálogo de equipos reutiliza discovery local para `ExtractionCli` —Claude Code, Codex y Kiro—, pero no convierte automáticamente una capacidad headless de extracción en capacidad de lanzamiento interactivo. Cada entrada informa por separado, con procedencia y `observed_at`, si la CLI está instalada, si Orca puede lanzarla en este host, si admite crear un worktree, seleccionar modelo, seleccionar esfuerzo y qué clase de outcome puede devolver.
+El catálogo de equipos usa `ExtractionCli` —Claude Code, Codex y Kiro— como conjunto de candidatos, pero no convierte automáticamente una capacidad headless de extracción ni el tipo aceptado por `TeamOrca` en capacidad de lanzamiento interactivo. Cada entrada informa por separado, con procedencia y `observed_at`, si la CLI está instalada, si el runtime local de Orca puede lanzarla, si admite crear un worktree, seleccionar modelo, seleccionar esfuerzo y qué clase de outcome puede devolver. En la versión inspeccionada, Kiro publica `--model`, `--effort` y una lista de modelos sin efforts por modelo; el esquema público de Orca no anuncia discovery de Kiro. Por eso Kiro permanece no-launchable/unknown hasta evidencia positiva del runtime, sin iniciar una sesión para probarlo.
 
 Un modelo anunciado por una CLI no demuestra acceso, cuota ni permiso de la cuenta. La preparación puede mostrarlo con esa advertencia; el lanzamiento vuelve a validarlo y falla cerrado si la combinación quedó ausente, vencida o desconocida. No se resuelven aliases ambiguos, no se inventan precios o benchmarks y no se elige otro modelo para completar el equipo.
 
