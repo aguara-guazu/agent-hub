@@ -13,7 +13,8 @@ export const extractionClis = ['claude_code', 'codex_cli', 'kiro'] as const
 export type ExtractionCli = typeof extractionClis[number]
 export const cliLabels: Record<ExtractionCli, string> = { claude_code: 'Claude Code', codex_cli: 'Codex', kiro: 'Kiro CLI' }
 export function isExtractionCli(value: string): value is ExtractionCli { return extractionClis.includes(value as ExtractionCli) }
-export interface CliModel { default?: boolean; description?: string; id: string; name: string; reasoning_efforts: string[] }
+export type CliReasoningEffortsSource = 'cli' | 'fallback'
+export interface CliModel { default?: boolean; description?: string; id: string; name: string; reasoning_efforts: string[]; reasoning_efforts_source: CliReasoningEffortsSource }
 export interface CliStatus { installed: boolean; models: CliModel[]; detail?: string }
 interface Options {
   /** Resolved locally for each launch, including in an already-running worker. */
@@ -192,7 +193,8 @@ export class CliExtractionRuntime {
           check(Array.isArray(data.models), 'Actualizá Kiro CLI para consultar sus modelos.', 409)
           for (const model of data.models) models.push({ id: model.model_id, name: model.model_name ?? model.model_id,
             ...nativeModelDescription(model),
-            reasoning_efforts: Array.isArray(model.supported_effort_levels) ? effortLevels(model.supported_effort_levels) : kiroEfforts(model.model_id) })
+            reasoning_efforts: Array.isArray(model.supported_effort_levels) ? effortLevels(model.supported_effort_levels) : kiroEfforts(model.model_id),
+            reasoning_efforts_source: Array.isArray(model.supported_effort_levels) ? 'cli' : 'fallback' })
         } else if (provider === 'claude_code') {
           const args = [...claudeArgs]; args[args.indexOf('json')] = 'stream-json'
           await this.run(provider, [...args, '--input-format', 'stream-json', '--verbose'], cwd, undefined, undefined, (event, _send, done) => {
@@ -201,7 +203,8 @@ export class CliExtractionRuntime {
             check(event.response.subtype === 'success' && Array.isArray(data?.models), 'Actualizá Claude Code para consultar sus modelos.', 409)
             for (const model of data.models) models.push({ default: model.value === 'default' || model.isDefault === true, id: model.resolvedModel ?? model.value, name: model.displayName ?? model.value,
               ...nativeModelDescription(model),
-              reasoning_efforts: model.supportsEffort ? effortLevels(model.supportedEffortLevels) : [] })
+              reasoning_efforts: model.supportsEffort ? effortLevels(model.supportedEffortLevels) : [],
+              reasoning_efforts_source: 'cli' })
             done()
           }, timeout)
         } else {
@@ -215,7 +218,8 @@ export class CliExtractionRuntime {
             for (const model of event.result.data) if (!model.hidden && (!model.inputModalities || model.inputModalities.includes('text')))
               models.push({ default: model.isDefault === true, id: model.model ?? model.id, name: model.displayName ?? model.model ?? model.id,
                 ...nativeModelDescription(model),
-                reasoning_efforts: effortLevels(model.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort)) })
+                reasoning_efforts: effortLevels(model.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort)),
+                reasoning_efforts_source: 'cli' })
             if (event.result.nextCursor) {
               check(++pages < 100, 'Codex no terminó de listar sus modelos.', 502)
               send({ id: ++id, method: 'model/list', params: { limit: 100, cursor: event.result.nextCursor } })

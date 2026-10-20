@@ -33,9 +33,12 @@ async function requests() { return (await readFile(join(directory, 'requests'), 
 it.each(extractionClis)('descubre modelos de %s usando su protocolo y limpia los procesos', async provider => {
   setup()
   const status = await runtime.status(provider)
-  expect(status).toMatchObject({ installed: true, models: [{ id: 'fixture', name: 'Fixture' }, ...(provider === 'codex_cli' ? [{ id: 'second', name: 'Fixture' }] : [])] })
+  const extra = provider === 'codex_cli' ? [{ id: 'second', name: 'Fixture' }] : provider === 'kiro' ? [{ id: 'gpt-5.6-sol', name: 'GPT Fixture' }] : []
+  expect(status).toMatchObject({ installed: true, models: [{ id: 'fixture', name: 'Fixture' }, ...extra] })
   expect(status.models[0]?.reasoning_efforts).toEqual(['low', 'high'])
+  expect(status.models[0]?.reasoning_efforts_source).toBe('cli')
   expect(status.models[0]?.description).toBe('Native fixture description')
+  if (provider === 'kiro') expect(status.models[1]).toMatchObject({ reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'], reasoning_efforts_source: 'fallback' })
   expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true)
   expect(await readdir(join(directory, 'cli-extraction'))).toEqual([])
 })

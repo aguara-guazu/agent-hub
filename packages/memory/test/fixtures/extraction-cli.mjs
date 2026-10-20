@@ -7,7 +7,10 @@ const log = value => process.stdout.write(JSON.stringify(value) + '\n')
 const record = value => appendFileSync(process.env.FIXTURE_REQUESTS, JSON.stringify(value) + '\n')
 record({ provider, args, cwd: process.cwd(), pid: process.pid })
 if (args.includes('--delete-session')) process.exit(0)
-if (args.includes('--list-models')) { log({ models: [{ model_id: 'fixture', model_name: 'Fixture', description: 'Native fixture description', supported_effort_levels: ['low', 'high'] }] }); process.exit(0) }
+if (args.includes('--list-models')) { log({ models: [
+  { model_id: 'fixture', model_name: 'Fixture', description: 'Native fixture description', supported_effort_levels: ['low', 'high'] },
+  { model_id: 'gpt-5.6-sol', model_name: 'GPT Fixture' },
+] }); process.exit(0) }
 if (args.includes('app-server') || args.includes('--input-format')) {
   const lines = createInterface({ input: process.stdin })
   lines.on('line', line => {
