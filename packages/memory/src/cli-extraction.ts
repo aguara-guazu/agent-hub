@@ -15,7 +15,7 @@ export const cliLabels: Record<ExtractionCli, string> = { claude_code: 'Claude C
 export function isExtractionCli(value: string): value is ExtractionCli { return extractionClis.includes(value as ExtractionCli) }
 export type CliReasoningEffortsSource = 'native' | 'fallback'
 export type CliDiscoverySource = 'native'
-export interface CliModel { default?: boolean; description?: string; id: string; name: string; reasoning_efforts: string[]; reasoning_efforts_source: CliReasoningEffortsSource }
+export interface CliModel { default?: boolean; description?: string; context_window_tokens?: number; rate_multiplier?: number; id: string; name: string; reasoning_efforts: string[]; reasoning_efforts_source: CliReasoningEffortsSource }
 export interface CliStatus { installed: boolean; models: CliModel[]; checked_at: string; source: CliDiscoverySource; detail?: string }
 interface Options {
   /** Resolved locally for each launch, including in an already-running worker. */
@@ -33,6 +33,13 @@ function nativeModelDescription(model: any): { description?: string } {
   const value = typeof model.description === 'string' ? model.description : typeof model.model_description === 'string' ? model.model_description : ''
   const description = value.trim().slice(0, 2000)
   return description ? { description } : {}
+}
+function nativeModelLimits(model: any): { context_window_tokens?: number; rate_multiplier?: number } {
+  const context = Number(model.context_window_tokens), multiplier = Number(model.rate_multiplier)
+  return {
+    ...(Number.isSafeInteger(context) && context > 0 ? { context_window_tokens: context } : {}),
+    ...(Number.isFinite(multiplier) && multiplier > 0 ? { rate_multiplier: multiplier } : {}),
+  }
 }
 
 /** Native installers and npm entrypoints, including GUI launches without a shell PATH. */
@@ -195,6 +202,7 @@ export class CliExtractionRuntime {
           check(Array.isArray(data.models), 'Actualizá Kiro CLI para consultar sus modelos.', 409)
           for (const model of data.models) models.push({ id: model.model_id, name: model.model_name ?? model.model_id,
             ...nativeModelDescription(model),
+            ...nativeModelLimits(model),
             reasoning_efforts: Array.isArray(model.supported_effort_levels) ? effortLevels(model.supported_effort_levels) : kiroEfforts(model.model_id),
             reasoning_efforts_source: Array.isArray(model.supported_effort_levels) ? 'native' : 'fallback' })
         } else if (provider === 'claude_code') {
@@ -205,6 +213,7 @@ export class CliExtractionRuntime {
             check(event.response.subtype === 'success' && Array.isArray(data?.models), 'Actualizá Claude Code para consultar sus modelos.', 409)
             for (const model of data.models) models.push({ default: model.value === 'default' || model.isDefault === true, id: model.resolvedModel ?? model.value, name: model.displayName ?? model.value,
               ...nativeModelDescription(model),
+              ...nativeModelLimits(model),
               reasoning_efforts: model.supportsEffort ? effortLevels(model.supportedEffortLevels) : [],
               reasoning_efforts_source: 'native' })
             done()
@@ -220,6 +229,7 @@ export class CliExtractionRuntime {
             for (const model of event.result.data) if (!model.hidden && (!model.inputModalities || model.inputModalities.includes('text')))
               models.push({ default: model.isDefault === true, id: model.model ?? model.id, name: model.displayName ?? model.model ?? model.id,
                 ...nativeModelDescription(model),
+              ...nativeModelLimits(model),
                 reasoning_efforts: effortLevels(model.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort)),
                 reasoning_efforts_source: 'native' })
             if (event.result.nextCursor) {

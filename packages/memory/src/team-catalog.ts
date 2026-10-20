@@ -15,6 +15,13 @@ export type TeamModelDescriptionSource = 'native' | 'heuristic'
 export type UnsupportedTeamCli = 'gemini_cli' | 'opencode' | 'antigravity' | 'claude_desktop'
 export type TeamCatalogCliId = ExtractionCli | UnsupportedTeamCli
 export type TeamRole = 'exploration' | 'implementation' | 'design' | 'review'
+export type TeamLaunchRoute = 'agent_launch' | 'native_terminal' | 'unsupported'
+
+const launchRoutes: Record<ExtractionCli, Exclude<TeamLaunchRoute, 'unsupported'>> = {
+  claude_code: 'agent_launch',
+  codex_cli: 'agent_launch',
+  kiro: 'native_terminal',
+}
 
 const unsupportedClis: ReadonlyArray<{ id: UnsupportedTeamCli; label: string }> = [
   { id: 'gemini_cli', label: 'Gemini CLI' },
@@ -31,6 +38,7 @@ export interface TeamCatalogCli {
   catalogable: boolean
   model_selectable: boolean
   launchable: boolean
+  launch_route: TeamLaunchRoute
   checked_at: string
   source: CliDiscoverySource | 'unsupported'
   detail?: string
@@ -48,6 +56,8 @@ export interface TeamCatalogModel {
   name: string
   description?: string
   description_source?: TeamModelDescriptionSource
+  context_window_tokens?: number
+  rate_multiplier?: number
   default?: boolean
   reasoning_efforts: string[]
   reasoning_efforts_source: CliReasoningEffortsSource
@@ -55,6 +65,7 @@ export interface TeamCatalogModel {
   source: CliDiscoverySource
   access: 'unverified'
   role_hints: TeamRoleHint[]
+  warnings: string[]
 }
 
 export interface TeamCatalogResult {
@@ -68,7 +79,16 @@ export interface TeamSelection {
   effort?: string
 }
 
+export interface TeamValidation extends TeamSelection {
+  capabilities: {
+    cli: TeamCatalogCli
+    model: TeamCatalogModel
+  }
+}
+
 type CatalogStatus = Omit<CliStatus, 'installed'> & { installed: boolean | null }
+
+const KIRO_FALLBACK_WARNING = 'Los esfuerzos de este modelo son una compatibilidad declarada por el adaptador: Kiro CLI no los informó y su acceso sigue sin verificar.'
 
 function token(value: string, name: string): boolean {
   return new RegExp(`(?:^|[^a-z0-9])${name}(?:$|[^a-z0-9])`, 'i').test(value)
@@ -96,6 +116,8 @@ function catalogModel(cli: ExtractionCli, status: CatalogStatus, model: CliModel
     name: model.name,
     ...(native ? { description: native, description_source: 'native' as const }
       : heuristic ? { description: heuristic, description_source: 'heuristic' as const } : {}),
+    ...(model.context_window_tokens === undefined ? {} : { context_window_tokens: model.context_window_tokens }),
+    ...(model.rate_multiplier === undefined ? {} : { rate_multiplier: model.rate_multiplier }),
     ...(model.default === undefined ? {} : { default: model.default }),
     reasoning_efforts: [...model.reasoning_efforts],
     reasoning_efforts_source: model.reasoning_efforts_source,
@@ -103,6 +125,7 @@ function catalogModel(cli: ExtractionCli, status: CatalogStatus, model: CliModel
     source: status.source,
     access: 'unverified',
     role_hints: hints,
+    warnings: model.reasoning_efforts_source === 'fallback' && model.reasoning_efforts.length > 0 ? [KIRO_FALLBACK_WARNING] : [],
   }
 }
 
@@ -119,6 +142,22 @@ async function discover(runtime: CliExtractionRuntime, cli: ExtractionCli): Prom
   }
 }
 
+function catalogCli(cli: ExtractionCli, status: CatalogStatus): TeamCatalogCli {
+  const modelSelectable = status.installed === true && status.models.length > 0
+  return {
+    id: cli,
+    label: cliLabels[cli],
+    installed: status.installed,
+    catalogable: true,
+    model_selectable: modelSelectable,
+    launchable: modelSelectable,
+    launch_route: launchRoutes[cli],
+    checked_at: status.checked_at,
+    source: status.source,
+    ...(status.detail ? { detail: status.detail } : {}),
+  }
+}
+
 /** Models available to the three launch adapters. Each native discovery is
  * independent, so one broken CLI cannot hide the other catalog entries. */
 export class TeamCatalog {
@@ -128,20 +167,7 @@ export class TeamCatalog {
     const statuses = await Promise.all(extractionClis.map(async cli => ({ cli, status: await discover(this.runtime, cli) })))
     return {
       clis: [
-        ...statuses.map(({ cli, status }): TeamCatalogCli => {
-          const modelSelectable = status.installed === true && status.models.length > 0
-          return {
-            id: cli,
-            label: cliLabels[cli],
-            installed: status.installed,
-            catalogable: true,
-            model_selectable: modelSelectable,
-            launchable: modelSelectable,
-            checked_at: status.checked_at,
-            source: status.source,
-            ...(status.detail ? { detail: status.detail } : {}),
-          }
-        }),
+        ...statuses.map(({ cli, status }) => catalogCli(cli, status)),
         ...unsupportedClis.map(({ id, label }): TeamCatalogCli => ({
           id,
           label,
@@ -149,6 +175,7 @@ export class TeamCatalog {
           catalogable: false,
           model_selectable: false,
           launchable: false,
+          launch_route: 'unsupported',
           checked_at: new Date().toISOString(),
           source: 'unsupported',
           detail: 'Este cliente todavía no admite discovery ni lanzamiento de miembros de equipo.',
@@ -159,17 +186,32 @@ export class TeamCatalog {
     }
   }
 
-  async validate(cli: ExtractionCli, model: string, effort?: string): Promise<TeamSelection> {
+  async validate(cli: ExtractionCli, model: string, effort?: string): Promise<TeamValidation> {
     check(isExtractionCli(String(cli)), 'Ese cliente no admite miembros de equipo.', 422)
-    const status = await this.runtime.status(cli)
-    check(status.installed, `${cliLabels[cli]} no está instalado.`, 409)
-    check(status.models.length > 0, `${cliLabels[cli]} no devolvió un catálogo de modelos; no se puede lanzar el miembro.`, 409)
-    const selected = status.models.find(candidate => candidate.id === model)
-    check(selected, `${cliLabels[cli]} no ofrece el modelo elegido. Actualizá el catálogo y volvé a elegirlo.`, 409)
+    const status = await discover(this.runtime, cli)
+    const client = catalogCli(cli, status)
+    check(client.catalogable, `${cliLabels[cli]} no admite catálogo de modelos para equipos.`, 409)
+    check(client.installed === true, `${cliLabels[cli]} no está instalado o no se pudo verificar.`, 409)
+    check(client.model_selectable && client.launchable, `${cliLabels[cli]} no devolvió un catálogo de modelos; no se puede lanzar el miembro.`, 409)
+    const discovered = status.models.find(candidate => candidate.id === model)
+    check(discovered, `${cliLabels[cli]} no ofrece el modelo elegido. Actualizá el catálogo y volvé a elegirlo.`, 409)
+    const selected = catalogModel(cli, status, discovered)
+    check(selected.source === 'native' && selected.access === 'unverified', `${cliLabels[cli]} devolvió procedencia incompatible para el modelo elegido.`, 409)
     if (effort) {
-      check(selected.reasoning_efforts_source === 'native', `${cliLabels[cli]} sólo infiere ese esfuerzo; elegí el esfuerzo predeterminado para lanzar el miembro.`, 409)
       check(selected.reasoning_efforts.includes(effort), `${cliLabels[cli]} no ofrece ese esfuerzo para el modelo elegido.`, 409)
+      const declaredKiroFallback = cli === 'kiro' && selected.reasoning_efforts_source === 'fallback'
+        && selected.warnings.includes(KIRO_FALLBACK_WARNING)
+      check(selected.reasoning_efforts_source === 'native' || declaredKiroFallback,
+        `${cliLabels[cli]} no informó ese esfuerzo ni existe una compatibilidad declarada por el adaptador.`, 409)
     }
-    return { cli, model, ...(effort ? { effort } : {}) }
+    return {
+      cli,
+      model,
+      ...(effort ? { effort } : {}),
+      capabilities: {
+        cli: { ...client },
+        model: { ...selected, reasoning_efforts: [...selected.reasoning_efforts], role_hints: selected.role_hints.map(hint => ({ ...hint })), warnings: [...selected.warnings] },
+      },
+    }
   }
 }

@@ -40,7 +40,10 @@ it.each(extractionClis)('descubre modelos de %s usando su protocolo y limpia los
   expect(status.models[0]?.reasoning_efforts).toEqual(['low', 'high'])
   expect(status.models[0]?.reasoning_efforts_source).toBe('native')
   expect(status.models[0]?.description).toBe('Native fixture description')
-  if (provider === 'kiro') expect(status.models[1]).toMatchObject({ reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'], reasoning_efforts_source: 'fallback' })
+  if (provider === 'kiro') {
+    expect(status.models[0]).toMatchObject({ context_window_tokens: 200000, rate_multiplier: 1.5 })
+    expect(status.models[1]).toMatchObject({ reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'], reasoning_efforts_source: 'fallback' })
+  }
   expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true)
   expect(await readdir(join(directory, 'cli-extraction'))).toEqual([])
 })

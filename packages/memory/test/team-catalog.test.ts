@@ -4,7 +4,7 @@ import { TeamCatalog } from '../src/team-catalog.js'
 
 const checkedAt = '2026-10-20T18:00:00.000Z'
 const statuses: Record<ExtractionCli, CliStatus> = {
-  claude_code: { installed: true, checked_at: checkedAt, source: 'native', models: [{ id: 'claude-native', name: 'Claude Native', description: 'Descripción entregada por Claude.', reasoning_efforts: ['low', 'high'], reasoning_efforts_source: 'native' }] },
+  claude_code: { installed: true, checked_at: checkedAt, source: 'native', models: [{ id: 'claude-native', name: 'Claude Native', description: 'Descripción entregada por Claude.', context_window_tokens: 180000, rate_multiplier: 2, reasoning_efforts: ['low', 'high'], reasoning_efforts_source: 'native' }] },
   codex_cli: { installed: true, checked_at: checkedAt, source: 'native', models: [{ id: 'gpt-5.6-sol', name: 'GPT Sol', default: true, reasoning_efforts: ['medium'], reasoning_efforts_source: 'native' }] },
   kiro: { installed: false, checked_at: checkedAt, source: 'native', models: [], detail: 'Kiro no detectado.' },
 }
@@ -18,15 +18,15 @@ describe('TeamCatalog', () => {
     const result = await new TeamCatalog(runtime()).catalog()
 
     expect(result.clis.slice(0, 3)).toEqual([
-      { id: 'claude_code', label: 'Claude Code', installed: true, catalogable: true, model_selectable: true, launchable: true, checked_at: checkedAt, source: 'native' },
-      { id: 'codex_cli', label: 'Codex', installed: true, catalogable: true, model_selectable: true, launchable: true, checked_at: checkedAt, source: 'native' },
-      { id: 'kiro', label: 'Kiro CLI', installed: false, catalogable: true, model_selectable: false, launchable: false, checked_at: checkedAt, source: 'native', detail: 'Kiro no detectado.' },
+      { id: 'claude_code', label: 'Claude Code', installed: true, catalogable: true, model_selectable: true, launchable: true, launch_route: 'agent_launch', checked_at: checkedAt, source: 'native' },
+      { id: 'codex_cli', label: 'Codex', installed: true, catalogable: true, model_selectable: true, launchable: true, launch_route: 'agent_launch', checked_at: checkedAt, source: 'native' },
+      { id: 'kiro', label: 'Kiro CLI', installed: false, catalogable: true, model_selectable: false, launchable: false, launch_route: 'native_terminal', checked_at: checkedAt, source: 'native', detail: 'Kiro no detectado.' },
     ])
-    expect(result.clis.slice(3).map(cli => ({ id: cli.id, installed: cli.installed, catalogable: cli.catalogable, model_selectable: cli.model_selectable, launchable: cli.launchable, source: cli.source }))).toEqual([
-      { id: 'gemini_cli', installed: null, catalogable: false, model_selectable: false, launchable: false, source: 'unsupported' },
-      { id: 'opencode', installed: null, catalogable: false, model_selectable: false, launchable: false, source: 'unsupported' },
-      { id: 'antigravity', installed: null, catalogable: false, model_selectable: false, launchable: false, source: 'unsupported' },
-      { id: 'claude_desktop', installed: null, catalogable: false, model_selectable: false, launchable: false, source: 'unsupported' },
+    expect(result.clis.slice(3).map(cli => ({ id: cli.id, installed: cli.installed, catalogable: cli.catalogable, model_selectable: cli.model_selectable, launchable: cli.launchable, launch_route: cli.launch_route, source: cli.source }))).toEqual([
+      { id: 'gemini_cli', installed: null, catalogable: false, model_selectable: false, launchable: false, launch_route: 'unsupported', source: 'unsupported' },
+      { id: 'opencode', installed: null, catalogable: false, model_selectable: false, launchable: false, launch_route: 'unsupported', source: 'unsupported' },
+      { id: 'antigravity', installed: null, catalogable: false, model_selectable: false, launchable: false, launch_route: 'unsupported', source: 'unsupported' },
+      { id: 'claude_desktop', installed: null, catalogable: false, model_selectable: false, launchable: false, launch_route: 'unsupported', source: 'unsupported' },
     ])
   })
 
@@ -34,8 +34,9 @@ describe('TeamCatalog', () => {
     const model = (await new TeamCatalog(runtime()).catalog()).models[0]
     expect(model).toEqual({
       cli: 'claude_code', id: 'claude-native', name: 'Claude Native', description: 'Descripción entregada por Claude.',
-      description_source: 'native', reasoning_efforts: ['low', 'high'], reasoning_efforts_source: 'native',
-      checked_at: checkedAt, source: 'native', access: 'unverified', role_hints: [],
+      description_source: 'native', context_window_tokens: 180000, rate_multiplier: 2,
+      reasoning_efforts: ['low', 'high'], reasoning_efforts_source: 'native',
+      checked_at: checkedAt, source: 'native', access: 'unverified', role_hints: [], warnings: [],
     })
   })
 
@@ -68,11 +69,33 @@ describe('TeamCatalog', () => {
     expect(result.clis.find(cli => cli.id === 'codex_cli')?.detail).not.toContain('raw provider secret')
   })
 
-  it('valida sólo catálogo nativo y rechaza effort inferido, catálogo ausente o selección inválida', async () => {
+  it('validate consulta sólo una CLI y devuelve selección más snapshot persistible', async () => {
+    const selectedRuntime = runtime()
+    const status = vi.spyOn(selectedRuntime, 'status')
+    const native = await new TeamCatalog(selectedRuntime).validate('claude_code', 'claude-native', 'high')
+    expect(status).toHaveBeenCalledTimes(1)
+    expect(status).toHaveBeenCalledWith('claude_code')
+    expect(native).toMatchObject({
+      cli: 'claude_code', model: 'claude-native', effort: 'high',
+      capabilities: {
+        cli: { id: 'claude_code', launchable: true, launch_route: 'agent_launch', checked_at: checkedAt, source: 'native' },
+        model: { id: 'claude-native', checked_at: checkedAt, source: 'native', access: 'unverified', reasoning_efforts_source: 'native', warnings: [], role_hints: [] },
+      },
+    })
+
     const fallback = new TeamCatalog(runtime({ kiro: { installed: true, checked_at: checkedAt, source: 'native', models: [{ id: 'gpt-5.6-sol', name: 'GPT', reasoning_efforts: ['high'], reasoning_efforts_source: 'fallback' }] } }))
-    await expect(new TeamCatalog(runtime()).validate('claude_code', 'claude-native', 'high')).resolves.toEqual({ cli: 'claude_code', model: 'claude-native', effort: 'high' })
-    await expect(fallback.validate('kiro', 'gpt-5.6-sol')).resolves.toEqual({ cli: 'kiro', model: 'gpt-5.6-sol' })
-    await expect(fallback.validate('kiro', 'gpt-5.6-sol', 'high')).rejects.toThrow('sólo infiere ese esfuerzo')
+    const validatedFallback = await fallback.validate('kiro', 'gpt-5.6-sol', 'high')
+    expect(validatedFallback).toMatchObject({
+      cli: 'kiro', model: 'gpt-5.6-sol', effort: 'high',
+      capabilities: {
+        cli: { launch_route: 'native_terminal', launchable: true, source: 'native' },
+        model: { access: 'unverified', reasoning_efforts_source: 'fallback', role_hints: [{ role: 'implementation', source: 'heuristic' }] },
+      },
+    })
+    expect(validatedFallback.capabilities.model.warnings).toEqual([expect.stringContaining('compatibilidad declarada por el adaptador')])
+
+    const unknown = new TeamCatalog(runtime({ kiro: { installed: true, checked_at: checkedAt, source: 'native', models: [{ id: 'unknown', name: 'Unknown', reasoning_efforts: [], reasoning_efforts_source: 'fallback' }] } }))
+    await expect(unknown.validate('kiro', 'unknown', 'high')).rejects.toThrow('no ofrece ese esfuerzo')
     await expect(new TeamCatalog(runtime({ kiro: { installed: true, checked_at: checkedAt, source: 'native', models: [] } })).validate('kiro', 'anything')).rejects.toThrow('no devolvió un catálogo')
     await expect(new TeamCatalog(runtime()).validate('claude_code', 'missing')).rejects.toThrow('no ofrece el modelo')
     await expect(new TeamCatalog(runtime()).validate('claude_code', 'claude-native', 'max')).rejects.toThrow('no ofrece ese esfuerzo')
