@@ -178,12 +178,21 @@ export class UsageQuotas {
   }
 
   async forCli(cli:string,model?:string,filter:Omit<UsageQuotaFilter,'cli'|'model'>={}):Promise<UsageQuotaAvailability> {
-    const pools=await this.list({...filter,cli,...(model?{model}:{})})
-    if(!pools.length)return {status:'unknown',reason:'no_observation',pools}
-    const scopes=new Set(pools.map(pool=>pool.scope==='account'?`${pool.provider}:${pool.account_ref}`:`binding:${pool.binding_ids.join(',')}`))
-    if(scopes.size>1)return {status:'unknown',reason:'ambiguous_account',pools}
-    // Observed exhaustion of an unidentified model pool is not evidence that the requested model is exhausted.
-    const status=reduce(pools.map(pool=>pool.model_scope==='unknown'?'unknown':pool.status))
-    return {status,...(status==='unknown' && pools.some(pool=>pool.model_scope==='unknown')?{reason:'unknown_model_scope'}:{}),pools}
+    return this.db.transaction(async sql=>{
+      // Resolve the requested CLI/profile/account scope before looking at observations. A newly bound profile
+      // without a sample must not silently inherit the availability of a different, already observed account.
+      const bindings=await sql.query<{binding_id:string;provider:string;account_ref:string|null}>(`SELECT binding_id,provider,account_ref
+        FROM usage_quota_bindings WHERE active=1 AND cli=$1 AND ($2 IS NULL OR provider=$2)
+          AND ($3 IS NULL OR binding_id=$3) AND ($4 IS NULL OR account_ref=$4)`,
+        [cli,filter.provider ?? null,filter.binding_id ?? null,filter.account_ref ?? null])
+      const scopes=new Set(bindings.map(binding=>digestJson(binding.account_ref
+        ? ['account',binding.provider,binding.account_ref]:['binding',binding.provider,binding.binding_id])))
+      const pools=await this.list({...filter,cli,...(model?{model}:{})})
+      if(scopes.size>1)return {status:'unknown',reason:'ambiguous_account',pools}
+      if(!pools.length)return {status:'unknown',reason:'no_observation',pools}
+      // Observed exhaustion of an unidentified model pool is not evidence that the requested model is exhausted.
+      const status=reduce(pools.map(pool=>pool.model_scope==='unknown'?'unknown':pool.status))
+      return {status,...(status==='unknown' && pools.some(pool=>pool.model_scope==='unknown')?{reason:'unknown_model_scope'}:{}),pools}
+    },'read')
   }
 }

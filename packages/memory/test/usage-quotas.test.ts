@@ -285,3 +285,46 @@ it('validates explicit model applicability while preserving legacy listed and gl
   expect((await quotas.ingest(observation({pool_id:'legacy-global'}),ticket)).snapshot?.model_scope).toBe('all')
   expect((await quotas.ingest(observation({pool_id:'legacy-listed',model_ids:['large']}),ticket)).snapshot?.model_scope).toBe('listed')
 })
+
+it('treats a second verified profile without a sample as account ambiguity instead of reusing another account balance',async()=>{
+  const first=await bind('installed:profile:first','account-first')
+  await quotas.ingest(observation({account_ref:'account-first'}),first)
+  const second=await bind('installed:profile:second','account-second')
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'unknown',reason:'ambiguous_account'})
+  expect(await quotas.forCli('codex_cli',undefined,{binding_id:second.binding_id})).toMatchObject({status:'unknown',reason:'no_observation',pools:[]})
+  expect(await quotas.forCli('codex_cli',undefined,{binding_id:first.binding_id})).toMatchObject({status:'available'})
+  expect(await quotas.forCli('codex_cli',undefined,{account_ref:'account-first'})).toMatchObject({status:'available'})
+  expect(await quotas.forCli('codex_cli',undefined,{account_ref:'account-second'})).toMatchObject({status:'unknown',reason:'no_observation'})
+})
+
+it('does not assume an unverified profile shares the account of the only observed profile',async()=>{
+  const first=await bind('installed:profile:verified')
+  await quotas.ingest(observation(),first)
+  await quotas.bind({binding_id:'installed:profile:unknown',cli:'codex_cli',provider:'openai',sample_started_at:start})
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'unknown',reason:'ambiguous_account'})
+  expect(await quotas.forCli('codex_cli',undefined,{binding_id:'installed:profile:unknown'})).toMatchObject({status:'unknown',reason:'no_observation'})
+})
+
+it('reuses verified account constraints for another profile before its first sample while respecting provider and CLI filters',async()=>{
+  const first=await bind('installed:profile:first')
+  await quotas.ingest(observation(),first)
+  const same=await bind('installed:profile:same')
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'available'})
+  expect(await quotas.forCli('codex_cli',undefined,{binding_id:same.binding_id})).toMatchObject({status:'available'})
+  await quotas.bind({binding_id:'another-provider:profile:first',cli:'codex_cli',provider:'other-provider',account_ref:'opaque-account',sample_started_at:start})
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'unknown',reason:'ambiguous_account'})
+  expect(await quotas.forCli('codex_cli',undefined,{provider:'openai'})).toMatchObject({status:'available'})
+  expect(await quotas.forCli('codex_cli',undefined,{provider:'other-provider'})).toMatchObject({status:'unknown',reason:'no_observation'})
+  expect(await quotas.forCli('kiro',undefined,{binding_id:same.binding_id})).toMatchObject({status:'unknown',reason:'no_observation'})
+})
+
+it('keeps multiple unobserved profiles ambiguous and releases the old account scope after a profile switch',async()=>{
+  await bind('installed:profile:first','account-first')
+  await bind('installed:profile:second','account-second')
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'unknown',reason:'ambiguous_account',pools:[]})
+  now='2026-10-20T10:02:00.000Z'
+  const switched=await bind('installed:profile:second','account-first',now)
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'unknown',reason:'no_observation'})
+  await quotas.ingest(observation({account_ref:'account-first',observed_at:now}),switched)
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'available'})
+})
