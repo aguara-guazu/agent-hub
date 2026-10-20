@@ -12,10 +12,11 @@ import { storageConverter, vectorValues } from './database.js'
 const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identities', 'fragments', 'fragment_projects', 'links', 'evidence', 'link_evidence',
   'embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'changes'] as const
 // Added by schema version 3; backups taken before it restore without them.
-const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries'] as const
+const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries',
+  'chat_team_plans', 'chat_team_members', 'chat_team_events'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–11 restore. */
-const BACKUP_SCHEMA_VERSION = 11
+/** Data-model version of agenthub-memory-v1; backups from 1–12 restore. */
+const BACKUP_SCHEMA_VERSION = 12
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -87,7 +88,11 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
       const rows = (backup.tables[table] ?? []).map(row => {
         const value = table === 'chat_channels' && backup.schema_version < 7 ? {...row,scope_key:`git:${row.path}`,orca_workspace_id:null} : row
         // Restored sessions cannot authenticate as the former virtual leader. Preserve history and release the folder for explicit recreation.
-        return table === 'chat_channels' && value.kind === 'virtual' && !value.closed_at ? {...value,closed_at:backup.exported_at,virtual_path:null} : value
+        if (table === 'chat_channels' && value.kind === 'virtual' && !value.closed_at) return {...value,closed_at:backup.exported_at,virtual_path:null}
+        if (table === 'chat_team_plans' && !['completed','cancelled'].includes(String(value.state))) return {...value,state:'paused'}
+        if (table === 'chat_team_members') return {...value,invitation_hash:null,invitation_expires_at:null,
+          ...(['prepared','workspace_intent','workspace_created','launch_intent','accepted','unknown'].includes(String(value.state)) ? {state:'paused'} : {})}
+        return value
       })
       const keys = [...new Set(rows.flatMap(row => Object.keys(row)))].filter(k => k !== 'search_text')
       check(keys.every(k => columns.some(c => c.name === k)), 'El respaldo contiene columnas desconocidas')
