@@ -251,3 +251,37 @@ it('allows a complete native numeric response to resolve an aggregate cooldown w
   now='2026-10-20T10:04:00.000Z'
   expect((await quotas.ingest(observation({observed_at:now,windows:[],status:'available'}),ticket)).snapshot?.status).toBe('exhausted')
 })
+
+it('keeps unknown model pool observations visible without claiming availability for an arbitrary model',async()=>{
+  const ticket=await bind()
+  await quotas.ingest(observation({pool_id:'native-dedicated-pool',model_scope:'unknown',windows:[{id:'primary',unit:'percent',used:100}]}),ticket)
+  expect((await quotas.list({model:'unrelated-model'}))[0]).toMatchObject({status:'exhausted',model_scope:'unknown',model_ids:[]})
+  expect(await quotas.forCli('codex_cli','unrelated-model')).toMatchObject({status:'unknown',reason:'unknown_model_scope'})
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'unknown',reason:'unknown_model_scope'})
+  now='2026-10-20T10:01:00.000Z'
+  expect((await quotas.ingest(observation({pool_id:'native-dedicated-pool',model_scope:'unknown',observed_at:now,
+    windows:[{id:'primary',unit:'percent',used:20}]}),ticket)).snapshot?.status).toBe('available')
+  expect(await quotas.forCli('codex_cli','unrelated-model')).toMatchObject({status:'unknown',reason:'unknown_model_scope'})
+})
+
+it('lets a confirmed global exhaustion dominate unknown model scopes without summing their quotas',async()=>{
+  const ticket=await bind()
+  await quotas.ingest(observation({pool_id:'global',model_scope:'all',status:'exhausted'}),ticket)
+  await quotas.ingest(observation({pool_id:'unmapped-pool',model_scope:'unknown'}),ticket)
+  const result=await quotas.forCli('codex_cli','any-model')
+  expect(result.status).toBe('exhausted');expect(result.reason).toBeUndefined();expect(result.pools).toHaveLength(2)
+})
+
+it('validates explicit model applicability while preserving legacy listed and global observations',async()=>{
+  const ticket=await bind()
+  await expect(quotas.ingest(observation({model_scope:'listed'}),ticket)).rejects.toBeTruthy()
+  await expect(quotas.ingest(observation({model_scope:'listed',model_ids:[]}),ticket)).rejects.toBeTruthy()
+  await expect(quotas.ingest(observation({model_scope:'unknown',model_ids:['invented']}),ticket)).rejects.toBeTruthy()
+  await expect(quotas.ingest(observation({model_scope:'all',model_ids:['contradiction']}),ticket)).rejects.toBeTruthy()
+  await quotas.ingest(observation({pool_id:'listed',model_scope:'listed',model_ids:['large'],status:'exhausted'}),ticket)
+  await quotas.ingest(observation({pool_id:'global',model_scope:'all'}),ticket)
+  expect(await quotas.forCli('codex_cli','large')).toMatchObject({status:'exhausted'})
+  expect(await quotas.forCli('codex_cli','small')).toMatchObject({status:'available'})
+  expect((await quotas.ingest(observation({pool_id:'legacy-global'}),ticket)).snapshot?.model_scope).toBe('all')
+  expect((await quotas.ingest(observation({pool_id:'legacy-listed',model_ids:['large']}),ticket)).snapshot?.model_scope).toBe('listed')
+})

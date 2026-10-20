@@ -1,4 +1,5 @@
 /** Native observations only. This contract is not a writable LLM tool. */
+export type UsageQuotaModelScope = 'all' | 'listed' | 'unknown'
 export type UsageQuotaState = 'available' | 'low' | 'exhausted' | 'cooldown' | 'unknown'
 export interface UsageQuotaWindow {
   id: string
@@ -16,6 +17,8 @@ export interface UsageQuotaObservation {
   /** Opaque native identity, never email, token or a session id. Omit if not verified. */
   account_ref?: string
   pool_id: string
+  /** Native collectors must declare applicability; omission preserves legacy/internal observations. */
+  model_scope?: UsageQuotaModelScope
   model_ids?: string[]
   observed_at: string
   expires_at: string
@@ -56,6 +59,7 @@ export interface UsageQuotaSnapshot {
   identity_confidence: 'verified' | 'unknown_account'
   binding_ids: string[]
   clis: string[]
+  model_scope: UsageQuotaModelScope
   model_ids: string[]
   status: UsageQuotaState
   observed_status: UsageQuotaState

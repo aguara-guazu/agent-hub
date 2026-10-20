@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { digestJson } from '@agenthub/shared'
-import type { UsageQuotaObservation, UsageQuotaBinding, UsageQuotaSnapshot, UsageQuotaState, UsageQuotaWindow, UsageQuotaWindowEvidence, UsageQuotaStatusEvidence,
+import type { UsageQuotaObservation, UsageQuotaBinding, UsageQuotaSnapshot, UsageQuotaState, UsageQuotaModelScope, UsageQuotaWindow, UsageQuotaWindowEvidence, UsageQuotaStatusEvidence,
   UsageQuotaFilter, UsageQuotaAvailability, UsageQuotaIngestResult, UsageQuotaTransition } from '@agenthub/shared'
 import type { MemoryDatabase, Sql } from './database.js'
 import { check, parse } from './contracts.js'
@@ -11,12 +11,14 @@ const state=z.enum(['available','low','exhausted','cooldown','unknown'])
 const amount=z.number().finite().nonnegative()
 export const usageQuotaObservationSchema=z.object({
   cli:identifier,provider:identifier,account_ref:identifier.optional(),pool_id:identifier,
-  model_ids:z.array(identifier).max(100).optional(),observed_at:timestamp,expires_at:timestamp,
+  model_scope:z.enum(['all','listed','unknown']).optional(),model_ids:z.array(identifier).max(100).optional(),observed_at:timestamp,expires_at:timestamp,
   source:z.object({kind:z.literal('native'),adapter:identifier,reference:z.string().max(300).optional()}).strict(),
   windows:z.array(z.object({id:identifier,unit:z.enum(['percent','credits','tokens','requests','unknown']),
     used:amount.optional(),limit:amount.optional(),remaining:amount.optional(),resets_at:timestamp.optional(),duration_minutes:z.number().finite().positive().optional(),status:state.optional()}).strict()).max(32),
   complete:z.boolean().optional(),status:state.optional(),reason:z.string().max(300).optional(),
 }).strict().superRefine((value,ctx)=>{
+  if(value.model_scope==='listed' && !value.model_ids?.length)ctx.addIssue({code:'custom',message:'El alcance por modelo requiere identificadores nativos'})
+  if((value.model_scope==='all' || value.model_scope==='unknown') && value.model_ids?.length)ctx.addIssue({code:'custom',message:'Los modelos listados requieren alcance listed'})
   if(Date.parse(value.expires_at)<=Date.parse(value.observed_at) || Date.parse(value.expires_at)-Date.parse(value.observed_at)>86400000)
     ctx.addIssue({code:'custom',message:'La vigencia debe ser positiva y no superar 24 horas'})
   if(new Set(value.windows.map(item=>item.id)).size!==value.windows.length)
@@ -27,6 +29,10 @@ export const usageQuotaObservationSchema=z.object({
 const bindingSchema=z.object({binding_id:identifier,binding_version:z.number().int().positive(),cli:identifier,provider:identifier,account_ref:identifier.optional()}).strict()
 const bindSchema=bindingSchema.omit({binding_version:true}).extend({sample_started_at:timestamp})
 export type UsageQuotaBindInput=z.input<typeof bindSchema>
+
+function modelScope(observation:UsageQuotaObservation):UsageQuotaModelScope {
+  return observation.model_scope ?? (observation.model_ids?.length?'listed':'all')
+}
 
 /** Most restrictive simultaneous constraint wins. An unknown window prevents a green result. */
 function reduce(states:UsageQuotaState[]):UsageQuotaState {
@@ -150,7 +156,7 @@ export class UsageQuotas {
     const resetPassed=values.some(item=>!!item.window.resets_at && item.window.resets_at<=now)
     return {id:row.id,provider:row.provider,...(row.account_ref?{account_ref:row.account_ref}:{}),pool_id:row.pool_id,scope:row.scope,
       identity_confidence:row.scope==='account'?'verified':'unknown_account',binding_ids:bindings.map(item=>item.binding_id),clis:[...new Set(bindings.map(item=>item.cli))],
-      model_ids:row.observation.model_ids ?? [],status,observed_status:row.observed_status,stale:expired || resetPassed,
+      model_scope:modelScope(row.observation),model_ids:row.observation.model_ids ?? [],status,observed_status:row.observed_status,stale:expired || resetPassed,
       ...(expired?{reason:'expired_observation'}:resetPassed?{reason:'reset_requires_observation'}:row.observation.reason?{reason:row.observation.reason}:{}),
       observation:row.observation,last_known:row.last_known,retained_windows:values.filter(item=>item.observed_at!==row.observation.observed_at),
       ...(aggregate && aggregate.observed_at!==row.observation.observed_at?{retained_status:aggregate}:{})}
@@ -164,7 +170,7 @@ export class UsageQuotas {
         if(filter.provider && row.provider!==filter.provider || filter.account_ref && row.account_ref!==filter.account_ref)continue
         const value=await this.snapshot(sql,row,now)
         if(!value.binding_ids.length || filter.binding_id && !value.binding_ids.includes(filter.binding_id) || filter.cli && !value.clis.includes(filter.cli))continue
-        if(filter.model && value.model_ids.length && !value.model_ids.includes(filter.model))continue
+        if(filter.model && value.model_scope==='listed' && !value.model_ids.includes(filter.model))continue
         results.push(value)
       }
       return results
@@ -176,6 +182,8 @@ export class UsageQuotas {
     if(!pools.length)return {status:'unknown',reason:'no_observation',pools}
     const scopes=new Set(pools.map(pool=>pool.scope==='account'?`${pool.provider}:${pool.account_ref}`:`binding:${pool.binding_ids.join(',')}`))
     if(scopes.size>1)return {status:'unknown',reason:'ambiguous_account',pools}
-    return {status:reduce(pools.map(pool=>pool.status)),pools}
+    // Observed exhaustion of an unidentified model pool is not evidence that the requested model is exhausted.
+    const status=reduce(pools.map(pool=>pool.model_scope==='unknown'?'unknown':pool.status))
+    return {status,...(status==='unknown' && pools.some(pool=>pool.model_scope==='unknown')?{reason:'unknown_model_scope'}:{}),pools}
   }
 }
