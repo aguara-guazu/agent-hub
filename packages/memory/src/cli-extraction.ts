@@ -13,9 +13,10 @@ export const extractionClis = ['claude_code', 'codex_cli', 'kiro'] as const
 export type ExtractionCli = typeof extractionClis[number]
 export const cliLabels: Record<ExtractionCli, string> = { claude_code: 'Claude Code', codex_cli: 'Codex', kiro: 'Kiro CLI' }
 export function isExtractionCli(value: string): value is ExtractionCli { return extractionClis.includes(value as ExtractionCli) }
-export type CliReasoningEffortsSource = 'cli' | 'fallback'
+export type CliReasoningEffortsSource = 'native' | 'fallback'
+export type CliDiscoverySource = 'native'
 export interface CliModel { default?: boolean; description?: string; id: string; name: string; reasoning_efforts: string[]; reasoning_efforts_source: CliReasoningEffortsSource }
-export interface CliStatus { installed: boolean; models: CliModel[]; detail?: string }
+export interface CliStatus { installed: boolean; models: CliModel[]; checked_at: string; source: CliDiscoverySource; detail?: string }
 interface Options {
   /** Resolved locally for each launch, including in an already-running worker. */
   kiroApiKey?: () => string | undefined
@@ -182,7 +183,8 @@ export class CliExtractionRuntime {
   }
 
   async status(provider: ExtractionCli): Promise<CliStatus> {
-    if (!(this.options.executable ?? findExtractionCli)(provider)) return { installed: false, models: [], detail: `Instalá ${cliLabels[provider]} e iniciá sesión desde su terminal.` }
+    const metadata = () => ({ checked_at: new Date().toISOString(), source: 'native' as const })
+    if (!(this.options.executable ?? findExtractionCli)(provider)) return { installed: false, models: [], ...metadata(), detail: `Instalá ${cliLabels[provider]} e iniciá sesión desde su terminal.` }
     try {
       const models = await this.workspace(async cwd => {
         const models: CliModel[] = []
@@ -194,7 +196,7 @@ export class CliExtractionRuntime {
           for (const model of data.models) models.push({ id: model.model_id, name: model.model_name ?? model.model_id,
             ...nativeModelDescription(model),
             reasoning_efforts: Array.isArray(model.supported_effort_levels) ? effortLevels(model.supported_effort_levels) : kiroEfforts(model.model_id),
-            reasoning_efforts_source: Array.isArray(model.supported_effort_levels) ? 'cli' : 'fallback' })
+            reasoning_efforts_source: Array.isArray(model.supported_effort_levels) ? 'native' : 'fallback' })
         } else if (provider === 'claude_code') {
           const args = [...claudeArgs]; args[args.indexOf('json')] = 'stream-json'
           await this.run(provider, [...args, '--input-format', 'stream-json', '--verbose'], cwd, undefined, undefined, (event, _send, done) => {
@@ -204,7 +206,7 @@ export class CliExtractionRuntime {
             for (const model of data.models) models.push({ default: model.value === 'default' || model.isDefault === true, id: model.resolvedModel ?? model.value, name: model.displayName ?? model.value,
               ...nativeModelDescription(model),
               reasoning_efforts: model.supportsEffort ? effortLevels(model.supportedEffortLevels) : [],
-              reasoning_efforts_source: 'cli' })
+              reasoning_efforts_source: 'native' })
             done()
           }, timeout)
         } else {
@@ -219,7 +221,7 @@ export class CliExtractionRuntime {
               models.push({ default: model.isDefault === true, id: model.model ?? model.id, name: model.displayName ?? model.model ?? model.id,
                 ...nativeModelDescription(model),
                 reasoning_efforts: effortLevels(model.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort)),
-                reasoning_efforts_source: 'cli' })
+                reasoning_efforts_source: 'native' })
             if (event.result.nextCursor) {
               check(++pages < 100, 'Codex no terminó de listar sus modelos.', 502)
               send({ id: ++id, method: 'model/list', params: { limit: 100, cursor: event.result.nextCursor } })
@@ -229,9 +231,9 @@ export class CliExtractionRuntime {
         return [...new Map(models.filter(m => typeof m.id === 'string' && validCliModel(m.id)).map(m => [m.id, m])).values()]
       })
       this.catalogs.set(provider, { models, at: Date.now() })
-      return { installed: true, models, detail: 'La lista proviene de la CLI. Probá el modelo para verificar el acceso de tu cuenta en segundo plano.' }
+      return { installed: true, models, ...metadata(), detail: 'La lista proviene de la CLI. Probá el modelo para verificar el acceso de tu cuenta en segundo plano.' }
     } catch (error) {
-      return { installed: true, models: [], detail: error instanceof MemoryError ? error.message : `No se pudieron consultar los modelos de ${cliLabels[provider]}. Actualizá la CLI y revisá su sesión.` }
+      return { installed: true, models: [], ...metadata(), detail: error instanceof MemoryError ? error.message : `No se pudieron consultar los modelos de ${cliLabels[provider]}. Actualizá la CLI y revisá su sesión.` }
     }
   }
 

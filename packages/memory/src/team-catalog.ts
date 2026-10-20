@@ -3,15 +3,18 @@ import {
   cliLabels,
   extractionClis,
   isExtractionCli,
+  type CliDiscoverySource,
   type CliExtractionRuntime,
   type CliModel,
   type CliReasoningEffortsSource,
+  type CliStatus,
   type ExtractionCli,
 } from './cli-extraction.js'
 
 export type TeamModelDescriptionSource = 'native' | 'heuristic'
 export type UnsupportedTeamCli = 'gemini_cli' | 'opencode' | 'antigravity' | 'claude_desktop'
 export type TeamCatalogCliId = ExtractionCli | UnsupportedTeamCli
+export type TeamRole = 'exploration' | 'implementation' | 'design' | 'review'
 
 const unsupportedClis: ReadonlyArray<{ id: UnsupportedTeamCli; label: string }> = [
   { id: 'gemini_cli', label: 'Gemini CLI' },
@@ -23,24 +26,35 @@ const unsupportedClis: ReadonlyArray<{ id: UnsupportedTeamCli; label: string }> 
 export interface TeamCatalogCli {
   id: TeamCatalogCliId
   label: string
-  /** null means this catalog deliberately does not inspect installation for an unsupported CLI. */
+  /** null means discovery could not determine installation or does not support this CLI. */
   installed: boolean | null
-  supported: boolean
   catalogable: boolean
   model_selectable: boolean
   launchable: boolean
+  checked_at: string
+  source: CliDiscoverySource | 'unsupported'
   detail?: string
+}
+
+export interface TeamRoleHint {
+  role: TeamRole
+  rationale: string
+  source: 'heuristic'
 }
 
 export interface TeamCatalogModel {
   cli: ExtractionCli
   id: string
   name: string
-  description: string
-  description_source: TeamModelDescriptionSource
+  description?: string
+  description_source?: TeamModelDescriptionSource
   default?: boolean
   reasoning_efforts: string[]
   reasoning_efforts_source: CliReasoningEffortsSource
+  checked_at: string
+  source: CliDiscoverySource
+  access: 'unverified'
+  role_hints: TeamRoleHint[]
 }
 
 export interface TeamCatalogResult {
@@ -54,51 +68,77 @@ export interface TeamSelection {
   effort?: string
 }
 
-/** Family guidance is intentionally qualitative and carries heuristic provenance.
- * It never claims price, recency, benchmarks or account-specific availability. */
-function heuristicDescription(cli: ExtractionCli, model: CliModel): string {
-  const family = `${model.id} ${model.name}`.toLowerCase()
-  if (family.includes('haiku')) return 'Recomendación heurística por familia: considerar para una tarea acotada.'
-  if (family.includes('opus')) return 'Recomendación heurística por familia: considerar para análisis o revisión compleja.'
-  if (family.includes('sonnet')) return 'Recomendación heurística por familia: considerar como opción general para implementación y revisión.'
-  if (/(?:^|\W)gpt(?:\W|$)/.test(family)) return 'Recomendación heurística por familia: considerar como opción general para implementación y revisión.'
-  const identity = model.name === model.id ? model.id : `${model.name} (${model.id})`
-  return `${identity}, modelo informado por ${cliLabels[cli]}.`
+type CatalogStatus = Omit<CliStatus, 'installed'> & { installed: boolean | null }
+
+function token(value: string, name: string): boolean {
+  return new RegExp(`(?:^|[^a-z0-9])${name}(?:$|[^a-z0-9])`, 'i').test(value)
 }
 
-function catalogModel(cli: ExtractionCli, model: CliModel): TeamCatalogModel {
+/** Qualitative family guidance only. Unknown families receive no inferred role. */
+function roleHints(model: CliModel): TeamRoleHint[] {
+  const family = `${model.id} ${model.name}`
+  if (token(family, 'haiku')) return [{ role: 'exploration', rationale: 'Considerar esta familia para exploración y uso liviano de herramientas.', source: 'heuristic' }]
+  if (token(family, 'sol')) return [{ role: 'implementation', rationale: 'Considerar esta familia para tareas de implementación.', source: 'heuristic' }]
+  if (token(family, 'astra') || token(family, 'opus')) return [
+    { role: 'design', rationale: 'Considerar esta familia para tareas de diseño.', source: 'heuristic' },
+    { role: 'review', rationale: 'Considerar esta familia para tareas de revisión.', source: 'heuristic' },
+  ]
+  return []
+}
+
+function catalogModel(cli: ExtractionCli, status: CatalogStatus, model: CliModel): TeamCatalogModel {
   const native = model.description?.trim()
+  const hints = roleHints(model)
+  const heuristic = hints.length ? hints.map(hint => hint.rationale).join(' ') : undefined
   return {
     cli,
     id: model.id,
     name: model.name,
-    description: native || heuristicDescription(cli, model),
-    description_source: native ? 'native' : 'heuristic',
+    ...(native ? { description: native, description_source: 'native' as const }
+      : heuristic ? { description: heuristic, description_source: 'heuristic' as const } : {}),
     ...(model.default === undefined ? {} : { default: model.default }),
     reasoning_efforts: [...model.reasoning_efforts],
     reasoning_efforts_source: model.reasoning_efforts_source,
+    checked_at: status.checked_at,
+    source: status.source,
+    access: 'unverified',
+    role_hints: hints,
   }
 }
 
-/** Models available to the three launch adapters. Unsupported clients remain
- * visible instead of being mistaken for not installed or silently omitted. */
+async function discover(runtime: CliExtractionRuntime, cli: ExtractionCli): Promise<CatalogStatus> {
+  try { return await runtime.status(cli) }
+  catch {
+    return {
+      installed: null,
+      models: [],
+      checked_at: new Date().toISOString(),
+      source: 'native',
+      detail: `No se pudo consultar ${cliLabels[cli]}; los demás catálogos siguen disponibles.`,
+    }
+  }
+}
+
+/** Models available to the three launch adapters. Each native discovery is
+ * independent, so one broken CLI cannot hide the other catalog entries. */
 export class TeamCatalog {
   constructor(private readonly runtime: CliExtractionRuntime) {}
 
   async catalog(): Promise<TeamCatalogResult> {
-    const statuses = await Promise.all(extractionClis.map(async cli => ({ cli, status: await this.runtime.status(cli) })))
+    const statuses = await Promise.all(extractionClis.map(async cli => ({ cli, status: await discover(this.runtime, cli) })))
     return {
       clis: [
         ...statuses.map(({ cli, status }): TeamCatalogCli => {
-          const modelSelectable = status.installed && status.models.length > 0
+          const modelSelectable = status.installed === true && status.models.length > 0
           return {
             id: cli,
             label: cliLabels[cli],
             installed: status.installed,
-            supported: true,
             catalogable: true,
             model_selectable: modelSelectable,
             launchable: modelSelectable,
+            checked_at: status.checked_at,
+            source: status.source,
             ...(status.detail ? { detail: status.detail } : {}),
           }
         }),
@@ -106,14 +146,16 @@ export class TeamCatalog {
           id,
           label,
           installed: null,
-          supported: false,
           catalogable: false,
           model_selectable: false,
           launchable: false,
-          detail: 'Este cliente todavía no admite miembros de equipo lanzados por Agent Hub.',
+          checked_at: new Date().toISOString(),
+          source: 'unsupported',
+          detail: 'Este cliente todavía no admite discovery ni lanzamiento de miembros de equipo.',
         })),
       ],
-      models: statuses.flatMap(({ cli, status }) => status.models.map(model => catalogModel(cli, model))),
+      models: statuses.flatMap(({ cli, status }) => status.installed === true
+        ? status.models.map(model => catalogModel(cli, status, model)) : []),
     }
   }
 
@@ -124,7 +166,10 @@ export class TeamCatalog {
     check(status.models.length > 0, `${cliLabels[cli]} no devolvió un catálogo de modelos; no se puede lanzar el miembro.`, 409)
     const selected = status.models.find(candidate => candidate.id === model)
     check(selected, `${cliLabels[cli]} no ofrece el modelo elegido. Actualizá el catálogo y volvé a elegirlo.`, 409)
-    if (effort) check(selected.reasoning_efforts.includes(effort), `${cliLabels[cli]} no ofrece ese esfuerzo para el modelo elegido.`, 409)
+    if (effort) {
+      check(selected.reasoning_efforts_source === 'native', `${cliLabels[cli]} sólo infiere ese esfuerzo; elegí el esfuerzo predeterminado para lanzar el miembro.`, 409)
+      check(selected.reasoning_efforts.includes(effort), `${cliLabels[cli]} no ofrece ese esfuerzo para el modelo elegido.`, 409)
+    }
     return { cli, model, ...(effort ? { effort } : {}) }
   }
 }
