@@ -51,3 +51,22 @@ verificado hasta usar el modelo.
 - Una prueba con dos servicios sobre la misma base verifica esa distinción y
   rechaza el primer mensaje del hijo tras un reinicio, sin necesitar una llamada
   previa a las herramientas de equipo.
+
+## Resultado final
+
+- Código y skill revisados independientemente hasta `4ccbd29`, sin hallazgos
+  altos o medios pendientes.
+- `npm run typecheck` y `npm run lint`: correctos.
+- `npm test`: 672 pruebas de backend correctas, 14 omitidas por la suite;
+  126 pruebas de frontend correctas. Total: 798 correctas.
+- La primera corrida del checkout falló porque `testdata/dist` todavía no estaba
+  compilado. Tras completar el build de referencias TypeScript, la suite completa
+  anterior terminó correctamente.
+- Las pruebas de equipos cubren catálogo parcial, esfuerzos, padre/revisión,
+  entrega de prompts, idempotencia, invitaciones, ACL entre canales, cierre,
+  pérdida de liderazgo, recuperación y backup/restore.
+
+Queda pendiente la prueba completa de las herramientas contra una instalación
+actualizada del daemon; no se ha publicado una release ni actualizado la
+instalación personal como parte de esta feature. El lanzamiento Kiro de esta
+versión admite macOS/Linux; Windows se declara no disponible explícitamente.
