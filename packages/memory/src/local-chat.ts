@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { check, id, parse } from './contracts.js'
 import { projectForPath, orcaWorkspaceSchema, type AgentContext } from './agents.js'
 import type { MemoryStore } from './store.js'
+import type { Sql } from './database.js'
 import { teamGuidance } from './local-chat-team.js'
 
 const exec = promisify(execFile)
@@ -28,7 +29,7 @@ export const chatDefinitions = {
   chat_agents: ['Encontrar identidades de sesiones concretas para mencionarlas; por defecto excluye expulsados. Usá include_removed=true sólo para auditoría. unassigned=true limita a canales sin proyecto.', z.object({ ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), ...page }).strict()],
   chat_threads: ['Buscar hilos y mensajes históricos por texto, canal, proyecto, autor o estado. unassigned=true limita a canales sin proyecto. El historial permanece al cerrar los agentes.', z.object({ ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
   chat_read: ['Leer una página de un hilo. Sólo registra lectura de las menciones devueltas destinadas a tu sesión; no las marca atendidas.', z.object({ ...session, project_id:id.optional(), thread_id: id, ...page }).strict()],
-  chat_send: ['Crear un hilo por tarea (channel_id,title) o responder (thread_id). mentions contiene IDs de sesiones concretas del mismo canal; despierta sólo esos destinatarios. request_id estable permite reintentar sin duplicar. Requiere autorización para colaborar.', z.object({ ...session, thread_id: id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), request_id: z.string().min(1).max(200) }).strict()],
+  chat_send: ['Crear un hilo por tarea (channel_id,title) o responder (thread_id). Fuera del canal propio sólo admite el hilo raíz de un equipo vinculado; mentions queda limitado a miembros del mismo equipo. request_id estable permite reintentar sin duplicar. Requiere autorización para colaborar.', z.object({ ...session, thread_id: id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Leer tus menciones pendientes. Marcarlas leídas no las atiende; pendientes sin atender permanecen visibles. No hacer polling con el modelo: el Hub notifica.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
   chat_kick: ['Expulsar una sesión del canal por orden de la persona. Sólo el líder reconocido puede hacerlo; indicá el motivo de la orden. Conserva el historial, cancela avisos y bloquea la reincorporación de esa sesión. No cierra su terminal ni detiene trabajos en curso.', chatKickInput.extend(session).strict()],
   chat_ack: ['Marcar como atendida una mención propia después de resolverla o responder. No acepta la tarea por sólo haberla leído.', z.object({ ...session, message_id: id }).strict()],
@@ -179,6 +180,9 @@ export class LocalChat {
       const existing = (await this.db.query('SELECT * FROM chat_sessions WHERE key_hash=$1', [hash(sessionKey)]))[0]
       check(!existing || existing.agent_id === agent.agent_id, 'La identidad pertenece a otro cliente', 403)
       const sid = existing?.id ?? (nativeId ? agent.session_id : randomUUID())
+      const priorIdentity=(await this.db.query('SELECT id,agent_id,channel_id FROM chat_sessions WHERE id=$1',[sid]))[0]
+      check(!priorIdentity || (priorIdentity.agent_id===agent.agent_id && priorIdentity.channel_id===channel.id),
+        'La conversación nativa ya pertenece a otro canal y no puede migrarse; abrí una conversación nueva en el worktree asignado.',409)
       const value = (await this.db.query(`INSERT INTO chat_sessions(id,agent_id,native_id,key_hash,label,cli_kind,channel_id,event_at,lease_until,gateway_session_id)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO UPDATE SET channel_id=excluded.channel_id,key_hash=excluded.key_hash RETURNING *`,
       [sid, agent.agent_id, nativeId, hash(sessionKey), 'Sin nick todavía', agent.cli_kind, channel.id, '1970-01-01T00:00:00.000Z', new Date(Date.now()+90000).toISOString(),agent.session_id]))[0]!
@@ -353,19 +357,47 @@ export class LocalChat {
         if (input.task_id) check((await sql.query('SELECT id FROM tasks WHERE id=$1 AND project_id=(SELECT project_id FROM chat_channels WHERE id=$2)',[input.task_id,who.channel_id])).length,'La tarea no pertenece al proyecto',400)
         thread = (await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,task_id) VALUES($1,$2,$3,$4,$5) RETURNING *',[randomUUID(),who.channel_id,input.title,who.id,input.task_id ?? null]))[0]
       }
-      check(thread && thread.channel_id === who.channel_id,'El hilo no pertenece a tu canal',403)
+      check(thread,'Hilo inexistente',404)
+      let linkedTeam:Record<string,any>|undefined
+      const teamRoot=(await sql.query('SELECT id FROM chat_team_plans WHERE root_thread_id=$1',[thread.id]))[0]
+      if(teamRoot || thread.channel_id!==who.channel_id) {
+        linkedTeam=await this.teamForThread(sql,who,thread)
+        check(linkedTeam,'Sólo el master y miembros vinculados pueden escribir en el hilo raíz activo de su equipo.',403)
+      }
       if (input.reply_to) check((await sql.query('SELECT id FROM chat_messages WHERE id=$1 AND thread_id=$2',[input.reply_to,thread.id])).length,'La respuesta debe apuntar al mismo hilo',400)
       for (const recipient of new Set(input.mentions as string[])) {
         check(recipient !== who.id,'No podés despertarte mencionándote a vos mismo',400)
-        check((await sql.query('SELECT id FROM chat_sessions WHERE id=$1 AND channel_id=$2 AND removed_at IS NULL',[recipient,thread.channel_id])).length,'La mención debe ser una sesión de este canal que no haya sido expulsada',400)
+        const target=(await sql.query('SELECT id,channel_id,removed_at FROM chat_sessions WHERE id=$1',[recipient]))[0]
+        if(linkedTeam)check(await this.teamRecipient(sql,linkedTeam,recipient),'La mención debe pertenecer al equipo vinculado a este hilo.',400)
+        else if(target && target.channel_id===thread.channel_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
+        else check(false,'La mención debe pertenecer al mismo canal.',400)
       }
       const message = (await sql.query('INSERT INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
         [randomUUID(),thread.id,who.id,input.text,input.reply_to ?? null,input.request_id,requestHash]))[0]!
       for (const recipient of new Set(input.mentions as string[])) await sql.query('INSERT INTO chat_deliveries(message_id,recipient_id) VALUES($1,$2)',[message.id,recipient])
+      if(linkedTeam)await sql.query(`INSERT INTO chat_team_events(id,team_id,type,actor_session_id,source_channel_id,target_thread_id,payload)
+        VALUES($1,$2,'chat_message',$3,$4,$5,$6)`,[randomUUID(),linkedTeam.id,who.id,who.channel_id,thread.id,JSON.stringify({message_id:message.id,request_hash:requestHash})])
       await sql.query('UPDATE chat_threads SET updated_at=now() WHERE id=$1',[thread.id])
       return message
     })
     return result
+  }
+  private async teamForThread(sql:Sql,who:Record<string,any>,thread:Record<string,any>) {
+    return (await sql.query(`SELECT t.* FROM chat_team_plans t
+      JOIN chat_channels master ON master.id=t.master_channel_id JOIN chat_channels source ON source.id=$2
+      JOIN chat_sessions leader ON leader.id=t.created_by
+      WHERE t.root_thread_id=$1 AND t.state IN ('launching','launched','partial','uncertain','active')
+      AND master.closed_at IS NULL AND source.closed_at IS NULL AND master.leader_id=t.created_by
+      AND leader.closed_at IS NULL AND leader.removed_at IS NULL
+      AND ((t.created_by=$3 AND t.master_channel_id=$2) OR EXISTS(SELECT 1 FROM chat_team_members m
+        WHERE m.team_id=t.id AND m.session_id=$3 AND m.channel_id=$2 AND m.state='joined'))`,[thread.id,who.channel_id,who.id]))[0]
+  }
+  private async teamRecipient(sql:Sql,team:Record<string,any>,recipientId:string) {
+    return (await sql.query(`SELECT s.id FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
+      WHERE s.id=$2 AND s.closed_at IS NULL AND s.removed_at IS NULL AND c.closed_at IS NULL
+      AND ((s.id=$3 AND s.channel_id=$4) OR EXISTS(SELECT 1 FROM chat_team_members m
+        WHERE m.team_id=$1 AND m.session_id=s.id AND m.channel_id=s.channel_id AND m.state='joined'))`,
+      [team.id,recipientId,team.created_by,team.master_channel_id])).length>0
   }
   private async writableChannel(channelId:string) {
     const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[channelId]))[0]!

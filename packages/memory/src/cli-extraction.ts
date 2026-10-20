@@ -13,8 +13,10 @@ export const extractionClis = ['claude_code', 'codex_cli', 'kiro'] as const
 export type ExtractionCli = typeof extractionClis[number]
 export const cliLabels: Record<ExtractionCli, string> = { claude_code: 'Claude Code', codex_cli: 'Codex', kiro: 'Kiro CLI' }
 export function isExtractionCli(value: string): value is ExtractionCli { return extractionClis.includes(value as ExtractionCli) }
-export interface CliModel { default?: boolean; id: string; name: string; reasoning_efforts: string[] }
-export interface CliStatus { installed: boolean; models: CliModel[]; detail?: string }
+export type CliReasoningEffortsSource = 'native' | 'fallback'
+export type CliDiscoverySource = 'native'
+export interface CliModel { default?: boolean; description?: string; context_window_tokens?: number; rate_multiplier?: number; id: string; name: string; reasoning_efforts: string[]; reasoning_efforts_source: CliReasoningEffortsSource }
+export interface CliStatus { installed: boolean; models: CliModel[]; checked_at: string; source: CliDiscoverySource; detail?: string }
 interface Options {
   /** Resolved locally for each launch, including in an already-running worker. */
   kiroApiKey?: () => string | undefined
@@ -27,6 +29,18 @@ const binaries = { claude_code: 'claude', codex_cli: 'codex', kiro: 'kiro-cli' }
 const npmEntries = { claude_code: '@anthropic-ai/claude-code/cli.js', codex_cli: '@openai/codex/bin/codex.js', kiro: '' }
 const modelPattern = /^[^\s\x00-\x1f\x7f]{1,200}$/
 export function validCliModel(value: string): boolean { return modelPattern.test(value) && !value.startsWith('-') }
+function nativeModelDescription(model: any): { description?: string } {
+  const value = typeof model.description === 'string' ? model.description : typeof model.model_description === 'string' ? model.model_description : ''
+  const description = value.trim().slice(0, 2000)
+  return description ? { description } : {}
+}
+function nativeModelLimits(model: any): { context_window_tokens?: number; rate_multiplier?: number } {
+  const context = Number(model.context_window_tokens), multiplier = Number(model.rate_multiplier)
+  return {
+    ...(Number.isSafeInteger(context) && context > 0 ? { context_window_tokens: context } : {}),
+    ...(Number.isFinite(multiplier) && multiplier > 0 ? { rate_multiplier: multiplier } : {}),
+  }
+}
 
 /** Native installers and npm entrypoints, including GUI launches without a shell PATH. */
 export function findExtractionCli(provider: ExtractionCli, env = process.env, home = homedir()): string | undefined {
@@ -176,7 +190,8 @@ export class CliExtractionRuntime {
   }
 
   async status(provider: ExtractionCli): Promise<CliStatus> {
-    if (!(this.options.executable ?? findExtractionCli)(provider)) return { installed: false, models: [], detail: `Instalá ${cliLabels[provider]} e iniciá sesión desde su terminal.` }
+    const metadata = () => ({ checked_at: new Date().toISOString(), source: 'native' as const })
+    if (!(this.options.executable ?? findExtractionCli)(provider)) return { installed: false, models: [], ...metadata(), detail: `Instalá ${cliLabels[provider]} e iniciá sesión desde su terminal.` }
     try {
       const models = await this.workspace(async cwd => {
         const models: CliModel[] = []
@@ -186,7 +201,10 @@ export class CliExtractionRuntime {
           const data = JSON.parse(output)
           check(Array.isArray(data.models), 'Actualizá Kiro CLI para consultar sus modelos.', 409)
           for (const model of data.models) models.push({ id: model.model_id, name: model.model_name ?? model.model_id,
-            reasoning_efforts: Array.isArray(model.supported_effort_levels) ? effortLevels(model.supported_effort_levels) : kiroEfforts(model.model_id) })
+            ...nativeModelDescription(model),
+            ...nativeModelLimits(model),
+            reasoning_efforts: Array.isArray(model.supported_effort_levels) ? effortLevels(model.supported_effort_levels) : kiroEfforts(model.model_id),
+            reasoning_efforts_source: Array.isArray(model.supported_effort_levels) ? 'native' : 'fallback' })
         } else if (provider === 'claude_code') {
           const args = [...claudeArgs]; args[args.indexOf('json')] = 'stream-json'
           await this.run(provider, [...args, '--input-format', 'stream-json', '--verbose'], cwd, undefined, undefined, (event, _send, done) => {
@@ -194,7 +212,10 @@ export class CliExtractionRuntime {
             const data = event.response?.response
             check(event.response.subtype === 'success' && Array.isArray(data?.models), 'Actualizá Claude Code para consultar sus modelos.', 409)
             for (const model of data.models) models.push({ default: model.value === 'default' || model.isDefault === true, id: model.resolvedModel ?? model.value, name: model.displayName ?? model.value,
-              reasoning_efforts: model.supportsEffort ? effortLevels(model.supportedEffortLevels) : [] })
+              ...nativeModelDescription(model),
+              ...nativeModelLimits(model),
+              reasoning_efforts: model.supportsEffort ? effortLevels(model.supportedEffortLevels) : [],
+              reasoning_efforts_source: 'native' })
             done()
           }, timeout)
         } else {
@@ -207,7 +228,10 @@ export class CliExtractionRuntime {
             check(Array.isArray(event.result?.data), 'Codex devolvió un catálogo de modelos incompatible.', 502)
             for (const model of event.result.data) if (!model.hidden && (!model.inputModalities || model.inputModalities.includes('text')))
               models.push({ default: model.isDefault === true, id: model.model ?? model.id, name: model.displayName ?? model.model ?? model.id,
-                reasoning_efforts: effortLevels(model.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort)) })
+                ...nativeModelDescription(model),
+              ...nativeModelLimits(model),
+                reasoning_efforts: effortLevels(model.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort)),
+                reasoning_efforts_source: 'native' })
             if (event.result.nextCursor) {
               check(++pages < 100, 'Codex no terminó de listar sus modelos.', 502)
               send({ id: ++id, method: 'model/list', params: { limit: 100, cursor: event.result.nextCursor } })
@@ -217,9 +241,9 @@ export class CliExtractionRuntime {
         return [...new Map(models.filter(m => typeof m.id === 'string' && validCliModel(m.id)).map(m => [m.id, m])).values()]
       })
       this.catalogs.set(provider, { models, at: Date.now() })
-      return { installed: true, models, detail: 'La lista proviene de la CLI. Probá el modelo para verificar el acceso de tu cuenta en segundo plano.' }
+      return { installed: true, models, ...metadata(), detail: 'La lista proviene de la CLI. Probá el modelo para verificar el acceso de tu cuenta en segundo plano.' }
     } catch (error) {
-      return { installed: true, models: [], detail: error instanceof MemoryError ? error.message : `No se pudieron consultar los modelos de ${cliLabels[provider]}. Actualizá la CLI y revisá su sesión.` }
+      return { installed: true, models: [], ...metadata(), detail: error instanceof MemoryError ? error.message : `No se pudieron consultar los modelos de ${cliLabels[provider]}. Actualizá la CLI y revisá su sesión.` }
     }
   }
 

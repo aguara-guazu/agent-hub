@@ -42,7 +42,7 @@ export interface MemoryRouteOptions {
   jiraMcp?: import('./tasks.js').JiraTaskReader
 }
 export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions) {
-  const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp)
+  const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true)
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }

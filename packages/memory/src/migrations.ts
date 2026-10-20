@@ -332,4 +332,33 @@ ALTER TABLE chat_channels ADD COLUMN activated_at TIMESTAMP;
 ALTER TABLE chat_channels ADD COLUMN closed_at TIMESTAMP;
 ALTER TABLE chat_channels ADD COLUMN virtual_path TEXT;
 CREATE UNIQUE INDEX chat_channels_virtual_open ON chat_channels(virtual_path);
+`, String.raw`
+CREATE TABLE chat_team_plans (
+ id TEXT PRIMARY KEY, master_channel_id TEXT NOT NULL REFERENCES chat_channels(id),
+ root_thread_id TEXT NOT NULL UNIQUE REFERENCES chat_threads(id), created_by TEXT NOT NULL REFERENCES chat_sessions(id),
+ objective TEXT NOT NULL, parent JSON NOT NULL, base_revision TEXT NOT NULL, plan JSON NOT NULL, digest TEXT NOT NULL UNIQUE,
+ state TEXT NOT NULL, human_instruction TEXT, launched_by TEXT REFERENCES chat_sessions(id),
+ launch_started_at TIMESTAMP, launched_at TIMESTAMP, close_reason TEXT, closed_at TIMESTAMP,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX chat_team_plans_master ON chat_team_plans(master_channel_id,updated_at);
+CREATE TABLE chat_team_members (
+ id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES chat_team_plans(id), ordinal INTEGER NOT NULL,
+ worktree_name TEXT NOT NULL, cli TEXT NOT NULL, model TEXT NOT NULL, effort TEXT, role TEXT NOT NULL, task TEXT NOT NULL,
+ prompt TEXT NOT NULL, capabilities JSON, state TEXT NOT NULL,
+ workspace_id TEXT UNIQUE, workspace_path TEXT, workspace_repo_id TEXT, workspace_head TEXT,
+ launch_handle TEXT, launch_kind TEXT, operation_id TEXT, prompt_outcome TEXT, error TEXT,
+ invitation_hash TEXT UNIQUE, invitation_expires_at TIMESTAMP, invitation_used_at TIMESTAMP,
+ session_id TEXT UNIQUE REFERENCES chat_sessions(id), channel_id TEXT UNIQUE REFERENCES chat_channels(id),
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ UNIQUE(team_id,ordinal), UNIQUE(team_id,worktree_name)
+);
+CREATE INDEX chat_team_members_team ON chat_team_members(team_id,ordinal);
+CREATE TABLE chat_team_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, team_id TEXT NOT NULL REFERENCES chat_team_plans(id),
+ member_id TEXT REFERENCES chat_team_members(id), type TEXT NOT NULL, actor_session_id TEXT REFERENCES chat_sessions(id),
+ source_channel_id TEXT REFERENCES chat_channels(id), target_thread_id TEXT REFERENCES chat_threads(id), payload JSON NOT NULL DEFAULT '{}',
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX chat_team_events_team ON chat_team_events(team_id,seq);
 `]

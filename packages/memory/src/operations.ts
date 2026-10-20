@@ -1,4 +1,7 @@
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
+import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
+import type { TeamCatalog } from './team-catalog.js'
+import type { TeamOrca } from './team-orca.js'
 import { SharedPublications } from './sharing/publications.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { queueMedia, processFilesInput, mediaSettings } from './media-processing.js'
@@ -25,6 +28,7 @@ import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput,
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
   ...chatDefinitions,
+  ...teamDefinitions,
   shared_status: ['Ver miembros, permisos, identidad y versiones de un proyecto compartido; consultar la skill hub-collaboration al trabajar en él.', z.object({ project_id: id }).strict()],
   shared_version: ['Leer una versión compartida completa y su autor, agente y peer de procedencia antes de resolver un conflicto. No devuelve los bytes del adjunto.', z.object({ project_id: id, event_id: z.string().length(64) }).strict()],
   publish_source: ['Adelantar la publicación de una fuente (normalmente automática) o compartir una tarea o colección. Conserva procedencia y evita duplicados; sólo comparte fragmentos del proyecto.', z.object({ project_id: id, entity_id: id, key: z.string().max(1000).optional() }).strict()],
@@ -105,13 +109,18 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set([...chatReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set([...chatReadOperations,...teamReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
   readonly chat: LocalChat
+  readonly teams: TeamOrchestration | undefined
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
-    private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime) { this.chat = new LocalChat(store) }
+    private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime,
+    teamRuntime?: { catalog: TeamCatalog; orca: TeamOrca }) {
+    this.chat = new LocalChat(store)
+    this.teams = teamRuntime ? new TeamOrchestration(this.chat, teamRuntime.catalog, teamRuntime.orca) : undefined
+  }
   async collaborationNotice(operation: string, raw: unknown, result: any, agent?: AgentContext) {
     if (!agent || !READ_OPERATIONS.has(operation) || operation === 'read_messages') return null
     const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
@@ -137,6 +146,10 @@ export class MemoryOperations {
   /** `agent` identifies the calling agent session (from the gateway); it attributes notes and keeps the session alive for the notes board. */
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
     if (operation.startsWith('chat_')) return this.chat.call(operation, raw, agent)
+    if (operation.startsWith('team_')) {
+      check(this.teams, 'La orquestación de equipos no está disponible en este servicio.', 503)
+      return this.teams.call(operation, raw, agent)
+    }
     const definition = definitions[operation as keyof typeof definitions]
     check(definition, 'Operación de memoria inexistente', 404)
     const input = parse(definition[1] as z.ZodType, raw ?? {}) as any
