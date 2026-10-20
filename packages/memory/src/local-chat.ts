@@ -385,8 +385,10 @@ export class LocalChat {
   private async teamForThread(sql:Sql,who:Record<string,any>,thread:Record<string,any>) {
     return (await sql.query(`SELECT t.* FROM chat_team_plans t
       JOIN chat_channels master ON master.id=t.master_channel_id JOIN chat_channels source ON source.id=$2
+      JOIN chat_sessions leader ON leader.id=t.created_by
       WHERE t.root_thread_id=$1 AND t.state IN ('launching','launched','partial','uncertain','active')
       AND master.closed_at IS NULL AND source.closed_at IS NULL AND master.leader_id=t.created_by
+      AND leader.closed_at IS NULL AND leader.removed_at IS NULL
       AND ((t.created_by=$3 AND t.master_channel_id=$2) OR EXISTS(SELECT 1 FROM chat_team_members m
         WHERE m.team_id=t.id AND m.session_id=$3 AND m.channel_id=$2 AND m.state='joined'))`,[thread.id,who.channel_id,who.id]))[0]
   }

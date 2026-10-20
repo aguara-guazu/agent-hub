@@ -225,3 +225,33 @@ it('restaura planes activos pausados, invalida invitaciones y conserva eventos/p
     expect(await restored.query('PRAGMA foreign_key_check')).toEqual([])
   } finally {await restored.close()}
 })
+
+it('pausa la ejecución y revoca invitaciones si el master cierra su sesión durante la creación',async()=>{
+  const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head}
+  orca.spaces.set(parent.id,parent)
+  orca.create.mockImplementationOnce(async(base,name)=>{
+    const path=join(dir,name);await mkdir(path)
+    await db.query("UPDATE chat_sessions SET closed_at=now(),state='offline' WHERE id=$1",[master.session.id])
+    return {id:`${randomUUID()}::${path}`,path,repo_id:base.repo_id,head}
+  })
+  const teams=new TeamOrchestration(chat,catalog,orca)
+  const prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Pérdida del master',base_revision:head,members:members(2)},master.agent)
+  await expect(teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Lanzar el plan'},master.agent))
+    .rejects.toMatchObject({statusCode:403})
+  expect(orca.create).toHaveBeenCalledTimes(1);expect(orca.launch).not.toHaveBeenCalled()
+  expect((await db.query('SELECT state FROM chat_team_plans WHERE id=$1',[prepared.id]))[0].state).toBe('paused')
+  expect((await db.query('SELECT invitation_hash FROM chat_team_members WHERE team_id=$1',[prepared.id])).every(row=>row.invitation_hash===null)).toBe(true)
+})
+
+it('revoca escritura cross-channel cuando el master está offline aunque conserve leader_id',async()=>{
+  const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head}
+  orca.spaces.set(parent.id,parent)
+  const teams=new TeamOrchestration(chat,catalog,orca)
+  const prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Master offline',base_revision:head,members:members(1)},master.agent)
+  const launched=await teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Lanzar'},master.agent)
+  const assigned=launched.members[0],child=await session('child',assigned.workspace_path,assigned.workspace_id)
+  await teams.call('team_join',{session_key:child.key,invitation:invitation(orca.prompts.get(assigned.workspace_id)!)},child.agent)
+  await db.query("UPDATE chat_sessions SET closed_at=now(),state='offline' WHERE id=$1",[master.session.id])
+  await expect(chat.call('chat_send',{session_key:child.key,thread_id:prepared.root_thread_id,text:'No autorizado',request_id:'offline-master'},child.agent))
+    .rejects.toMatchObject({statusCode:403})
+})

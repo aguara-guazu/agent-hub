@@ -12,6 +12,8 @@ import { MemoryAI } from './ai.js'
 import { GoogleAuth } from './google-auth.js'
 import { OpenCodeRuntime } from './opencode.js'
 import { CliExtractionRuntime, extractionClis, isExtractionCli, validCliModel } from './cli-extraction.js'
+import { TeamCatalog } from './team-catalog.js'
+import { LocalTeamOrca } from './team-orca.js'
 import { JobRunner } from './jobs.js'
 import { check, MemoryError, parse } from './contracts.js'
 import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
@@ -68,7 +70,8 @@ export class MemoryService {
     }
     const store = new MemoryStore(db, this.directory)
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
-    const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media)
+    const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media,
+      { catalog: new TeamCatalog(this.cliExtraction), orca: new LocalTeamOrca() })
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     this.current = { db, store, ai, operations, runner, network: new SharedNetwork(operations.sharing) }
     return this.current

@@ -168,7 +168,17 @@ export class TeamOrchestration {
     })
     if(!claimed)return this.view(plan.id,who)
     const members=await this.db.query('SELECT * FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal,id',[plan.id])
-    for(const item of members)if(!await this.launchMember(plan,item,parent,who))break
+    try {
+      for(const item of members)if(!await this.launchMember(plan,item,parent,who))break
+    } catch(error) {
+      // Authority can disappear while Orca is working. Preserve every receipt,
+      // revoke pending invitations and do not leave a stopped run "launching".
+      await this.db.transaction(async sql=>{
+        await sql.query("UPDATE chat_team_plans SET state='paused',updated_at=now() WHERE id=$1 AND state='launching'",[plan.id])
+        await sql.query('UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL WHERE team_id=$1',[plan.id])
+      })
+      throw error
+    }
     await this.refreshPlan(plan.id)
     return this.view(plan.id,who)
   }
@@ -278,8 +288,12 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
     return this.db.transaction(async sql=>{
       const current=(await sql.query(`SELECT m.id,t.state AS team_state,master.leader_id,leader.closed_at AS leader_closed,leader.removed_at AS leader_removed
         FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id JOIN chat_channels master ON master.id=t.master_channel_id
-        JOIN chat_sessions leader ON leader.id=t.created_by WHERE m.id=$1 AND m.invitation_hash=$2 AND m.invitation_used_at IS NULL
-        AND master.closed_at IS NULL`,[member.id,digest]))[0]
+        JOIN chat_sessions leader ON leader.id=t.created_by
+        JOIN chat_sessions participant ON participant.id=$3
+        JOIN chat_channels child ON child.id=participant.channel_id
+        WHERE m.id=$1 AND m.invitation_hash=$2 AND m.invitation_used_at IS NULL AND m.invitation_expires_at>now()
+        AND master.closed_at IS NULL AND participant.closed_at IS NULL AND participant.removed_at IS NULL
+        AND child.closed_at IS NULL AND child.orca_workspace_id=m.workspace_id`,[member.id,digest,who.id]))[0]
       check(current && activePlan(current.team_state) && current.leader_id===member.created_by && !current.leader_closed && !current.leader_removed,
         'El líder master o el equipo ya no están vigentes',409)
       const used=await sql.query(`UPDATE chat_team_members SET state='joined',invitation_used_at=now(),invitation_hash=NULL,session_id=$2,channel_id=$3,updated_at=now()
