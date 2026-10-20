@@ -189,7 +189,7 @@ function describePass(item: AgentPass): string {
   if (item.applied !== null) {
     const parts = [`${item.applied.written.length} archivos escritos`]
     if (item.applied.removed.length > 0) parts.push(`${item.applied.removed.length} borrados`)
-    if (item.applied.adopted.length > 0) parts.push(`${item.applied.adopted.length} enlaces adoptados`)
+    if (item.applied.adopted.length > 0) parts.push(`${item.applied.adopted.length} regiones adoptadas`)
     if (item.applied.drift.length > 0) parts.push(`${item.applied.drift.length} con deriva, sin pisar`)
     return parts.join(', ')
   }

@@ -155,7 +155,7 @@ export function normalizeToolName(raw: string): string {
 export function diffFor(change: FileChange): string {
   if (change.action === 'delete') return `- borrar ${change.path}`
   if (change.action === 'symlink') return `+ enlazar ${change.path} -> ${change.target ?? ''}`
-  if (change.action === 'adopt') return `= adoptar ${change.path} (ya enlaza a ${change.target ?? ''})`
+  if (change.action === 'adopt') return `= adoptar ${change.path} (${change.target ? `ya enlaza a ${change.target}` : change.summary})`
   const lines = change.content.split('\n')
   const preview = lines.slice(0, 20)
   const suffix = lines.length > 20 ? [`… (${lines.length - 20} líneas más)`] : []
@@ -509,7 +509,10 @@ export class DaemonApp {
     const snapshot = outcome.snapshot as unknown as Snapshot
     const endpoint = this.endpointFor(agent)
     const adapter = adapterFor(agent.cliKind)
-    const [changes, drift] = adapter.planDetailed(snapshot, endpoint, this.home)
+    const geminiEndpoints = agent.cliKind === 'antigravity' && this.stdioGateway
+      ? this.cachedAgents().filter(other => other.cliKind === 'gemini_cli' && other.id !== agent.id)
+        .map(other => this.endpointFor(other)) : []
+    const [changes, drift] = adapter.planDetailed(snapshot, endpoint, this.home, { geminiEndpoints })
 
     if (!opts.apply) {
       const [hooks, hookDrift] = planMemoryHooks(snapshot, endpoint, this.home)

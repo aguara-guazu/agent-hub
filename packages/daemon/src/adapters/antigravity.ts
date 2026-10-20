@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { detectDrift, Manifest, planJsonValue, region, samePath, type DriftItem, type DriftReport, type FileChange, type ManagedRegion } from './atomic.js'
-import { isStdio, SERVER_ALIAS, stdioEntry, type CliAdapter, type DetectionResult, type GatewayEndpoint, type Snapshot } from './base.js'
+import { isStdio, SERVER_ALIAS, stdioEntry, type AdapterPlanContext, type CliAdapter, type DetectionResult, type GatewayEndpoint, type Snapshot } from './base.js'
 import { planSkills, skillsDriftTargets, skillsRoot } from './skills.js'
 
 export const CLI_KIND = 'antigravity'
@@ -40,11 +40,16 @@ export class AntigravityAdapter implements CliAdapter {
     return { serverUrl: endpoint.url, ...(Object.keys(endpoint.headers).length ? { headers: { ...endpoint.headers } } : {}) }
   }
 
-  planDetailed(snapshot: Snapshot, endpoint: GatewayEndpoint, home: string): [FileChange[], DriftItem[]] {
+  planDetailed(snapshot: Snapshot, endpoint: GatewayEndpoint, home: string, context: AdapterPlanContext = {}): [FileChange[], DriftItem[]] {
     const manifest = Manifest.load(home), changes: FileChange[] = [], drift: DriftItem[] = []
+    // A copied Gemini connection is recoverable only when it exactly matches an endpoint
+    // generated for a registered local Gemini client. Unknown commands/options remain drift.
+    const trustedUnmanagedValues = isStdio(endpoint)
+      ? (context.geminiEndpoints ?? []).filter(isStdio).map(stdioEntry) : []
     for (const path of this.configPaths(home)) {
       const [change, items] = planJsonValue({ home, path, keyPath: MCP_KEY, value: this.serverEntry(endpoint), manifest,
-        cliKind: CLI_KIND, mode: 0o600, summary: 'Conexión de Antigravity al hub' })
+        cliKind: CLI_KIND, mode: 0o600, summary: 'Conexión de Antigravity al hub',
+        adoptExisting: true, trustedUnmanagedValues })
       if (change) changes.push(change)
       drift.push(...items)
     }

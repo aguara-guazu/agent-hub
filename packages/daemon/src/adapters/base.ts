@@ -83,12 +83,17 @@ export interface DetectionResult {
   version: string
 }
 
+/** Endpoints generated from the daemon's own registered clients, never from config files. */
+export interface AdapterPlanContext {
+  geminiEndpoints?: GatewayEndpoint[]
+}
+
 /** Lo que el daemon le pide a cualquier adaptador. */
 export interface CliAdapter {
   readonly cliKind: string
   detect(home: string): DetectionResult | null
   plan(snapshot: Snapshot, endpoint: GatewayEndpoint, home: string): FileChange[]
-  planDetailed(snapshot: Snapshot, endpoint: GatewayEndpoint, home: string): [FileChange[], DriftItem[]]
+  planDetailed(snapshot: Snapshot, endpoint: GatewayEndpoint, home: string, context?: AdapterPlanContext): [FileChange[], DriftItem[]]
   readDrift(home: string): DriftReport
 }
 

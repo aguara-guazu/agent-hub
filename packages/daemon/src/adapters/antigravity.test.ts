@@ -5,9 +5,10 @@ import { afterEach, beforeEach, expect, it } from 'vitest'
 import type { PolicySnapshot } from '@agenthub/shared'
 import { AntigravityAdapter } from './antigravity.js'
 import { GeminiCliAdapter } from './gemini_cli.js'
-import { applyChanges } from './atomic.js'
+import { applyChanges, canonicalDigest, Manifest, manifestKey, region } from './atomic.js'
 import { gatewayEndpoint } from './base.js'
-import { detectClis, normalizeToolName } from '../app.js'
+import { DaemonApp, detectClis, normalizeToolName } from '../app.js'
+import { loadConfig } from '../config.js'
 import { planMemoryHooks } from './memory-hooks.js'
 
 let home: string
@@ -99,4 +100,98 @@ it('instala hooks con esquema nativo, preserva otros hooks y respeta ediciones y
   hooks.Stop[0].command = command; write(path, current)
   applyChanges(planMemoryHooks({ ...snapshot, servers: [] }, endpoint, home)[0])
   expect(json(path)).toEqual({ personal, 'agenthub-memory': { enabled: false } })
+})
+
+const windowsEndpoint = (id: string) => gatewayEndpoint({
+  command: 'C:\\Program Files\\Agent Hub\\Agent Hub.exe',
+  args: ['C:\\Program Files\\Agent Hub\\resources\\app\\desktop\\dist\\entry.js',
+    '--agenthub-headless', 'gateway', '--agent', id, '--state-dir', 'C:\\Users\\Pérez\\AppData\\Roaming\\Agent Hub'],
+  env: { ELECTRON_RUN_AS_NODE: '1' },
+})
+const mcpRegion = region('json_value', ['mcpServers', 'hub'])
+
+it('repara una copia exacta de Gemini registrado y conserva Blender, preferencias y respaldo', () => {
+  const target = windowsEndpoint('antigravity-id'), gemini = windowsEndpoint('gemini-id')
+  const path = adapter.configPath(home)
+  const original = { mcpServers: { hub: adapter.serverEntry(gemini), blender: { command: 'uvx', args: ['blender-mcp'] } }, theme: 'dark' }
+  write(path, original)
+  const [changes, drift] = adapter.planDetailed(snapshot, target, home, { geminiEndpoints: [gemini] })
+  expect(drift).toEqual([])
+  expect(Manifest.load(home).digestFor(path, mcpRegion)).toBeNull()
+  const result = applyChanges(changes)
+  expect(result.drift).toEqual([])
+  expect(json(path)).toEqual({ ...original, mcpServers: { ...original.mcpServers, hub: adapter.serverEntry(target) } })
+  expect(json(result.backups[path]!)).toEqual(original)
+  const manifest = Manifest.load(home)
+  expect(manifest.files[manifestKey(path, mcpRegion)]).toBe(canonicalDigest(adapter.serverEntry(target)))
+  expect(adapter.readDrift(home).items).toEqual([])
+  expect(adapter.planDetailed(snapshot, target, home, { geminiEndpoints: [gemini] })).toEqual([[], []])
+})
+
+it('registra una entrada correcta sin reescribirla y permite la próxima actualización del gateway', () => {
+  const path = adapter.configPath(home), original = JSON.stringify({ mcpServers: { hub: adapter.serverEntry(endpoint) } }, null, 4)
+  mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, original)
+  const changes = adapter.plan(snapshot, endpoint, home)
+  expect(changes.find(change => change.path === path)?.action).toBe('adopt')
+  expect(applyChanges(changes).adopted).toContain(path)
+  expect(readFileSync(path, 'utf8')).toBe(original)
+  expect(Manifest.load(home).digestFor(path, mcpRegion)).toBe(canonicalDigest(adapter.serverEntry(endpoint)))
+  const upgraded = gatewayEndpoint({ ...endpoint, command: '/updated/node' })
+  expect(applyChanges(adapter.plan(snapshot, upgraded, home)).drift).toEqual([])
+  expect(json(path).mcpServers.hub.command).toBe('/updated/node')
+})
+
+it.each(['unknown-agent', 'custom-command', 'extra-option', 'custom-env', 'managed-edit'])(
+  'mantiene protección de contenido ajeno: %s', variant => {
+    const target = windowsEndpoint('antigravity-id'), gemini = windowsEndpoint('gemini-id')
+    const path = adapter.configPath(home)
+    if (variant === 'managed-edit') applyChanges(adapter.plan(snapshot, target, home))
+    const copied = adapter.serverEntry(gemini)
+    if (variant === 'unknown-agent') copied.args = windowsEndpoint('unregistered').args
+    if (variant === 'custom-command') copied.command = 'custom-command.exe'
+    if (variant === 'extra-option') copied.disabled = true
+    if (variant === 'custom-env') copied.env = { ...gemini.env, PERSONAL: 'keep' }
+    write(path, { mcpServers: { hub: copied } })
+    const before = readFileSync(path, 'utf8')
+    const [changes, drift] = adapter.planDetailed(snapshot, target, home, { geminiEndpoints: [gemini] })
+    expect(drift).toHaveLength(1)
+    expect(changes.some(change => change.path === path)).toBe(false)
+    applyChanges(changes)
+    expect(readFileSync(path, 'utf8')).toBe(before)
+  },
+)
+
+it.each(['repair', 'adopt'])('detecta cambios concurrentes antes de %s', action => {
+  const target = windowsEndpoint('antigravity-id'), gemini = windowsEndpoint('gemini-id')
+  const path = adapter.configPath(home)
+  write(path, { mcpServers: { hub: adapter.serverEntry(action === 'repair' ? gemini : target) } })
+  const [changes] = adapter.planDetailed(snapshot, target, home, { geminiEndpoints: [gemini] })
+  const edited = { mcpServers: { hub: { command: 'personal.exe' } } }
+  write(path, edited)
+  const result = applyChanges(changes)
+  expect(result.skipped).toContain(path)
+  expect(result.drift).toHaveLength(1)
+  expect(json(path)).toEqual(edited)
+  expect(Manifest.load(home).digestFor(path, mcpRegion)).toBeNull()
+})
+
+it('el daemon obtiene candidatos de su registro de Gemini; plan no escribe y apply registra el hash', async () => {
+  const app = new DaemonApp(loadConfig({ home, stateDir: join(home, 'state'), local: true }))
+  app.state.saveAgents([{ id: 'gemini', cli_kind: 'gemini_cli' }, { id: 'antigravity', cli_kind: 'antigravity' }])
+  app.state.saveSnapshot({ ...snapshot, agent_instance_id: 'antigravity', snapshot_hash: 'test' })
+  const gemini = app.endpointFor(app.cachedAgents().find(agent => agent.id === 'gemini')!)
+  const target = app.endpointFor(app.cachedAgents().find(agent => agent.id === 'antigravity')!)
+  const path = adapter.configPath(home)
+  write(path, { mcpServers: { hub: adapter.serverEntry(gemini), blender: { command: 'blender' } } })
+  const before = readFileSync(path, 'utf8')
+  const report = await app.syncOnce({ apply: false })
+  const pass = report.agents.find(agent => agent.agent.id === 'antigravity')!
+  expect(pass.drift).toEqual([])
+  expect(readFileSync(path, 'utf8')).toBe(before)
+  // Apply only the MCP plan here: hook writes are planned separately after MCP edits.
+  const change = pass.changes.find(change => change.path === path)!
+  expect(applyChanges([change]).drift).toEqual([])
+  expect(json(path).mcpServers.hub).toEqual(adapter.serverEntry(target))
+  expect(json(path).mcpServers.blender).toEqual({ command: 'blender' })
+  expect(Manifest.load(home).digestFor(path, mcpRegion)).not.toBeNull()
 })
