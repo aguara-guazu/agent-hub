@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalTeamOrca, type TeamWorkspace } from '../src/team-orca.js'
@@ -45,9 +46,9 @@ it('sends model, effort and prompt as literal arguments without permission overr
     .mockResolvedValueOnce(envelope({ outcome: { kind: 'terminal', handle: 'term_real' },
       prompt: { outcome: 'handed-to-terminal' }, operationId: 'op_real' }))
   const prompt = 'Search $(do-not-execute); `echo unsafe` and report.\nKeep your own identity.'
-  expect(await new LocalTeamOrca({ run }).launch(parent, { cli: 'kiro', model: 'provider/model-v1', effort: 'high', prompt }))
+  expect(await new LocalTeamOrca({ run }).launch(parent, { cli: 'codex_cli', model: 'provider/model-v1', effort: 'high', prompt }))
     .toEqual({ kind: 'terminal', handle: 'term_real', prompt_outcome: 'handed-to-terminal', operation_id: 'op_real' })
-  expect(run.mock.calls[1]![1]).toEqual(['agent', 'launch', '--agent', 'kiro', '--worktree', `id:${parent.id}`,
+  expect(run.mock.calls[1]![1]).toEqual(['agent', 'launch', '--agent', 'codex', '--worktree', `id:${parent.id}`,
     '--model', 'provider/model-v1', '--effort', 'high', '--prompt', prompt, '--json'])
 })
 
@@ -64,7 +65,7 @@ it('retains only a known operation id from a lost launch reply for manual reconc
     .mockRejectedValueOnce(Object.assign(new Error('secret'), { stdout: JSON.stringify({
       operationId: 'op-recover', prompt: 'secret invitation', error: 'credential',
     }) }))
-  const error = await new LocalTeamOrca({ run }).launch(parent, { cli: 'kiro', model: 'exact', prompt: 'Task' }).catch(e => e)
+  const error = await new LocalTeamOrca({ run }).launch(parent, { cli: 'codex_cli', model: 'exact', prompt: 'Task' }).catch(e => e)
   expect(error).toMatchObject({ operation_id: 'op-recover' })
   expect(JSON.stringify(error)).not.toContain('secret')
   expect(run).toHaveBeenCalledTimes(2)
@@ -92,4 +93,47 @@ it('rejects remote workspaces and never inherits host routing or another convers
 it('rejects a selector resolved to another worktree', async () => {
   const run = vi.fn().mockResolvedValue(envelope({ worktree: raw({ ...parent, id: 'another-id' }) }))
   await expect(new LocalTeamOrca({ run }).workspace(parent.id)).rejects.toThrow('otro worktree')
+})
+
+it.skipIf(process.platform === 'win32')('launches Kiro through its fixed connected CLI with literal model, effort and prompt', async () => {
+  const launcher = join(directory, "launcher with 'quote")
+  await writeFile(launcher, '#!/bin/sh\nprintf "%s\\0" "$@"\n', { mode: 0o700 })
+  const marker = join(directory, 'must-not-exist')
+  const prompt = `--unsafe ' ; touch ${marker}; $(touch ${marker}) \`touch ${marker}\`\n" literal`
+  const run = vi.fn().mockResolvedValueOnce(envelope({ worktree: raw(parent) }))
+    .mockResolvedValueOnce(envelope({ terminal: { handle: 'term_kiro' } }))
+    .mockResolvedValueOnce(envelope({ wait: { satisfied: true } }))
+    .mockResolvedValueOnce(envelope({ terminal: { tail: ['›  ask a question or describe a task ↵'] } }))
+    .mockResolvedValueOnce(envelope({ send: { accepted: true } }))
+  const adapter = new LocalTeamOrca({ run, kiroLauncher: () => launcher })
+  await adapter.preflight([{ cli: 'kiro', model: 'exact-model', effort: 'high' }])
+  expect(await adapter.launch(parent, { cli: 'kiro', model: 'exact-model', effort: 'high', prompt }))
+    .toEqual({ handle: 'term_kiro', kind: 'terminal', prompt_outcome: 'input-accepted' })
+  const args = run.mock.calls[1]![1] as string[]
+  expect(args.slice(0, 2)).toEqual(['terminal', 'create'])
+  const command = args[args.indexOf('--command') + 1]!
+  const received = execFileSync('/bin/sh', ['-c', command]).toString().split('\0').slice(0, -1)
+  expect(received).toEqual(['--model', 'exact-model', '--effort', 'high'])
+  expect(run.mock.calls[4]![1]).toEqual(['terminal', 'send', '--terminal', 'term_kiro', '--text', prompt, '--enter', '--json'])
+  expect(await access(marker).then(() => true, () => false)).toBe(false)
+})
+
+it('retains the Kiro handle and sends nothing when a draft or permission prompt is present', async () => {
+  const run = vi.fn().mockResolvedValueOnce(envelope({ worktree: raw(parent) }))
+    .mockResolvedValueOnce(envelope({ terminal: { handle: 'term_kiro' } }))
+    .mockResolvedValueOnce(envelope({ wait: { satisfied: true } }))
+    .mockResolvedValueOnce(envelope({ terminal: { tail: ['› human draft'] } }))
+  const error = await new LocalTeamOrca({ run, platform: 'darwin', kiroLauncher: () => '/fixed/agenthub-kiro' })
+    .launch(parent, { cli: 'kiro', model: 'exact', prompt: 'Task' }).catch(e => e)
+  expect(error).toMatchObject({ launch_handle: 'term_kiro' })
+  expect(run.mock.calls.some(call => call[1][1] === 'send')).toBe(false)
+})
+
+it('rejects unsupported Kiro platforms or a missing connected launcher before creating resources', async () => {
+  const run = vi.fn()
+  await expect(new LocalTeamOrca({ run, platform: 'win32' }).preflight([{ cli: 'kiro', model: 'exact' }]))
+    .rejects.toThrow('macOS o Linux')
+  await expect(new LocalTeamOrca({ run, platform: 'darwin', kiroLauncher: () => undefined }).preflight([{ cli: 'kiro', model: 'exact' }]))
+    .rejects.toThrow('agenthub-kiro')
+  expect(run).not.toHaveBeenCalled()
 })

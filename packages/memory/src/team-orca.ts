@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { accessSync, constants, statSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -11,6 +12,7 @@ export interface TeamWorkspace { id: string; path: string; repo_id: string; head
 export interface TeamLaunchReceipt { handle: string; kind: string; operation_id?: string; prompt_outcome: string }
 export interface TeamLaunchMember { cli: ExtractionCli; model: string; effort?: string; prompt: string }
 export interface TeamOrca {
+  preflight?(members: Array<{ cli: ExtractionCli; model: string; effort?: string }>): Promise<void>
   workspace(id: string): Promise<TeamWorkspace>
   create(parent: TeamWorkspace, name: string): Promise<TeamWorkspace>
   launch(workspace: TeamWorkspace, member: TeamLaunchMember): Promise<TeamLaunchReceipt>
@@ -18,7 +20,7 @@ export interface TeamOrca {
 
 /** A durable operation identifier is safe to retain for inspection; raw CLI output is not. */
 export class TeamOrcaError extends MemoryError {
-  constructor(message: string, readonly operation_id?: string) { super(503, message) }
+  constructor(message: string, readonly operation_id?: string, readonly launch_handle?: string) { super(503, message) }
 }
 
 const exec = promisify(execFile)
@@ -27,11 +29,11 @@ const safeId = (value: unknown): value is string => typeof value === 'string' &&
 const revision = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{40,64}$/i.test(value)
 type Runner = (command: string, args: string[], options: { cwd?: string; env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; windowsHide: boolean }) => Promise<{ stdout: string }>
 
-/** One local execution host. No shell text, remote host inheritance or automatic launch retries. */
+/** One local execution host. No caller-supplied commands, inherited remote target or automatic launch retries. */
 export class LocalTeamOrca implements TeamOrca {
   private readonly command: string
   private readonly env: NodeJS.ProcessEnv
-  constructor(private options: { run?: Runner; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}) {
+  constructor(private options: { run?: Runner; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; kiroLauncher?: () => string | undefined } = {}) {
     const env = options.env ?? process.env
     const platform = options.platform ?? process.platform
     this.command = env.ORCA_CLI_COMMAND || (env.ORCA_DEV_REPO_ROOT ? 'orca-dev' : platform === 'linux' ? 'orca-ide' : 'orca')
@@ -45,6 +47,25 @@ export class LocalTeamOrca implements TeamOrca {
     // Desktop processes often start with a minimal PATH.
     this.env.PATH = [this.env.PATH, join(homedir(), '.local', 'bin'),
       ...(platform === 'win32' ? [] : ['/usr/local/bin', '/opt/homebrew/bin'])].filter(Boolean).join(delimiter)
+  }
+
+  private kiroLauncher(): string {
+    check((this.options.platform ?? process.platform) !== 'win32',
+      'El lanzamiento de equipos Kiro requiere macOS o Linux en esta versión del adaptador.', 409)
+    let launcher = this.options.kiroLauncher?.()
+    if (!this.options.kiroLauncher) {
+      for (const directory of (this.env.PATH ?? '').split(delimiter).filter(Boolean)) {
+        const candidate = join(directory, 'agenthub-kiro')
+        try { accessSync(candidate, constants.X_OK); if (statSync(candidate).isFile()) { launcher = candidate; break } } catch { /* next installation */ }
+      }
+    }
+    check(launcher && isAbsolute(launcher) && !/[\0\r\n]/.test(launcher),
+      'Instalá el lanzador agenthub-kiro del Hub antes de crear un equipo Kiro.', 409)
+    return launcher
+  }
+
+  async preflight(members: Array<{ cli: ExtractionCli; model: string; effort?: string }>): Promise<void> {
+    if (members.some(member => member.cli === 'kiro')) this.kiroLauncher()
   }
 
   private async commandResult(args: string[], cwd?: string): Promise<Record<string, any>> {
@@ -107,6 +128,39 @@ export class LocalTeamOrca implements TeamOrca {
     const current = await this.workspace(workspace.id)
     check(current.repo_id === workspace.repo_id && current.path === workspace.path && current.head === workspace.head,
       'El worktree asignado cambió antes del lanzamiento.', 409)
+    if (member.cli === 'kiro') {
+      // Orca's agent launch explicitly rejects model selection for Kiro. Its
+      // native CLI accepts these flags; launch that fixed connected executable
+      // in an Orca terminal, never discard the user's requested model/effort.
+      // POSIX single quoting keeps executable/model/effort literal. The task
+      // itself travels through terminal send, never through the shell.
+      const quote = (value: string) => `'${value.replace(/'/g, "'\"'\"'")}'`
+      const argv = [this.kiroLauncher(), '--model', member.model]
+      if (member.effort) argv.push('--effort', member.effort)
+      const result = await this.commandResult(['terminal', 'create', '--worktree', `id:${workspace.id}`,
+        '--title', 'Kiro · Agent Hub', '--command', `exec ${argv.map(quote).join(' ')}`], workspace.path)
+      check(result.terminal && safeId(result.terminal.handle),
+        'Orca no devolvió el handle de la terminal Kiro. Inspeccioná el espacio antes de reintentar.', 502)
+      const handle = result.terminal.handle as string
+      try {
+        const ready = await this.commandResult(['terminal', 'wait', '--terminal', handle, '--for', 'tui-idle', '--timeout-ms', '20000'], workspace.path)
+        check(ready.wait?.satisfied === true, 'Kiro todavía no confirmó disponibilidad.', 409)
+        const screen = await this.commandResult(['terminal', 'read', '--terminal', handle, '--screen', '--limit', '12'], workspace.path)
+        const lines = screen.terminal?.tail
+        check(Array.isArray(lines) && !/(?:esc|ctrl.?c)\s+(?:to\s+)?(?:interrupt|cancel)|kiro is working|thinking|permission (?:requested|required)|allow once|trust this|approve (?:this|once)/i.test(lines.join('\n')) &&
+          lines.some((line: unknown) =>
+          typeof line === 'string' && /^\s*›\s+ask a question or describe a task\s*↵?\s*$/i.test(line)),
+        'Kiro no tiene el compositor vacío. No se envió la tarea.', 409)
+        // The TUI currently ignores positional startup input. Submit exactly once
+        // after observing its empty composer, preserving permission prompts.
+        const sent = await this.commandResult(['terminal', 'send', '--terminal', handle, '--text', member.prompt, '--enter'], workspace.path)
+        check(sent.send?.accepted === true, 'Orca no confirmó la entrega inicial.', 502)
+      } catch (error) {
+        throw new TeamOrcaError('La terminal Kiro fue creada, pero su incorporación no se confirmó. Inspeccioná el handle antes de reintentar.',
+          error instanceof TeamOrcaError ? error.operation_id : undefined, handle)
+      }
+      return { handle, kind: 'terminal', prompt_outcome: 'input-accepted' }
+    }
     const args = ['agent', 'launch', '--agent', agents[member.cli], '--worktree', `id:${workspace.id}`, '--model', member.model]
     if (member.effort) args.push('--effort', member.effort)
     args.push('--prompt', member.prompt)

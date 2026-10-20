@@ -78,6 +78,9 @@ interface TeamLaunchReceipt {
   prompt_outcome: string;
 }
 interface TeamOrca {
+  preflight?(members: Array<{
+    cli: 'kiro' | 'claude_code' | 'codex_cli'; model: string; effort?: string;
+  }>): Promise<void>;
   workspace(id: string): Promise<TeamWorkspace>;
   create(parent: TeamWorkspace, name: string): Promise<TeamWorkspace>;
   launch(workspace: TeamWorkspace, member: {
@@ -90,6 +93,18 @@ interface TeamOrca {
 El adaptador usa argumentos separados, `--json`, padre explícito y revisión base
 exacta. Los IDs y recibos provienen de Orca. No deriva handles ni acepta comandos
 del modelo.
+
+Claude y Codex usan `agent launch`. La versión de Orca probada rechaza
+explícitamente la selección de modelo de Kiro. Para Kiro se crea una terminal
+Orca que ejecuta el lanzador fijo `agenthub-kiro`, con modelo y esfuerzo como
+argumentos escapados para POSIX. El adaptador verifica ese lanzador en preflight;
+esta ruta admite macOS/Linux. No se omite el modelo ni se cambian permisos.
+
+La TUI de Kiro probada ignoró la pregunta posicional de arranque. Se espera su
+estado idle, se verifica el compositor vacío y se envía el prompt una sola vez
+mediante `terminal send`. `input-accepted` confirma aceptación de entrada, no
+inferencia ni incorporación. Una falla posterior a crear la terminal conserva
+su handle para inspección.
 
 ## Verificación
 
