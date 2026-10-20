@@ -89,6 +89,7 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
         const value = table === 'chat_channels' && backup.schema_version < 7 ? {...row,scope_key:`git:${row.path}`,orca_workspace_id:null} : row
         // Restored sessions cannot authenticate as the former virtual leader. Preserve history and release the folder for explicit recreation.
         if (table === 'usage_quota_notices') return {...value,read_at:backup.exported_at,notified_at:backup.exported_at}
+        if (table === 'usage_quota_pools') return {...value,active:false}
         if (table === 'usage_quota_bindings') return {...value,active:false,binding_version:Number(value.binding_version)+1}
         if (table === 'chat_channels' && value.kind === 'virtual' && !value.closed_at) return {...value,closed_at:backup.exported_at,virtual_path:null}
         if (table === 'chat_team_plans' && !['completed','cancelled'].includes(String(value.state))) return {...value,state:'paused'}

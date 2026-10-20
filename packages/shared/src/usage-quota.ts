@@ -7,6 +7,7 @@ export interface UsageQuotaWindow {
   limit?: number
   remaining?: number
   resets_at?: string
+  duration_minutes?: number
   status?: UsageQuotaState
 }
 export interface UsageQuotaObservation {
@@ -33,6 +34,13 @@ export interface UsageQuotaBinding {
   provider: string
   account_ref?: string
 }
+/** A constraint retained from an earlier native sample, with its original validity. */
+export interface UsageQuotaWindowEvidence {
+  window: UsageQuotaWindow
+  observed_at: string
+  expires_at: string
+  source: UsageQuotaObservation['source']
+}
 export interface UsageQuotaSnapshot {
   id: string
   provider: string
@@ -49,6 +57,7 @@ export interface UsageQuotaSnapshot {
   reason?: string
   observation: UsageQuotaObservation
   last_known: UsageQuotaObservation | null
+  retained_windows?: UsageQuotaWindowEvidence[]
 }
 export interface UsageQuotaTransition {
   id: string

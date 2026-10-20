@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { digestJson } from '@agenthub/shared'
-import type { UsageQuotaObservation, UsageQuotaBinding, UsageQuotaSnapshot, UsageQuotaState,
+import type { UsageQuotaObservation, UsageQuotaBinding, UsageQuotaSnapshot, UsageQuotaState, UsageQuotaWindow, UsageQuotaWindowEvidence,
   UsageQuotaFilter, UsageQuotaAvailability, UsageQuotaIngestResult, UsageQuotaTransition } from '@agenthub/shared'
 import type { MemoryDatabase, Sql } from './database.js'
 import { check, parse } from './contracts.js'
@@ -14,7 +14,7 @@ export const usageQuotaObservationSchema=z.object({
   model_ids:z.array(identifier).max(100).optional(),observed_at:timestamp,expires_at:timestamp,
   source:z.object({kind:z.literal('native'),adapter:identifier,reference:z.string().max(300).optional()}).strict(),
   windows:z.array(z.object({id:identifier,unit:z.enum(['percent','credits','tokens','requests','unknown']),
-    used:amount.optional(),limit:amount.optional(),remaining:amount.optional(),resets_at:timestamp.optional(),status:state.optional()}).strict()).max(32),
+    used:amount.optional(),limit:amount.optional(),remaining:amount.optional(),resets_at:timestamp.optional(),duration_minutes:z.number().finite().positive().optional(),status:state.optional()}).strict()).max(32),
   complete:z.boolean().optional(),status:state.optional(),reason:z.string().max(300).optional(),
 }).strict().superRefine((value,ctx)=>{
   if(Date.parse(value.expires_at)<=Date.parse(value.observed_at) || Date.parse(value.expires_at)-Date.parse(value.observed_at)>86400000)
@@ -33,22 +33,39 @@ function reduce(states:UsageQuotaState[]):UsageQuotaState {
   for(const value of ['exhausted','cooldown','unknown','low','available'] as const)if(states.includes(value))return value
   return 'unknown'
 }
+function windowState(window:UsageQuotaWindow,now:string):UsageQuotaState {
+  if(window.resets_at && window.resets_at<=now)return 'unknown'
+  const limit=window.limit ?? (window.unit==='percent'?100:undefined)
+  const remaining=window.remaining ?? (limit!==undefined && window.used!==undefined?Math.max(0,limit-window.used):undefined)
+  const numerical:UsageQuotaState=remaining===0 || (limit!==undefined && window.used!==undefined && window.used>=limit)?'exhausted'
+    : remaining!==undefined && limit!==undefined && limit>0 ? (remaining/limit<=0.1?'low':'available') : 'unknown'
+  // An explicit native warning can be stricter than the generic 10% threshold.
+  return window.status?reduce([window.status,...(numerical==='unknown'?[]:[numerical])]):numerical
+}
 function observedState(observation:UsageQuotaObservation,now:string):UsageQuotaState {
-  const states=observation.windows.map(window=>{
-    if(window.resets_at && window.resets_at<=now)return 'unknown' as const
-    if(window.remaining===0 || (window.limit!==undefined && window.used!==undefined && window.used>=window.limit))return 'exhausted' as const
-    if(window.status==='exhausted' || window.status==='cooldown' || window.status==='unknown')return window.status
-    const limit=window.limit ?? (window.unit==='percent'?100:undefined)
-    const remaining=window.remaining ?? (limit!==undefined && window.used!==undefined?Math.max(0,limit-window.used):undefined)
-    if(remaining===0)return 'exhausted' as const
-    if(remaining!==undefined && limit!==undefined && limit>0)return remaining/limit<=0.1?'low' as const:'available' as const
-    return window.status ?? 'unknown'
-  })
+  const states=observation.windows.map(window=>windowState(window,now))
   if(observation.status)states.push(observation.status)
   if(observation.complete===false)states.push('unknown')
   return reduce(states)
 }
-interface PoolRow {id:string;provider:string;account_ref:string|null;pool_id:string;scope:'account'|'binding';observation:UsageQuotaObservation;
+type WindowEvidence=Record<string,UsageQuotaWindowEvidence>
+function evidenceFor(observation:UsageQuotaObservation,previous:WindowEvidence={}):WindowEvidence {
+  const evidence={...previous}
+  for(const window of observation.windows){
+    const old=evidence[window.id]
+    // Unknown is not evidence that a previously confirmed constraint has recovered.
+    if(old && old.expires_at>observation.observed_at && windowState(old.window,observation.observed_at)!=='unknown'
+      && windowState(window,observation.observed_at)==='unknown')continue
+    evidence[window.id]={window,observed_at:observation.observed_at,expires_at:observation.expires_at,source:observation.source}
+  }
+  check(Object.keys(evidence).length<=128,'El pool supera el máximo de ventanas conocidas')
+  return evidence
+}
+function effectiveState(observation:UsageQuotaObservation,evidence:WindowEvidence,now:string):UsageQuotaState {
+  return reduce([observation.expires_at<=now?'unknown':observedState(observation,now),...Object.values(evidence).map(item=>
+    item.expires_at<=now?'unknown' as const:windowState(item.window,now))])
+}
+interface PoolRow {active:boolean;id:string;provider:string;account_ref:string|null;pool_id:string;scope:'account'|'binding';observation:UsageQuotaObservation;window_evidence:WindowEvidence;
   last_known:UsageQuotaObservation|null;observed_status:UsageQuotaState;event_state:UsageQuotaState;observed_at:string;digest:string}
 
 export class UsageQuotas {
@@ -86,23 +103,24 @@ export class UsageQuotas {
       if(observation.observed_at<current.bound_at)return {accepted:false,reason:'out_of_order',transitions:[]}
       const previous=(await sql.query<PoolRow>('SELECT * FROM usage_quota_pools WHERE id=$1',[key]))[0]
       if(previous)await sql.query('INSERT INTO usage_quota_memberships(binding_id,pool_key) VALUES($1,$2) ON CONFLICT DO NOTHING',[binding.binding_id,key])
-      if(previous && observation.observed_at<previous.observed_at)return {accepted:false,reason:'out_of_order',transitions:[]}
+      if(previous && (observation.observed_at<previous.observed_at || !previous.active && observation.observed_at===previous.observed_at))return {accepted:false,reason:'out_of_order',transitions:[]}
       if(previous && observation.observed_at===previous.observed_at && digest!==previous.digest)return {accepted:false,reason:'conflicting_observation',transitions:[]}
       // A second installation on the same verified account attaches to the existing pool; it never adds capacity.
       if(previous && digest===previous.digest){
         await sql.query('INSERT INTO usage_quota_memberships(binding_id,pool_key) VALUES($1,$2) ON CONFLICT DO NOTHING',[binding.binding_id,key])
         return {accepted:false,reason:'duplicate',snapshot:await this.snapshot(sql,previous,now),transitions:[]}
       }
-      const status=observedState(observation,observation.observed_at),lastKnown=status==='unknown'?(previous?.last_known ?? null):observation
-      await sql.query(`INSERT INTO usage_quota_pools(id,provider,account_ref,pool_id,scope,observation,last_known,observed_status,observed_at,digest)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO UPDATE SET observation=excluded.observation,
-        last_known=excluded.last_known,observed_status=excluded.observed_status,observed_at=excluded.observed_at,digest=excluded.digest`,
-        [key,binding.provider,binding.account_ref ?? null,observation.pool_id,scope,JSON.stringify(observation),lastKnown?JSON.stringify(lastKnown):null,status,observation.observed_at,digest])
+      const evidence=evidenceFor(observation,previous?.window_evidence),status=effectiveState(observation,evidence,observation.observed_at),
+        lastKnown=observedState(observation,observation.observed_at)==='unknown'?(previous?.last_known ?? null):observation
+      await sql.query(`INSERT INTO usage_quota_pools(id,provider,account_ref,pool_id,scope,observation,last_known,observed_status,observed_at,digest,window_evidence)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(id) DO UPDATE SET active=1,observation=excluded.observation,
+        window_evidence=excluded.window_evidence,last_known=excluded.last_known,observed_status=excluded.observed_status,observed_at=excluded.observed_at,digest=excluded.digest`,
+        [key,binding.provider,binding.account_ref ?? null,observation.pool_id,scope,JSON.stringify(observation),lastKnown?JSON.stringify(lastKnown):null,status,observation.observed_at,digest,JSON.stringify(evidence)])
       await sql.query('INSERT INTO usage_quota_memberships(binding_id,pool_key) VALUES($1,$2) ON CONFLICT DO NOTHING',[binding.binding_id,key])
       const row=(await sql.query<PoolRow>('SELECT * FROM usage_quota_pools WHERE id=$1',[key]))[0]!,snapshot=await this.snapshot(sql,row,now)
       const transitions:UsageQuotaTransition[]=[]
       // Expired/backfilled data is history, never a present-tense recovery notification.
-      if(status!=='unknown' && (previous?.event_state ?? 'unknown')!==status && !snapshot.stale && snapshot.status===status){
+      if(status!=='unknown' && (previous?.event_state ?? 'unknown')!==status && observation.expires_at>now && (!snapshot.stale || status==='exhausted' || status==='cooldown') && snapshot.status===status){
         const before=previous?.event_state ?? 'unknown',id=digestJson([key,observation.observed_at,before,status])
         await sql.query('INSERT INTO usage_quota_transitions(id,pool_key,before_state,after_state,observed_at) VALUES($1,$2,$3,$4,$5)',[id,key,before,status,observation.observed_at])
         await sql.query('UPDATE usage_quota_pools SET event_state=$2 WHERE id=$1',[key,status])
@@ -114,20 +132,23 @@ export class UsageQuotas {
 
   private async snapshot(sql:Sql,row:PoolRow,now:string):Promise<UsageQuotaSnapshot> {
     const bindings=await sql.query<{binding_id:string;cli:string}>(`SELECT b.binding_id,b.cli FROM usage_quota_bindings b
-      JOIN usage_quota_memberships m ON m.binding_id=b.binding_id WHERE m.pool_key=$1 AND b.active=1 ORDER BY b.binding_id`,[row.id])
-    const expired=row.observation.expires_at<=now,status=expired?'unknown':observedState(row.observation,now)
-    const resetPassed=row.observation.windows.some(window=>!!window.resets_at && window.resets_at<=now)
+      WHERE b.active=1 AND (($2='account' AND b.provider=$3 AND b.account_ref=$4)
+        OR ($2='binding' AND EXISTS(SELECT 1 FROM usage_quota_memberships m WHERE m.binding_id=b.binding_id AND m.pool_key=$1)))
+      ORDER BY b.binding_id`,[row.id,row.scope,row.provider,row.account_ref])
+    const evidence=row.window_evidence ?? evidenceFor(row.observation),values=Object.values(evidence)
+    const expired=row.observation.expires_at<=now || values.some(item=>item.expires_at<=now),status=effectiveState(row.observation,evidence,now)
+    const resetPassed=values.some(item=>!!item.window.resets_at && item.window.resets_at<=now)
     return {id:row.id,provider:row.provider,...(row.account_ref?{account_ref:row.account_ref}:{}),pool_id:row.pool_id,scope:row.scope,
       identity_confidence:row.scope==='account'?'verified':'unknown_account',binding_ids:bindings.map(item=>item.binding_id),clis:[...new Set(bindings.map(item=>item.cli))],
       model_ids:row.observation.model_ids ?? [],status,observed_status:row.observed_status,stale:expired || resetPassed,
       ...(expired?{reason:'expired_observation'}:resetPassed?{reason:'reset_requires_observation'}:row.observation.reason?{reason:row.observation.reason}:{}),
-      observation:row.observation,last_known:row.last_known}
+      observation:row.observation,last_known:row.last_known,retained_windows:values.filter(item=>item.observed_at!==row.observation.observed_at)}
   }
 
   async list(filter:UsageQuotaFilter={}):Promise<UsageQuotaSnapshot[]> {
     const now=filter.now?parse(timestamp,filter.now):this.clock()
     return this.db.transaction(async sql=>{
-      const rows=await sql.query<PoolRow>('SELECT * FROM usage_quota_pools ORDER BY provider,pool_id,id'),results=[]
+      const rows=await sql.query<PoolRow>('SELECT * FROM usage_quota_pools WHERE active=1 ORDER BY provider,pool_id,id'),results=[]
       for(const row of rows){
         if(filter.provider && row.provider!==filter.provider || filter.account_ref && row.account_ref!==filter.account_ref)continue
         const value=await this.snapshot(sql,row,now)

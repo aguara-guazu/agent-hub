@@ -26,7 +26,7 @@ it('reduces concurrent windows without summing or concealing a weekly exhaustion
   expect(result.transitions).toMatchObject([{before:'unknown',after:'exhausted'}])
   expect(await quotas.forCli('codex_cli')).toMatchObject({status:'exhausted'})
   now='2026-10-20T10:01:00.000Z'
-  expect((await quotas.ingest(observation({observed_at:now,windows:[{id:'five_hour',unit:'percent',used:91,limit:100}]}),ticket)).snapshot?.status).toBe('low')
+  expect((await quotas.ingest(observation({observed_at:now,windows:[{id:'five_hour',unit:'percent',used:91,limit:100},{id:'weekly',unit:'percent',used:20,limit:100}]}),ticket)).snapshot?.status).toBe('low')
 })
 
 it('deduplicates simultaneous collection and keeps one pool across verified installations',async()=>{
@@ -157,4 +157,60 @@ it('retains cooldown as a reported quota constraint and makes absent CLI data un
   await quotas.ingest(observation({windows:[],status:'cooldown'}),ticket)
   expect(await quotas.forCli('codex_cli')).toMatchObject({status:'cooldown'})
   expect(await quotas.forCli('kiro')).toMatchObject({status:'unknown',reason:'no_observation'})
+})
+
+it('preserves omitted weekly exhaustion through partial updates with original freshness and provenance',async()=>{
+  const ticket=await bind()
+  await quotas.ingest(observation({windows:[{id:'five_hour',unit:'percent',used:10},{id:'weekly',unit:'percent',used:100,
+    resets_at:'2026-10-20T10:10:00.000Z'}]}),ticket)
+  now='2026-10-20T10:05:00.000Z'
+  const partial=await quotas.ingest(observation({observed_at:now,expires_at:'2026-10-20T10:30:00.000Z',complete:false,
+    windows:[{id:'five_hour',unit:'percent',used:20}]}),ticket)
+  expect(partial).toMatchObject({snapshot:{status:'exhausted',retained_windows:[{window:{id:'weekly',used:100},observed_at:start,expires_at:future}]},transitions:[]})
+  now='2026-10-20T10:11:00.000Z'
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'unknown'})
+  expect((await db.query('SELECT count(*) AS n FROM usage_quota_transitions'))[0]?.n).toBe(1)
+  now='2026-10-20T10:12:00.000Z'
+  const recovered=await quotas.ingest(observation({observed_at:now,windows:[{id:'five_hour',unit:'percent',used:10},{id:'weekly',unit:'percent',used:5}]}),ticket)
+  expect(recovered).toMatchObject({snapshot:{status:'available'},transitions:[{before:'exhausted',after:'available'}]})
+})
+
+it('does not extend a retained restriction expiry with partial updates or replace it with unknown',async()=>{
+  const ticket=await bind()
+  await quotas.ingest(observation({windows:[{id:'weekly',unit:'credits',remaining:0,limit:100}]}),ticket)
+  now='2026-10-20T10:05:00.000Z'
+  await quotas.ingest(observation({observed_at:now,expires_at:'2026-10-20T10:30:00.000Z',complete:false,
+    windows:[{id:'weekly',unit:'unknown',status:'unknown'}]}),ticket)
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'exhausted'})
+  now='2026-10-20T10:16:00.000Z'
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'unknown'})
+  expect((await quotas.list())[0]?.retained_windows?.[0]?.expires_at).toBe(future)
+})
+
+it('propagates account-wide constraints to verified bindings without explicit pool membership',async()=>{
+  const a=await bind(),b=await bind('second-installation')
+  await quotas.ingest(observation({pool_id:'global',status:'exhausted'}),a)
+  await quotas.ingest(observation({pool_id:'small-pool',model_ids:['small-model']}),b)
+  const result=await quotas.forCli('codex_cli','small-model',{binding_id:b.binding_id})
+  expect(result.status).toBe('exhausted');expect(result.pools).toHaveLength(2)
+  expect(result.pools.find(pool=>pool.pool_id==='global')?.binding_ids).toEqual(['installed-codex','second-installation'])
+})
+
+it('shares model-scoped account pools only for matching models and isolates other identities',async()=>{
+  const a=await bind(),b=await bind('second-installation'),other=await bind('other-account','other-account')
+  await quotas.ingest(observation({pool_id:'large-pool',model_ids:['large-model'],status:'exhausted'}),a)
+  await quotas.ingest(observation({pool_id:'small-pool',model_ids:['small-model']}),b)
+  await quotas.ingest(observation({account_ref:'other-account',pool_id:'large-pool',model_ids:['large-model']}),other)
+  expect(await quotas.forCli('codex_cli','small-model',{binding_id:b.binding_id})).toMatchObject({status:'available'})
+  expect(await quotas.forCli('codex_cli','large-model',{binding_id:b.binding_id})).toMatchObject({status:'exhausted'})
+  expect(await quotas.forCli('codex_cli','large-model',{binding_id:other.binding_id})).toMatchObject({status:'available'})
+})
+
+it('retains native low warnings even when the generic percentage threshold is less restrictive',async()=>{
+  const ticket=await bind()
+  expect((await quotas.ingest(observation({windows:[{id:'native',unit:'percent',used:20,limit:100,status:'low',duration_minutes:300}]}),ticket)).snapshot)
+    .toMatchObject({status:'low',observation:{windows:[{duration_minutes:300}]}})
+  now='2026-10-20T10:01:00.000Z'
+  expect((await quotas.ingest(observation({observed_at:now,windows:[{id:'native',unit:'percent',used:100,limit:100,status:'available'}]}),ticket)).snapshot?.status).toBe('exhausted')
+  await expect(quotas.ingest(observation({observed_at:now,windows:[{id:'native',unit:'percent',duration_minutes:0}]}),ticket)).rejects.toBeTruthy()
 })
