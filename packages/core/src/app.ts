@@ -276,6 +276,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     fastify.addHook('onClose', async () => { await jiraPool.close() })
     const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
       jiraMcp: createJiraTaskReader(store, owner.id, jiraPool, oauthStore),
+      usageAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='usage_status')),
       chatAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='chat_join') && s.tools.some(t=>t.name==='chat_inbox')),
       authorizeChatAgent: async (request, agentId) => {
         const principal = currentDaemon(request), agent = store.agent(agentId)

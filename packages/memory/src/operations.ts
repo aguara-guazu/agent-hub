@@ -1,3 +1,6 @@
+import { CLI_KINDS } from '@agenthub/shared'
+import { UsageQuotas } from './usage-quotas.js'
+import { UsageNotices } from './usage-notices.js'
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
 import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
 import type { TeamCatalog } from './team-catalog.js'
@@ -27,6 +30,7 @@ import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput,
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
+  usage_status: ['Consultar cuotas nativas y avisos del equipo: ventanas, reinicios, fuente y frescura. Desconocido no significa disponible; cuota no garantiza acceso ni completar una tarea. No ejecuta inferencia ni refresca proveedores.', z.object({session_key:z.string().min(32).max(200).optional(),cli:z.enum(CLI_KINDS).optional(),model:z.string().max(300).optional()}).strict()],
   ...chatDefinitions,
   ...teamDefinitions,
   shared_status: ['Ver miembros, permisos, identidad y versiones de un proyecto compartido; consultar la skill hub-collaboration al trabajar en él.', z.object({ project_id: id }).strict()],
@@ -109,9 +113,11 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set([...chatReadOperations,...teamReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set(['usage_status',...chatReadOperations,...teamReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
+  readonly usage: UsageQuotas
+  readonly usageNotices: UsageNotices
   readonly chat: LocalChat
   readonly teams: TeamOrchestration | undefined
   get sharing() { return new SharedPublications(this.store) }
@@ -119,7 +125,9 @@ export class MemoryOperations {
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime,
     teamRuntime?: { catalog: TeamCatalog; orca: TeamOrca }) {
     this.chat = new LocalChat(store)
-    this.teams = teamRuntime ? new TeamOrchestration(this.chat, teamRuntime.catalog, teamRuntime.orca) : undefined
+    this.usage = new UsageQuotas(store.db)
+    this.usageNotices = new UsageNotices(this.chat)
+    this.teams = teamRuntime ? new TeamOrchestration(this.chat, teamRuntime.catalog, teamRuntime.orca, this.usage) : undefined
   }
   async collaborationNotice(operation: string, raw: unknown, result: any, agent?: AgentContext) {
     if (!agent || !READ_OPERATIONS.has(operation) || operation === 'read_messages') return null
@@ -158,6 +166,13 @@ export class MemoryOperations {
     if (agent && !['context', 'write_note', 'finish_notes'].includes(operation)) await touchSession(store, agent)
     const author = agent ? `agent:${agent.cli_kind || 'mcp'}:${agent.session_id.slice(0, 8)}` : actor
     switch (operation) {
+      case 'usage_status': {
+        const who=agent ? await this.chat.identity(agent,input.session_key) : undefined
+        if(who)check(!who.closed_at && !who.removed_at,'La sesión de colaboración está cerrada',403)
+        const clis=await Promise.all((input.cli ? [input.cli] : CLI_KINDS).map(async (cli:string)=>({cli,...await this.usage.forCli(cli,input.model)})))
+        return {generated_at:new Date().toISOString(),clis,notices:who ? await this.usageNotices.pending(who.id,true) : [],
+          guidance:'Las cuotas compartidas no se multiplican por agente. Los datos desconocidos o vencidos no prueban disponibilidad. Conservar progreso y acordar cambios de composición dentro de la autorización vigente.'}
+      }
       case 'suggest_projects': return suggestProjects(store, this.ai, input)
       case 'draft_profile': return draftProfile(store, this.ai, input, signal)
       case 'save_project_company': return saveProjectCompany(store, input, author)

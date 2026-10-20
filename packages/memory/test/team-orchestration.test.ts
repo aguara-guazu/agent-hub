@@ -47,6 +47,43 @@ function members(count=2){return Array.from({length:count},(_,index)=>({worktree
   role:index?'revisor':'implementador',task:`Tarea ${index+1}`,prompt:`Atendé la tarea ${index+1}`}))}
 function invitation(prompt:string){const token=/invitation=([A-Za-z0-9_-]+)/.exec(prompt)?.[1];if(!token)throw new Error('missing invitation');return token}
 
+it('incluye cuota en propuesta y bloquea agotamiento antes de crear efectos, revalidando al lanzar',async()=>{
+  const master=await session('quota-master'),catalog=new Catalog(),orca=new Orca()
+  orca.spaces.set(master.workspace,{id:master.workspace,path:dir,repo_id:'repo',head})
+  let exhausted=true
+  const usage={forCli:vi.fn(async()=>({status:exhausted?'exhausted' as const:'available' as const,pools:[]}))}
+  const teams=new TeamOrchestration(chat,catalog,orca,usage)
+  const prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Cuotas',base_revision:head,members:members(1)},master.agent)
+  expect(prepared.plan.usage[0].status).toBe('exhausted')
+  const input={session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Lanzá este equipo'}
+  await expect(teams.call('team_launch',input,master.agent)).rejects.toMatchObject({statusCode:409})
+  expect(orca.create).not.toHaveBeenCalled();expect(orca.launch).not.toHaveBeenCalled()
+  exhausted=false
+  await teams.call('team_launch',input,master.agent)
+  expect(orca.launch).toHaveBeenCalledTimes(1)
+})
+it('conserva el worktree y pausa si la cuota se agota entre creación y lanzamiento',async()=>{
+  const master=await session('quota-race'),catalog=new Catalog(),orca=new Orca()
+  orca.spaces.set(master.workspace,{id:master.workspace,path:dir,repo_id:'repo',head})
+  const usage={forCli:vi.fn(async()=>({status:orca.create.mock.calls.length?'exhausted' as const:'available' as const,pools:[]}))}
+  const teams=new TeamOrchestration(chat,catalog,orca,usage)
+  const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Race',base_revision:head,members:members(1)},master.agent)
+  await expect(teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Lanzá'},master.agent)).rejects.toMatchObject({statusCode:409})
+  const result=await teams.call('team_status',{session_key:master.key,plan_id:plan.id},master.agent)
+  expect(result.state).toBe('paused');expect(result.members[0].workspace_id).toBeTruthy()
+  expect(orca.create).toHaveBeenCalledTimes(1);expect(orca.launch).not.toHaveBeenCalled()
+})
+it('expone desconocido en catálogo sin inventar cuota ni impedir un plan autorizado',async()=>{
+  const master=await session('quota-unknown'),catalog=new Catalog(),orca=new Orca()
+  orca.spaces.set(master.workspace,{id:master.workspace,path:dir,repo_id:'repo',head})
+  const teams=new TeamOrchestration(chat,catalog,orca,{forCli:async()=>({status:'unknown',reason:'no_observation',pools:[]})})
+  const listed=await teams.call('team_catalog',{session_key:master.key},master.agent)
+  expect(listed.models[0].usage).toMatchObject({status:'unknown',reason:'no_observation'})
+  const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Unknown',base_revision:head,members:members(1)},master.agent)
+  await teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Lanzá el equipo con la información disponible'},master.agent)
+  expect(orca.launch).toHaveBeenCalledTimes(1)
+})
+
 it('prepara un plan inmutable sólo como líder Orca y no crea efectos externos',async()=>{
   const master=await session('master'),foreign=await session('foreign'),catalog=new Catalog(),orca=new Orca()
   orca.spaces.set(master.workspace,{id:master.workspace,path:dir,repo_id:'repo',head})

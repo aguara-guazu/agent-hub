@@ -1,4 +1,5 @@
 import { orcaWorkspaceSchema } from './agents.js'
+import { registerUsageRoutes } from './usage-routes.js'
 import { chatKickInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
 import { nativeSession } from '@agenthub/gateway'
@@ -37,12 +38,15 @@ export interface MemoryRouteOptions {
   directory: string; baseUrl: string;
   authorize(request: FastifyRequest): Promise<{ id: string }>
   chatAgentEnabled?(agentId: string): boolean
+  usageAgentEnabled?(agentId: string): boolean
   authorizeChatAgent?(request: FastifyRequest, agentId: string): Promise<{ cli_kind: string }>
   worker?: boolean
   jiraMcp?: import('./tasks.js').JiraTaskReader
 }
 export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions) {
   const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true)
+  service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
+  registerUsageRoutes(app,service,options)
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }
