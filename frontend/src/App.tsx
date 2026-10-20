@@ -7,6 +7,7 @@ import { HubActivity, HubCatalog, HubClients, HubSettings, HubSkills } from './p
 import { MemoryProjects, MemoryExplore, MemoryEntityPage, MemorySearch, MemoryReview } from './pages/Memory'
 import { MemorySettings } from './pages/MemorySettings'
 import { MemoryProcessing } from './pages/MemoryProcessing'
+import { MemoryLocalCollaboration } from './pages/MemoryLocalCollaboration'
 
 function LocalSession() {
   const { user, loading, reload } = useAuth()
@@ -26,6 +27,7 @@ export function App() {
     <Route path="projects" element={<MemoryProjects />} />
     <Route path="projects/:id" element={<MemoryEntityPage />} />
     <Route path="memory" element={<MemoryExplore />} />
+    <Route path="memory/collaboration" element={<MemoryLocalCollaboration />} />
     <Route path="memory/entities/:id" element={<MemoryEntityPage />} />
     <Route path="memory/search" element={<MemorySearch />} />
     <Route path="memory/review" element={<MemoryReview />} />

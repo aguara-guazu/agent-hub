@@ -5,9 +5,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach,beforeEach,expect,it,vi } from 'vitest'
 import { installFetch,jsonResponse } from '../test-utils'
 import { ProjectCollaboration } from './MemoryCollaboration'
-let root:Root,container:HTMLDivElement,client:QueryClient,calls:any[],historical:boolean,removed:boolean,failKick:boolean
+let root:Root,container:HTMLDivElement,client:QueryClient,calls:any[],historical:boolean,removed:boolean,failKick:boolean,agentTotal:number|null
 beforeEach(()=> {
-  globalThis.IS_REACT_ACT_ENVIRONMENT=true;vi.useFakeTimers();calls=[];historical=false;removed=false;failKick=false
+  globalThis.IS_REACT_ACT_ENVIRONMENT=true;vi.useFakeTimers();calls=[];historical=false;removed=false;failKick=false;agentTotal=null
   container=document.createElement('div');document.body.appendChild(container);root=createRoot(container)
   client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:0}}})
   installFetch({handle:call=> {
@@ -25,12 +25,12 @@ beforeEach(()=> {
         {id:'removed-state',channel_id:'channel',label:'Sombra removida',cli_kind:'kiro',state:'removed',removed_at:null,capability:'tui_prompt',last_seen_at:'2026-10-18T00:00:00Z'}]
       :body.operation==='chat_threads'?[{id:'thread',channel_id:'channel',title:'Revisión de suma',state:'open',channel_name:'feature/review',messages:1,preview:'Error en resta',updated_at:'2026-10-19T00:00:00Z'}]
       :[{id:'message',author_id:'author',author_label:'Junco',text:'Error en resta <script>bad()</script>',created_at:'2026-10-19T00:00:00Z',reply_to:null,mentions:[{recipient_id:'old-agent',label:'Bruma',notified_at:null,read_at:null,handled_at:null,attempts:0}]}]
-    return jsonResponse({items,total:items.length,limit:40,offset:0,...(body.operation==='chat_read'?{thread:{id:'thread',channel_id:'channel',title:'Revisión de suma',state:'open'}}:{})})
+    return jsonResponse({items,total:body.operation==='chat_agents' && agentTotal!==null?agentTotal:items.length,limit:40,offset:body.input.offset??0,...(body.operation==='chat_read'?{thread:{id:'thread',channel_id:'channel',title:'Revisión de suma',state:'open'}}:{})})
   }})
 })
 afterEach(()=> {act(()=>root.unmount());client.clear();container.remove();vi.useRealTimers();vi.unstubAllGlobals()})
 async function tick(){await act(async()=> {await vi.advanceTimersByTimeAsync(30)})}
-async function mount(url='/?tab=collaboration'){await act(async()=>{root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><ProjectCollaboration projectId="project"/></MemoryRouter></QueryClientProvider>)});await tick();await tick()}
+async function mount(url='/?tab=collaboration',unassigned=false){await act(async()=>{root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><ProjectCollaboration {...(unassigned ? {unassigned:true}:{projectId:'project'})}/></MemoryRouter></QueryClientProvider>)});await tick();await tick()}
 async function click(text:string){const button=[...container.querySelectorAll('button')].find(b=>b.textContent?.includes(text))!;expect(button).toBeTruthy();await act(async()=>button.click());await tick();await tick()}
 it('permite recorrer canales e historial sin participar ni consumir mensajes',async()=> {
   await mount();expect(container.textContent).toContain('Chat de sólo lectura');expect(container.querySelector('[aria-label="Agentes vigentes"]')).toBeNull()
@@ -108,4 +108,33 @@ it('cancelar no expulsa y los errores quedan visibles sin fingir éxito',async()
  await act(async()=>[...dialog.querySelectorAll('button')].find(b=>b.textContent==='Confirmar expulsión')!.click());await tick();await tick()
  expect(document.querySelector('[role=dialog] [role=alert]')).not.toBeNull()
  expect(container.querySelector('[aria-label="Expulsar a Bruma"]')).not.toBeNull()
+})
+
+it('consulta colaboración sin proyecto y permite expulsar sin inventar una asociación',async()=>{
+ await mount('/?channel=channel',true)
+ expect(container.querySelector('[aria-label="Canales sin proyecto"]')).not.toBeNull()
+ for(const operation of ['chat_channels','chat_agents','chat_threads']) {
+   const input=calls.find(c=>c.operation===operation).input
+   expect(input.unassigned).toBe(true)
+   expect(input.project_id).toBeUndefined()
+ }
+ await click('Mostrar agentes');await click('Expulsar del canal')
+ const dialog=document.querySelector('[role=dialog]')!
+ await act(async()=>[...dialog.querySelectorAll('button')].find(b=>b.textContent==='Confirmar expulsión')!.click());await tick();await tick()
+ expect(calls.find(c=>c.operation==='ui_kick').input).toEqual({channel_id:'channel',participant_id:'old-agent',reason:'Expulsado por la persona desde la UI'})
+ await click('Abrir hilo')
+ const input=calls.find(c=>c.operation==='chat_read').input
+ expect(input.project_id).toBeUndefined()
+ expect(input.unassigned).toBeUndefined()
+ expect(container.textContent).toContain('Error en resta')
+})
+
+it('usa el total paginado de agentes vigentes y vuelve a la primera página después de expulsar',async()=>{
+ agentTotal=81
+ await mount('/?channel=channel&agent_offset=80')
+ expect(container.textContent).toContain('Mostrar agentes (81)')
+ await click('Mostrar agentes');await click('Expulsar del canal')
+ const dialog=document.querySelector('[role=dialog]')!
+ await act(async()=>[...dialog.querySelectorAll('button')].find(b=>b.textContent==='Confirmar expulsión')!.click());await tick();await tick()
+ expect(calls.filter(c=>c.operation==='chat_agents').at(-1).input.offset).toBe(0)
 })

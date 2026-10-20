@@ -30,7 +30,7 @@ export function ErrorBox({ error, retry }: { error: Error | null; retry?: () => 
   return error ? <div className="hub-notice error" role="alert"><p>{error.message}</p>{retry && <button className="btn" onClick={() => void retry()}>Reintentar</button>}</div> : null
 }
 export function MemoryNav() { return <nav className="memory-nav" aria-label="Navegación de memoria">
-  <NavLink to="/projects" end>Proyectos</NavLink><NavLink to="/memory" end>Explorar</NavLink>
+  <NavLink to="/projects" end>Proyectos</NavLink><NavLink to="/memory/collaboration">Colaboración sin proyecto</NavLink><NavLink to="/memory" end>Explorar</NavLink>
   <NavLink to="/memory/search">Buscar</NavLink><NavLink to="/memory/review">Por revisar</NavLink><NavLink to="/memory/processing">Procesamiento</NavLink><NavLink to="/memory/sources">Fuentes y ajustes</NavLink>
 </nav> }
 export function MemoryFrame({ children, setup = false }: { children: ReactNode; setup?: boolean }) {
