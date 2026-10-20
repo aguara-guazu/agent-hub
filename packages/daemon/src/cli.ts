@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { runQuotaHookProbe } from './usage-quota-hook.js'
+import { reportClaudeStatusline } from './usage-quota-statusline.js'
 /**
  * Interfaz de línea de comandos del daemon (`agenthub`).
  *
@@ -494,6 +496,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   try {
+    if(args.command==='usage-probe') {
+      try {
+        if(!args.agent || !args.stateDir)return EXIT_OK
+        let raw=''
+        for await(const chunk of process.stdin){raw+=String(chunk);if(raw.length>16384)return EXIT_OK}
+        await runQuotaHookProbe(expand(args.stateDir),args.agent,JSON.parse(raw || '{}'))
+      } catch { /* Optional metadata must never affect the native CLI. */ }
+      return EXIT_OK
+    }
+    if(args.command==='usage-statusline') {
+      // Telemetry failures cannot affect Claude's response or emit its private input.
+      try {
+        if(!args.agent || !args.stateDir)return EXIT_OK
+        let raw=''
+        for await(const chunk of process.stdin){raw+=String(chunk);if(raw.length>262144)return EXIT_OK}
+        const output=await reportClaudeStatusline(expand(args.stateDir),args.agent,JSON.parse(raw || '{}'))
+        if(output)say(output)
+      } catch { /* Offline, absent quota fields, and malformed input are harmless. */ }
+      return EXIT_OK
+    }
     if(args.command==='chat') {
       if(!args.agent || !args.stateDir)throw new Error('chat requiere --agent y --state-dir.')
       return await runChatTui(expand(args.stateDir),args.agent,args.extra)

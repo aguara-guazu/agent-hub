@@ -1,3 +1,4 @@
+import { startQuotaCollector } from './usage-quota-collector.js'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { delimiter, join } from 'node:path'
@@ -75,6 +76,7 @@ export async function runChatTerminal(stateDir:string,agentId:string,extra:strin
   let listener:Promise<void>|undefined
   let protocol:ChatProtocol|undefined
   let closing:Promise<void>|undefined
+  let stopQuotas:(()=>Promise<void>)|undefined
   let inputEnded=false
   const say=(text:string)=>process.stdout.write(text)
   const report=(error:unknown)=>process.stderr.write(`\n${error instanceof Error?error.message:String(error)}\n`)
@@ -82,7 +84,7 @@ export async function runChatTerminal(stateDir:string,agentId:string,extra:strin
   const close=()=> closing ??= Promise.resolve().then(async()=>{
     inputEnded=true;controller.abort();permissionReply?.('');terminal.close()
     if(session)await session.close();else await protocol?.close()
-    await listener?.catch(()=>{})
+    await stopQuotas?.();await listener?.catch(()=>{})
   })
   const exit=()=>{void close()}
   const interrupt=()=>{
@@ -124,6 +126,7 @@ export async function runChatTerminal(stateDir:string,agentId:string,extra:strin
     const broker=new NativeChatClient(state,agentId,nativeId,cwd,invocation.format==='codex'?'codex_appserver':invocation.format==='acp'?'acp_prompt':'antigravity_stream')
     const registration=await broker.start()
     session=new ConnectedChatSession(protocol,broker)
+    stopQuotas=startQuotaCollector({root:state.root,cli:kind,command:executable.command,prefix:executable.prefix,args:extra,cwd,env:process.env,broker,signal:controller.signal,protocol})
     say(`\n${registration.session.label} · ${cwd}\nSesión ${nativeId}. Escucha activa; /exit para cerrar.\n> `)
     listener=broker.listen(text=>session!.submit(text,true),controller.signal).catch(error=>{report(error);exit()})
     for(const line of queued)submit(line)

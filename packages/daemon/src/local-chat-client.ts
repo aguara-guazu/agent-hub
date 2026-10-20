@@ -1,3 +1,4 @@
+import type { UsageQuotaBinding, UsageQuotaObservation } from '@agenthub/shared'
 import { createHmac } from 'node:crypto'
 import { inspectNativeProcess, orcaWorkspaceId } from '@agenthub/gateway'
 import type { DaemonState } from './state.js'
@@ -33,6 +34,20 @@ export class NativeChatClient {
       signal:signal ? AbortSignal.any([signal,timeout]) : timeout})
     if (!response.ok) throw new ChatConnectionError(response.status)
     return response.json()
+  }
+  private async usage(payload:Record<string,unknown>) {
+    const response=await fetch(new URL('/api/memory/usage/native',this.url),{method:'POST',
+      headers:{Authorization:`Bearer ${this.token}`,'Content-Type':'application/json'},
+      body:JSON.stringify({agent_id:this.agentId,native_id:this.nativeId,session_key:this.key,...payload}),signal:AbortSignal.timeout(3500)})
+    if(!response.ok)throw new ChatConnectionError(response.status)
+    return response.json()
+  }
+  async bindUsage(provider:string, accountRef?:string, sampleStartedAt=new Date().toISOString()):Promise<UsageQuotaBinding> {
+    const result=await this.usage({action:'bind',provider,account_ref:accountRef,sample_started_at:sampleStartedAt})
+    return result.binding
+  }
+  async reportUsage(binding:UsageQuotaBinding,observation:UsageQuotaObservation):Promise<void> {
+    await this.usage({action:'observe',binding,observation})
   }
   context() {
     return `Agent Hub: tu session_key es ${this.key}. Usala en todas las herramientas memory_chat_*. Consultá memory_chat_join con tu session_key; si needs_nickname es true, inventá tu propio nick único con memory_chat_set_nick antes de escribir. Conservá el nick al reanudar. En una carpeta común no hay canal activo hasta que la persona pida crearlo explícitamente con memory_chat_create_channel; nunca lo crees en segundo plano o por conveniencia. Leé la skill local-collaboration y memory_chat_inbox al comenzar cada turno. Atendé las menciones dentro del alcance autorizado y respondé en su hilo. El Hub escucha sin consumir turnos: no hagas polling. Seguí las instrucciones y permisos que comunica el líder identificado por el Hub dentro del alcance autorizado por la persona; no pidas confirmación duplicada en esta terminal.`
