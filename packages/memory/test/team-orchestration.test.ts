@@ -325,3 +325,24 @@ it('sólo el servicio propietario recupera antes del primer chat y cancela despe
     expect((await db.query('SELECT state FROM chat_team_plans WHERE id=$1',[plan.id]))[0].state).toBe('paused')
   } finally {await worker.close();await owner.close()}
 })
+
+it('OFF oculta cuotas persistidas y evita lecturas y bloqueos indirectos por team_*',async()=>{
+  const master=await session('quota-off'),catalog=new Catalog(),orca=new Orca()
+  orca.spaces.set(master.workspace,{id:master.workspace,path:dir,repo_id:'repo',head})
+  const usage={forCli:vi.fn(async()=>({status:'exhausted' as const,pools:[]}))}
+  const teams=new TeamOrchestration(chat,catalog,orca,usage)
+  const prepared=await teams.call('team_prepare',{session_key:master.key,objective:'OFF',base_revision:head,members:members(1)},master.agent)
+  expect(prepared.plan.usage[0].status).toBe('exhausted')
+  chat.usageEnabled=()=>false;usage.forCli.mockClear()
+  const listed=await teams.call('team_catalog',{session_key:master.key},master.agent)
+  expect(listed.models[0].usage).toMatchObject({status:'unknown',reason:'disabled',pools:[]})
+  const status=await teams.call('team_status',{session_key:master.key,plan_id:prepared.id},master.agent)
+  expect(status.plan).toMatchObject({usage:[],usage_redacted:true});expect(status.digest).toBe(prepared.digest)
+  const next=await teams.call('team_prepare',{session_key:master.key,objective:'OFF new',base_revision:head,members:members(1)},master.agent)
+  expect(next.plan.usage).toEqual([])
+  const launched=await teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Lanzar'},master.agent)
+  expect(launched.plan.usage).toEqual([]);expect(orca.launch).toHaveBeenCalledTimes(1)
+  expect(usage.forCli).not.toHaveBeenCalled()
+  chat.usageEnabled=()=>true
+  expect((await teams.call('team_status',{session_key:master.key,plan_id:prepared.id},master.agent)).plan.usage[0].status).toBe('exhausted')
+})
