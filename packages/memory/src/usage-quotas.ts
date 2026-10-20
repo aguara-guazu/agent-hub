@@ -162,14 +162,22 @@ export class UsageQuotas {
       ...(aggregate && aggregate.observed_at!==row.observation.observed_at?{retained_status:aggregate}:{})}
   }
 
+  private matchingBindings(sql:Sql,filter:UsageQuotaFilter) {
+    return sql.query<{binding_id:string;provider:string;account_ref:string|null}>(`SELECT binding_id,provider,account_ref
+      FROM usage_quota_bindings WHERE active=1 AND ($1 IS NULL OR cli=$1) AND ($2 IS NULL OR provider=$2)
+        AND ($3 IS NULL OR binding_id=$3) AND ($4 IS NULL OR account_ref=$4)`,
+      [filter.cli ?? null,filter.provider ?? null,filter.binding_id ?? null,filter.account_ref ?? null])
+  }
+
   async list(filter:UsageQuotaFilter={}):Promise<UsageQuotaSnapshot[]> {
     const now=filter.now?parse(timestamp,filter.now):this.clock()
     return this.db.transaction(async sql=>{
+      const matching=new Set((await this.matchingBindings(sql,filter)).map(binding=>binding.binding_id))
       const rows=await sql.query<PoolRow>('SELECT * FROM usage_quota_pools WHERE active=1 ORDER BY provider,pool_id,id'),results=[]
       for(const row of rows){
         if(filter.provider && row.provider!==filter.provider || filter.account_ref && row.account_ref!==filter.account_ref)continue
         const value=await this.snapshot(sql,row,now)
-        if(!value.binding_ids.length || filter.binding_id && !value.binding_ids.includes(filter.binding_id) || filter.cli && !value.clis.includes(filter.cli))continue
+        if(!value.binding_ids.some(bindingId=>matching.has(bindingId)))continue
         if(filter.model && value.model_scope==='listed' && !value.model_ids.includes(filter.model))continue
         results.push(value)
       }
@@ -181,10 +189,8 @@ export class UsageQuotas {
     return this.db.transaction(async sql=>{
       // Resolve the requested CLI/profile/account scope before looking at observations. A newly bound profile
       // without a sample must not silently inherit the availability of a different, already observed account.
-      const bindings=await sql.query<{binding_id:string;provider:string;account_ref:string|null}>(`SELECT binding_id,provider,account_ref
-        FROM usage_quota_bindings WHERE active=1 AND cli=$1 AND ($2 IS NULL OR provider=$2)
-          AND ($3 IS NULL OR binding_id=$3) AND ($4 IS NULL OR account_ref=$4)`,
-        [cli,filter.provider ?? null,filter.binding_id ?? null,filter.account_ref ?? null])
+      const bindings=await this.matchingBindings(sql,{...filter,cli})
+      if(!bindings.length)return {status:'unknown',reason:'no_observation',pools:[]}
       const scopes=new Set(bindings.map(binding=>digestJson(binding.account_ref
         ? ['account',binding.provider,binding.account_ref]:['binding',binding.provider,binding.binding_id])))
       const pools=await this.list({...filter,cli,...(model?{model}:{})})

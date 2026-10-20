@@ -328,3 +328,18 @@ it('keeps multiple unobserved profiles ambiguous and releases the old account sc
   await quotas.ingest(observation({account_ref:'account-first',observed_at:now}),switched)
   expect(await quotas.forCli('codex_cli')).toMatchObject({status:'available'})
 })
+
+it('correlates CLI, binding, provider and account filters on the same active binding',async()=>{
+  const codex=await bind('profile-A')
+  await quotas.bind({binding_id:'profile-B',cli:'other_cli',provider:'openai',account_ref:'opaque-account',sample_started_at:start})
+  await quotas.ingest(observation({model_scope:'all'}),codex)
+  // Both CLIs really appear in the shared pool: independently matching the two arrays would be incorrect.
+  expect((await quotas.list())[0]?.clis).toEqual(['codex_cli','other_cli'])
+  expect(await quotas.list({cli:'other_cli',binding_id:'profile-A'})).toEqual([])
+  expect(await quotas.forCli('other_cli',undefined,{binding_id:'profile-A'})).toEqual({status:'unknown',reason:'no_observation',pools:[]})
+  expect(await quotas.list({cli:'codex_cli',binding_id:'profile-B'})).toEqual([])
+  expect(await quotas.forCli('codex_cli',undefined,{binding_id:'profile-B'})).toEqual({status:'unknown',reason:'no_observation',pools:[]})
+  expect(await quotas.forCli('other_cli',undefined,{binding_id:'profile-B',provider:'openai',account_ref:'opaque-account'})).toMatchObject({status:'available'})
+  expect(await quotas.forCli('other_cli',undefined,{binding_id:'profile-B',provider:'other-provider'})).toMatchObject({status:'unknown',reason:'no_observation',pools:[]})
+  expect(await quotas.list({cli:'other_cli',binding_id:'profile-B',account_ref:'other-account'})).toEqual([])
+})
