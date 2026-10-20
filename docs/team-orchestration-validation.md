@@ -66,7 +66,19 @@ verificado hasta usar el modelo.
   entrega de prompts, idempotencia, invitaciones, ACL entre canales, cierre,
   pérdida de liderazgo, recuperación y backup/restore.
 
-Queda pendiente la prueba completa de las herramientas contra una instalación
-actualizada del daemon; no se ha publicado una release ni actualizado la
-instalación personal como parte de esta feature. El lanzamiento Kiro de esta
-versión admite macOS/Linux; Windows se declara no disponible explícitamente.
+El lanzamiento Kiro de esta versión admite macOS/Linux; Windows se declara no
+disponible explícitamente.
+
+## Ensayo de actualización para 0.10.1
+
+`scripts/test-team-orchestration-e2e.mjs <checkout-anterior-compilado>` arranca
+un perfil aislado con el build anterior y lo reabre con el candidato. Usa HTTP
+y gateways stdio MCP de producción y consulta el catálogo nativo de modelos.
+Los efectos externos de Orca y el miembro son controlados: no ejecuta inferencia
+ni modifica perfiles personales. Es un complemento al ensayo real Orca/Kiro
+descrito arriba, no una simulación presentada como una sesión de modelo real.
+
+Verifica actualización de la skill de fábrica, materialización para Claude,
+Codex y Kiro, exposición de las seis herramientas y conservación de una regla
+OFF existente. Recorre prepare sin efectos, launch idempotente, join desde el
+hijo, mención al master, status sin invitaciones y revocación al cerrar.
