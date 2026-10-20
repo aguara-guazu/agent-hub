@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { realpath } from 'node:fs/promises'
-import { isAbsolute } from 'node:path'
+import { delimiter, isAbsolute, join } from 'node:path'
+import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import { childEnv } from '@agenthub/gateway/platform'
 import { check, MemoryError } from './contracts.js'
@@ -13,6 +14,11 @@ export interface TeamOrca {
   workspace(id: string): Promise<TeamWorkspace>
   create(parent: TeamWorkspace, name: string): Promise<TeamWorkspace>
   launch(workspace: TeamWorkspace, member: TeamLaunchMember): Promise<TeamLaunchReceipt>
+}
+
+/** A durable operation identifier is safe to retain for inspection; raw CLI output is not. */
+export class TeamOrcaError extends MemoryError {
+  constructor(message: string, readonly operation_id?: string) { super(503, message) }
 }
 
 const exec = promisify(execFile)
@@ -33,9 +39,12 @@ export class LocalTeamOrca implements TeamOrca {
     // A daemon can inherit the terminal that started it. Never direct another team's
     // launch to that terminal, execution host, workspace or agent conversation.
     for (const name of Object.keys(this.env)) {
-      if (/^(?:ORCA_(?:PAIRING_CODE|ENVIRONMENT|WORKTREE_ID|TERMINAL_ID|TERMINAL_HANDLE|SESSION_ID)|AGENTHUB_CHAT_|GIT_(?:DIR|WORK_TREE|COMMON_DIR))/.test(name))
+      if (/^(?:ORCA_(?:PAIRING_CODE|ENVIRONMENT|WORKTREE_ID|TERMINAL_ID|TERMINAL_HANDLE|SESSION_ID)|AGENTHUB_|ELECTRON_RUN_AS_NODE$|GIT_(?:DIR|WORK_TREE|COMMON_DIR))/i.test(name))
         delete this.env[name]
     }
+    // Desktop processes often start with a minimal PATH.
+    this.env.PATH = [this.env.PATH, join(homedir(), '.local', 'bin'),
+      ...(platform === 'win32' ? [] : ['/usr/local/bin', '/opt/homebrew/bin'])].filter(Boolean).join(delimiter)
   }
 
   private async commandResult(args: string[], cwd?: string): Promise<Record<string, any>> {
@@ -43,9 +52,15 @@ export class LocalTeamOrca implements TeamOrca {
     try {
       ({ stdout } = await (this.options.run ?? exec)(this.command, [...args, '--json'],
         { ...(cwd ? { cwd } : {}), env: this.env, timeout: 45_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true }))
-    } catch {
+    } catch (error) {
       // CLI stderr can contain prompts, invitation tokens or local credentials.
-      throw new MemoryError(503, 'Orca no devolvió un recibo verificable. Inspeccioná el espacio antes de volver a lanzar; no reintentes como una operación nueva.')
+      let operation: unknown
+      try {
+        const value = JSON.parse(String((error as { stdout?: unknown }).stdout ?? ''))
+        operation = value.operationId ?? value.result?.launch?.operationId ?? value.result?.operationId
+      } catch { /* no machine-readable receipt */ }
+      throw new TeamOrcaError('Orca no devolvió un recibo verificable. Inspeccioná el espacio antes de volver a lanzar; no reintentes como una operación nueva.',
+        safeId(operation) ? operation : undefined)
     }
     let envelope: Record<string, any>
     try { envelope = JSON.parse(stdout) } catch { throw new MemoryError(502, 'Respuesta de Orca inválida; el resultado puede ser incierto.') }
@@ -97,9 +112,10 @@ export class LocalTeamOrca implements TeamOrca {
     args.push('--prompt', member.prompt)
     const result = await this.commandResult(args, workspace.path)
     const launch = result.launch ?? result
-    check(launch.outcome && ['terminal', 'structured'].includes(launch.outcome.kind) && safeId(launch.outcome.handle) &&
-      ['journaled', 'handed-to-terminal'].includes(launch.prompt?.outcome),
-    'Orca no confirmó el agente y la entrega inicial. Inspeccioná el recibo antes de reintentar; no lances un duplicado.', 502)
+    if (!(launch.outcome && ['terminal', 'structured'].includes(launch.outcome.kind) && safeId(launch.outcome.handle) &&
+      ['journaled', 'handed-to-terminal'].includes(launch.prompt?.outcome)))
+      throw new TeamOrcaError('Orca no confirmó el agente y la entrega inicial. Inspeccioná el recibo antes de reintentar; no lances un duplicado.',
+        safeId(launch.operationId) ? launch.operationId : undefined)
     return {
       kind: launch.outcome.kind, handle: launch.outcome.handle, prompt_outcome: launch.prompt.outcome,
       ...(safeId(launch.operationId) ? { operation_id: launch.operationId } : {}),

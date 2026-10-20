@@ -59,6 +59,17 @@ it('does not retry ambiguous launches and does not return sensitive stderr', asy
   expect(run).toHaveBeenCalledTimes(2)
 })
 
+it('retains only a known operation id from a lost launch reply for manual reconciliation', async () => {
+  const run = vi.fn().mockResolvedValueOnce(envelope({ worktree: raw(parent) }))
+    .mockRejectedValueOnce(Object.assign(new Error('secret'), { stdout: JSON.stringify({
+      operationId: 'op-recover', prompt: 'secret invitation', error: 'credential',
+    }) }))
+  const error = await new LocalTeamOrca({ run }).launch(parent, { cli: 'kiro', model: 'exact', prompt: 'Task' }).catch(e => e)
+  expect(error).toMatchObject({ operation_id: 'op-recover' })
+  expect(JSON.stringify(error)).not.toContain('secret')
+  expect(run).toHaveBeenCalledTimes(2)
+})
+
 it.each(['missing', 'not-delivered'])('does not claim delivery when receipt is %s', async outcome => {
   const run = vi.fn().mockResolvedValueOnce(envelope({ worktree: raw(parent) }))
     .mockResolvedValueOnce(envelope({ outcome: { kind: 'terminal', handle: 'term_real' }, prompt: { outcome } }))
