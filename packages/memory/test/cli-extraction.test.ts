@@ -35,6 +35,7 @@ it.each(extractionClis)('descubre modelos de %s usando su protocolo y limpia los
   const status = await runtime.status(provider)
   expect(status).toMatchObject({ installed: true, models: [{ id: 'fixture', name: 'Fixture' }, ...(provider === 'codex_cli' ? [{ id: 'second', name: 'Fixture' }] : [])] })
   expect(status.models[0]?.reasoning_efforts).toEqual(['low', 'high'])
+  expect(status.models[0]?.description).toBe('Native fixture description')
   expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true)
   expect(await readdir(join(directory, 'cli-extraction'))).toEqual([])
 })
