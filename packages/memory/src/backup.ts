@@ -84,7 +84,11 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
     await sql.query('PRAGMA defer_foreign_keys=ON')
     for (const table of tables) {
       const columns = await sql.query<{ name: string; type: string }>(`SELECT name,type FROM pragma_table_info('${table}') WHERE name<>'rid'`)
-      const rows = (backup.tables[table] ?? []).map(row => table === 'chat_channels' && backup.schema_version < 7 ? {...row,scope_key:`git:${row.path}`,orca_workspace_id:null} : row)
+      const rows = (backup.tables[table] ?? []).map(row => {
+        const value = table === 'chat_channels' && backup.schema_version < 7 ? {...row,scope_key:`git:${row.path}`,orca_workspace_id:null} : row
+        // Restored sessions cannot authenticate as the former virtual leader. Preserve history and release the folder for explicit recreation.
+        return table === 'chat_channels' && value.kind === 'virtual' && !value.closed_at ? {...value,closed_at:backup.exported_at,virtual_path:null} : value
+      })
       const keys = [...new Set(rows.flatMap(row => Object.keys(row)))].filter(k => k !== 'search_text')
       check(keys.every(k => columns.some(c => c.name === k)), 'El respaldo contiene columnas desconocidas')
       if (!rows.length) continue

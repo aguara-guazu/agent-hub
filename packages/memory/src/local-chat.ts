@@ -265,8 +265,8 @@ export class LocalChat {
       return { ...result,items:await Promise.all(result.items.map(async c=>({...c,read_only:await this.channelReadOnly(c)}))) }
     }
     if (operation === 'chat_agents') {
-      const result = await this.page(`SELECT s.*,CASE WHEN c.leader_id=s.id THEN 'leader' ELSE 'member' END AS role FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2)
-        AND ($3=0 OR (s.closed_at IS NULL AND s.lease_until>now())) AND ($4=1 OR s.removed_at IS NULL) AND ($5=0 OR c.project_id IS NULL)`,
+      const result = await this.page(`SELECT s.*,CASE WHEN c.leader_id=s.id THEN 'leader' ELSE 'member' END AS role FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2)
+        AND ($3=0 OR (c.closed_at IS NULL AND s.closed_at IS NULL AND s.lease_until>now())) AND ($4=1 OR s.removed_at IS NULL) AND ($5=0 OR c.project_id IS NULL)`,
       [input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0,input.include_removed ? 1 : 0,input.unassigned ? 1 : 0], 'last_seen_at DESC,id',input)
       return { ...result, items: result.items.map(s=>({...publicSession(s),role:s.role})) }
     }
@@ -304,6 +304,7 @@ export class LocalChat {
       check(channel.kind==='virtual' && channel.activated_at && !channel.closed_at,'Esta sesión no pertenece a un canal virtual activo.',409)
       check(channel.leader_id===who.id,'Sólo el líder reconocido puede cerrar este canal virtual.',403)
       const closed=(await this.db.query('UPDATE chat_channels SET closed_at=now(),virtual_path=NULL,updated_at=now() WHERE id=$1 AND closed_at IS NULL RETURNING *',[channel.id]))[0]!
+      await this.db.query(`UPDATE chat_sessions SET state='offline',closed_at=COALESCE(closed_at,now()),lease_until=NULL,wake_error=NULL WHERE channel_id=$1`,[channel.id])
       await this.db.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Canal virtual cerrado' WHERE handled_at IS NULL AND cancelled_at IS NULL
         AND recipient_id IN (SELECT id FROM chat_sessions WHERE channel_id=$1)`,[channel.id])
       return {channel:closed,team:await this.team(channel.id)}

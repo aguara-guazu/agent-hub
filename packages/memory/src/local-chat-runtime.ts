@@ -38,7 +38,7 @@ export class LocalChatRuntime {
   }
   async tick() {
     // PID birth time prevents a recycled PID from keeping a dead session online.
-    const processes = await this.chat.db.query('SELECT id,process_id,process_started FROM chat_sessions WHERE closed_at IS NULL AND process_id IS NOT NULL')
+    const processes = await this.chat.db.query('SELECT s.id,s.process_id,s.process_started FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.closed_at IS NULL AND c.closed_at IS NULL AND s.process_id IS NOT NULL')
     for (const s of processes) {
       const live=await inspectNativeProcess(s.process_id)
       if(live===undefined)continue
