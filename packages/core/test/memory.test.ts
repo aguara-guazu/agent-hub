@@ -164,6 +164,27 @@ describe('memoria HTTP y gateway MCP', () => {
       expect(list.json().total).toBe(0)
     } finally { await client.close(); await gateway.close(); await pool.close() }
   }, 20_000)
+  it('cuotas nativas autentican la máquina y respetan OFF sin apagar el chat',async()=>{
+    const machine=app.store.insertMachine({user_id:owner.id,hostname:'quota-test',os:'test',daemon_version:'test'})
+    const agent=app.store.insertAgent({machine_id:machine.id,cli_kind:'codex_cli',cli_version:'test',config_path:''})
+    const [daemon,digest]=generateDaemonToken()
+    app.store.insertToken({user_id:owner.id,machine_id:machine.id,name:'quota-test',token_hash:digest})
+    execFileSync('git',['init','-q',directory])
+    const identity={agent_id:agent.id,native_id:'quota-native',session_key:'q'.repeat(64)}
+    const headers={authorization:`Bearer ${daemon}`}
+    const lifecycle={...identity,cwd:directory,event:'SessionStart',at:new Date().toISOString()}
+    expect((await app.fastify.inject({method:'POST',url:'/api/memory/chat/native',headers,payload:lifecycle})).statusCode).toBe(200)
+    const payload={...identity,action:'bind',provider:'openai',sample_started_at:new Date().toISOString()}
+    const bind=(auth:string)=>app.fastify.inject({method:'POST',url:'/api/memory/usage/native',headers:{authorization:`Bearer ${auth}`},payload})
+    expect((await bind(token)).statusCode).toBe(401)
+    expect((await bind(daemon)).statusCode).toBe(200)
+    const server=computeSnapshot(app.store,agent.id).servers.find(s=>s.tools.some(t=>t.name==='usage_status'))!
+    const tool=app.store.toolsOfServer(server.id).find(t=>t.name==='usage_status')!
+    const disabled=await app.fastify.inject({method:'PUT',url:'/api/policy/rules',headers:{authorization:`Bearer ${token}`},payload:{scope:'user',resource_type:'mcp_tool',resource_id:tool.id,state:'off'}})
+    expect(disabled.statusCode).toBe(204)
+    expect((await bind(daemon)).statusCode).toBe(403)
+    expect((await app.fastify.inject({method:'POST',url:'/api/memory/chat/native',headers,payload:{...lifecycle,event:'Heartbeat'}})).statusCode).toBe(200)
+  })
   it('el puente nativo exige daemon de la máquina y respeta el apagado del chat', async () => {
     const machine=app.store.insertMachine({user_id:owner.id,hostname:'native-one',os:'test',daemon_version:'test'})
     const other=app.store.insertMachine({user_id:owner.id,hostname:'native-two',os:'test',daemon_version:'test'})
