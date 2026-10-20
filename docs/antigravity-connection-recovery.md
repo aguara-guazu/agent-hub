@@ -22,6 +22,9 @@ La recuperación:
 Una entrada que ya coincide con la conexión correcta se registra sin reescribir
 el archivo. Así, una corrección manual correcta no requiere editar hashes ni
 claves del manifiesto para permitir futuras actualizaciones.
+La adopción asegura los permisos del archivo y vuelve a verificar contenido,
+identidad y permisos antes de registrar la huella esperada. Si otro proceso
+reemplaza el archivo durante esa operación, se informa deriva y no se lo registra.
 
 Las entradas con un agente desconocido, comandos, opciones o variables personales
 siguen produciendo deriva. Una modificación de una entrada previamente gestionada
