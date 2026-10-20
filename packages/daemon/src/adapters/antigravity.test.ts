@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { PolicySnapshot } from '@agenthub/shared'
 import { AntigravityAdapter } from './antigravity.js'
 import { GeminiCliAdapter } from './gemini_cli.js'
@@ -20,7 +22,7 @@ const snapshot = { cli_kind: 'antigravity', servers: [{ tools: [{ name: 'finish_
 function json(path: string) { return JSON.parse(readFileSync(path, 'utf8')) }
 function write(path: string, value: unknown) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value)) }
 beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'antigravity Pérez #%20-')) })
-afterEach(() => { rmSync(home, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); syncBuiltinESMExports(); rmSync(home, { recursive: true, force: true }) })
 
 it('detecta Antigravity sin confundirlo con Gemini CLI, incluso después de materializar skills', () => {
   mkdirSync(join(home, '.gemini'), { recursive: true })
@@ -194,4 +196,44 @@ it('el daemon obtiene candidatos de su registro de Gemini; plan no escribe y app
   expect(json(path).mcpServers.hub).toEqual(adapter.serverEntry(target))
   expect(json(path).mcpServers.blender).toEqual({ command: 'blender' })
   expect(Manifest.load(home).digestFor(path, mcpRegion)).not.toBeNull()
+})
+
+it('no registra una edición personal intercalada después del preflight de adopción', () => {
+  const path = adapter.configPath(home)
+  write(path, { mcpServers: { hub: adapter.serverEntry(endpoint) } })
+  const changes = adapter.plan(snapshot, endpoint, home).filter(change => change.path === path)
+  const realChmod = fs.chmodSync
+  vi.spyOn(fs, 'chmodSync').mockImplementation((file, mode) => {
+    realChmod(file, mode)
+    if (String(file) === path) write(path, { mcpServers: { hub: { command: 'personal.exe' } } })
+  })
+  syncBuiltinESMExports()
+  const result = applyChanges(changes)
+  expect(result.drift).toHaveLength(1)
+  expect(result.adopted).not.toContain(path)
+  expect(Manifest.load(home).digestFor(path, mcpRegion)).toBeNull()
+  expect(json(path).mcpServers.hub).toEqual({ command: 'personal.exe' })
+})
+
+it.skipIf(process.platform === 'win32')('asegura permisos privados al adoptar HTTP sin cambiar su contenido', () => {
+  const path = adapter.configPath(home)
+  const http = gatewayEndpoint({ transport: 'http', url: 'http://127.0.0.1:8787/mcp', headers: { Authorization: 'Bearer local-test-token' } })
+  write(path, { mcpServers: { hub: adapter.serverEntry(http), personal: { command: 'keep' } } })
+  chmodSync(path, 0o644)
+  const before = readFileSync(path, 'utf8')
+  expect(applyChanges(adapter.plan(snapshot, http, home)).adopted).toContain(path)
+  expect(statSync(path).mode & 0o777).toBe(0o600)
+  expect(readFileSync(path, 'utf8')).toBe(before)
+})
+
+it('no registra adopción si no puede asegurar los permisos', () => {
+  const path = adapter.configPath(home)
+  write(path, { mcpServers: { hub: adapter.serverEntry(endpoint) } })
+  const changes = adapter.plan(snapshot, endpoint, home).filter(change => change.path === path)
+  vi.spyOn(fs, 'chmodSync').mockImplementation(() => { throw new Error('EPERM') })
+  syncBuiltinESMExports()
+  const result = applyChanges(changes)
+  expect(result.drift).toHaveLength(1)
+  expect(result.adopted).toEqual([])
+  expect(Manifest.load(home).digestFor(path, mcpRegion)).toBeNull()
 })

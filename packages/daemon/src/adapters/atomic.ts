@@ -602,7 +602,13 @@ export function applyChanges(changes: readonly FileChange[]): ApplyResult {
             if (change.skillsRoot !== null && change.skillSlug) manifest.dropSkill(change.skillsRoot, change.skillSlug)
           } else {
             // Se relee de disco: con el plan B de copia lo que quedó no es un symlink.
-            manifest.record(change.path, change.region, regionDigest(change.path, change.region))
+            const recordedDigest = regionDigest(change.path, change.region)
+            if (change.action === 'adopt' && recordedDigest !== change.expectedDigest) {
+              throw new Error('la región cambió durante la adopción; no se registra contenido ajeno')
+            }
+            // An edit after this check must remain drift, never become a newly trusted digest.
+            manifest.record(change.path, change.region, change.action === 'adopt' ? change.expectedDigest : recordedDigest)
+            if (change.action === 'adopt') result.adopted.push(change.path)
             if (change.skillsRoot !== null && change.skillSlug) manifest.addSkill(change.skillsRoot, change.skillSlug)
           }
         } catch (exc) {
@@ -623,7 +629,7 @@ export function applyChanges(changes: readonly FileChange[]): ApplyResult {
 
 function perform(change: FileChange, result: ApplyResult): void {
   if (change.action === 'adopt') {
-    result.adopted.push(change.path)
+    if (change.region.kind === 'json_value') chmodSync(change.path, change.mode)
     return
   }
   if (change.action === 'write') {
@@ -788,7 +794,7 @@ export function planJsonValue(args: PlanJsonArgs): PlanOutcome {
   if (currentDigest === desiredDigest) {
     if (!args.adoptExisting || expected === desiredDigest || desiredDigest === null) return [null, []]
     return [makeChange({ home: args.home, path: args.path, action: 'adopt', region: r,
-      expectedDigest: currentDigest, cliKind: args.cliKind ?? '',
+      expectedDigest: currentDigest, mode: args.mode ?? 0o600, cliKind: args.cliKind ?? '',
       summary: `${args.summary || regionLabel(r)} (configuración existente registrada)` }), []]
   }
 
