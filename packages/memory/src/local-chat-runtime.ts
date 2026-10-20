@@ -49,7 +49,9 @@ export class LocalChatRuntime {
     // Native queue addresses the exact conversation and verifies it at delivery time.
     // A managed app-server may not expose a per-TUI PID to hooks; its idle lease is
     // advisory presence, not a reason to silently suppress durable notifications.
-    const sessions = await this.chat.db.query(`SELECT * FROM chat_sessions s WHERE s.capability='codex_queue' AND s.native_id IS NOT NULL AND s.state='idle' AND s.closed_at IS NULL
+    const sessions = await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
+      WHERE s.capability='codex_queue' AND s.native_id IS NOT NULL AND s.state='idle' AND s.closed_at IS NULL AND c.closed_at IS NULL
+      AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL)
       AND EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)`)
     for (const s of sessions) {
       if (this.stopped) return
@@ -64,7 +66,7 @@ export class LocalChatRuntime {
         for (const d of deliveries) await this.chat.db.query("UPDATE chat_deliveries SET error='No se pudo notificar a la CLI' WHERE recipient_id=$1 AND message_id=$2 AND cancelled_at IS NULL",[s.id,d.message_id])
       }
     }
-    const newcomers=await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE c.leader_id IS NOT NULL AND s.team_seen=0 AND s.bootstrap_attempts<5 AND (s.bootstrap_sent_at IS NULL OR s.bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) AND s.closed_at IS NULL AND s.state='idle' AND s.capability='codex_queue' AND s.native_id IS NOT NULL
+    const newcomers=await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE c.leader_id IS NOT NULL AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND s.team_seen=0 AND s.bootstrap_attempts<5 AND (s.bootstrap_sent_at IS NULL OR s.bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) AND s.closed_at IS NULL AND s.state='idle' AND s.capability='codex_queue' AND s.native_id IS NOT NULL
       AND NOT EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL)`)
     for(const s of newcomers) {
       if(!this.enabled(s.agent_id))continue
@@ -97,8 +99,8 @@ export class LocalChatRuntime {
     const deadline = Date.now()+25000
     try {
       while (!controller.signal.aborted && Date.now()<deadline) {
-        const s = (await this.chat.db.query('SELECT s.*,c.leader_id,c.orca_workspace_id FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.id=$1',[sid]))[0]
-        if (!s || s.closed_at || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
+        const s = (await this.chat.db.query('SELECT s.*,c.leader_id,c.orca_workspace_id,c.closed_at AS channel_closed_at,c.kind AS channel_kind,c.activated_at FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.id=$1',[sid]))[0]
+        if (!s || s.closed_at || s.channel_closed_at || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
         if (s.state === 'idle') {
           if(s.leader_id && await this.claimBootstrap(sid)) {
             return {messages:[],bootstrap:true,context:teamBootstrap}

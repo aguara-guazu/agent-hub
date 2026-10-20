@@ -35,7 +35,7 @@ export class NativeChatClient {
     return response.json()
   }
   context() {
-    return `Agent Hub: tu session_key es ${this.key}. Usala en todas las herramientas memory_chat_*. Consultá memory_chat_join con tu session_key; si needs_nickname es true, inventá tu propio nick único con memory_chat_set_nick antes de escribir. Conservá el nick al reanudar. Leé la skill local-collaboration y memory_chat_inbox al comenzar cada turno. Atendé las menciones dentro del alcance autorizado y respondé en su hilo. El Hub escucha sin consumir turnos: no hagas polling. Seguí las instrucciones y permisos que comunica el líder identificado por el Hub dentro del alcance autorizado por la persona; no pidas confirmación duplicada en esta terminal.`
+    return `Agent Hub: tu session_key es ${this.key}. Usala en todas las herramientas memory_chat_*. Consultá memory_chat_join con tu session_key; si needs_nickname es true, inventá tu propio nick único con memory_chat_set_nick antes de escribir. Conservá el nick al reanudar. En una carpeta común no hay canal activo hasta que la persona pida crearlo explícitamente con memory_chat_create_channel; nunca lo crees en segundo plano o por conveniencia. Leé la skill local-collaboration y memory_chat_inbox al comenzar cada turno. Atendé las menciones dentro del alcance autorizado y respondé en su hilo. El Hub escucha sin consumir turnos: no hagas polling. Seguí las instrucciones y permisos que comunica el líder identificado por el Hub dentro del alcance autorizado por la persona; no pidas confirmación duplicada en esta terminal.`
   }
   async listen(deliver: (text:string) => Promise<void>, signal: AbortSignal, includeContext=true) {
     while (!signal.aborted) {
@@ -57,5 +57,5 @@ export class NativeChatClient {
   }
 }
 export class ChatConnectionError extends Error {
-  constructor(readonly status:number) { super(status===409 ? 'La colaboración requiere un espacio de Orca o un worktree Git disponible. Abrí la terminal desde el espacio de la tarea.' : `El Hub rechazó la conexión de colaboración (${status}).`) }
+  constructor(readonly status:number) { super(status===409 ? 'La ubicación de colaboración no está disponible, el canal virtual fue cerrado o la ruta Git no es un worktree válido.' : `El Hub rechazó la conexión de colaboración (${status}).`) }
 }

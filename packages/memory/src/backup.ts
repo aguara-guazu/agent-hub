@@ -14,8 +14,8 @@ const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identi
 // Added by schema version 3; backups taken before it restore without them.
 const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–10 restore. */
-const BACKUP_SCHEMA_VERSION = 10
+/** Data-model version of agenthub-memory-v1; backups from 1–11 restore. */
+const BACKUP_SCHEMA_VERSION = 11
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 

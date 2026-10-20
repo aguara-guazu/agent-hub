@@ -17,12 +17,21 @@ it('reconoce el ejecutable nativo de Windows',async()=> {
   expect(await cliProcess('codex_cli')).toMatchObject({process_id:process.ppid})
 })
 
-it('fuera de un worktree informa el motivo sin bloquear la CLI ni mantener listeners',async()=> {
+it('mantiene una conexión pasiva en carpeta común sin afirmar que ya existe un canal',async()=> {
+  const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({session:{label:'Sin nick',id:'native:one'},channel:{id:'pending',path:'/ordinary',kind:'virtual',activated_at:null},team:{leader_id:null},pending:[]})}))
+  const result=await localChatHook(state,'agent','codex_cli',{session_id:'session',cwd:'/ordinary',hook_event_name:'SessionStart'})
+  expect(JSON.stringify(result.output)).toContain('sin canal activo')
+  expect(JSON.stringify(result.output)).toContain('memory_chat_create_channel')
+  expect(JSON.stringify(result.output)).toContain('sólo si la persona pide explícitamente')
+})
+
+it('un rechazo definitivo informa el motivo sin bloquear la CLI ni mantener listeners',async()=> {
   const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:false,status:409}))
   const raw={session_id:'session',cwd:'/ordinary',hook_event_name:'SessionStart'}
   const result=await localChatHook(state,'agent','codex_cli',raw)
-  expect(JSON.stringify(result.output)).toContain('worktree Git')
+  expect(JSON.stringify(result.output)).toContain('canal fue cerrado')
   expect(result.code).toBeUndefined()
   expect(await localChatHook(state,'agent','claude_code',raw,'Watch')).toEqual({})
   expect(fetch).toHaveBeenCalledTimes(2)

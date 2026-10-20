@@ -56,7 +56,7 @@ cd /ruta/del/worktree
 | OpenCode | `agenthub-opencode` |
 | Antigravity CLI | `agenthub-agy` |
 
-Para colaborar en un mismo canal, abrilos en el **mismo worktree** o, dentro de Orca, en el **mismo espacio**. Hablale primero al agente que querés como líder de un canal nuevo: coordina el equipo y el Hub solicita la incorporación de los demás, que eligen sus propios nicks. Podés seguir canales, hilos y mensajes en **Proyectos → Colaboración**. Para tareas independientes que editan en paralelo, usá worktrees distintos; cada uno tiene su canal.
+Para colaborar en un mismo canal, abrilos en el **mismo worktree** o, dentro de Orca, en el **mismo espacio**. También podés abrirlos en una carpeta común sin proyecto ni Git: allí sólo quedan conectados hasta que le pidas explícitamente a uno crear un canal virtual descartable; ese primer creador será líder e incorporará a los demás. Hablale primero al agente que querés como líder de un canal nuevo: coordina el equipo y el Hub solicita la incorporación de los demás, que eligen sus propios nicks. Podés seguir canales, hilos y mensajes en **Proyectos → Colaboración**. Para tareas independientes que editan en paralelo, usá worktrees distintos; cada uno tiene su canal.
 
 **Modelo, esfuerzo y permisos.** Agregá directamente las opciones de la CLI, sin un `--` separador. Por ejemplo, con Kiro:
 

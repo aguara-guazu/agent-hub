@@ -325,4 +325,11 @@ ALTER TABLE chat_sessions ADD COLUMN gateway_session_id TEXT;
 UPDATE chat_sessions SET gateway_session_id=id WHERE native_id IS NOT NULL;
 CREATE INDEX chat_sessions_gateway ON chat_sessions(agent_id,gateway_session_id);
 ALTER TABLE chat_deliveries ADD COLUMN cancelled_at TIMESTAMP;
+`, String.raw`
+-- Ordinary folders only become channels after an explicit agent tool call.
+ALTER TABLE chat_channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'workspace';
+ALTER TABLE chat_channels ADD COLUMN activated_at TIMESTAMP;
+ALTER TABLE chat_channels ADD COLUMN closed_at TIMESTAMP;
+ALTER TABLE chat_channels ADD COLUMN virtual_path TEXT;
+CREATE UNIQUE INDEX chat_channels_virtual_open ON chat_channels(virtual_path);
 `]

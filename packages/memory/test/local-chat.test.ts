@@ -198,16 +198,78 @@ it('migra identidades anteriores sin inventar nicks ni perder conversaciones',as
   expect((await ops.call('chat_read',{thread_id:m.thread_id})).items[0].author_label).toBe('Lumbre')
 })
 
-it('rechaza carpetas comunes, repositorios bare y rutas inexistentes sin crear canales',async()=> {
-  const plain=await mkdtemp(join(tmpdir(),'hub-chat-plain-'))
+it('activa y cierra canales virtuales sólo de forma explícita, sin robar liderazgo ni migrar sesiones',async()=> {
+  const plain=await mkdtemp(join(tmpdir(),'hub-chat-plain-')),bare=await mkdtemp(join(tmpdir(),'hub-chat-bare-'))
   try {
-    const a=author('plain',plain)
-    await expect(ops.chat.register(a,randomUUID())).rejects.toMatchObject({statusCode:409})
-    await expect(ops.chat.register({...a,cwd:join(plain,'missing')},randomUUID())).rejects.toMatchObject({statusCode:409})
-    execFileSync('git',['init','--bare','-q',plain])
-    await expect(ops.chat.register(a,randomUUID())).rejects.toMatchObject({statusCode:409})
+    const alias=join(dir,'plain-alias');await symlink(plain,alias)
+    const first=author('plain-a',plain),second=author('plain-b',alias),ka=randomUUID(),kb=randomUUID()
+    const a=await ops.chat.lifecycle(first,{session_key:ka,native_id:'plain-a',event:'SessionStart',at:new Date().toISOString()})
+    const b=await ops.chat.lifecycle(second,{session_key:kb,native_id:'plain-b',event:'SessionStart',at:new Date().toISOString()})
+    expect(a.channel).toMatchObject({id:b.channel.id,kind:'virtual',project_id:null,activated_at:null,closed_at:null})
+    expect(a.team.leader_id).toBeNull()
     expect((await ops.call('chat_channels',{})).total).toBe(0)
-  } finally { await rm(plain,{recursive:true,force:true}) }
+    const namedA=await ops.call('chat_set_nick',{session_key:ka,nickname:'Brisa'},'mcp',first)
+    const namedB=await ops.call('chat_set_nick',{session_key:kb,nickname:'Faro'},'mcp',second)
+    await expect(ops.call('chat_send',{session_key:kb,channel_id:b.channel.id,title:'Silencioso',text:'No',request_id:'pending'},'mcp',second)).rejects.toThrow('no pidió crear')
+
+    const active=await ops.call('chat_create_channel',{session_key:kb,name:'Sala efímera'},'mcp',second)
+    expect(active.channel).toMatchObject({id:b.channel.id,name:'Sala efímera',kind:'virtual',project_id:null,leader_id:namedB.session.id,closed_at:null})
+    expect(active.channel.activated_at).toBeTruthy()
+    expect(active.session.role).toBe('leader')
+    expect((await ops.call('chat_channels',{})).items[0]).toMatchObject({id:b.channel.id,read_only:false})
+    expect((await ops.call('chat_channels',{unassigned:true,limit:1}))).toMatchObject({total:1,items:[expect.objectContaining({id:b.channel.id})]})
+    expect((await ops.call('chat_agents',{unassigned:true,limit:1}))).toMatchObject({total:2,items:[expect.any(Object)]})
+    await expect(ops.call('chat_create_channel',{session_key:ka},'mcp',first)).rejects.toThrow('primer creador')
+    const runtime=new LocalChatRuntime(ops.chat)
+    expect(await runtime.wait(namedA.session.id)).toMatchObject({bootstrap:true})
+    const message=await ops.call('chat_send',{session_key:kb,channel_id:b.channel.id,title:'Trabajo',text:'Listo',mentions:[namedA.session.id],request_id:'active'},'mcp',second)
+    expect((await ops.call('chat_threads',{unassigned:true,limit:1}))).toMatchObject({total:1,items:[expect.objectContaining({id:message.thread_id})]})
+    await expect(ops.call('chat_close_channel',{session_key:ka},'mcp',first)).rejects.toThrow('líder')
+    const closed=await ops.call('chat_close_channel',{session_key:kb},'mcp',second)
+    expect(closed.channel.closed_at).toBeTruthy()
+    expect((await db.query('SELECT cancelled_at,error FROM chat_deliveries WHERE message_id=$1',[message.id]))[0]).toMatchObject({cancelled_at:expect.any(String),error:'Canal virtual cerrado'})
+    expect((await ops.call('chat_channels',{channel_id:b.channel.id})).items[0]).toMatchObject({read_only:true})
+    expect(await runtime.wait(namedA.session.id)).toMatchObject({closed:true,messages:[]})
+    await runtime.close()
+    await expect(ops.call('chat_send',{session_key:kb,thread_id:message.thread_id,text:'Después',request_id:'closed'},'mcp',second)).rejects.toThrow('cerrado')
+    await expect(ops.call('chat_join',{session_key:kb},'mcp',second)).rejects.toThrow('cerrado')
+    expect((await ops.call('chat_read',{thread_id:message.thread_id})).items[0].text).toBe('Listo')
+
+    const third=author('plain-c',plain),fourth=author('plain-d',alias),kc=randomUUID(),kd=randomUUID()
+    const c=await ops.chat.lifecycle(third,{session_key:kc,native_id:'plain-c',event:'SessionStart',at:new Date().toISOString()})
+    const d=await ops.chat.lifecycle(fourth,{session_key:kd,native_id:'plain-d',event:'SessionStart',at:new Date().toISOString()})
+    expect(c.channel.id).not.toBe(b.channel.id)
+    expect(d.channel.id).toBe(c.channel.id)
+    expect(c.channel.activated_at).toBeNull()
+    const race=await Promise.allSettled([
+      ops.call('chat_create_channel',{session_key:kc,name:'Siguiente'},'mcp',third),
+      ops.call('chat_create_channel',{session_key:kd,name:'Competidor'},'mcp',fourth),
+    ])
+    const created=race.filter((result):result is PromiseFulfilledResult<any>=>result.status==='fulfilled')
+    expect(created).toHaveLength(1)
+    expect(race.filter(result=>result.status==='rejected')).toHaveLength(1)
+    const future=created[0]!.value
+    expect(future.channel).toMatchObject({leader_id:future.session.id,kind:'virtual',closed_at:null})
+    expect((await ops.call('chat_channels',{})).total).toBe(2)
+    const oldMemberships=await db.query('SELECT id,channel_id FROM chat_sessions WHERE id IN ($1,$2) ORDER BY id',[namedA.session.id,namedB.session.id])
+    expect(oldMemberships.every(row=>row.channel_id===b.channel.id)).toBe(true)
+
+    const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
+    expect(backup.schema_version).toBe(11)
+    const restorePath=join(plain,'restore'),restored=new MemoryDatabase(join(restorePath,'memory.sqlite'));await restored.migrate()
+    try {
+      await restoreMemory(new MemoryStore(restored,restorePath),backup)
+      const restoredChannels=await restored.query("SELECT * FROM chat_channels WHERE kind='virtual' ORDER BY created_at")
+      expect(restoredChannels).toHaveLength(2)
+      expect(restoredChannels[0]).toMatchObject({id:b.channel.id,closed_at:expect.any(String),virtual_path:null})
+      expect(restoredChannels[1]).toMatchObject({id:future.channel.id,closed_at:null,activated_at:expect.any(String),virtual_path:a.channel.path})
+      expect((await restored.query('SELECT text FROM chat_messages WHERE id=$1',[message.id]))[0].text).toBe('Listo')
+    } finally {await restored.close()}
+
+    await expect(ops.chat.register({...third,cwd:join(plain,'missing')},randomUUID())).rejects.toMatchObject({statusCode:409})
+    execFileSync('git',['init','--bare','-q',bare])
+    await expect(ops.chat.register(author('bare',bare),randomUUID())).rejects.toMatchObject({statusCode:409})
+  } finally { await rm(plain,{recursive:true,force:true});await rm(bare,{recursive:true,force:true}) }
 })
 it('separa worktrees del mismo repositorio, agrupa subcarpetas y conserva canal al cambiar branch',async()=> {
   const a=await register('main'),path=worktree('feature'),b=await register('feature','Stop',path)
@@ -402,7 +464,8 @@ it('sólo el líder reconocido expulsa dentro de su canal; conserva historial y 
  expect(history.items[0].mentions[0]).toMatchObject({read_at:null,handled_at:null,error:'Destinatario expulsado del canal'})
  expect(history.items[0].mentions[0].cancelled_at).toBeTruthy()
  expect((await ops.call('chat_agents',{channel_id:leader.channel.id,active_only:true})).items.some((s:any)=>s.id===member.session.id)).toBe(false)
- expect((await ops.call('chat_agents',{channel_id:leader.channel.id})).items.find((s:any)=>s.id===member.session.id).state).toBe('removed')
+ expect((await ops.call('chat_agents',{channel_id:leader.channel.id})).items.some((s:any)=>s.id===member.session.id)).toBe(false)
+ expect((await ops.call('chat_agents',{channel_id:leader.channel.id,include_removed:true})).items.find((s:any)=>s.id===member.session.id).state).toBe('removed')
  await expect(send(leader,member,'No debería enviarse')).rejects.toThrow('expulsada')
 })
 it('la expulsión sobrevive hooks, claves nuevas y reconexiones de la misma conversación',async()=>{

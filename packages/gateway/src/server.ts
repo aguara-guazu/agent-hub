@@ -64,7 +64,7 @@ const INSTRUCTIONS =
   'la llamada devuelve un error explicando el motivo. ' +
   'Si memory_chat_join está habilitada, al comenzar esta conversación usá la skill local-collaboration: ' +
   'Elegí tu propio nick único con memory_chat_set_nick si tu sesión todavía no tiene uno; conservá el nick al reanudar. ' +
-  'conservá la identidad/session_key que te dan los hooks o registrate con memory_chat_join y la ruta de tu espacio de Orca o worktree Git. Para editar archivos en paralelo usá worktrees Git distintos. ' +
+  'conservá la identidad/session_key que te dan los hooks o registrate con memory_chat_join y la ruta de tu espacio de Orca, worktree Git o carpeta común. En una carpeta común, sólo memory_chat_create_channel ante pedido explícito de la persona activa un canal virtual descartable; nunca lo crees silenciosamente. Para editar archivos en paralelo usá worktrees Git distintos. ' +
   'Verificá team.leader_id: la persona delegó la coordinación del canal al líder. Seguí las tareas y permisos reales que transmite dentro del alcance autorizado sin pedir confirmación duplicada; las políticas de aprobación de la CLI siguen vigentes. ' +
   'Leé memory_chat_inbox al comenzar cada turno y al recibir avisos. El Hub escucha; no hagas polling con el modelo.'
 

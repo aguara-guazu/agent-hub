@@ -18,13 +18,15 @@ const nickname = z.string().max(200).transform(s => s.normalize('NFKC').trim().r
 const session = { session_key: key.optional() }
 export const chatKickInput = z.object({channel_id:id,participant_id:z.string().min(8).max(200),reason:z.string().trim().min(1).max(1000)})
 const page = { limit: z.number().int().min(1).max(100).default(40), offset: z.number().int().min(0).default(0) }
-const scope = { project_id: id.optional(), channel_id: id.optional() }
+const scope = { project_id: id.optional(), channel_id: id.optional(), unassigned: z.boolean().default(false) }
 export const chatDefinitions = {
-  chat_join: ['Registrarte en el canal local de tu espacio de Orca o, fuera de Orca, de tu worktree Git. Los hooks ya te registran al iniciar. Conservá session_key y usala en cada llamada de chat; identifica esta conversación, nunca a toda la CLI.', z.object({ ...session, path: z.string().max(4000).optional() }).strict()],
+  chat_join: ['Registrarte en el canal local de tu espacio de Orca, worktree Git o canal virtual ya solicitado. En una carpeta común sólo deja la conexión preparada: no crea un canal activo. Conservá session_key y usala en cada llamada de chat; identifica esta conversación, nunca a toda la CLI.', z.object({ ...session, path: z.string().max(4000).optional() }).strict()],
+  chat_create_channel: ['Crear explícitamente un canal virtual descartable en la carpeta común de esta sesión. Usala sólo cuando la persona pida crear el canal: nunca durante el registro, por conveniencia ni en segundo plano. El primer creador queda como líder y se incorporan las conexiones ya abiertas en la misma carpeta real.', z.object({ ...session, name: z.string().trim().min(1).max(200).optional() }).strict()],
+  chat_close_channel: ['Cerrar explícitamente el canal virtual descartable de esta sesión. Sólo puede hacerlo su líder. Conserva historial y bloquea nuevas adhesiones; una conversación nueva podrá crear otro canal futuro en la misma carpeta.', z.object({ ...session }).strict()],
   chat_set_nick: ['Elegí libremente tu nick inventado (2–40 caracteres) antes de escribir. Debe ser único en este Hub, incluso entre sesiones desconectadas; ante conflicto elegí otro. Sólo cambia tu propia sesión y conserva su identidad e historial.', z.object({ ...session, nickname }).strict()],
-  chat_channels: ['Explorar canales locales por espacio de Orca o worktree Git, incluidos los históricos. No se comparten con otros peers.', z.object({ project_id: id.optional(), channel_id:id.optional(), ...page }).strict()],
-  chat_agents: ['Encontrar identidades de sesiones concretas para mencionarlas; incluye agentes desconectados y capacidad real de notificación.', z.object({ ...scope, active_only: z.boolean().default(false), ...page }).strict()],
-  chat_threads: ['Buscar hilos y mensajes históricos por texto, canal, proyecto, autor o estado. El historial permanece al cerrar los agentes.', z.object({ ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
+  chat_channels: ['Explorar canales locales activos o históricos. unassigned=true devuelve sólo canales sin proyecto; los virtuales pendientes permanecen ocultos.', z.object({ ...scope, ...page }).strict()],
+  chat_agents: ['Encontrar identidades de sesiones concretas para mencionarlas; por defecto excluye expulsados. Usá include_removed=true sólo para auditoría. unassigned=true limita a canales sin proyecto.', z.object({ ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), ...page }).strict()],
+  chat_threads: ['Buscar hilos y mensajes históricos por texto, canal, proyecto, autor o estado. unassigned=true limita a canales sin proyecto. El historial permanece al cerrar los agentes.', z.object({ ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
   chat_read: ['Leer una página de un hilo. Sólo registra lectura de las menciones devueltas destinadas a tu sesión; no las marca atendidas.', z.object({ ...session, project_id:id.optional(), thread_id: id, ...page }).strict()],
   chat_send: ['Crear un hilo por tarea (channel_id,title) o responder (thread_id). mentions contiene IDs de sesiones concretas del mismo canal; despierta sólo esos destinatarios. request_id estable permite reintentar sin duplicar. Requiere autorización para colaborar.', z.object({ ...session, thread_id: id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Leer tus menciones pendientes. Marcarlas leídas no las atiende; pendientes sin atender permanecen visibles. No hacer polling con el modelo: el Hub notifica.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
@@ -58,6 +60,23 @@ export async function chatFolder(path: string) {
     check(false, 'La colaboración requiere un worktree Git disponible. Abrí la sesión dentro de un worktree; para tareas paralelas usá worktrees distintos.',409)
     throw new Error('unreachable')
   }
+}
+
+async function virtualFolder(path: string) {
+  const root = await realpath(resolve(path)).catch(()=>null)
+  check(root && await stat(root).then(value=>value.isDirectory()).catch(()=>false), 'La carpeta local no está disponible.', 409)
+  const env = { ...process.env }
+  for (const name of ['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR']) delete env[name]
+  try {
+    await exec('git',['-C',root,'rev-parse','--git-dir'],{env,timeout:1500,maxBuffer:8192})
+    check(false,'La ruta pertenece a un repositorio Git pero no es un worktree disponible.',409)
+  } catch (error) {
+    if ((error as {statusCode?:number}).statusCode) throw error
+    const failure=error as NodeJS.ErrnoException & {killed?:boolean}
+    if(failure.killed || failure.name==='AbortError' || failure.code==='ETIMEDOUT' || failure.code==='ENOENT' || failure.syscall?.startsWith('spawn'))
+      check(false,'No se pudo ejecutar Git para verificar la carpeta. Reintentá cuando Git esté disponible.',503)
+  }
+  return root
 }
 
 /** Durable data; events are hints only. Reconnecting listeners always re-read SQLite. */
@@ -114,8 +133,10 @@ export class LocalChat {
     return {leader_id:c.leader_id,leader_nickname:c.nickname ?? c.label,leader_offline:Boolean(c.closed_at),guidance:teamGuidance}
   }
   async activate(sid:string) {
-    await this.db.query(`UPDATE chat_channels SET leader_id=$1 WHERE leader_id IS NULL AND id=(SELECT channel_id FROM chat_sessions WHERE id=$1 AND closed_at IS NULL)`,[sid])
-    await this.db.query('UPDATE chat_sessions SET team_seen=1 WHERE id=$1',[sid])
+    await this.db.query(`UPDATE chat_channels SET leader_id=$1 WHERE leader_id IS NULL AND closed_at IS NULL
+      AND (kind<>'virtual' OR activated_at IS NOT NULL) AND id=(SELECT channel_id FROM chat_sessions WHERE id=$1 AND closed_at IS NULL)`,[sid])
+    await this.db.query(`UPDATE chat_sessions SET team_seen=1 WHERE id=$1 AND EXISTS(
+      SELECT 1 FROM chat_channels c WHERE c.id=chat_sessions.channel_id AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL))`,[sid])
   }
   private async registration(session:Record<string,any>,channel:Record<string,any>,sessionKey:string|undefined,active:boolean) {
     if(active)await this.activate(session.id)
@@ -130,20 +151,30 @@ export class LocalChat {
     if (known) {
       check(known.agent_id===agent.agent_id,'La identidad pertenece a otro cliente',403)
       await this.db.query('UPDATE chat_sessions SET gateway_session_id=COALESCE(gateway_session_id,$2) WHERE id=$1',[known.id,agent.session_id])
-      await this.writableChannel(known.channel_id)
       const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[known.channel_id]))[0]!
+      await this.joinableChannel(channel)
       return this.registration(known,channel,sessionKey,active)
     }
     check(agent.cwd, 'La sesión necesita una carpeta para elegir su canal', 409)
     const workspace=agent.orca_workspace_id ? parse(orcaWorkspaceSchema,agent.orca_workspace_id) : null
     const existingChannel=workspace ? (await this.db.query('SELECT * FROM chat_channels WHERE orca_workspace_id=$1',[workspace]))[0] : undefined
     const root=workspace ? await this.workspaceFolder(existingChannel?.path ?? (workspace.includes('::') ? workspace.slice(workspace.indexOf('::')+2) : agent.cwd)) : null
-    const folder = root ? {root,branch:null,repository:root} : await chatFolder(agent.cwd)
-    const project = await this.project(folder.root,folder.repository)
-    const scopeKey=workspace ? `orca:${workspace}` : `git:${folder.root}`
-    const channel = (await this.db.query(`INSERT INTO chat_channels(id,project_id,path,name,branch,repository,scope_key,orca_workspace_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-      ON CONFLICT(scope_key) DO UPDATE SET project_id=excluded.project_id,branch=excluded.branch,repository=excluded.repository,updated_at=now() RETURNING *`,
-    [randomUUID(), project?.id ?? null, folder.root, basename(folder.root) || folder.root, folder.branch, folder.repository,scopeKey,workspace]))[0]!
+    let virtual=false
+    const folder = root ? {root,branch:null,repository:root} : await chatFolder(agent.cwd).catch(async error=>{
+      if ((error as {statusCode?:number}).statusCode!==409) throw error
+      virtual=true
+      const plain=await virtualFolder(agent.cwd!)
+      return {root:plain,branch:null,repository:null}
+    })
+    const project = virtual ? null : await this.project(folder.root,folder.repository ?? folder.root)
+    const channel = virtual
+      ? (await this.db.query(`INSERT INTO chat_channels(id,project_id,path,name,branch,repository,scope_key,orca_workspace_id,kind,virtual_path)
+          VALUES($1,NULL,$2,$3,NULL,NULL,$4,NULL,'virtual',$2)
+          ON CONFLICT(virtual_path) DO UPDATE SET updated_at=now() RETURNING *`,
+        [randomUUID(),folder.root,basename(folder.root)||folder.root,`virtual:${randomUUID()}`]))[0]!
+      : (await this.db.query(`INSERT INTO chat_channels(id,project_id,path,name,branch,repository,scope_key,orca_workspace_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+          ON CONFLICT(scope_key) DO UPDATE SET project_id=excluded.project_id,branch=excluded.branch,repository=excluded.repository,updated_at=now() RETURNING *`,
+        [randomUUID(),project?.id ?? null,folder.root,basename(folder.root)||folder.root,folder.branch,folder.repository,workspace ? `orca:${workspace}` : `git:${folder.root}`,workspace]))[0]!
     return this.db.transaction(async () => {
       const existing = (await this.db.query('SELECT * FROM chat_sessions WHERE key_hash=$1', [hash(sessionKey)]))[0]
       check(!existing || existing.agent_id === agent.agent_id, 'La identidad pertenece a otro cliente', 403)
@@ -166,6 +197,7 @@ export class LocalChat {
     const result=await this.db.transaction(async()=>{
     await this.assertNotRemoved(agent,input.session_key)
     const known = (await this.db.query('SELECT * FROM chat_sessions WHERE key_hash=$1 AND agent_id=$2',[hash(input.session_key),agent.agent_id]))[0]
+    if(known)await this.joinableChannel((await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[known.channel_id]))[0]!)
     const registration = !known || input.event==='SessionStart' ? await this.register(agent,input.session_key,input.native_id,false)
       : { session:publicSession(known),channel:(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[known.channel_id]))[0],session_key:input.session_key }
     const sid = registration.session.id
@@ -201,7 +233,7 @@ export class LocalChat {
       if(agent)await this.assertNotRemoved(agent,typeof (raw as any)?.session_key==='string' ? (raw as any).session_key : undefined)
       return this.callInner(operation,raw,agent)
     }
-    const writes=['chat_join','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick']
+    const writes=['chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick']
     const result=await (writes.includes(operation)?this.db.transaction(execute):execute())
     if(writes.includes(operation))this.events.emit('change')
     return result
@@ -217,23 +249,25 @@ export class LocalChat {
       // Native identities must retain their hook-issued key; fallback conversations create their own identity.
       const native = (await this.db.query('SELECT * FROM chat_sessions WHERE id=$1 AND agent_id=$2',[agent.session_id, agent.agent_id]))[0]
       if (native) {
-        await this.writableChannel(native.channel_id)
-        return this.registration(native,(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[native.channel_id]))[0]!,undefined,true)
+        const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[native.channel_id]))[0]!
+        await this.joinableChannel(channel)
+        return this.registration(native,channel,undefined,true)
       }
       return this.register({ ...agent, cwd: input.path ?? agent.cwd }, randomUUID())
     }
     if (operation === 'chat_channels') {
       // Folder assignments can be added after sessions and channels already exist.
-      for (const c of await this.db.query('SELECT id,path,repository,project_id FROM chat_channels')) {
+      for (const c of await this.db.query("SELECT id,path,repository,project_id FROM chat_channels WHERE kind<>'virtual'")) {
         const project=await this.project(c.path,c.repository ?? c.path)
         if ((project?.id ?? null)!==c.project_id) await this.db.query('UPDATE chat_channels SET project_id=$2 WHERE id=$1',[c.id,project?.id ?? null])
       }
-      const result = await this.page(`SELECT c.*,(SELECT label FROM chat_sessions WHERE id=c.leader_id) AS leader_label,(SELECT count(*) FROM chat_threads t WHERE t.channel_id=c.id) AS threads FROM chat_channels c WHERE ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2)`, [input.project_id ?? null,input.channel_id ?? null], 'updated_at DESC,id', input)
+      const result = await this.page(`SELECT c.*,(SELECT label FROM chat_sessions WHERE id=c.leader_id) AS leader_label,(SELECT count(*) FROM chat_threads t WHERE t.channel_id=c.id) AS threads FROM chat_channels c WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3=0 OR c.project_id IS NULL)`, [input.project_id ?? null,input.channel_id ?? null,input.unassigned ? 1 : 0], 'updated_at DESC,id', input)
       return { ...result,items:await Promise.all(result.items.map(async c=>({...c,read_only:await this.channelReadOnly(c)}))) }
     }
     if (operation === 'chat_agents') {
       const result = await this.page(`SELECT s.*,CASE WHEN c.leader_id=s.id THEN 'leader' ELSE 'member' END AS role FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2)
-        AND ($3=0 OR (s.closed_at IS NULL AND s.lease_until>now()))`,[input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0], 'last_seen_at DESC,id',input)
+        AND ($3=0 OR (s.closed_at IS NULL AND s.lease_until>now())) AND ($4=1 OR s.removed_at IS NULL) AND ($5=0 OR c.project_id IS NULL)`,
+      [input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0,input.include_removed ? 1 : 0,input.unassigned ? 1 : 0], 'last_seen_at DESC,id',input)
       return { ...result, items: result.items.map(s=>({...publicSession(s),role:s.role})) }
     }
     if (operation === 'chat_threads') return this.page(`SELECT t.*,c.name AS channel_name,s.label AS author_label,
@@ -242,8 +276,8 @@ export class LocalChat {
       FROM chat_threads t JOIN chat_channels c ON c.id=t.channel_id JOIN chat_sessions s ON s.id=t.created_by
       WHERE ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3 IS NULL OR t.state=$3)
       AND ($4='' OR instr(lower(t.title),lower($4))>0 OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND instr(lower(m.text),lower($4))>0))
-      AND ($5 IS NULL OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.author_id=$5))`,
-    [input.project_id ?? null,input.channel_id ?? null,input.state ?? null,input.query,input.author_id ?? null], 'updated_at DESC,id',input)
+      AND ($5 IS NULL OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.author_id=$5)) AND ($6=0 OR c.project_id IS NULL)`,
+    [input.project_id ?? null,input.channel_id ?? null,input.state ?? null,input.query,input.author_id ?? null,input.unassigned ? 1 : 0], 'updated_at DESC,id',input)
     const who = agent ? await this.identity(agent, input.session_key) : undefined
     if (operation === 'chat_read') {
       const thread = (await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
@@ -254,6 +288,26 @@ export class LocalChat {
       return { ...result, thread, team:await this.team(thread.channel_id),items: await this.receipts(result.items) }
     }
     check(who && !who.closed_at, 'Sólo una sesión de agente abierta puede participar',403)
+    if (operation === 'chat_create_channel') {
+      const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[who.channel_id]))[0]!
+      check(channel.kind==='virtual' && !channel.closed_at,'Esta sesión no está esperando un canal virtual descartable.',409)
+      if(channel.activated_at) {
+        check(channel.leader_id===who.id,'Ya existe un canal virtual activo en esta carpeta. El primer creador conserva el liderazgo.',409)
+      } else {
+        await this.db.query('UPDATE chat_channels SET activated_at=now(),leader_id=$2,name=COALESCE($3,name),updated_at=now() WHERE id=$1 AND activated_at IS NULL AND closed_at IS NULL',[channel.id,who.id,input.name ?? null])
+      }
+      await this.db.query('UPDATE chat_sessions SET team_seen=1 WHERE id=$1',[who.id])
+      return this.registration((await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[who.id]))[0]!,(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[channel.id]))[0]!,input.session_key,false)
+    }
+    if (operation === 'chat_close_channel') {
+      const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[who.channel_id]))[0]!
+      check(channel.kind==='virtual' && channel.activated_at && !channel.closed_at,'Esta sesión no pertenece a un canal virtual activo.',409)
+      check(channel.leader_id===who.id,'Sólo el líder reconocido puede cerrar este canal virtual.',403)
+      const closed=(await this.db.query('UPDATE chat_channels SET closed_at=now(),virtual_path=NULL,updated_at=now() WHERE id=$1 AND closed_at IS NULL RETURNING *',[channel.id]))[0]!
+      await this.db.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Canal virtual cerrado' WHERE handled_at IS NULL AND cancelled_at IS NULL
+        AND recipient_id IN (SELECT id FROM chat_sessions WHERE channel_id=$1)`,[channel.id])
+      return {channel:closed,team:await this.team(channel.id)}
+    }
     if (operation === 'chat_set_nick') {
       const canonical = input.nickname.toLowerCase()
       const value = await this.db.transaction(async sql => {
@@ -314,10 +368,22 @@ export class LocalChat {
   }
   private async writableChannel(channelId:string) {
     const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[channelId]))[0]!
+    if(channel.kind==='virtual') {
+      check(!channel.closed_at,'Este canal virtual está cerrado. El historial se conserva, pero no admite nuevas escrituras ni adhesiones.',409)
+      check(channel.activated_at,'La carpeta está preparada, pero la persona todavía no pidió crear un canal virtual. No lo crees silenciosamente.',409)
+      return this.workspaceFolder(channel.path)
+    }
     if(channel.orca_workspace_id) return this.workspaceFolder(channel.path)
     const folder=await chatFolder(channel.path)
     check(folder.root===channel.path, 'Este canal anterior es histórico. Registrate desde la raíz del worktree en una nueva conversación.',409)
     return folder
+  }
+  private async joinableChannel(channel:Record<string,any>) {
+    if(channel.kind==='virtual') {
+      check(!channel.closed_at,'Este canal virtual está cerrado y no admite nuevas adhesiones. Una conversación nueva puede crear otro cuando la persona lo pida.',409)
+      return this.workspaceFolder(channel.path)
+    }
+    return this.writableChannel(channel.id)
   }
   private async workspaceFolder(path:string) {
     const root=await realpath(resolve(path)).catch(()=>null)
@@ -325,12 +391,13 @@ export class LocalChat {
     return root
   }
   private channelReadOnly(channel:Record<string,any>):Promise<boolean|null> {
-    const {path,scope_key:cacheKey}=channel
+    const {path}=channel,cacheKey=`${channel.scope_key}:${channel.activated_at ?? ''}:${channel.closed_at ?? ''}`
     const cached=this.availability.get(cacheKey)
     if(cached && cached.until>Date.now())return cached.readOnly
     // Observers poll frequently. Presence here is advisory; writes always validate Git again.
     if(this.availability.size>=256)this.availability.clear()
-    const readOnly=channel.orca_workspace_id ? this.workspaceFolder(path).then(()=>false,()=>true)
+    const readOnly=channel.kind==='virtual' ? (channel.closed_at || !channel.activated_at ? Promise.resolve(true) : this.workspaceFolder(path).then(()=>false,()=>true))
+      : channel.orca_workspace_id ? this.workspaceFolder(path).then(()=>false,()=>true)
       : chatFolder(path).then(folder=>folder.root!==path,error=>(error as {statusCode?:number}).statusCode===503 ? null : true)
     void readOnly.then(value=>{if(value===null)this.availability.delete(cacheKey)})
     this.availability.set(cacheKey,{until:Date.now()+30000,readOnly})
