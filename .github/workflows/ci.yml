@@ -20,6 +20,8 @@ jobs:
       - run: npm run build
       - name: Windows paths, secrets, diagnostics and startup regressions
         run: npx vitest run packages/gateway/src/secrets.test.ts packages/gateway/src/platform.test.ts packages/daemon/src/secrets/index.test.ts packages/daemon/src/adapters/memory-hooks.test.ts packages/daemon/src/adapters/antigravity.test.ts packages/gateway/src/memory-outbox.test.ts packages/memory/test/vault.test.ts packages/memory/test/report.test.ts desktop/src/session.test.ts desktop/src/clients.test.ts desktop/src/prepare-sharp.test.ts
+      - name: Quota profiles, adapters and orchestration regressions
+        run: npx vitest run packages/daemon/src/usage-quota-adapters.test.ts packages/daemon/src/usage-quota-hook.test.ts packages/daemon/src/usage-quota-statusline.test.ts packages/daemon/src/usage-quota-recovery.test.ts packages/daemon/src/adapters/usage-statusline.test.ts packages/memory/test/usage-quotas.test.ts packages/memory/test/usage-integration.test.ts packages/memory/test/team-orchestration.test.ts
       - name: Build Windows installer
         run: npx electron-builder --win nsis --x64 --publish never
         env:

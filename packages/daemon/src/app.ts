@@ -1,3 +1,4 @@
+import { planUsageStatusline } from './adapters/usage-statusline.js'
 /**
  * Orquestación del daemon: lo que los comandos del CLI necesitan.
  *
@@ -516,7 +517,8 @@ export class DaemonApp {
 
     if (!opts.apply) {
       const [hooks, hookDrift] = planMemoryHooks(snapshot, endpoint, this.home)
-      return { ...base, changes: [...changes, ...hooks], drift: [...drift, ...hookDrift], applied: null, skipped: '' }
+      const [usage,usageDrift]=planUsageStatusline(snapshot,endpoint,this.home)
+      return { ...base, changes: [...changes, ...hooks, ...usage], drift: [...drift, ...hookDrift, ...usageDrift], applied: null, skipped: '' }
     }
 
     const applied = applyChanges(changes)
@@ -527,6 +529,12 @@ export class DaemonApp {
     applied.written.push(...hookResult.written); applied.removed.push(...hookResult.removed)
     applied.drift.push(...hookResult.drift); applied.skipped.push(...hookResult.skipped)
     Object.assign(applied.backups, hookResult.backups)
+    // Re-plan after hooks: statusLine lives in the same settings file, so retain atomic drift checks.
+    const [usage,usageDrift]=planUsageStatusline(snapshot,endpoint,this.home),usageResult=applyChanges(usage)
+    changes.push(...usage);drift.push(...usageDrift)
+    applied.written.push(...usageResult.written);applied.removed.push(...usageResult.removed)
+    applied.drift.push(...usageResult.drift);applied.skipped.push(...usageResult.skipped)
+    Object.assign(applied.backups,usageResult.backups)
     if (!this.deliveryRuns.has(agent.id)) {
       const delivery = buildHeadlessGateway({ agentInstanceId: agent.id, snapshotPath: this.state.snapshotPath(agent.id), oauthDir: join(this.config.stateDir, 'oauth'), detectContainers: false })
       const running = delivery.gateway.flushMemory().catch(() => undefined).finally(async () => {

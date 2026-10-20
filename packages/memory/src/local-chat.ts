@@ -1,3 +1,4 @@
+import { UsageNotices } from './usage-notices.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { realpath, stat } from 'node:fs/promises'
@@ -82,6 +83,7 @@ async function virtualFolder(path: string) {
 
 /** Durable data; events are hints only. Reconnecting listeners always re-read SQLite. */
 export class LocalChat {
+  usageEnabled: (agentId:string)=>boolean = () => true
   readonly events = new EventEmitter().setMaxListeners(0)
   private readonly availability = new Map<string,{until:number;readOnly:Promise<boolean|null>}>()
   constructor(readonly store: MemoryStore) {}
@@ -330,7 +332,7 @@ export class LocalChat {
       const result = await this.page(`SELECT m.*,s.label AS author_label,t.title,d.read_at,d.handled_at FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id
         JOIN chat_threads t ON t.id=m.thread_id JOIN chat_sessions s ON s.id=m.author_id WHERE d.recipient_id=$1 AND d.handled_at IS NULL AND d.cancelled_at IS NULL AND ($2=0 OR d.read_at IS NULL)`,[who.id,input.unread_only ? 1 : 0],'seq',input)
       for (const m of result.items) await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[m.id,who.id])
-      return {...result,team:await this.team(who.channel_id)}
+      return {...result,team:await this.team(who.channel_id),usage_notices:await new UsageNotices(this).pending(who.id,true)}
     }
     await this.db.query('UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[who.id,new Date(Date.now()+90000).toISOString()])
     if (operation === 'chat_ack') {

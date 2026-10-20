@@ -1,3 +1,4 @@
+import { UsageNotices, usageWakeText } from './usage-notices.js'
 import { inspectNativeProcess } from '@agenthub/gateway'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -52,14 +53,16 @@ export class LocalChatRuntime {
     const sessions = await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
       WHERE s.capability='codex_queue' AND s.native_id IS NOT NULL AND s.state='idle' AND s.closed_at IS NULL AND c.closed_at IS NULL
       AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL)
-      AND EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)`)
+      AND (EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5) OR EXISTS(SELECT 1 FROM usage_quota_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5))`)
     for (const s of sessions) {
       if (this.stopped) return
       if (!this.enabled(s.agent_id)) continue
       const deliveries = await this.claim(s.id)
-      if (!deliveries.length) continue
+      const quota=new UsageNotices(this.chat),notices=await quota.claim(s.id)
+      if (!deliveries.length && !notices.length) continue
       try {
-        await this.queue(s.native_id,chatWakeText(deliveries.map(d=>d.message_id)))
+        await this.queue(s.native_id,[deliveries.length?chatWakeText(deliveries.map(d=>d.message_id)):'',notices.length?usageWakeText:''].filter(Boolean).join('\n'))
+        await quota.notified(s.id,notices.map(n=>String(n.id)))
         await this.notified(s.id,deliveries.map(d=>d.message_id))
       } catch {
         await this.chat.db.query('UPDATE chat_sessions SET wake_error=$2 WHERE id=$1',[s.id,'No se pudo notificar con codex queue; comprobá versión, sesión y conexión. Se reintentará hasta 5 veces.'])
@@ -106,9 +109,11 @@ export class LocalChatRuntime {
             return {messages:[],bootstrap:true,context:teamBootstrap}
           }
           const deliveries = await this.claim(sid)
-          if (deliveries.length) {
+          const quota=new UsageNotices(this.chat),notices=await quota.claim(sid)
+          if (deliveries.length || notices.length) {
             const ids = deliveries.map(d=>String(d.message_id)); await this.notified(sid,ids)
-            return { messages:ids, context:chatWakeText(ids) }
+            await quota.notified(sid,notices.map(n=>String(n.id)))
+            return { messages:[...ids,...notices.map(n=>String(n.id))], context:[ids.length?chatWakeText(ids):'',notices.length?usageWakeText:''].filter(Boolean).join('\n') }
           }
         }
         await new Promise<void>(resolve => {
