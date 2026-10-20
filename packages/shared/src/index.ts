@@ -217,5 +217,5 @@ export function argsDigest(args: unknown): string {
   return digestJson(args)
 }
 
-export type { UsageQuotaState, UsageQuotaWindow, UsageQuotaWindowEvidence, UsageQuotaObservation, UsageQuotaBinding, UsageQuotaSnapshot,
+export type { UsageQuotaState, UsageQuotaWindow, UsageQuotaWindowEvidence, UsageQuotaStatusEvidence, UsageQuotaObservation, UsageQuotaBinding, UsageQuotaSnapshot,
   UsageQuotaTransition, UsageQuotaFilter, UsageQuotaAvailability, UsageQuotaIngestResult } from './usage-quota.js'

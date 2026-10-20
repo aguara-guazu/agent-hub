@@ -214,3 +214,40 @@ it('retains native low warnings even when the generic percentage threshold is le
   expect((await quotas.ingest(observation({observed_at:now,windows:[{id:'native',unit:'percent',used:100,limit:100,status:'available'}]}),ticket)).snapshot?.status).toBe('exhausted')
   await expect(quotas.ingest(observation({observed_at:now,windows:[{id:'native',unit:'percent',duration_minutes:0}]}),ticket)).rejects.toBeTruthy()
 })
+
+it.each(['cooldown','exhausted'] as const)('retains native aggregate %s through partial unknown without extending its TTL',async status=>{
+  const ticket=await bind()
+  await quotas.ingest(observation({windows:[],status}),ticket)
+  now='2026-10-20T10:02:00.000Z'
+  const partial=await quotas.ingest(observation({observed_at:now,expires_at:'2026-10-20T10:30:00.000Z',windows:[],status:'unknown',complete:false}),ticket)
+  expect(partial).toMatchObject({transitions:[],snapshot:{status,retained_status:{status,observed_at:start,expires_at:future,source:{kind:'native',adapter:'app-server'}}}})
+  now='2026-10-20T10:16:00.000Z'
+  expect(await quotas.forCli('codex_cli')).toMatchObject({status:'unknown'})
+  expect((await db.query('SELECT count(*) AS n FROM usage_quota_transitions'))[0]?.n).toBe(1)
+  now='2026-10-20T10:17:00.000Z'
+  const recovered=await quotas.ingest(observation({observed_at:now,expires_at:'2026-10-20T10:30:00.000Z',windows:[],status:'available'}),ticket)
+  expect(recovered).toMatchObject({snapshot:{status:'available'},transitions:[{before:status,after:'available'}]})
+  expect(recovered.snapshot?.retained_status).toBeUndefined()
+})
+
+it('retains aggregate low evidence while incomplete data remains unknown and accepts explicit fresh recovery before expiry',async()=>{
+  const ticket=await bind()
+  await quotas.ingest(observation({windows:[],status:'low'}),ticket)
+  now='2026-10-20T10:02:00.000Z'
+  const partial=await quotas.ingest(observation({observed_at:now,windows:[],status:'unknown',complete:false}),ticket)
+  expect(partial.snapshot).toMatchObject({status:'unknown',retained_status:{status:'low',observed_at:start,expires_at:future}})
+  now='2026-10-20T10:03:00.000Z'
+  const recovered=await quotas.ingest(observation({observed_at:now,windows:[],status:'available'}),ticket)
+  expect(recovered).toMatchObject({snapshot:{status:'available'},transitions:[{before:'low',after:'available'}]})
+})
+
+it('allows a complete native numeric response to resolve an aggregate cooldown without erasing independent window constraints',async()=>{
+  const ticket=await bind()
+  await quotas.ingest(observation({windows:[],status:'cooldown'}),ticket)
+  now='2026-10-20T10:02:00.000Z'
+  expect((await quotas.ingest(observation({observed_at:now}),ticket)).snapshot?.status).toBe('available')
+  now='2026-10-20T10:03:00.000Z'
+  await quotas.ingest(observation({observed_at:now,windows:[{id:'weekly',unit:'percent',used:100}],status:'cooldown'}),ticket)
+  now='2026-10-20T10:04:00.000Z'
+  expect((await quotas.ingest(observation({observed_at:now,windows:[],status:'available'}),ticket)).snapshot?.status).toBe('exhausted')
+})

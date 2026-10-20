@@ -41,6 +41,12 @@ export interface UsageQuotaWindowEvidence {
   expires_at: string
   source: UsageQuotaObservation['source']
 }
+export interface UsageQuotaStatusEvidence {
+  status: Exclude<UsageQuotaState, 'unknown'>
+  observed_at: string
+  expires_at: string
+  source: UsageQuotaObservation['source']
+}
 export interface UsageQuotaSnapshot {
   id: string
   provider: string
@@ -58,6 +64,7 @@ export interface UsageQuotaSnapshot {
   observation: UsageQuotaObservation
   last_known: UsageQuotaObservation | null
   retained_windows?: UsageQuotaWindowEvidence[]
+  retained_status?: UsageQuotaStatusEvidence
 }
 export interface UsageQuotaTransition {
   id: string

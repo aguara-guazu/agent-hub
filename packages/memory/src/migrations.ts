@@ -371,7 +371,7 @@ CREATE TABLE usage_quota_bindings (
 CREATE TABLE usage_quota_pools (
  id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_ref TEXT, pool_id TEXT NOT NULL,
  scope TEXT NOT NULL CHECK(scope IN ('account','binding')),
- active BOOLEAN NOT NULL DEFAULT 1, observation JSON NOT NULL, window_evidence JSON NOT NULL DEFAULT '{}', last_known JSON, observed_status TEXT NOT NULL, event_state TEXT NOT NULL DEFAULT 'unknown',
+ active BOOLEAN NOT NULL DEFAULT 1, observation JSON NOT NULL, window_evidence JSON NOT NULL DEFAULT '{}', status_evidence JSON, last_known JSON, observed_status TEXT NOT NULL, event_state TEXT NOT NULL DEFAULT 'unknown',
  observed_at TIMESTAMP NOT NULL, digest TEXT NOT NULL
 );
 CREATE TABLE usage_quota_memberships (
