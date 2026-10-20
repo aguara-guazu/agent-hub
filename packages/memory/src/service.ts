@@ -45,7 +45,7 @@ export class MemoryService {
   private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
-    private jiraMcp?: import('./tasks.js').JiraTaskReader) {
+    private jiraMcp?: import('./tasks.js').JiraTaskReader, private orchestrationOwner = false) {
     this.nativeEmbeddings = new NativeEmbeddingPool(directory)
     this.media = new MediaRuntime(directory)
     this.openCode = new OpenCodeRuntime(directory)
@@ -72,6 +72,7 @@ export class MemoryService {
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media,
       { catalog: new TeamCatalog(this.cliExtraction), orca: new LocalTeamOrca() })
+    if (this.orchestrationOwner) await operations.teams?.initialize()
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     this.current = { db, store, ai, operations, runner, network: new SharedNetwork(operations.sharing) }
     return this.current

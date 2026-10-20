@@ -29,3 +29,25 @@ con base aislada; no se ha probado contra el daemon personal instalado.
 La disponibilidad de un catálogo no prueba cuota ni acceso. Kiro no informó
 esfuerzos por modelo en este catálogo: se distingue la compatibilidad conocida
 del adaptador de los valores reportados por una CLI.
+
+## Catálogo local observado
+
+La consulta nativa, sin inferencia, devolvió 12 modelos de Claude Code, 7 de Codex
+ y 20 de Kiro el 2026-10-20. Claude Code informó `claude-haiku-5-5` con esfuerzo
+`high`; Kiro informó `gpt-5.6-sol`, cuya selección `high` se verificó en el ensayo.
+Las descripciones, ventanas de contexto y multiplicadores se conservan sólo
+cuando la CLI los proporciona. El acceso de la cuenta sigue marcado como no
+verificado hasta usar el modelo.
+
+## Hallazgos de revisión corregidos
+
+- `team_catalog` conserva el catálogo fuera de Orca, pero sólo anuncia
+  `launchable` con un worktree confirmado y los requisitos del adaptador
+  disponibles. Un fallo de preflight no publica rutas ni errores privados.
+- El servicio propietario del daemon recupera lanzamientos interrumpidos antes
+  de exponer chat y notificaciones: pausa el plan, marca efectos pendientes como
+  inciertos y revoca invitaciones y entregas pendientes. Los workers y scripts
+  que comparten la base no recuperan ni pausan lanzamientos del daemon activo.
+- Una prueba con dos servicios sobre la misma base verifica esa distinción y
+  rechaza el primer mensaje del hijo tras un reinicio, sin necesitar una llamada
+  previa a las herramientas de equipo.

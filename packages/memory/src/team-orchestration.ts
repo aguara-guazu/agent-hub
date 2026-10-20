@@ -66,7 +66,6 @@ export class TeamOrchestration {
   private get db() { return this.chat.db }
 
   async call(operation:string, raw:unknown, agent?:AgentContext):Promise<any> {
-    await this.recover()
     const definition=teamDefinitions[operation as keyof typeof teamDefinitions]
     check(definition,'Operación de equipo inexistente',404)
     const input=parse(definition[1] as z.ZodType,raw ?? {}) as any
@@ -92,7 +91,19 @@ export class TeamOrchestration {
           : {orca_workspace_id:channel.orca_workspace_id,available:false,reason:'Orca devolvió otro worktree.'}
       } catch {launch_context={orca_workspace_id:channel.orca_workspace_id,available:false,reason:'Orca no confirmó este worktree; el catálogo sigue disponible.'}}
     }
-    return value && typeof value==='object' && !Array.isArray(value) ? {...value as Record<string,unknown>,launch_context}:{catalog:value,launch_context}
+    if(!value || typeof value!=='object' || Array.isArray(value))return {catalog:value,launch_context}
+    const catalog=value as Record<string,any>
+    const clis=await Promise.all((Array.isArray(catalog.clis)?catalog.clis:[]).map(async(entry:Record<string,any>)=>{
+      if(!entry.launchable)return entry
+      if(!launch_context.available)return {...entry,launchable:false,launch_reason:launch_context.reason}
+      const model=Array.isArray(catalog.models)?catalog.models.find((item:Record<string,any>)=>item.cli===entry.id):undefined
+      if(!model || !['kiro','claude_code','codex_cli'].includes(entry.id))return {...entry,launchable:false,launch_reason:'No hay un modelo seleccionable para esta CLI.'}
+      try {
+        await this.orca.preflight?.([{cli:entry.id as ExtractionCli,model:model.id}])
+        return entry
+      } catch {return {...entry,launchable:false,launch_reason:'El adaptador no confirmó los requisitos de lanzamiento de esta CLI en la plataforma actual.'}}
+    }))
+    return {...catalog,clis,launch_context}
   }
 
   private async master(who:Record<string,any>) {
@@ -265,10 +276,15 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
     })
   }
 
-  private recover() {
+  /** Called once by the daemon owner before exposing chat or notifications. Worker services must not recover live launches. */
+  initialize() {
     this.recovery ??= this.db.transaction(async sql=>{
       await sql.query(`UPDATE chat_team_members SET state='unknown',error='El Hub se reinició con un efecto pendiente; reconciliá Orca antes de continuar.',updated_at=now()
         WHERE state IN ('workspace_intent','workspace_created','launch_intent')`)
+      await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Equipo pausado tras reinicio' WHERE handled_at IS NULL AND cancelled_at IS NULL
+        AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_team_plans t ON t.root_thread_id=m.thread_id WHERE t.state='launching')`)
+      await sql.query(`UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL
+        WHERE team_id IN (SELECT id FROM chat_team_plans WHERE state='launching')`)
       await sql.query("UPDATE chat_team_plans SET state='paused',updated_at=now() WHERE state='launching'")
     })
     return this.recovery

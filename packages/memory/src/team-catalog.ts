@@ -37,6 +37,7 @@ export interface TeamCatalogCli {
   installed: boolean | null
   catalogable: boolean
   model_selectable: boolean
+  /** Native candidate; team_catalog also checks the current Orca context and adapter preflight. */
   launchable: boolean
   launch_route: TeamLaunchRoute
   checked_at: string

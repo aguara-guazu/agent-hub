@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
+import { MemoryService } from '../src/service.js'
 import { LocalChat } from '../src/local-chat.js'
 import { TeamOrchestration,type TeamCatalog,type TeamOrca,type TeamWorkspace } from '../src/team-orchestration.js'
 import { exportMemory,readBackup,restoreMemory } from '../src/backup.js'
@@ -16,7 +17,7 @@ const author=(name:string,path:string,workspace:string,cli='kiro'):AgentContext=
   cli_kind:cli,client:cli,cwd:path,orca_workspace_id:workspace})
 
 class Catalog implements TeamCatalog {
-  catalog=vi.fn(async()=>({generated_at:'2026-10-20T00:00:00.000Z',clis:[{cli:'kiro',launchable:true}]}))
+  catalog=vi.fn(async()=>({generated_at:'2026-10-20T00:00:00.000Z',clis:[{id:'kiro',launchable:true}],models:[{cli:'kiro',id:'modelo-real'}]}))
   validate=vi.fn(async(cli:string,model:string,effort?:string)=>({cli,model,effort,launchable:true,source:'cli_reported',observed_at:'2026-10-20T00:00:00.000Z'}))
 }
 class Orca implements TeamOrca {
@@ -53,7 +54,7 @@ it('prepara un plan inmutable sólo como líder Orca y no crea efectos externos'
   const teams=new TeamOrchestration(chat,catalog,orca)
   const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Implementar feature',base_revision:head,members:members()},master.agent)
   expect(plan).toMatchObject({state:'prepared',created_by:master.session.id,master_channel_id:master.channel.id,base_revision:head})
-  expect(plan.digest).toMatch(/^[a-f0-9]{64}$/);expect(plan.members).toHaveLength(2);expect(plan.plan.catalog).toMatchObject({clis:[{cli:'kiro',launchable:true}]})
+  expect(plan.digest).toMatch(/^[a-f0-9]{64}$/);expect(plan.members).toHaveLength(2);expect(plan.plan.catalog).toMatchObject({clis:[{id:'kiro',launchable:true}],models:[{cli:'kiro',id:'modelo-real'}]})
   expect(catalog.validate).toHaveBeenCalledTimes(2);expect(orca.preflight).toHaveBeenCalledTimes(1);expect(orca.create).not.toHaveBeenCalled();expect(orca.launch).not.toHaveBeenCalled()
   await expect(teams.call('team_prepare',{session_key:foreign.key,objective:'Ajeno',base_revision:head,members:members(1)},foreign.agent)).resolves.toBeTruthy()
   await chat.db.query('UPDATE chat_channels SET leader_id=$2 WHERE id=$1',[master.channel.id,foreign.session.id])
@@ -140,7 +141,13 @@ it('mantiene el catálogo útil y declara disponibilidad Orca por sesión sin la
   const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
   const teams=new TeamOrchestration(chat,catalog,orca)
   expect(await teams.call('team_catalog',{session_key:master.key},master.agent)).toMatchObject({launch_context:{orca_workspace_id:master.workspace,available:true}})
+  expect((await teams.call('team_catalog',{session_key:master.key},master.agent)).clis[0].launchable).toBe(true)
+  orca.preflight.mockRejectedValueOnce(new Error('private launcher path'))
+  const unavailable=await teams.call('team_catalog',{session_key:master.key},master.agent)
+  expect(unavailable.clis[0].launchable).toBe(false);expect(unavailable.models).toHaveLength(1)
+  expect(JSON.stringify(unavailable)).not.toContain('private launcher path')
   orca.spaces.delete(parent.id)
+  expect((await teams.call('team_catalog',{session_key:master.key},master.agent)).clis[0].launchable).toBe(false)
   expect(await teams.call('team_catalog',{session_key:master.key},master.agent)).toMatchObject({launch_context:{orca_workspace_id:master.workspace,available:false}})
   const path=join(dir,'plain');await mkdir(path);const plain={agent_id:'plain',session_id:`native:${'plain'.padEnd(64,'0')}`,cli_kind:'kiro',client:'kiro',cwd:path},key=randomUUID()
   await chat.lifecycle(plain,{session_key:key,native_id:'plain',event:'SessionStart',at:new Date().toISOString()})
@@ -191,7 +198,7 @@ it('pausa intents encontrados al reiniciar y nunca reintenta efectos',async()=>{
   const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
   const first=new TeamOrchestration(chat,catalog,orca),prepared=await first.call('team_prepare',{session_key:master.key,objective:'Recovery',base_revision:head,members:members(1)},master.agent)
   await db.query("UPDATE chat_team_plans SET state='launching' WHERE id=$1",[prepared.id]);await db.query("UPDATE chat_team_members SET state='launch_intent' WHERE team_id=$1",[prepared.id])
-  const restarted=new TeamOrchestration(chat,catalog,orca),status=await restarted.call('team_status',{session_key:master.key,plan_id:prepared.id},master.agent)
+  const restarted=new TeamOrchestration(chat,catalog,orca);await restarted.initialize();const status=await restarted.call('team_status',{session_key:master.key,plan_id:prepared.id},master.agent)
   expect(status).toMatchObject({state:'paused',members:[expect.objectContaining({state:'unknown'})]})
   expect(orca.create).not.toHaveBeenCalled();expect(orca.launch).not.toHaveBeenCalled()
 })
@@ -254,4 +261,30 @@ it('revoca escritura cross-channel cuando el master está offline aunque conserv
   await db.query("UPDATE chat_sessions SET closed_at=now(),state='offline' WHERE id=$1",[master.session.id])
   await expect(chat.call('chat_send',{session_key:child.key,thread_id:prepared.root_thread_id,text:'No autorizado',request_id:'offline-master'},child.agent))
     .rejects.toMatchObject({statusCode:403})
+})
+
+
+it('sólo el servicio propietario recupera antes del primer chat y cancela despertares pendientes',async()=>{
+  const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head}
+  orca.spaces.set(parent.id,parent)
+  const teams=new TeamOrchestration(chat,catalog,orca)
+  const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Recuperar antes del chat',base_revision:head,members:members(2)},master.agent)
+  const launched=await teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Lanzar'},master.agent)
+  const assigned=launched.members[0],child=await session('child',assigned.workspace_path,assigned.workspace_id)
+  await teams.call('team_join',{session_key:child.key,invitation:invitation(orca.prompts.get(assigned.workspace_id)!)},child.agent)
+  const report=await chat.call('chat_send',{session_key:child.key,thread_id:plan.root_thread_id,text:'Pendiente',mentions:[master.session.id],request_id:'before-crash'},child.agent)
+  await db.query("UPDATE chat_team_plans SET state='launching' WHERE id=$1",[plan.id])
+  await db.query("UPDATE chat_team_members SET state='launch_intent' WHERE id=$1",[launched.members[1].id])
+  const worker=new MemoryService(dir,'http://localhost/callback'),owner=new MemoryService(dir,'http://localhost/callback',fetch,undefined,true)
+  try {
+    const secondary=await worker.get()
+    expect((await secondary.operations.teams!.call('team_status',{session_key:master.key,plan_id:plan.id},master.agent)).state).toBe('launching')
+    const restarted=await owner.get()
+    expect((await db.query('SELECT state FROM chat_team_plans WHERE id=$1',[plan.id]))[0].state).toBe('paused')
+    expect((await db.query('SELECT cancelled_at FROM chat_deliveries WHERE message_id=$1',[report.id]))[0].cancelled_at).toBeTruthy()
+    expect((await db.query('SELECT invitation_hash FROM chat_team_members WHERE team_id=$1',[plan.id])).every(row=>row.invitation_hash===null)).toBe(true)
+    await expect(restarted.operations.chat.call('chat_send',{session_key:child.key,thread_id:plan.root_thread_id,text:'Después del reinicio',request_id:'chat-first'},child.agent)).rejects.toMatchObject({statusCode:403})
+    await restarted.operations.teams!.initialize()
+    expect((await db.query('SELECT state FROM chat_team_plans WHERE id=$1',[plan.id]))[0].state).toBe('paused')
+  } finally {await worker.close();await owner.close()}
 })
