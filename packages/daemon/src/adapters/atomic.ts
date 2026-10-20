@@ -595,6 +595,7 @@ export function applyChanges(changes: readonly FileChange[]): ApplyResult {
 
         // Un cambio que falla (archivo bloqueado, sin permiso) queda como deriva y no frena a los demás.
         try {
+          const adoptedFile = change.action === 'adopt' && change.region.kind === 'json_value' ? statSync(change.path) : null
           perform(change, result)
           touched = true
           if (change.action === 'delete') {
@@ -605,6 +606,13 @@ export function applyChanges(changes: readonly FileChange[]): ApplyResult {
             const recordedDigest = regionDigest(change.path, change.region)
             if (change.action === 'adopt' && recordedDigest !== change.expectedDigest) {
               throw new Error('la región cambió durante la adopción; no se registra contenido ajeno')
+            }
+            if (adoptedFile) {
+              const currentFile = statSync(change.path)
+              if (currentFile.dev !== adoptedFile.dev || currentFile.ino !== adoptedFile.ino ||
+                  (process.platform !== 'win32' && (currentFile.mode & 0o777) !== change.mode)) {
+                throw new Error('el archivo o sus permisos cambiaron durante la adopción; no se registra')
+              }
             }
             // An edit after this check must remain drift, never become a newly trusted digest.
             manifest.record(change.path, change.region, change.action === 'adopt' ? change.expectedDigest : recordedDigest)

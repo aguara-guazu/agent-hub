@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -236,4 +236,26 @@ it('no registra adopción si no puede asegurar los permisos', () => {
   expect(result.drift).toHaveLength(1)
   expect(result.adopted).toEqual([])
   expect(Manifest.load(home).digestFor(path, mcpRegion)).toBeNull()
+})
+
+it.each([0o600, 0o644])('no adopta un archivo reemplazado con contenido idéntico y modo %i', mode => {
+  const path = adapter.configPath(home)
+  const http = gatewayEndpoint({ transport: 'http', url: 'http://127.0.0.1:8787/mcp', headers: { Authorization: 'Bearer local-test-token' } })
+  write(path, { mcpServers: { hub: adapter.serverEntry(http) } })
+  const before = readFileSync(path, 'utf8')
+  const changes = adapter.plan(snapshot, http, home).filter(change => change.path === path)
+  const realChmod = fs.chmodSync
+  vi.spyOn(fs, 'chmodSync').mockImplementation((file, permissions) => {
+    realChmod(file, permissions)
+    if (String(file) === path) {
+      writeFileSync(`${path}.replacement`, before, { mode })
+      renameSync(`${path}.replacement`, path)
+    }
+  })
+  syncBuiltinESMExports()
+  const result = applyChanges(changes)
+  expect(result.drift).toHaveLength(1)
+  expect(result.adopted).not.toContain(path)
+  expect(Manifest.load(home).digestFor(path, mcpRegion)).toBeNull()
+  expect(readFileSync(path, 'utf8')).toBe(before)
 })

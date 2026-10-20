@@ -72,8 +72,9 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   })
   app.post('/api/memory/chat/kick', {bodyLimit:4096}, async request=>{
     const user=await options.authorize(request)
-    const input=parse(chatKickInput.extend({project_id:id}).strict(),request.body)
-    return (await service.get()).operations.chat.kick(input,{user_id:user.id})
+    const input=parse(chatKickInput.extend({project_id:id.optional()}).strict(),request.body)
+    const {project_id,...kick}=input
+    return (await service.get()).operations.chat.kick({...kick,...(project_id?{project_id}:{})},{user_id:user.id})
   })
   app.addHook('onListen', async () => { void runtime().catch(() => {}) })
   sharingRoutes(app, service, options.authorize)

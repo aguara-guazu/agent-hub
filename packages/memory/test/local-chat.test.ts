@@ -58,6 +58,20 @@ it('sólo el destinatario consume lectura; humanos observan y no pueden escribir
   await ops.call('chat_ack',{message_id:m.id,session_key:b.k},'mcp',b.a)
   expect((await ops.call('chat_inbox',{session_key:b.k},'mcp',b.a)).total).toBe(0)
 })
+it('excluye expulsados antes de contar y paginar, conservando miembros offline e historial',async()=> {
+  const member=await register('remaining')
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'remaining',event:'SessionEnd',at:new Date().toISOString()})
+  for(let i=0;i<41;i++) {
+    await db.query(`INSERT INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,last_seen_at,removed_at,closed_at)
+      VALUES($1,'test-client',$2,'Expulsado','codex_cli',$3,'offline',$4,$4,$4,$4)`,
+      [`removed-${i}`,randomUUID(),member.channel.id,'2099-01-01T00:00:00.000Z'])
+  }
+  expect(await ops.call('chat_agents',{channel_id:member.channel.id,limit:40})).toMatchObject({
+    total:1,items:[expect.objectContaining({id:member.session.id,state:'offline'})],
+  })
+  expect(await ops.call('chat_agents',{channel_id:member.channel.id,include_removed:true,limit:40})).toMatchObject({total:42})
+  expect((await ops.call('chat_agents',{channel_id:member.channel.id,include_removed:true,limit:40,offset:40})).items).toHaveLength(2)
+})
 it('aísla canales y claves incluso con el mismo cliente instalado; no adivina una sesión',async()=> {
   const a=await register('a');worktree('other'); const b=await register('b','Stop',join(dir,'other'))
   await expect(send(a,b)).rejects.toThrow('mención')
