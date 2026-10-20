@@ -176,6 +176,17 @@ Revisión de código: `bc813f03e58feb413acb9d329ce9be749d0b4a3a`, con base
 `ad6c44c2b1eb3f01e1989b8f23f22cce770c3a99`. Los commits posteriores de documentación
 no cambian el comportamiento comprobado.
 
+**Revisión exclusiva aprobada por TeroLunar el 20 de octubre de 2026**, sin
+hallazgos pendientes. Los veredictos sustituyen sus rechazos de versiones
+anteriores y quedan en los hilos del Hub:
+
+- Panel: mensaje `b51ac625-571c-4754-943e-4c506858ce8c`.
+- Canales virtuales: mensaje `e55f0bc3-7395-4fcf-974b-2f01f8c90e9c`.
+- Antigravity: mensaje `9f2db3a9-dd42-4492-816f-1f54b898699c`.
+
+La revisión fue de sólo lectura. La ejecución E2E y la suite general siguientes
+son evidencia del TL, diferenciada de las pruebas dirigidas del revisor.
+
 - Backend, daemon y desktop: **636 pruebas aprobadas, 14 omitidas** mediante
   `npx vitest run --exclude '**/dist/**' packages desktop/src testdata/src --maxWorkers=2`.
 - Frontend: **126 pruebas aprobadas** mediante
