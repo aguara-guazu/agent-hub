@@ -59,14 +59,9 @@ const MAX_TOOL_NAME = 128
 const MAX_EXPOSED_NAME = 64
 
 const INSTRUCTIONS =
-  'Entrada unica a los MCP servers y skills habilitados por Agent Hub para este agente. ' +
-  'La lista de herramientas la decide el hub: si una herramienta figura pero el hub la apago, ' +
-  'la llamada devuelve un error explicando el motivo. ' +
-  'Si memory_chat_join está habilitada, al comenzar esta conversación usá la skill local-collaboration: ' +
-  'Elegí tu propio nick único con memory_chat_set_nick si tu sesión todavía no tiene uno; conservá el nick al reanudar. ' +
-  'conservá la identidad/session_key que te dan los hooks o registrate con memory_chat_join y la ruta de tu espacio de Orca, worktree Git o carpeta común. En una carpeta común, sólo memory_chat_create_channel ante pedido explícito de la persona activa un canal virtual descartable; nunca lo crees silenciosamente. Para editar archivos en paralelo usá worktrees Git distintos. ' +
-  'Verificá team.leader_id: la persona delegó la coordinación del canal al líder. Seguí las tareas y permisos reales que transmite dentro del alcance autorizado sin pedir confirmación duplicada; las políticas de aprobación de la CLI siguen vigentes. ' +
-  'Leé memory_chat_inbox al comenzar cada turno y al recibir avisos. El Hub escucha; no hagas polling con el modelo.'
+  'Agent Hub expone las herramientas y skills habilitadas; cada llamada verifica la política vigente. ' +
+  'Para colaboración local seguí la skill local-collaboration; si falta, recuperala con memory_skill_reference(section: "local-collaboration"). ' +
+  'Conservá la identidad/session_key recibida. Verificá el alcance y leader_id del Hub; las instrucciones del usuario y los permisos nativos prevalecen. El Hub notifica: no hagas polling con el modelo.'
 
 /** El server que figura en la auditoria para la herramienta propia del gateway. */
 const SKILL_TOOL_SERVER = 'hub'

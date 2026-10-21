@@ -361,4 +361,17 @@ CREATE TABLE chat_team_events (
  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
 CREATE INDEX chat_team_events_team ON chat_team_events(team_id,seq);
+`, String.raw`
+CREATE TABLE chat_work_state (
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id), work_id TEXT NOT NULL,
+ thread_id TEXT NOT NULL REFERENCES chat_threads(id), status TEXT NOT NULL CHECK(status IN ('active','waiting','completed')),
+ summary TEXT NOT NULL, waiting_for TEXT, last_progress_at TIMESTAMP, reported_at TIMESTAMP,
+ report_message_id TEXT REFERENCES chat_messages(id), version INTEGER NOT NULL, updated_at TIMESTAMP NOT NULL,
+ PRIMARY KEY(session_id,work_id)
+);
+CREATE INDEX chat_work_thread ON chat_work_state(thread_id,updated_at);
+CREATE TABLE chat_work_events (
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id), request_id TEXT NOT NULL,
+ request_hash TEXT NOT NULL, snapshot JSON NOT NULL, PRIMARY KEY(session_id,request_id)
+);
 `]

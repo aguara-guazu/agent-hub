@@ -3,10 +3,10 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { findExtractionCli } from './cli-extraction.js'
 import { LocalChat } from './local-chat.js'
-import { teamBootstrap, teamGuidance } from './local-chat-team.js'
+import { teamBootstrap } from './local-chat-team.js'
 
 const exec = promisify(execFile)
-export const chatWakeText = (ids: string[]) => `Agent Hub: tenés menciones locales pendientes (${ids.join(', ')}). Leé memory_chat_inbox con tu session_key antes de continuar y verificá team.leader_id. ${teamGuidance} Respondé en el mismo hilo y usá memory_chat_ack sólo cuando hayas atendido el pedido. No hagas polling ni envíes respuestas automáticas sin contenido.`
+export const chatWakeText = (ids: string[]) => `Agent Hub: tenés menciones locales pendientes (${ids.join(', ')}). Leé memory_chat_inbox con tu session_key antes de continuar y verificá team.leader_id. Respondé en el mismo hilo y usá memory_chat_ack sólo cuando hayas atendido el pedido. No hagas polling ni envíes respuestas automáticas sin contenido.`
 
 /** Only the local Hub owns the dispatcher. No inference process is created to listen. */
 export class LocalChatRuntime {

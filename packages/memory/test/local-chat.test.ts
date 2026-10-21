@@ -281,7 +281,7 @@ it('activa y cierra canales virtuales sólo de forma explícita, sin robar lider
     expect(oldMemberships.every(row=>row.channel_id===b.channel.id)).toBe(true)
 
     const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-    expect(backup.schema_version).toBe(12)
+    expect(backup.schema_version).toBe(13)
     expect(backup.tables.chat_channels.find((channel:any)=>channel.id===future.channel.id)).toMatchObject({closed_at:null,virtual_path:a.channel.path})
     const restorePath=join(plain,'restore'),restored=new MemoryDatabase(join(restorePath,'memory.sqlite'));await restored.migrate()
     try {
@@ -557,4 +557,82 @@ it('serializa un envío concurrente con expulsión: no quedan entregas activas d
  expect(results[1].status).toBe('fulfilled')
  expect(await db.query('SELECT * FROM chat_deliveries WHERE recipient_id=$1 AND cancelled_at IS NULL',[member.session.id])).toHaveLength(0)
  await expect(send(member,leader)).rejects.toMatchObject({statusCode:410})
+})
+
+
+it('entrega guía recuperable en join y metadatos compactos en inbox; la versión cambia con el líder',async()=>{
+  const a=await register('a'),b=await register('b')
+  const first=await ops.call('chat_join',{session_key:b.k},'mcp',b.a)
+  expect(first.team).toMatchObject({scope:'channel',channel_id:b.channel.id,linked_team:null,guidance:expect.any(String),guidance_version:expect.any(String)})
+  const inbox=await ops.call('chat_inbox',{session_key:b.k},'mcp',b.a)
+  expect(inbox.team.guidance).toBeUndefined()
+  expect(inbox.team.guidance_version).toBe(first.team.guidance_version)
+  // Compaction/reconnect explicitly re-fetches the same guidance; no per-process cache.
+  expect((await ops.call('chat_join',{session_key:b.k},'mcp',b.a)).team.guidance).toBe(first.team.guidance)
+  await ops.chat.kick({channel_id:a.channel.id,participant_id:a.session.id,reason:'Cambio de líder solicitado'},{user_id:'owner'})
+  const changed=await ops.call('chat_inbox',{session_key:b.k},'mcp',b.a)
+  expect(changed.team.leader_id).toBe(b.session.id)
+  expect(changed.team.guidance_version).not.toBe(first.team.guidance_version)
+})
+it('recupera referencias bajo demanda sin perder operaciones del catálogo ni sus argumentos',async()=>{
+  const reference=await ops.call('skill_reference',{section:'memory-tools'})
+  expect(reference.text).toContain('memory_chat_work_update')
+  const orchestration=await ops.call('skill_reference',{section:'team-orchestration'})
+  expect(orchestration.text).toContain('memory_team_launch')
+  expect(orchestration.text).toContain('digest')
+  const entry=await ops.call('skill_reference',{section:'local-collaboration'})
+  expect(entry.text).toContain('team-orchestration')
+  expect(entry.text.length).toBeLessThan(14000)
+  await expect(ops.call('skill_reference',{section:'../../private'})).rejects.toThrow()
+})
+it('conserva progreso explícito separado de heartbeat, Stop, esperas y reintentos',async()=>{
+  const a=await register('a'),b=await register('b'),m=await send(a,b)
+  const start={session_key:a.k,thread_id:m.thread_id,work_id:'fix-login',request_id:'start',expected_version:0,event:'started',summary:'Corregir login'}
+  const initial=await ops.call('chat_work_update',start,'mcp',a.a)
+  expect(initial).toMatchObject({version:1,status:'active',last_progress_at:null,report_message_id:null})
+  const progress={...start,event:'progress',summary:'Regresión reproducida',expected_version:1,request_id:'progress'}
+  const updated=await ops.call('chat_work_update',progress,'mcp',a.a)
+  expect(updated).toMatchObject({version:2,last_progress_at:expect.any(String)})
+  const wait={...start,event:'waiting',waiting_for:'permission',summary:'Espero aprobación',expected_version:2,request_id:'wait'}
+  expect(await ops.call('chat_work_update',wait,'mcp',a.a)).toMatchObject({version:3,status:'waiting',waiting_for:'permission'})
+  // A late retry returns its original receipt without overwriting a subsequent wait.
+  expect(await ops.call('chat_work_update',progress,'mcp',a.a)).toEqual(updated)
+  await expect(ops.call('chat_work_update',{...progress,summary:'Otro evento'},'mcp',a.a)).rejects.toMatchObject({statusCode:409})
+  await expect(ops.call('chat_work_update',{...progress,request_id:'stale'},'mcp',a.a)).rejects.toMatchObject({statusCode:409})
+  for(const event of ['Heartbeat','Stop'])await ops.chat.lifecycle(a.a,{session_key:a.k,native_id:'a',event,at:new Date().toISOString()})
+  const listed=await ops.call('chat_work_list',{session_key:b.k,thread_id:m.thread_id},'mcp',b.a)
+  expect(listed.items[0]).toMatchObject({version:3,status:'waiting',waiting_for:'permission',last_progress_at:updated.last_progress_at,report_message_id:null,session_state:'idle'})
+  expect(JSON.stringify(listed)).not.toContain(a.k)
+})
+it('finalización exige un reporte propio del mismo hilo y no simula lectura del destinatario',async()=>{
+  const a=await register('a'),b=await register('b'),m=await send(a,b)
+  const start={session_key:a.k,thread_id:m.thread_id,work_id:'fix',request_id:'start',expected_version:0,event:'started',summary:'Trabajo'}
+  await ops.call('chat_work_update',start,'mcp',a.a)
+  const complete={...start,event:'completed',summary:'Terminado',expected_version:1,request_id:'done'}
+  await expect(ops.call('chat_work_update',complete,'mcp',a.a)).rejects.toThrow()
+  const other=await send(b,a,'Reporte de otra sesión',m.thread_id)
+  await expect(ops.call('chat_work_update',{...complete,report_message_id:other.id},'mcp',a.a)).rejects.toMatchObject({statusCode:400})
+  const wrongThread=await send(a,b,'Otro trabajo')
+  await expect(ops.call('chat_work_update',{...complete,report_message_id:wrongThread.id},'mcp',a.a)).rejects.toMatchObject({statusCode:400})
+  const report=await send(a,b,'Pruebas pasaron; detalle del resultado',m.thread_id)
+  const done=await ops.call('chat_work_update',{...complete,report_message_id:report.id},'mcp',a.a)
+  expect(done).toMatchObject({status:'completed',report_receipt:'persisted',report_message_id:report.id,reported_at:expect.any(String)})
+  const delivery=(await db.query('SELECT read_at,handled_at FROM chat_deliveries WHERE message_id=$1',[report.id]))[0]
+  expect(delivery).toMatchObject({read_at:null,handled_at:null})
+  await expect(ops.call('chat_work_update',{...start,event:'progress',expected_version:2,request_id:'reopen'},'mcp',a.a)).rejects.toMatchObject({statusCode:409})
+  const exported=await exportMemory(store),backup=JSON.parse(await readBackup(store,exported.id))
+  expect(backup.tables.chat_work_state).toHaveLength(1)
+  const target=join(dir,'restore-work'),restored=new MemoryDatabase(join(target,'memory.sqlite'));await restored.migrate()
+  try {
+    await restoreMemory(new MemoryStore(restored,target),backup)
+    expect((await restored.query('SELECT status,report_message_id FROM chat_work_state'))[0]).toMatchObject({status:'completed',report_message_id:report.id})
+    expect((await restored.query('SELECT count(*) AS n FROM chat_work_events'))[0].n).toBe(2)
+    expect(await restored.query('PRAGMA foreign_key_check')).toEqual([])
+  } finally {await restored.close()}
+})
+it('rechaza acceso a estados ajenos fuera del canal y claves de otra sesión',async()=>{
+  const a=await register('a'),b=await register('b'),m=await send(a,b),outside=await register('outside','Stop',worktree('outside'))
+  await expect(ops.call('chat_work_list',{session_key:outside.k,thread_id:m.thread_id},'mcp',outside.a)).rejects.toMatchObject({statusCode:403})
+  await expect(ops.call('chat_work_update',{session_key:outside.k,thread_id:m.thread_id,work_id:'x',request_id:'x',expected_version:0,event:'started',summary:'Ajeno'},'mcp',outside.a)).rejects.toMatchObject({statusCode:403})
+  await expect(ops.call('chat_work_list',{session_key:a.k,thread_id:m.thread_id},'mcp',{...outside.a,agent_id:'foreign-client'})).rejects.toThrow('Registrate')
 })

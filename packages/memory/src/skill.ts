@@ -21,7 +21,7 @@ const groups: [string, string[]][] = [
   ['Fuentes, procesamiento y mantenimiento', ['list_connectors', 'save_connector', 'sync_connector', 'sync_sources', 'google_setup_status', 'import_google_client', 'connect_google', 'repair_google', 'list_jobs', 'processing_status', 'retry_job', 'cancel_job', 'reprocess', 'rebuild_embeddings', 'process_files', 'export_backup', 'delete_entity']],
 ]
 
-export function renderMemorySkill(tools: { name: string; description: string }[] = memoryTools): string {
+export function renderMemoryToolReference(tools: { name: string; description: string }[] = memoryTools): string {
   const byName = new Map(tools.map(t => [t.name, t]))
   const listed = new Set<string>()
   const sections = groups.map(([title, names]) => {
@@ -30,6 +30,10 @@ export function renderMemorySkill(tools: { name: string; description: string }[]
   })
   const rest = tools.filter(t => !listed.has(t.name)).map(t => `- \`memory_${t.name}\`: ${t.description}`)
   if (rest.length) sections.push(`### Otras\n\n${rest.join('\n')}`)
+  return `# Referencia de herramientas de memoria\n\n${sections.join('\n\n')}`
+}
+
+export function renderMemorySkill(): string {
   return `# Memoria principal del agente en Agent Hub
 
 La memoria es la base local del equipo: empresas, proyectos, personas, reuniones con sus transcripciones, documentos, conversaciones, tareas, notas y conocimiento extraído con evidencia. Vive en la computadora de la persona y se consulta con las herramientas del MCP **Memoria de proyectos**, que llegan a través del servidor \`hub\` con nombres \`memory_<operación>\` (por ejemplo \`memory_search\`; según el cliente el nombre completo lleva un prefijo como \`mcp__hub__\` o \`hub__\`).
@@ -58,7 +62,7 @@ Podés organizar o corregir recuerdos a partir de evidencia: actualizar mediante
 
 ## Colaboración local
 
-Al iniciar una conversación y al recibir avisos locales, seguí la skill **local-collaboration**. Si los hooks no te dieron una identidad, registrate con \`memory_chat_join\` y conservá la session_key. Elegí libremente tu nick único con \`memory_chat_set_nick\` si aún no tenés uno; conservá el nick al reanudar. Leé \`memory_chat_inbox\` al comenzar cada turno; el Hub escucha sin consumir contexto. Coordiná revisiones en hilos dentro del canal del espacio de Orca o, fuera de Orca, del worktree Git. Este chat es local y separado del foro de proyectos compartidos.
+Para identidad, mensajes y autoridad local, seguí **local-collaboration** al iniciar o reanudar y al recibir avisos. Esa skill es la fuente canónica del protocolo; si no está disponible, recuperala con \`memory_skill_reference\` (\`section: "local-collaboration"\`).
 
 ## Al empezar a trabajar: el proyecto de la carpeta
 
@@ -158,7 +162,7 @@ Dos nombres iguales no son la misma persona. Las unificaciones automáticas ya c
 
 ## Referencia de herramientas
 
-${sections.join('\n\n')}
+Las definiciones MCP describen los argumentos vigentes. Si necesitás el catálogo agrupado, llamá \`memory_skill_reference\` con \`section: "memory-tools"\`; cargalo sólo cuando falte ese detalle.
 `
 }
 

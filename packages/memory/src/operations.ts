@@ -1,3 +1,5 @@
+import { renderMemoryToolReference } from './skill.js'
+import { localCollaborationSkill, localOrchestrationReference } from './local-chat-skill.js'
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
 import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
 import type { TeamCatalog } from './team-catalog.js'
@@ -27,6 +29,7 @@ import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput,
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
+  skill_reference: ['Leer instrucciones de colaboración o una referencia extensa de herramientas sólo cuando haga falta. No ejecuta operaciones ni concede permisos.', z.object({section:z.enum(['memory-tools','local-collaboration','team-orchestration'])}).strict()],
   ...chatDefinitions,
   ...teamDefinitions,
   shared_status: ['Ver miembros, permisos, identidad y versiones de un proyecto compartido; consultar la skill hub-collaboration al trabajar en él.', z.object({ project_id: id }).strict()],
@@ -109,7 +112,7 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set([...chatReadOperations,...teamReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set(['skill_reference',...chatReadOperations,...teamReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
   readonly chat: LocalChat
@@ -158,6 +161,8 @@ export class MemoryOperations {
     if (agent && !['context', 'write_note', 'finish_notes'].includes(operation)) await touchSession(store, agent)
     const author = agent ? `agent:${agent.cli_kind || 'mcp'}:${agent.session_id.slice(0, 8)}` : actor
     switch (operation) {
+      case 'skill_reference': return {section:input.section,text:input.section==='memory-tools'?renderMemoryToolReference():input.section==='local-collaboration'?localCollaborationSkill.body:localOrchestrationReference}
+
       case 'suggest_projects': return suggestProjects(store, this.ai, input)
       case 'draft_profile': return draftProfile(store, this.ai, input, signal)
       case 'save_project_company': return saveProjectCompany(store, input, author)

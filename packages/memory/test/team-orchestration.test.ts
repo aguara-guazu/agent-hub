@@ -103,6 +103,9 @@ it('consume invitación one-shot sólo desde workspace/CLI asignados y conserva 
   const joined=await teams.call('team_join',{session_key:child.key,invitation:token},child.agent)
   expect(joined).toMatchObject({team_id:prepared.id,member_id:assigned.id,root_thread_id:prepared.root_thread_id,master_session_id:master.session.id,session:{id:child.session.id,channel_id:child.channel.id}})
   expect(joined.guidance).toContain('master coordina desde root_thread_id')
+  const context=await chat.call('chat_inbox',{session_key:child.key},child.agent)
+  expect(context.team).toMatchObject({scope:'channel',leader_id:child.session.id,linked_team:{team_id:prepared.id,master_leader_id:master.session.id,root_thread_id:prepared.root_thread_id}})
+  expect(context.team.guidance).toBeUndefined()
   await expect(teams.call('team_join',{session_key:child.key,invitation:token},child.agent)).rejects.toMatchObject({statusCode:409})
   expect((await db.query('SELECT channel_id FROM chat_sessions WHERE id=$1',[master.session.id]))[0].channel_id).toBe(master.channel.id)
   expect((await db.query('SELECT channel_id FROM chat_sessions WHERE id=$1',[child.session.id]))[0].channel_id).toBe(child.channel.id)
@@ -123,11 +126,21 @@ it('limita chat cross-channel al hilo raíz y a miembros vinculados con proceden
   const event=(await db.query("SELECT * FROM chat_team_events WHERE type='chat_message' AND payload->>'message_id'=$1",[report.id]))[0]
   expect(event).toMatchObject({actor_session_id:child.session.id,source_channel_id:child.channel.id,target_thread_id:prepared.root_thread_id})
   expect(reply).toBeTruthy()
+  const work={session_key:child.key,thread_id:prepared.root_thread_id,work_id:'review',request_id:'work-start',expected_version:0,event:'started',summary:'Revisión'}
+  await chat.call('chat_work_update',work,child.agent)
+  expect((await chat.call('chat_work_list',{session_key:master.key,thread_id:prepared.root_thread_id},master.agent)).items[0].session_id).toBe(child.session.id)
+  await expect(chat.call('chat_work_list',{session_key:sameChannel.key,thread_id:prepared.root_thread_id},sameChannel.agent)).rejects.toMatchObject({statusCode:403})
+  const linkedVersion=(await chat.call('chat_inbox',{session_key:child.key},child.agent)).team.guidance_version
   const outsider=await session('outsider')
   await expect(chat.call('chat_send',{session_key:outsider.key,thread_id:prepared.root_thread_id,text:'Intrusión',request_id:'outsider'},outsider.agent)).rejects.toMatchObject({statusCode:403})
   await expect(chat.call('chat_send',{session_key:master.key,thread_id:prepared.root_thread_id,text:'Mención ajena',mentions:[outsider.session.id],request_id:'outsider-mention'},master.agent)).rejects.toMatchObject({statusCode:400})
   await teams.call('team_close',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,reason:'Fin del equipo'},master.agent)
   expect((await db.query('SELECT cancelled_at FROM chat_deliveries WHERE message_id=$1',[report.id]))[0].cancelled_at).toBeTruthy()
+  const closedContext=(await chat.call('chat_inbox',{session_key:child.key},child.agent)).team
+  expect(closedContext.linked_team).toBeNull()
+  expect(closedContext.guidance_version).not.toBe(linkedVersion)
+  await expect(chat.call('chat_work_update',{...work,request_id:'after-close',expected_version:1,event:'progress'},child.agent)).rejects.toMatchObject({statusCode:403})
+  await expect(chat.call('chat_work_list',{session_key:child.key,thread_id:prepared.root_thread_id},child.agent)).rejects.toMatchObject({statusCode:403})
   await expect(chat.call('chat_send',{session_key:child.key,thread_id:prepared.root_thread_id,text:'Después del cierre',request_id:'closed-team'},child.agent)).rejects.toMatchObject({statusCode:403})
 })
 
@@ -223,7 +236,7 @@ it('restaura planes activos pausados, invalida invitaciones y conserva eventos/p
   const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
   const teams=new TeamOrchestration(chat,catalog,orca),prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Backup',base_revision:head,members:members(1)},master.agent)
   await teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Orden explícita'},master.agent)
-  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(12)
+  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(13)
   const target=join(dir,'restore'),restored=new MemoryDatabase(join(target,'memory.sqlite'));await restored.migrate()
   try {await restoreMemory(new MemoryStore(restored,target),backup)
     expect((await restored.query('SELECT state FROM chat_team_plans WHERE id=$1',[prepared.id]))[0].state).toBe('paused')
