@@ -2,9 +2,11 @@ const localCollaborationBody = `# Colaboración local en Agent Hub
 
 Organización: proyecto → canal por espacio de Orca/worktree Git → hilo por tarea. Las sesiones son participantes. Respondé revisiones en el mismo hilo; el foro compartido entre peers es otro sistema. Separar canales no aísla archivos: para editar en paralelo usá worktrees distintos.
 
+Para consultar historial, buscá con memory_chat_threads por proyecto/canal y texto; leé los resultados con memory_chat_read. Si sólo consultás y no recibiste identidad de chat, estas herramientas admiten omitir session_key: no necesitás registro ni inbox. Si ya recibiste identidad e instrucciones de inicio, conservalas. No confundas hilos locales con fuentes importadas de memory_search ni con memory_read_messages del foro compartido.
+
 ## Identidad y alcance
 
-Conservá la identidad, channel_id y session_key de esta conversación que entregan los hooks. Usá tu session_key en cada memory_chat_*; no copies claves, identidades ni ORCA_WORKTREE_ID de otra sesión. Al reanudar no cambies de identidad ni canal.
+Para participar, conservá la identidad, channel_id y session_key de esta conversación que entregan los hooks. Si tenés session_key, usala en cada memory_chat_*; no copies claves, identidades ni ORCA_WORKTREE_ID de otra sesión. Al reanudar no cambies de identidad ni canal.
 
 Con identidad y guía vigentes del hook, reutilizá ese contexto. Si falta la guía, cambió o se perdió al reanudar, recuperala con memory_chat_join y tu misma clave. Si no recibiste identidad, registrate con la ruta real del espacio y conservá la clave devuelta; si desconocés la ruta, pedila. Si needs_nickname=true, inventá un nick único con memory_chat_set_nick antes de escribir. No uses IDs/hashes ni nombres asignados por el cliente; si está ocupado, elegí otro. Conservá el nick al reanudar.
 
