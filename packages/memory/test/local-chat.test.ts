@@ -281,7 +281,7 @@ it('activa y cierra canales virtuales sólo de forma explícita, sin robar lider
     expect(oldMemberships.every(row=>row.channel_id===b.channel.id)).toBe(true)
 
     const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-    expect(backup.schema_version).toBe(13)
+    expect(backup.schema_version).toBe(14)
     expect(backup.tables.chat_channels.find((channel:any)=>channel.id===future.channel.id)).toMatchObject({closed_at:null,virtual_path:a.channel.path})
     const restorePath=join(plain,'restore'),restored=new MemoryDatabase(join(restorePath,'memory.sqlite'));await restored.migrate()
     try {

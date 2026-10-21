@@ -374,4 +374,21 @@ CREATE TABLE chat_work_events (
  session_id TEXT NOT NULL REFERENCES chat_sessions(id), request_id TEXT NOT NULL,
  request_hash TEXT NOT NULL, snapshot JSON NOT NULL, PRIMARY KEY(session_id,request_id)
 );
+`, String.raw`
+-- Shadow observations are evidence, never delivery/recovery attempts or agent messages.
+CREATE TABLE chat_watchdog_observations (
+ session_id TEXT NOT NULL, work_id TEXT NOT NULL, work_version INTEGER NOT NULL,
+ policy_version TEXT NOT NULL, policy_config JSON NOT NULL, decision JSON NOT NULL, snapshot JSON NOT NULL,
+ fingerprint TEXT NOT NULL, first_observed_at TIMESTAMP NOT NULL, last_observed_at TIMESTAMP NOT NULL,
+ next_scan_at TIMESTAMP NOT NULL,
+ PRIMARY KEY(session_id,work_id),
+ FOREIGN KEY(session_id,work_id) REFERENCES chat_work_state(session_id,work_id) ON DELETE CASCADE
+);
+CREATE INDEX chat_watchdog_due ON chat_watchdog_observations(next_scan_at);
+CREATE TABLE chat_watchdog_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, work_id TEXT NOT NULL,
+ work_version INTEGER NOT NULL, policy_version TEXT NOT NULL, policy_config JSON NOT NULL,
+ decision JSON NOT NULL, snapshot JSON NOT NULL, observed_at TIMESTAMP NOT NULL,
+ FOREIGN KEY(session_id,work_id) REFERENCES chat_work_state(session_id,work_id) ON DELETE CASCADE
+);
 `]

@@ -134,6 +134,8 @@ export class Sandbox {
         if(args.mentions?.includes(leader))this.goals.add('report-to-coordinator');
       } else if (name === 'memory_chat_work_update') {
         if (args.work_id !== this.fixture.work_id) return fail('wrong-work', true);
+        // These fixtures provide no later answer, approval or dependency-resolution event.
+        if(this.work?.status==='waiting'&&args.event!=='waiting')return fail('work-resumed-with-unresolved-wait',true);
         if (args.event === 'completed' && !this.messages.some(message => message.id === args.report_message_id)) return fail('completion-before-persisted-report', true);
         if ((args.event === 'waiting') !== Boolean(args.waiting_for) || (args.event === 'completed') !== Boolean(args.report_message_id)) return fail('invalid-event-fields');
         if (this.work?.status === 'completed') return fail('completed-work-reopened', true);

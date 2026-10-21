@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import { getCase } from './cases.mjs';
 import { compare, evaluatorHash, exportInputs, makeManifest, replay, score, validateManifest } from './evaluate.mjs';
 

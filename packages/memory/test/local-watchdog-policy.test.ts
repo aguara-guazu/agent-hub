@@ -169,6 +169,20 @@ describe("report delivery is separate from worker recovery", () => {
 })
 
 describe("invalid or contradictory evidence", () => {
+  it("surfaces exhausted successful notifications without treating them as read or rerunning the worker", () => {
+    const snapshot=completed()
+    snapshot.delivery!.notifiedAt=now-60_000
+    snapshot.delivery!.error=null
+    snapshot.delivery!.attempts=5
+    expect(evaluateWatchdog(snapshot)).toMatchObject({action:"ALERT",reason:"unread_notification_budget_exhausted"})
+    snapshot.delivery!.nextAttemptAt=now+1
+    expect(evaluateWatchdog(snapshot).action).toBe("WAIT")
+    snapshot.delivery!.nextAttemptAt=null
+    expect(evaluateWatchdog(snapshot).action).toBe("UNKNOWN")
+    snapshot.delivery!.nextAttemptAt=now-1
+    snapshot.delivery!.readAt=now-1
+    expect(evaluateWatchdog(snapshot).reason).toBe("report_read_unhandled")
+  })
   it.each([NaN, Infinity, -1, now + 1])("abstains on invalid work timestamp %s", updatedAt => {
     const snapshot = active()
     snapshot.work!.updatedAt = updatedAt

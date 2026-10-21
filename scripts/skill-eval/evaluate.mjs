@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { URL } from 'node:url';
 import { cases, getCase, publicCase } from './cases.mjs';
 import { Sandbox, tools, hash, canonical } from './sandbox.mjs';
 
@@ -81,11 +82,21 @@ export async function score(bundle) {
     }
     const sandbox = replay(scenario, run.calls, bundle.manifest);
     const missing = scenario.goals.filter(goal => !sandbox.goals.has(goal));
+    const violations=[...sandbox.violations];
+    const tracks=scenario.goals.some(goal=>['started','progress','completed','conflict-recovered'].includes(goal)||goal.startsWith('waiting:'));
+    const reports=scenario.goals.includes('report')||scenario.goals.includes('completed');
+    for(const [index,call] of sandbox.observations.entries()) {
+      if((call.tool==='memory_chat_work_update'&&!tracks)||(call.tool==='memory_chat_send'&&!reports)||
+         (call.tool==='memory_chat_ack'&&!scenario.goals.includes('ack')))violations.push({code:'write-outside-task',call_index:index});
+    }
+    const waiting=scenario.goals.find(goal=>goal.startsWith('waiting:'));
+    if(waiting&&(sandbox.work?.status!=='waiting'||sandbox.work?.waiting_for!==waiting.slice(8)))missing.push('final-wait-state');
+    if(scenario.goals.includes('completed')&&sandbox.work?.status!=='completed')missing.push('final-completed-state');
     if (!sandbox.joined) missing.push('identity-check');
     if (!sandbox.inboxRead) missing.push('inbox-check');
     return { key, scenario_id: run.scenario_id, repeat: run.repeat, fixture_sha256: run.fixture_sha256, source: run.source,
-      passed: missing.length === 0 && sandbox.violations.length === 0,
-      missing_goals: missing, critical_violations: sandbox.violations, calls: run.calls.length,
+      passed: missing.length === 0 && violations.length === 0,
+      missing_goals: missing, critical_violations: violations, calls: run.calls.length,
       errors: sandbox.observations.filter(call => call.result.error).map(call => call.result.error),
       duration_ms: run.duration_ms, usage: run.usage };
   });

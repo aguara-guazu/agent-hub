@@ -1,5 +1,5 @@
 export type WatchdogAction = "WAIT" | "UNKNOWN" | "ASK_STATUS" | "ALERT" | "RETRY_DELIVERY"
-export const POLICY_VERSION = "1"
+export const POLICY_VERSION = "2"
 
 export interface WatchdogConfig {
   idleGraceMs: number
@@ -106,7 +106,15 @@ export function evaluateWatchdog(snapshot: WatchdogSnapshot, overrides: Partial<
     if (delivery.cancelledAt != null) return decide("WAIT", "delivery_cancelled", evidence)
     if (delivery.handledAt != null) return decide("WAIT", "report_handled", [...evidence, "recipient_handled"])
     if (delivery.readAt != null) return decide("WAIT", "report_read_unhandled", [...evidence, "recipient_read"])
-    if (delivery.notifiedAt != null && !delivery.error) return decide("WAIT", "report_notified_unread", [...evidence, "transport_notified"])
+    if (delivery.notifiedAt != null && !delivery.error) {
+      if (delivery.attempts >= config.maxDeliveryAttempts) {
+        if (delivery.nextAttemptAt == null) return decide("UNKNOWN", "delivery_deadline_unknown", evidence)
+        if (delivery.nextAttemptAt > now) return decide("WAIT", "delivery_cooldown", evidence, delivery.nextAttemptAt)
+        // Queue acceptance is not a read receipt; this does not claim the transport failed.
+        return alert("unread_notification_budget_exhausted", [...evidence, "transport_notified", "recipient_not_read"])
+      }
+      return decide("WAIT", "report_notified_unread", [...evidence, "transport_notified"])
+    }
     if (delivery.attempts === 0) return decide("WAIT", "delivery_pending", evidence)
     if (delivery.nextAttemptAt == null) return decide("UNKNOWN", "delivery_deadline_unknown", evidence)
     if (delivery.nextAttemptAt > now) return decide("WAIT", "delivery_cooldown", evidence, delivery.nextAttemptAt)

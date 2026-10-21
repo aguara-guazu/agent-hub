@@ -310,9 +310,33 @@ export class LocalChat {
       if(teamRoot || thread.channel_id!==who.channel_id)
         check(await this.teamForThread(this.db,who,thread),'El hilo no pertenece a tu canal o equipo activo',403)
       if(operation==='chat_work_update')return updateWork(this.db,who.id,input)
-      return this.page(`SELECT w.*,CASE WHEN s.removed_at IS NOT NULL THEN 'removed' WHEN s.closed_at IS NOT NULL THEN 'offline'
-        WHEN s.lease_until IS NULL OR s.lease_until<now() THEN 'unknown' ELSE s.state END AS session_state,s.closed_at AS session_closed_at,'agent' AS source
-        FROM chat_work_state w JOIN chat_sessions s ON s.id=w.session_id WHERE w.thread_id=$1`,[thread.id],'updated_at DESC,session_id,work_id',input)
+      const result=await this.page(`SELECT w.*,CASE WHEN s.removed_at IS NOT NULL THEN 'removed' WHEN s.closed_at IS NOT NULL THEN 'offline'
+        WHEN s.lease_until IS NULL OR s.lease_until<now() THEN 'unknown' ELSE s.state END AS session_state,s.closed_at AS session_closed_at,'agent' AS source,
+        s.event_at AS session_event_at,o.work_version AS observed_version,o.policy_version,o.decision,o.last_observed_at,o.snapshot AS watchdog_snapshot,
+        t.state AS watched_thread_state,c.closed_at AS watched_channel_closed_at,c.leader_id AS watched_recipient_id,
+        recipient.closed_at AS watched_recipient_closed_at,recipient.removed_at AS watched_recipient_removed_at,recipient.lease_until AS watched_recipient_lease_until,
+        d.message_id AS receipt_id,d.notified_at AS receipt_notified_at,d.read_at AS receipt_read_at,d.handled_at AS receipt_handled_at,
+        d.cancelled_at AS receipt_cancelled_at,d.attempts AS receipt_attempts,d.next_attempt_at AS receipt_next_attempt_at,d.error AS receipt_error
+        FROM chat_work_state w JOIN chat_sessions s ON s.id=w.session_id
+        JOIN chat_threads t ON t.id=w.thread_id JOIN chat_channels c ON c.id=t.channel_id
+        LEFT JOIN chat_sessions recipient ON recipient.id=c.leader_id
+        LEFT JOIN chat_watchdog_observations o ON o.session_id=w.session_id AND o.work_id=w.work_id
+        LEFT JOIN chat_deliveries d ON d.message_id=w.report_message_id AND d.recipient_id=c.leader_id
+        WHERE w.thread_id=$1`,[thread.id],'updated_at DESC,session_id,work_id',input)
+      return {...result,items:result.items.map(({session_event_at,observed_version,policy_version,decision,last_observed_at,watchdog_snapshot,
+        watched_thread_state,watched_channel_closed_at,watched_recipient_id,watched_recipient_closed_at,watched_recipient_removed_at,watched_recipient_lease_until,
+        receipt_id,receipt_notified_at,receipt_read_at,receipt_handled_at,
+        receipt_cancelled_at,receipt_attempts,receipt_next_attempt_at,receipt_error,...item})=>{
+        const at=(value:unknown)=>typeof value==='string'?Date.parse(value):null
+        const receipt=receipt_id?{notifiedAt:at(receipt_notified_at),readAt:at(receipt_read_at),handledAt:at(receipt_handled_at),
+          cancelledAt:at(receipt_cancelled_at),attempts:receipt_attempts,nextAttemptAt:at(receipt_next_attempt_at),error:receipt_error}:null
+        const stale=observed_version!==item.version || watched_thread_state!=='open' || Boolean(watched_channel_closed_at) ||
+          item.session_state!==watchdog_snapshot?.session?.state || watched_recipient_id!==watchdog_snapshot?.recipientId ||
+          watchdog_snapshot?.recipientAvailable!==Boolean(watched_recipient_id && !watched_recipient_closed_at && !watched_recipient_removed_at && (at(watched_recipient_lease_until)??0)>Date.now()) ||
+          JSON.stringify(receipt)!==JSON.stringify(watchdog_snapshot?.delivery) ||
+          Date.parse(session_event_at)>Date.parse(last_observed_at) || Date.now()-Date.parse(last_observed_at)>60_000 || Date.parse(last_observed_at)>Date.now()
+        return {...item,watchdog:last_observed_at?{mode:'shadow',work_version:observed_version,policy_version,decision,last_observed_at,stale}:null}
+      })}
     }
     if (operation === 'chat_create_channel') {
       const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[who.channel_id]))[0]!

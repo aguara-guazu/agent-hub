@@ -7,6 +7,7 @@ import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import { MemoryService } from '../src/service.js'
 import { LocalChat } from '../src/local-chat.js'
+import { LocalWatchdog } from '../src/local-watchdog.js'
 import { TeamOrchestration,type TeamCatalog,type TeamOrca,type TeamWorkspace } from '../src/team-orchestration.js'
 import { exportMemory,readBackup,restoreMemory } from '../src/backup.js'
 import type { AgentContext } from '../src/agents.js'
@@ -128,6 +129,9 @@ it('limita chat cross-channel al hilo raíz y a miembros vinculados con proceden
   expect(reply).toBeTruthy()
   const work={session_key:child.key,thread_id:prepared.root_thread_id,work_id:'review',request_id:'work-start',expected_version:0,event:'started',summary:'Revisión'}
   await chat.call('chat_work_update',work,child.agent)
+  const observer=new LocalWatchdog(chat)
+  await observer.tick();await observer.close()
+  expect((await db.query('SELECT snapshot FROM chat_watchdog_observations WHERE session_id=$1',[child.session.id]))[0].snapshot.recipientId).toBe(master.session.id)
   expect((await chat.call('chat_work_list',{session_key:master.key,thread_id:prepared.root_thread_id},master.agent)).items[0].session_id).toBe(child.session.id)
   await expect(chat.call('chat_work_list',{session_key:sameChannel.key,thread_id:prepared.root_thread_id},sameChannel.agent)).rejects.toMatchObject({statusCode:403})
   const linkedVersion=(await chat.call('chat_inbox',{session_key:child.key},child.agent)).team.guidance_version
@@ -135,6 +139,9 @@ it('limita chat cross-channel al hilo raíz y a miembros vinculados con proceden
   await expect(chat.call('chat_send',{session_key:outsider.key,thread_id:prepared.root_thread_id,text:'Intrusión',request_id:'outsider'},outsider.agent)).rejects.toMatchObject({statusCode:403})
   await expect(chat.call('chat_send',{session_key:master.key,thread_id:prepared.root_thread_id,text:'Mención ajena',mentions:[outsider.session.id],request_id:'outsider-mention'},master.agent)).rejects.toMatchObject({statusCode:400})
   await teams.call('team_close',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,reason:'Fin del equipo'},master.agent)
+  await db.query('DELETE FROM chat_watchdog_observations')
+  const afterClose=new LocalWatchdog(chat);await afterClose.tick();await afterClose.close()
+  expect(await db.query('SELECT * FROM chat_watchdog_observations')).toHaveLength(0)
   expect((await db.query('SELECT cancelled_at FROM chat_deliveries WHERE message_id=$1',[report.id]))[0].cancelled_at).toBeTruthy()
   const closedContext=(await chat.call('chat_inbox',{session_key:child.key},child.agent)).team
   expect(closedContext.linked_team).toBeNull()
@@ -236,7 +243,7 @@ it('restaura planes activos pausados, invalida invitaciones y conserva eventos/p
   const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
   const teams=new TeamOrchestration(chat,catalog,orca),prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Backup',base_revision:head,members:members(1)},master.agent)
   await teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Orden explícita'},master.agent)
-  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(13)
+  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(14)
   const target=join(dir,'restore'),restored=new MemoryDatabase(join(target,'memory.sqlite'));await restored.migrate()
   try {await restoreMemory(new MemoryStore(restored,target),backup)
     expect((await restored.query('SELECT state FROM chat_team_plans WHERE id=$1',[prepared.id]))[0].state).toBe('paused')
