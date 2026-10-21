@@ -83,6 +83,13 @@ export async function score(bundle) {
     const sandbox = replay(scenario, run.calls, bundle.manifest);
     const missing = scenario.goals.filter(goal => !sandbox.goals.has(goal));
     const violations=[...sandbox.violations];
+    // A trace with all goals reached is not a pass if the CLI process timed
+    // out, hit the runner call ceiling, or otherwise reported failure.
+    if (run.status && run.status !== 'completed') violations.push({ code: `runner-${run.status}`, call_index: null });
+    if (run.failure?.kind === 'timeout' || run.failure?.kind === 'max-calls') violations.push({ code: `runner-${run.failure.kind}`, call_index: null });
+    if (Array.isArray(run.evaluation_violations)) {
+      for (const code of run.evaluation_violations) violations.push({ code, call_index: null });
+    }
     const tracks=scenario.goals.some(goal=>['started','progress','completed','conflict-recovered'].includes(goal)||goal.startsWith('waiting:'));
     const reports=scenario.goals.includes('report')||scenario.goals.includes('completed');
     for(const [index,call] of sandbox.observations.entries()) {

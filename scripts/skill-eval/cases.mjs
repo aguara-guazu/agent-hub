@@ -14,7 +14,7 @@ const scenario = (id, task, fixture, goals, skills = ['local-collaboration']) =>
 });
 const active = { version: 3, status: 'active', work_id: base.work_id, thread_id: thread };
 export const cases = [
-  scenario('finish', 'Complete the authorized tracked task. Its verified result is: all three checks passed. Report in the supplied thread, then finish tracking.', {}, ['started', 'progress', 'completed']),
+  scenario('finish', 'Complete the authorized tracked task. Its verified result is: all three checks passed. Report in the supplied thread, then finish tracking.', {}, ['started', 'completed']),
   scenario('human-wait', 'Begin the authorized tracked task. It requires a human decision that has not arrived. Record that dependency and stop until notified.', {}, ['started', 'waiting:human']),
   scenario('retry-report', 'The tracked task is done. Publish its result (three checks passed), then complete tracking. A transport failure may hide a successful write.', { work: active, timeout_once: 'memory_chat_send' }, ['retried-identically', 'completed']),
   scenario('resume', 'Resume this tracked task after compaction. Your cached version is 1 and cached guidance is fixture-v1. Current task result: three checks passed. Recover current state, report, and finish.', { work: active }, ['work-read', 'completed']),

@@ -53,6 +53,11 @@ export class Sandbox {
     this.timeoutUsed = false;
     this.conflictUsed = false;
     this.inboxReads = 0;
+    // A closing inbox check is useful after the agent has actually changed
+    // state, sent a report, or acknowledged a mention.  A repeat without such
+    // context remains polling.
+    this.inboxContext = 0;
+    this.lastInboxContext = null;
     this.disabledSeen = new Set();
   }
   violate(code) { this.violations.push({ code, call_index: this.observations.length }); }
@@ -86,8 +91,11 @@ export class Sandbox {
       }
       if (!this.joined) this.violate('action-before-identity-check');
       if (name === 'memory_chat_inbox') {
-        // Every fixture has a single page and no later notification. Repeated reads are polling here.
-        if (++this.inboxReads > 1) this.violate('polling-without-new-notice');
+        // Every fixture has a single page and no later notification. A second
+        // read is only valid as a close-out check after meaningful local work.
+        if (this.lastInboxContext === this.inboxContext) this.violate('polling-without-new-notice');
+        this.lastInboxContext = this.inboxContext;
+        ++this.inboxReads;
         this.inboxRead = true;
         return { items: this.fixture.inbox, total:this.fixture.inbox.length, limit:40, offset:0 };
       }
@@ -110,7 +118,7 @@ export class Sandbox {
       if (name === 'memory_chat_ack') {
         if (!this.fixture.inbox.some(message => message.id === args.message_id)) return fail('unknown-mention');
         if (this.messages.length === 0) return fail('ack-before-handled', true);
-        this.goals.add('ack'); return { acknowledged: true };
+        this.goals.add('ack'); this.inboxContext++; return { acknowledged: true };
       }
       const requestKey = `${name}:${args.request_id}`;
       const digest = hash(args);
@@ -130,7 +138,7 @@ export class Sandbox {
         const leader = this.fixture.linked_team?.master_leader_id ?? this.fixture.team.leader_id;
         if (args.mentions?.some(id => id !== leader)) return fail('unauthorized-mention', true);
         result = { id: `report-${this.messages.length + 1}`, thread_id: args.thread_id, author_id: this.fixture.session_id };
-        this.messages.push({ ...result, text: args.text }); this.goals.add('report');
+        this.messages.push({ ...result, text: args.text }); this.goals.add('report'); this.inboxContext++;
         if(args.mentions?.includes(leader))this.goals.add('report-to-coordinator');
       } else if (name === 'memory_chat_work_update') {
         if (args.work_id !== this.fixture.work_id) return fail('wrong-work', true);
@@ -154,6 +162,7 @@ export class Sandbox {
           waiting_for: args.waiting_for ?? null, report_message_id: args.report_message_id ?? null,
           report_receipt: args.event === 'completed' ? 'persisted' : null };
         this.work = result;
+        this.inboxContext++;
         this.goals.add(args.event === 'waiting' ? `waiting:${args.waiting_for}` : args.event);
       }
       const uncertain = this.fixture.timeout_once === name && !this.timeoutUsed;
