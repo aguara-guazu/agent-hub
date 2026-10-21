@@ -407,4 +407,18 @@ INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id,read_at)
 -- Child team threads live in the master channel but are ACL-bound to this immutable root.
 ALTER TABLE chat_threads ADD COLUMN team_root_thread_id TEXT REFERENCES chat_threads(id);
 CREATE INDEX chat_threads_team_root ON chat_threads(team_root_thread_id,updated_at);
+`, String.raw`
+-- Hook-observed turns are deliberately separate from work state and messages.
+CREATE TABLE chat_turn_state (
+ session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ turn_id TEXT NOT NULL, opened_at TIMESTAMP NOT NULL, terminal_at TIMESTAMP,
+ terminal_cause TEXT, chat_sent_at TIMESTAMP, alerted_at TIMESTAMP, last_event_at TIMESTAMP NOT NULL
+);
+CREATE TABLE chat_turn_alerts (
+ id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ turn_id TEXT NOT NULL, cause TEXT NOT NULL, recipient_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ message_id TEXT NOT NULL UNIQUE REFERENCES chat_messages(id), created_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ UNIQUE(session_id,turn_id,cause)
+);
+CREATE INDEX chat_turn_alerts_recipient ON chat_turn_alerts(recipient_id,created_at);
 `]

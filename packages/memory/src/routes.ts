@@ -60,6 +60,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const input = parse(z.object({ agent_id: z.string().min(1).max(200), native_id: z.string().min(1).max(300),
       orca_workspace_id: orcaWorkspaceSchema.optional(), session_key: z.string().min(32).max(200), cwd: z.string().min(1).max(4000), at: z.iso.datetime(),
       event: z.enum(['SessionStart','HubPromptSubmit','UserPromptSubmit','BeforeAgent','PreToolUse','BeforeTool','Stop','AfterAgent','SessionEnd','Interrupt','StopFailure','Heartbeat','Watch']),
+      turn_id:z.string().min(1).max(300).optional(),
       process_id: z.number().int().min(1).optional(), process_started: z.string().max(100).optional(), watch_started:z.iso.datetime().optional(),
       transport:z.enum(['opencode_prompt','acp_prompt','antigravity_stream','codex_appserver','tui_prompt']).optional() }).strict(), request.body)
     const client = await options.authorizeChatAgent!(request,input.agent_id)

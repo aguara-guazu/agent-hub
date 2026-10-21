@@ -207,7 +207,7 @@ export class LocalChat {
     check(!s.removed_at,'Esta sesión fue expulsada del canal',410)
     return s
   }
-  async lifecycle(agent: AgentContext, input: { session_key: string; native_id: string; event: string; at: string; process_id?: number | undefined; process_started?: string | undefined; transport?:string | undefined }) {
+  async lifecycle(agent: AgentContext, input: { session_key: string; native_id: string; event: string; at: string; turn_id?:string | undefined; process_id?: number | undefined; process_started?: string | undefined; transport?:string | undefined }) {
     const result=await this.db.transaction(async()=>{
     await this.assertNotRemoved(agent,input.session_key)
     const known = (await this.db.query('SELECT * FROM chat_sessions WHERE key_hash=$1 AND agent_id=$2',[hash(input.session_key),agent.agent_id]))[0]
@@ -227,6 +227,7 @@ export class LocalChat {
         capability=CASE WHEN $3='Watch' AND $4 IS NOT NULL THEN $4 WHEN $3='Watch' AND cli_kind='claude_code' THEN 'claude_rewake' ELSE capability END WHERE id=$1 AND closed_at IS NULL`,
       [sid, new Date(Date.now()+90000).toISOString(), input.event,input.transport ?? null])
     }
+    await this.recordTurnEvent(sid,input.event,input.at,input.turn_id)
     if(input.event==='SessionStart') {
       await this.db.query('UPDATE chat_deliveries SET attempts=0,next_attempt_at=now(),error=NULL WHERE recipient_id=$1 AND read_at IS NULL',[sid])
       await this.db.query('UPDATE chat_sessions SET bootstrap_attempts=0,bootstrap_sent_at=NULL WHERE id=$1 AND team_seen=0',[sid])
@@ -241,6 +242,75 @@ export class LocalChat {
   async pending(sid: string) {
     return (await this.db.query(`SELECT d.message_id,m.thread_id FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id
       WHERE d.recipient_id=$1 AND d.read_at IS NULL AND d.cancelled_at IS NULL ORDER BY m.seq LIMIT 100`, [sid]))
+  }
+  /** Hook events are evidence of a turn boundary, not proof of task completion. */
+  private async recordTurnEvent(sessionId:string,event:string,at:string,turnId?:string) {
+    if(!['HubPromptSubmit','UserPromptSubmit','BeforeAgent','Stop','AfterAgent','SessionEnd','StopFailure','Interrupt'].includes(event))return
+    const current=(await this.db.query('SELECT * FROM chat_turn_state WHERE session_id=$1',[sessionId]))[0]
+    if(current && current.last_event_at>at)return
+    if(['HubPromptSubmit','UserPromptSubmit','BeforeAgent'].includes(event)) {
+      if(current && !current.terminal_at)return
+      const key=turnId ?? `fallback:${at}`
+      await this.db.query(`INSERT INTO chat_turn_state(session_id,turn_id,opened_at,last_event_at) VALUES($1,$2,$3,$3)
+        ON CONFLICT(session_id) DO UPDATE SET turn_id=excluded.turn_id,opened_at=excluded.opened_at,terminal_at=NULL,terminal_cause=NULL,chat_sent_at=NULL,alerted_at=NULL,last_event_at=excluded.last_event_at`,[sessionId,key,at])
+      return
+    }
+    if(!current || current.terminal_at || current.opened_at>at)return
+    const cause=event==='Stop' || event==='AfterAgent' ? 'normal' : event
+    await this.db.query('UPDATE chat_turn_state SET terminal_at=$2,terminal_cause=$3,last_event_at=$2 WHERE session_id=$1 AND terminal_at IS NULL',[sessionId,at,cause])
+  }
+  private async recordTurnChat(sql:Sql,sessionId:string) {
+    await sql.query('UPDATE chat_turn_state SET chat_sent_at=now() WHERE session_id=$1 AND alerted_at IS NULL',[sessionId])
+  }
+  async closeTurnForPid(sessionId:string,at=new Date().toISOString()) {
+    await this.recordTurnEvent(sessionId,'StopFailure',at)
+    await this.db.query("UPDATE chat_turn_state SET terminal_cause='pid_exit' WHERE session_id=$1 AND terminal_at IS NOT NULL AND terminal_cause='StopFailure'",[sessionId])
+  }
+  /** Called by the local runtime; grace avoids races between a terminal hook and a final successful send. */
+  async processTurnAlerts(now=Date.now(),graceMs=1200) {
+    const cutoff=new Date(now-graceMs).toISOString()
+    const turns=await this.db.query(`SELECT t.*,s.channel_id FROM chat_turn_state t JOIN chat_sessions s ON s.id=t.session_id
+      WHERE t.terminal_at IS NOT NULL AND t.terminal_at<=$1 AND t.alerted_at IS NULL AND t.chat_sent_at IS NULL`,[cutoff])
+    for(const turn of turns) await this.db.transaction(async sql=>{
+      const fresh=(await sql.query('SELECT * FROM chat_turn_state WHERE session_id=$1',[turn.session_id]))[0]
+      if(!fresh || fresh.alerted_at || fresh.chat_sent_at || !fresh.terminal_at || fresh.terminal_at>cutoff)return
+      const waiting=(await sql.query(`SELECT 1 FROM chat_work_state WHERE session_id=$1 AND status='waiting' AND (
+        lower(COALESCE(waiting_for,'')) GLOB '*permission*' OR lower(COALESCE(waiting_for,'')) GLOB '*approval*' OR lower(COALESCE(waiting_for,'')) GLOB '*human*' OR lower(COALESCE(waiting_for,'')) GLOB '*schedule*') LIMIT 1`,[turn.session_id]))[0]
+      if(waiting) { await sql.query('UPDATE chat_turn_state SET alerted_at=now() WHERE session_id=$1',[turn.session_id]);return }
+      const team=(await sql.query(`SELECT p.*,m.channel_id AS member_channel FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+        JOIN chat_sessions leader ON leader.id=p.created_by WHERE m.session_id=$1 AND m.state='joined'
+        AND p.state IN ('launching','launched','partial','uncertain','active') AND leader.closed_at IS NULL AND leader.removed_at IS NULL LIMIT 1`,[turn.session_id]))[0]
+      const source=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[turn.session_id]))[0]
+      if(!source)return
+      let recipient:Record<string,any>|undefined,thread:Record<string,any>|undefined
+      if(team) {
+        recipient=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1 AND closed_at IS NULL AND removed_at IS NULL',[team.created_by]))[0]
+        thread=(await sql.query('SELECT * FROM chat_threads WHERE id=$1',[team.root_thread_id]))[0]
+      }
+      if(!recipient) {
+        const channel=(await sql.query('SELECT leader_id FROM chat_channels WHERE id=$1 AND closed_at IS NULL',[source.channel_id]))[0]
+        recipient=channel?.leader_id ? (await sql.query('SELECT * FROM chat_sessions WHERE id=$1 AND closed_at IS NULL AND removed_at IS NULL',[channel.leader_id]))[0] : undefined
+      }
+      if(!recipient || recipient.id===source.id) { await sql.query('UPDATE chat_turn_state SET alerted_at=now() WHERE session_id=$1',[source.id]);return }
+      const hub=await this.hubSession(sql,thread?.channel_id ?? source.channel_id)
+      thread ??= await this.hubAlertThread(sql,source.channel_id)
+      const cause=fresh.terminal_cause==='pid_exit' ? 'Su proceso terminó sin cierre normal ni actualización.' : 'Terminó un turno sin enviar una actualización.'
+      const message=(await sql.query(`INSERT INTO chat_messages(id,thread_id,author_id,text,request_id,request_hash) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [randomUUID(),thread.id,hub.id,`Agent Hub: ${source.label} ${cause}`,`turn-alert:${source.id}:${fresh.turn_id}:${fresh.terminal_cause}`,hash(JSON.stringify([source.id,fresh.turn_id,fresh.terminal_cause]))]))[0]!
+      await sql.query('INSERT INTO chat_deliveries(message_id,recipient_id) VALUES($1,$2)',[message.id,recipient.id])
+      await sql.query('INSERT INTO chat_turn_alerts(id,session_id,turn_id,cause,recipient_id,message_id) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),source.id,fresh.turn_id,fresh.terminal_cause,recipient.id,message.id])
+      await sql.query('UPDATE chat_turn_state SET alerted_at=now() WHERE session_id=$1',[source.id])
+    })
+  }
+  private async hubSession(sql:Sql,channelId:string) {
+    const id=`hub:${channelId}`,existing=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[id]))[0]
+    if(existing)return existing
+    return (await sql.query(`INSERT INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,event_at,state,closed_at)
+      VALUES($1,'agenthub-system',$2,'Agent Hub','hub',$3,'1970-01-01T00:00:00.000Z','offline',now()) RETURNING *`,[id,hash(`hub-turn-alert:${channelId}`),channelId]))[0]!
+  }
+  private async hubAlertThread(sql:Sql,channelId:string) {
+    const existing=(await sql.query(`SELECT * FROM chat_threads WHERE channel_id=$1 AND title='Avisos del Hub' AND created_by=$2 LIMIT 1`,[channelId,`hub:${channelId}`]))[0]
+    return existing ?? (await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by) VALUES($1,$2,$3,$4) RETURNING *',[randomUUID(),channelId,'Avisos del Hub',`hub:${channelId}`]))[0]!
   }
   async call(operation: string, raw: unknown, agent?: AgentContext):Promise<any> {
     const execute=async()=>{
@@ -425,6 +495,7 @@ export class LocalChat {
       const prior = (await sql.query('SELECT * FROM chat_messages WHERE author_id=$1 AND request_id=$2',[who.id,input.request_id]))[0]
       if (prior) {
         check(prior.request_hash===requestHash, 'request_id ya usado con otro mensaje',409)
+        await this.recordTurnChat(sql,who.id)
         return prior
       }
       let thread
@@ -468,6 +539,7 @@ export class LocalChat {
       const message = (await sql.query('INSERT INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
         [randomUUID(),thread.id,who.id,input.text,input.reply_to ?? null,input.request_id,requestHash]))[0]!
       for (const recipient of new Set(input.mentions as string[])) await sql.query('INSERT INTO chat_deliveries(message_id,recipient_id) VALUES($1,$2)',[message.id,recipient])
+      await this.recordTurnChat(sql,who.id)
       if(linkedTeam)await sql.query(`INSERT INTO chat_team_events(id,team_id,type,actor_session_id,source_channel_id,target_thread_id,payload)
         VALUES($1,$2,'chat_message',$3,$4,$5,$6)`,[randomUUID(),linkedTeam.id,who.id,who.channel_id,thread.id,JSON.stringify({message_id:message.id,request_hash:requestHash})])
       await sql.query('UPDATE chat_threads SET updated_at=now() WHERE id=$1',[thread.id])

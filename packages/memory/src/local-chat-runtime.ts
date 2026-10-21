@@ -44,8 +44,12 @@ export class LocalChatRuntime {
       if(live===undefined)continue
       if(live && live.started===s.process_started) {
         await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[s.id,new Date(Date.now()+90000).toISOString()])
-      } else await this.chat.db.query("UPDATE chat_sessions SET state='offline',closed_at=now() WHERE id=$1",[s.id])
+      } else {
+        if(live===null)await this.chat.closeTurnForPid(s.id)
+        await this.chat.db.query("UPDATE chat_sessions SET state='offline',closed_at=now() WHERE id=$1",[s.id])
+      }
     }
+    await this.chat.processTurnAlerts()
     // Native queue addresses the exact conversation and verifies it at delivery time.
     // A managed app-server may not expose a per-TUI PID to hooks; its idle lease is
     // advisory presence, not a reason to silently suppress durable notifications.

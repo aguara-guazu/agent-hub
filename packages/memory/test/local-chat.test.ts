@@ -42,6 +42,34 @@ it('conserva el hash legado de request_id cuando no usa hilo de equipo',async()=
   expect((await db.query('SELECT request_hash FROM chat_messages WHERE id=$1',[message.id]))[0].request_hash).toBe(createHash('sha256').update(legacy).digest('hex'))
   expect((await ops.call('chat_send',input,'mcp',a.a)).id).toBe(message.id)
 })
+it('avisa al líder con autoría Agent Hub sólo al cerrar un turno sin chat actual',async()=> {
+  const leader=await register('leader'),member=await register('member')
+  const start=new Date(Date.now()+1000),stop=new Date(start.getTime()+10)
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'UserPromptSubmit',at:start.toISOString(),turn_id:'turn-1'})
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'Stop',at:stop.toISOString(),turn_id:'turn-1'})
+  await ops.chat.processTurnAlerts(stop.getTime()+2000,0)
+  const alert=(await db.query(`SELECT m.*,s.label FROM chat_turn_alerts a JOIN chat_messages m ON m.id=a.message_id JOIN chat_sessions s ON s.id=m.author_id WHERE a.session_id=$1`,[member.session.id]))[0]
+  expect(alert).toMatchObject({label:'Agent Hub'});expect(alert.text.toLowerCase()).toContain('terminó un turno sin enviar una actualización')
+  expect((await ops.call('chat_inbox',{session_key:leader.k},'mcp',leader.a)).items.some((item:any)=>item.id===alert.id)).toBe(true)
+  await ops.call('chat_ack',{session_key:leader.k,message_id:alert.id},'mcp',leader.a)
+  await ops.chat.processTurnAlerts(stop.getTime()+3000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[member.session.id])).toHaveLength(1)
+})
+it('sólo un chat_send exitoso del turno actual suprime su aviso',async()=> {
+  const leader=await register('leader'),member=await register('member')
+  const old=new Date(Date.now()+1000),start=new Date(old.getTime()+20),stop=new Date(start.getTime()+10)
+  await send(member,leader,'mensaje anterior')
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'BeforeAgent',at:start.toISOString(),turn_id:'turn-current'})
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'Stop',at:stop.toISOString(),turn_id:'turn-current'})
+  await ops.chat.processTurnAlerts(stop.getTime()+2000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[member.session.id])).toHaveLength(1)
+  const next=new Date(stop.getTime()+20),done=new Date(next.getTime()+10)
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'BeforeAgent',at:next.toISOString(),turn_id:'turn-chat'})
+  await send(member,leader,'mensaje actual')
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'Stop',at:done.toISOString(),turn_id:'turn-chat'})
+  await ops.chat.processTurnAlerts(done.getTime()+2000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[member.session.id])).toHaveLength(1)
+})
 it('lee chat_read incrementalmente por sesión sin saltar páginas ni mensajes sin mención',async()=> {
   const a=await register('author'),b=await register('reader'),c=await register('other')
   const first=await send(a,b,'uno')
@@ -363,7 +391,7 @@ it('activa y cierra canales virtuales sólo de forma explícita, sin robar lider
     expect(oldMemberships.every(row=>row.channel_id===b.channel.id)).toBe(true)
 
     const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-    expect(backup.schema_version).toBe(16)
+    expect(backup.schema_version).toBe(17)
     expect(backup.tables.chat_channels.find((channel:any)=>channel.id===future.channel.id)).toMatchObject({closed_at:null,virtual_path:a.channel.path})
     const restorePath=join(plain,'restore'),restored=new MemoryDatabase(join(restorePath,'memory.sqlite'));await restored.migrate()
     try {
