@@ -4,7 +4,7 @@ import { mkdtemp, rm, mkdir, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
@@ -34,6 +34,14 @@ async function register(name:string, event='Stop', path=dir) {
 async function send(from:Awaited<ReturnType<typeof register>>, to:Awaited<ReturnType<typeof register>>, text='Revisá suma', thread_id?:string) {
   return await ops.call('chat_send',{session_key:from.k,...(thread_id ? {thread_id}:{channel_id:from.channel.id,title:'Revisión'}),text,mentions:[to.session.id],request_id:randomUUID()},'mcp',from.a)
 }
+it('conserva el hash legado de request_id cuando no usa hilo de equipo',async()=> {
+  const a=await register('author'),b=await register('reader'),request_id='legacy-retry'
+  const input={session_key:a.k,channel_id:a.channel.id,title:'Legacy',text:'Mensaje durable',mentions:[b.session.id],request_id}
+  const message=await ops.call('chat_send',input,'mcp',a.a)
+  const legacy=JSON.stringify({thread:null,channel:a.channel.id,title:'Legacy',task:null,text:'Mensaje durable',reply:null,mentions:[b.session.id]})
+  expect((await db.query('SELECT request_hash FROM chat_messages WHERE id=$1',[message.id]))[0].request_hash).toBe(createHash('sha256').update(legacy).digest('hex'))
+  expect((await ops.call('chat_send',input,'mcp',a.a)).id).toBe(message.id)
+})
 it('lee chat_read incrementalmente por sesión sin saltar páginas ni mensajes sin mención',async()=> {
   const a=await register('author'),b=await register('reader'),c=await register('other')
   const first=await send(a,b,'uno')

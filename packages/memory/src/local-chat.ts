@@ -407,13 +407,22 @@ export class LocalChat {
       const rows = await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()),handled_at=COALESCE(handled_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL RETURNING *',[input.message_id,who.id])
       check(rows.length, 'La mención no está destinada a esta sesión',403); return rows[0]
     }
-    await this.writableChannel(who.channel_id)
     if (operation === 'chat_resolve') {
-      const rows = await this.db.query('UPDATE chat_threads SET state=$2,updated_at=now() WHERE id=$1 AND channel_id=$3 RETURNING *',[input.thread_id,input.state,who.channel_id])
-      check(rows.length,'El hilo no pertenece a tu canal',403); return rows[0]
+      const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
+      check(thread,'Hilo inexistente',404)
+      await this.writableChannel(who.channel_id)
+      if(thread.channel_id!==who.channel_id) {
+        check(thread.team_root_thread_id,'El hilo no pertenece a tu canal',403)
+        check(await this.teamForThread(this.db,who,thread),'El hilo de equipo no está activo o no te pertenece.',403)
+      }
+      return (await this.db.query('UPDATE chat_threads SET state=$2,updated_at=now() WHERE id=$1 RETURNING *',[input.thread_id,input.state]))[0]
     }
+    await this.writableChannel(who.channel_id)
     check(who.nickname, 'Elegí tu propio nick con chat_set_nick antes de escribir.',409)
-    const requestHash=hash(JSON.stringify({thread:input.thread_id ?? null,team_root_thread:input.team_root_thread_id ?? null,channel:input.channel_id ?? null,title:input.title ?? null,task:input.task_id ?? null,text:input.text,reply:input.reply_to ?? null,mentions:[...new Set(input.mentions)].sort()}))
+    const requestPayload={thread:input.thread_id ?? null,channel:input.channel_id ?? null,title:input.title ?? null,task:input.task_id ?? null,text:input.text,reply:input.reply_to ?? null,mentions:[...new Set(input.mentions)].sort()}
+    // Preserve pre-team-thread request hashes exactly so durable retries still deduplicate after upgrade.
+    if(input.team_root_thread_id)Object.assign(requestPayload,{team_root_thread:input.team_root_thread_id})
+    const requestHash=hash(JSON.stringify(requestPayload))
     const result = await this.db.transaction(async sql => {
       const prior = (await sql.query('SELECT * FROM chat_messages WHERE author_id=$1 AND request_id=$2',[who.id,input.request_id]))[0]
       if (prior) {
@@ -426,14 +435,17 @@ export class LocalChat {
         thread = (await sql.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       }
       else if(input.team_root_thread_id) {
-        check(input.title && !input.task_id,'Un hilo de equipo requiere title y no admite task_id.',400)
+        check(input.title,'Un hilo de equipo requiere title.',400)
         const root=(await sql.query('SELECT * FROM chat_threads WHERE id=$1',[input.team_root_thread_id]))[0]
         check(root,'Hilo raíz inexistente',404)
+        check(!root.team_root_thread_id,'team_root_thread_id debe referirse al hilo raíz canónico, no a un hilo hijo.',400)
         const team=await this.teamForThread(sql,who,root)
-        check(team,'Sólo el coordinador o un miembro vigente puede crear un hilo de este equipo activo.',403)
+        check(team && team.root_thread_id===root.id && team.master_channel_id===root.channel_id,'Sólo el coordinador o un miembro vigente puede crear un hilo de este equipo activo.',403)
         check(!input.channel_id || input.channel_id===root.channel_id,'El hilo de equipo pertenece al canal master de su raíz.',400)
-        thread=(await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,team_root_thread_id) VALUES($1,$2,$3,$4,$5) RETURNING *',
-          [randomUUID(),root.channel_id,input.title,who.id,root.id]))[0]!
+        const taskId=input.task_id ?? root.task_id ?? null
+        if(taskId)check((await sql.query('SELECT id FROM tasks WHERE id=$1 AND project_id=(SELECT project_id FROM chat_channels WHERE id=$2)',[taskId,root.channel_id])).length,'La tarea no pertenece al proyecto del equipo.',400)
+        thread=(await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,task_id,team_root_thread_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',
+          [randomUUID(),root.channel_id,input.title,who.id,taskId,root.id]))[0]!
       }
       else {
         check(input.title && input.channel_id === who.channel_id, 'Para iniciar un hilo usá el channel_id de tu sesión y un título',400)
