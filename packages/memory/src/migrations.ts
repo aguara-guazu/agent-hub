@@ -421,4 +421,15 @@ CREATE TABLE chat_turn_alerts (
  UNIQUE(session_id,turn_id,cause)
 );
 CREATE INDEX chat_turn_alerts_recipient ON chat_turn_alerts(recipient_id,created_at);
+`, String.raw`
+-- A session can close one turn while the next is already open; retain every turn independently.
+CREATE TABLE chat_turns (
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ turn_id TEXT NOT NULL, opened_at TIMESTAMP NOT NULL, terminal_at TIMESTAMP,
+ terminal_cause TEXT, chat_sent_at TIMESTAMP, alerted_at TIMESTAMP, last_event_at TIMESTAMP NOT NULL,
+ PRIMARY KEY(session_id,turn_id)
+);
+CREATE INDEX chat_turns_pending ON chat_turns(terminal_at,alerted_at,chat_sent_at);
+INSERT INTO chat_turns(session_id,turn_id,opened_at,terminal_at,terminal_cause,chat_sent_at,alerted_at,last_event_at)
+ SELECT session_id,turn_id,opened_at,terminal_at,terminal_cause,chat_sent_at,alerted_at,last_event_at FROM chat_turn_state;
 `]

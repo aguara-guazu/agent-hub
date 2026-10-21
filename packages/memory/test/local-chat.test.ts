@@ -70,6 +70,15 @@ it('sólo un chat_send exitoso del turno actual suprime su aviso',async()=> {
   await ops.chat.processTurnAlerts(done.getTime()+2000,0)
   expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[member.session.id])).toHaveLength(1)
 })
+it('conserva el cierre silencioso anterior cuando ya empezó el turno siguiente',async()=> {
+  const leader=await register('leader'),member=await register('member'),at=Date.now()+1000
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'BeforeAgent',at:new Date(at).toISOString(),turn_id:'one'})
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'Stop',at:new Date(at+10).toISOString(),turn_id:'one'})
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'BeforeAgent',at:new Date(at+20).toISOString(),turn_id:'two'})
+  await ops.chat.processTurnAlerts(at+2000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1 AND turn_id=$2',[member.session.id,'one'])).toHaveLength(1)
+  expect((await ops.call('chat_inbox',{session_key:leader.k},'mcp',leader.a)).total).toBeGreaterThan(0)
+})
 it('lee chat_read incrementalmente por sesión sin saltar páginas ni mensajes sin mención',async()=> {
   const a=await register('author'),b=await register('reader'),c=await register('other')
   const first=await send(a,b,'uno')
@@ -391,7 +400,7 @@ it('activa y cierra canales virtuales sólo de forma explícita, sin robar lider
     expect(oldMemberships.every(row=>row.channel_id===b.channel.id)).toBe(true)
 
     const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-    expect(backup.schema_version).toBe(17)
+    expect(backup.schema_version).toBe(18)
     expect(backup.tables.chat_channels.find((channel:any)=>channel.id===future.channel.id)).toMatchObject({closed_at:null,virtual_path:a.channel.path})
     const restorePath=join(plain,'restore'),restored=new MemoryDatabase(join(restorePath,'memory.sqlite'));await restored.migrate()
     try {

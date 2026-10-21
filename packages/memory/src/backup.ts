@@ -13,10 +13,10 @@ const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identi
   'embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'changes'] as const
 // Added by schema version 3; backups taken before it restore without them.
 const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries', 'chat_read_receipts',
-  'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts'] as const
+  'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts', 'chat_turns'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–16 restore. */
-const BACKUP_SCHEMA_VERSION = 17
+/** Data-model version of agenthub-memory-v1; backups from 1–17 restore. */
+const BACKUP_SCHEMA_VERSION = 18
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -107,6 +107,7 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
       SELECT recipient_id,message_id,read_at FROM chat_deliveries WHERE read_at IS NOT NULL`)
     // Hook timestamps are not portable session activity; restored history must never create a new alert.
     await sql.query('UPDATE chat_turn_state SET alerted_at=COALESCE(alerted_at,$1)',[backup.exported_at])
+    await sql.query('UPDATE chat_turns SET alerted_at=COALESCE(alerted_at,$1)',[backup.exported_at])
     await sql.query("UPDATE chat_sessions SET label='Sin nick todavía' WHERE nickname IS NULL")
     await mkdir(join(store.directory, 'originals'), { recursive: true, mode: 0o700 })
     for (const version of backup.tables.versions ?? []) {
