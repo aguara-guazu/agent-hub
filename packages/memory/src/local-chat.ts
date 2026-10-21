@@ -411,10 +411,8 @@ export class LocalChat {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread,'Hilo inexistente',404)
       await this.writableChannel(who.channel_id)
-      if(thread.channel_id!==who.channel_id) {
-        check(thread.team_root_thread_id,'El hilo no pertenece a tu canal',403)
-        check(await this.teamForThread(this.db,who,thread),'El hilo de equipo no está activo o no te pertenece.',403)
-      }
+      if(thread.team_root_thread_id) check(await this.teamForThread(this.db,who,thread),'El hilo de equipo no está activo o no te pertenece.',403)
+      else check(thread.channel_id===who.channel_id,'El hilo no pertenece a tu canal',403)
       return (await this.db.query('UPDATE chat_threads SET state=$2,updated_at=now() WHERE id=$1 RETURNING *',[input.thread_id,input.state]))[0]
     }
     await this.writableChannel(who.channel_id)

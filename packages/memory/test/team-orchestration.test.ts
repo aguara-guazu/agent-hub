@@ -182,6 +182,9 @@ it('crea hilos breves ligados al root de un equipo y conserva su ACL al cerrar o
   const outsider=await session('outsider')
   await expect(chat.call('chat_send',{session_key:outsider.key,thread_id:one.thread_id,text:'Intrusión',request_id:'outside'},outsider.agent)).rejects.toMatchObject({statusCode:403})
   await expect(chat.call('chat_resolve',{session_key:outsider.key,thread_id:one.thread_id,state:'resolved'},outsider.agent)).rejects.toMatchObject({statusCode:403})
+  const masterOutsider=await session('master-outsider',dir,master.workspace)
+  expect(masterOutsider.channel.id).toBe(master.channel.id)
+  await expect(chat.call('chat_resolve',{session_key:masterOutsider.key,thread_id:one.thread_id,state:'resolved'},masterOutsider.agent)).rejects.toMatchObject({statusCode:403})
   await expect(chat.call('chat_send',{session_key:outsider.key,team_root_thread_id:plan.root_thread_id,title:'No',text:'No',request_id:'outside-create'},outsider.agent)).rejects.toMatchObject({statusCode:403})
   const otherPlan=await teams.call('team_prepare',{session_key:master.key,objective:'Otro equipo',base_revision:head,members:members(1)},master.agent)
   const otherLaunch=await teams.call('team_launch',{session_key:master.key,plan_id:otherPlan.id,digest:otherPlan.digest,human_instruction:'Orden explícita'},master.agent)
@@ -196,6 +199,7 @@ it('crea hilos breves ligados al root de un equipo y conserva su ACL al cerrar o
   expect((await db.query('SELECT cancelled_at FROM chat_deliveries WHERE message_id=$1',[one.id]))[0].cancelled_at).toBeTruthy()
   await expect(chat.call('chat_send',{session_key:first.key,thread_id:one.thread_id,text:'Cerrado',request_id:'closed-child-thread'},first.agent)).rejects.toMatchObject({statusCode:403})
   await expect(chat.call('chat_resolve',{session_key:first.key,thread_id:one.thread_id,state:'resolved'},first.agent)).rejects.toMatchObject({statusCode:403})
+  await expect(chat.call('chat_resolve',{session_key:master.key,thread_id:one.thread_id,state:'resolved'},master.agent)).rejects.toMatchObject({statusCode:403})
 })
 
 it('rechaza migrar una conversación nativa existente a otro canal',async()=>{
