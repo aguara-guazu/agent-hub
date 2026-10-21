@@ -33,6 +33,16 @@ const toolDescriptions = {
   memory_search: 'Search only the supplied evaluation project.',
   memory_get_evidence: 'Fetch a search result as evidence.',
 };
+const readOnlyTools = new Set(['memory_chat_inbox', 'memory_chat_work_list', 'memory_skill_reference', 'memory_search', 'memory_get_evidence']);
+// These annotations describe this adapter only: every operation is confined to
+// a per-run in-memory Sandbox plus its local trace, with no Hub or network
+// connection. They do not alter Codex approval policy or confer production trust.
+const toolAnnotations = name => ({
+  destructiveHint: false,
+  openWorldHint: false,
+  readOnlyHint: readOnlyTools.has(name),
+  idempotentHint: readOnlyTools.has(name),
+});
 
 async function persistTrace(extra = {}) {
   const value = JSON.stringify({ observations: sandbox.observations, violations: sandbox.violations, goals: [...sandbox.goals], ...extra });
@@ -45,6 +55,7 @@ function toolList() {
     name,
     description: toolDescriptions[name] ?? 'Evaluation-only sandbox tool.',
     inputSchema,
+    annotations: toolAnnotations(name),
   }));
 }
 function reply(id, result) { process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`); }

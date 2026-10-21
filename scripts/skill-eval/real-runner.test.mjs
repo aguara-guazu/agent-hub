@@ -23,7 +23,14 @@ test('MCP server exposes sandbox schemas and records exact sandbox observations'
   await new Promise(resolve => setTimeout(resolve, 100)); child.stdin.end(); await exited;
   const replies = received.trim().split('\n').map(line => JSON.parse(line));
   assert.equal(replies[0].result.serverInfo.name, 'agenthub-skill-eval-sandbox');
-  assert.ok(replies[1].result.tools.some(tool => tool.name === 'memory_chat_join' && tool.inputSchema.required.includes('session_key')));
+  const listed = replies[1].result.tools;
+  const joinTool = listed.find(tool => tool.name === 'memory_chat_join');
+  const inbox = listed.find(tool => tool.name === 'memory_chat_inbox');
+  const send = listed.find(tool => tool.name === 'memory_chat_send');
+  assert.ok(joinTool.inputSchema.required.includes('session_key'));
+  assert.deepEqual(joinTool.annotations, { destructiveHint: false, openWorldHint: false, readOnlyHint: false, idempotentHint: false });
+  assert.deepEqual(inbox.annotations, { destructiveHint: false, openWorldHint: false, readOnlyHint: true, idempotentHint: true });
+  assert.deepEqual(send.annotations, { destructiveHint: false, openWorldHint: false, readOnlyHint: false, idempotentHint: false });
   assert.equal(replies.length, 4);
   assert.deepEqual((await JSON.parse(await readFile(tracePath, 'utf8'))).observations.map(call => call.tool), ['memory_chat_join', 'memory_chat_inbox']);
   await rm(directory, { recursive: true, force: true });

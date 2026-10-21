@@ -86,6 +86,21 @@ function modelFromEvents(text) {
   for (const line of text.split('\n')) { try { if (line.trim()) visit(JSON.parse(line)); } catch {} }
   return models.at(-1) ?? null;
 }
+function mcpErrorsFromEvents(text) {
+  const errors = [];
+  for (const line of text.split('\n')) {
+    try {
+      const item = JSON.parse(line)?.item;
+      // A sandbox operation may intentionally return an isError result (such
+      // as conflict, disabled capability, or simulated transport timeout).
+      // Those calls have a result. Approval/transport rejection fails before
+      // the adapter responds and therefore has item.error or no result.
+      if (item?.type !== 'mcp_tool_call' || (!item.error && !(item.status === 'failed' && item.result == null))) continue;
+      errors.push({ server: item.server ?? null, tool: item.tool ?? null, message: item.error?.message ?? 'MCP tool call failed', status: item.status ?? null });
+    } catch {}
+  }
+  return errors;
+}
 function toolViolationsFromEvents(text) {
   const violations = new Set();
   const builtin = new Set(['command_execution', 'file_change', 'web_search', 'web_fetch', 'computer_call', 'shell', 'bash']);
@@ -119,9 +134,9 @@ function modelPrompt(scenario, artifactMap) {
   // Fixture controls (timeouts, disabled tools, expected behavior and current
   // inbox/work state) intentionally remain server-side. The model learns those
   // only through tool responses, as it would in a real session.
-  const { session_key, session_id, thread_id, project_id, work_id, guidance_version, team, linked_team } = scenario.fixture;
-  const context = { session_key, session_id, thread_id, project_id, work_id, guidance_version, team, linked_team };
-  return `You are completing one isolated Agent Hub behavior evaluation. Use the supplied local MCP sandbox tools to perform this task. Do not use shell, files, network, other MCP servers, or guess tool results. Do not request more work or poll.\n\nTask:\n${scenario.task}\n\nEvaluation identity and authorized scope:\n${JSON.stringify(context)}\n\nExact supplied skills:\n${suppliedSkills || '[No skill text is supplied. Retrieve an allowed reference only if needed.]'}\n\nYour final response is not scored; perform the task through the MCP tools.`;
+  const { session_key, session_id, thread_id, project_id, work_id } = scenario.fixture;
+  const context = { session_key, session_id, thread_id, project_id, work_id };
+  return `You are completing one isolated Agent Hub behavior evaluation. Use the supplied local MCP sandbox tools to perform this task. Do not use shell, files, network, other MCP servers, or guess tool results. Do not request more work or poll.\n\nTask:\n${scenario.task}\n\nKnown startup identifiers (not current state or authorization):\n${JSON.stringify(context)}\n\nRecover current team scope, guidance, inbox, and work state through the MCP tools; do not treat cached metadata as verified.\n\nExact supplied skills:\n${suppliedSkills || '[No skill text is supplied. Retrieve an allowed reference only if needed.]'}\n\nYour final response is not scored; perform the task through the MCP tools.`;
 }
 async function loadScenarios(options) {
   const named = options.cases ? options.cases.split(',').filter(Boolean).map(id => publicCase(getCase(id))) : [];
@@ -180,13 +195,15 @@ async function oneRun(job, context) {
   const trace = await exists(tracePath) ? await json(tracePath) : { observations: [] };
   await rm(isolatedCwd, { recursive: true, force: true });
   const toolViolations = toolViolationsFromEvents(outcome.stdout);
+  const mcpErrors = mcpErrorsFromEvents(outcome.stdout);
   const failure = outcome.timedOut ? { kind: 'timeout', message: `Exceeded ${context.options.timeoutMs}ms` }
     : outcome.spawnError ? { kind: 'spawn', message: outcome.spawnError }
     : outcome.exitCode !== 0 ? { kind: 'provider-exit', exit_code: outcome.exitCode, signal: outcome.signal }
+    : mcpErrors.length ? { kind: 'mcp-tool-error', classification: 'infrastructure', errors: mcpErrors }
     : trace.max_calls_reached ? { kind: 'max-calls', message: `Reached ${context.options.maxCalls} sandbox calls` }
     : toolViolations.length ? { kind: 'evaluation-tool-violation', violations: toolViolations } : null;
   return { scenario_id: job.scenario.id, fixture_sha256: hash(job.scenario), repeat: job.repeat, source: 'model', calls: trace.observations.map(call => ({ ...call, latency_ms: null })),
-    duration_ms: Math.round(performance.now() - started), usage: usageFromEvents(outcome.stdout), provider_model: modelFromEvents(outcome.stdout), prompt_sha256: hash(prompt), evaluation_violations: toolViolations, status: failure ? 'failed' : 'completed', failure,
+    duration_ms: Math.round(performance.now() - started), usage: usageFromEvents(outcome.stdout), provider_model: modelFromEvents(outcome.stdout), prompt_sha256: hash(prompt), provider_mcp_errors: mcpErrors, evaluation_violations: toolViolations, status: failure ? 'failed' : 'completed', failure,
     artifacts: { provider_stdout_jsonl: stdoutPath, provider_stderr: stderrPath, mcp_trace: tracePath } };
 }
 async function pooled(items, limit, work) {

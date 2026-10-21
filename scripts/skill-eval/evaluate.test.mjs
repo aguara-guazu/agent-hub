@@ -82,6 +82,11 @@ test('export omits oracle goals and expected outcomes; missing-reference gets no
   assert.ok(exported.inputs.every(input => !('goals' in input) && !('expected' in input)));
   assert.deepEqual(exported.inputs.find(input => input.id === 'missing-reference').skills, []);
 });
+test('join returns bounded team guidance, not the full local-collaboration skill', () => {
+  const sandbox = new Sandbox(getCase('idle').fixture, { 'local-collaboration': 'full skill text', 'team-guidance': 'bounded current guidance' });
+  const result = sandbox.call('memory_chat_join', { session_key: getCase('idle').fixture.session_key });
+  assert.equal(result.team.guidance, 'bounded current guidance');
+});
 test('completion before persisted report is critical even if tool rejects it', async () => {
   await hasViolation('finish', calls => {
     const index = calls.findIndex(call => call.tool === 'memory_chat_send');
