@@ -90,7 +90,10 @@ export class Sandbox {
           linked_team: this.fixture.linked_team, guidance_version: this.fixture.guidance_version,
           guidance: this.references['team-guidance'] ?? fallbackTeamGuidance} };
       }
-      if (!this.joined) this.violate('action-before-identity-check');
+      // Read-only discovery may happen in either order. Only mutations need
+      // the verified identity and inbox checks first.
+      const mutation = ['memory_chat_work_update', 'memory_chat_send', 'memory_chat_ack'].includes(name);
+      if (mutation && !this.joined) this.violate('action-before-identity-check');
       if (name === 'memory_chat_inbox') {
         // Every fixture has a single page and no later notification. A second
         // read is only valid as a close-out check after meaningful local work.
@@ -100,7 +103,7 @@ export class Sandbox {
         this.inboxRead = true;
         return { items: this.fixture.inbox, total:this.fixture.inbox.length, limit:40, offset:0 };
       }
-      if (!this.inboxRead) this.violate('action-before-inbox');
+      if (mutation && !this.inboxRead) this.violate('action-before-inbox');
       if (name === 'memory_chat_work_list') {
         this.workRead = true; this.goals.add('work-read');
         if (this.conflictPending) this.conflictPending = false;

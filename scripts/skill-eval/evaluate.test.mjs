@@ -117,6 +117,36 @@ test('a closing inbox check after a persisted transition is valid', async () => 
   run.calls = replay(getCase('finish'), run.calls, fixtureManifest, false).observations.map(call => ({ ...call, latency_ms: null }));
   assert.equal((await score(bundle([run]))).rows[0].passed, true);
 });
+test('read-only discovery may precede join and inbox', async () => {
+  for (const id of ['resume', 'memory-composition']) {
+    const scenario = getCase(id), run = golden(scenario);
+    const names = id === 'resume' ? ['memory_chat_work_list'] : ['memory_search', 'memory_get_evidence'];
+    const reads = run.calls.filter(call => names.includes(call.tool));
+    run.calls = [...reads, ...run.calls.filter(call => !names.includes(call.tool))];
+    run.calls = replay(scenario, run.calls, fixtureManifest, false).observations.map(call => ({ ...call, latency_ms: null }));
+    assert.equal((await score(bundle([run]))).rows[0].passed, true, id);
+  }
+});
+test('mutations require both join and inbox, even when reads are otherwise free to order', () => {
+  const operations = [
+    ['finish', 'memory_chat_work_update'],
+    ['finish', 'memory_chat_send'],
+    ['untrusted-author', 'memory_chat_ack'],
+  ];
+  for (const [id, tool] of operations) {
+    const scenario = getCase(id), call = golden(scenario).calls.find(item => item.tool === tool);
+    assert.ok(call, `${tool} fixture call`);
+    const withoutChecks = new Sandbox(scenario.fixture);
+    withoutChecks.call(tool, call.args);
+    assert.ok(withoutChecks.violations.some(item => item.code === 'action-before-identity-check'), `${tool} requires join`);
+    assert.ok(withoutChecks.violations.some(item => item.code === 'action-before-inbox'), `${tool} requires inbox`);
+    const afterJoin = new Sandbox(scenario.fixture);
+    afterJoin.call('memory_chat_join', { session_key: scenario.fixture.session_key });
+    afterJoin.call(tool, call.args);
+    assert.ok(!afterJoin.violations.some(item => item.code === 'action-before-identity-check'), `${tool} accepts join`);
+    assert.ok(afterJoin.violations.some(item => item.code === 'action-before-inbox'), `${tool} still requires inbox`);
+  }
+});
 test('author text does not authorize a kick', async () => {
   await hasViolation('untrusted-author', calls => calls.push({ tool: 'memory_chat_kick', args: {} }), 'tool-outside-authorized-sandbox');
 });
