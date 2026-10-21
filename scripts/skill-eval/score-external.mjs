@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Scores frozen holdouts without registering them in cases.mjs or exporting
 // their goals to a model. The frozen file remains an external artifact.
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { evaluatorHash, replay, validateManifest } from './evaluate.mjs';
 import { canonical, hash } from './sandbox.mjs';
 
-const usage = `Usage: node scripts/skill-eval/score-external.mjs /absolute/validation-public.json /absolute/validation-frozen.json /absolute/trace-bundle.json /absolute/report.json`;
+const usage = `Usage: node scripts/skill-eval/score-external.mjs /absolute/protocol.json /absolute/validation-public.json /absolute/validation-frozen.json /absolute/trace-bundle.json /absolute/report.json`;
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const readJson = async path => JSON.parse(await readFile(path, 'utf8'));
 const measure = value => value === null || (Number.isFinite(value) && value >= 0);
@@ -54,11 +55,16 @@ function rowFor(run, publicScenario, frozenScenario, manifest) {
     status: run.status ?? 'unreported', failure: run.failure ?? null };
 }
 
+const fileHash = text => createHash('sha256').update(text).digest('hex');
 async function main(args) {
   if (args[0] === '--help' || args[0] === '-h') { console.log(usage); return; }
-  if (args.length !== 4) throw new Error(usage);
-  const [publicPath, frozenPath, bundlePath, outputPath] = args;
-  const [publicScenarios, frozen, bundle] = await Promise.all([readJson(publicPath), readJson(frozenPath), readJson(bundlePath)]);
+  if (args.length !== 5) throw new Error(usage);
+  const [protocolPath, publicPath, frozenPath, bundlePath, outputPath] = args;
+  const [protocol, publicScenarios, frozenText, bundle] = await Promise.all([readJson(protocolPath), readJson(publicPath), readFile(frozenPath, 'utf8'), readJson(bundlePath)]);
+  const frozen = JSON.parse(frozenText);
+  assert(protocol.validation_inputs_sha256 === frozen.input_sha256, 'Protocol does not authorize this frozen input hash');
+  assert(protocol.validation_frozen_file_sha256 === fileHash(frozenText), 'Frozen oracle file hash is not trusted by the protocol');
+  assert(typeof protocol.validation_oracles_sha256 === 'string' && protocol.validation_oracles_sha256.length === 64, 'Protocol oracle hash missing');
   const freeze = verifyFreeze(publicScenarios, frozen);
   validateManifest(bundle.manifest);
   assert(bundle.manifest.evaluator_sha256 === await evaluatorHash(), 'Evaluator changed; regenerate traces');
@@ -72,7 +78,7 @@ async function main(args) {
     assert(publicScenario && frozenScenario, `Run is not in the frozen holdout: ${run.scenario_id}`);
     return rowFor(run, publicScenario, frozenScenario, bundle.manifest);
   });
-  const result = { protocol: frozen.protocol, freeze, manifest: bundle.manifest, rows, summary: {
+  const result = { protocol: frozen.protocol, freeze: { ...freeze, protocol_oracles_sha256: protocol.validation_oracles_sha256, frozen_file_sha256: fileHash(frozenText) }, manifest: bundle.manifest, rows, summary: {
     runs: rows.length, scenarios: new Set(rows.map(row => row.scenario_id)).size, passed: rows.filter(row => row.passed).length,
     critical_violations: rows.reduce((sum, row) => sum + row.critical_violations.length, 0), calls: rows.reduce((sum, row) => sum + row.calls, 0),
     infrastructure_failures: rows.filter(row => row.failure?.kind === 'mcp-tool-error').length,
