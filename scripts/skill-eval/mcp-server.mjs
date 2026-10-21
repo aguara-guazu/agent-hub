@@ -4,7 +4,6 @@
 // endpoint, credentials, or production tool schema can enter an evaluation.
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { Sandbox, tools } from './sandbox.mjs';
 
 const readJson = async path => JSON.parse(await readFile(path, 'utf8'));

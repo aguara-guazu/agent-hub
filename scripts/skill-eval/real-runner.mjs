@@ -6,6 +6,8 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
+import { clearTimeout, setTimeout } from 'node:timers';
 import { fileURLToPath } from 'node:url';
 import { getCase, publicCase } from './cases.mjs';
 import { exportInputs, makeManifest, protocol } from './evaluate.mjs';
@@ -64,7 +66,7 @@ async function forbiddenOutput(path) {
 }
 function usageFromEvents(text) {
   const events = [];
-  for (const line of text.split('\n')) { try { if (line.trim()) events.push(JSON.parse(line)); } catch {} }
+  for (const line of text.split('\n')) { try { if (line.trim()) events.push(JSON.parse(line)); } catch { /* Ignore malformed provider JSONL. */ } }
   const candidates = [];
   const visit = value => {
     if (!value || typeof value !== 'object') return;
@@ -83,7 +85,7 @@ function modelFromEvents(text) {
     if (typeof value.model === 'string') models.push(value.model);
     for (const child of Object.values(value)) visit(child);
   };
-  for (const line of text.split('\n')) { try { if (line.trim()) visit(JSON.parse(line)); } catch {} }
+  for (const line of text.split('\n')) { try { if (line.trim()) visit(JSON.parse(line)); } catch { /* Ignore malformed provider JSONL. */ } }
   return models.at(-1) ?? null;
 }
 function mcpErrorsFromEvents(text) {
@@ -97,7 +99,7 @@ function mcpErrorsFromEvents(text) {
       // the adapter responds and therefore has item.error or no result.
       if (item?.type !== 'mcp_tool_call' || (!item.error && !(item.status === 'failed' && item.result == null))) continue;
       errors.push({ server: item.server ?? null, tool: item.tool ?? null, message: item.error?.message ?? 'MCP tool call failed', status: item.status ?? null });
-    } catch {}
+    } catch { /* Ignore malformed provider JSONL. */ }
   }
   return errors;
 }
@@ -114,7 +116,7 @@ function toolViolationsFromEvents(text) {
     }
     for (const child of Object.values(value)) inspect(child);
   };
-  for (const line of text.split('\n')) { try { if (line.trim()) inspect(JSON.parse(line)); } catch {} }
+  for (const line of text.split('\n')) { try { if (line.trim()) inspect(JSON.parse(line)); } catch { /* Ignore malformed provider JSONL. */ } }
   return [...violations];
 }
 function runProcess(command, args, options, timeoutMs) {
