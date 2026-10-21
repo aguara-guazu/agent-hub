@@ -31,7 +31,7 @@ export const chatDefinitions = {
   chat_agents: ['Encontrar identidades de sesiones concretas para mencionarlas; por defecto excluye expulsados. Usá include_removed=true sólo para auditoría. unassigned=true limita a canales sin proyecto.', z.object({ ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), ...page }).strict()],
   chat_threads: ['Buscar hilos y mensajes históricos por texto, canal, proyecto, autor o estado. unassigned=true limita a canales sin proyecto. El historial permanece al cerrar los agentes.', z.object({ ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
   chat_read: ['Leer mensajes de un hilo. Con session_key, por defecto devuelve sólo mensajes pendientes para esa sesión (sin los propios) y registra únicamente los devueltos; seguí paginando pendientes con offset: 0. unread_only=false devuelve historial. Sin session_key es una lectura histórica anónima y read-only; unread_only=true requiere session_key.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
-  chat_send: ['Crear un hilo por tarea (channel_id,title) o responder (thread_id). Fuera del canal propio sólo admite el hilo raíz de un equipo vinculado; mentions queda limitado a miembros del mismo equipo. request_id estable permite reintentar sin duplicar. Requiere autorización para colaborar.', z.object({ ...session, thread_id: id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), request_id: z.string().min(1).max(200) }).strict()],
+  chat_send: ['Crear un hilo por tarea (channel_id,title), un hilo breve de un equipo vinculado (team_root_thread_id,title), o responder (thread_id). Fuera del canal propio sólo admite el root o hilos ligados persistentemente a un equipo vigente; mentions queda limitado a sus miembros. request_id estable permite reintentar sin duplicar. Requiere autorización para colaborar.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Leer tus menciones pendientes. Marcarlas leídas no las atiende; pendientes sin atender permanecen visibles. No hacer polling con el modelo: el Hub notifica.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
   chat_kick: ['Expulsar una sesión del canal por orden de la persona. Sólo el líder reconocido puede hacerlo; indicá el motivo de la orden. Conserva el historial, cancela avisos y bloquea la reincorporación de esa sesión. No cierra su terminal ni detiene trabajos en curso.', chatKickInput.extend(session).strict()],
   chat_ack: ['Marcar como atendida una mención propia después de resolverla o responder. No acepta la tarea por sólo haberla leído.', z.object({ ...session, message_id: id }).strict()],
@@ -326,7 +326,7 @@ export class LocalChat {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread,'Hilo inexistente',404)
       await this.writableChannel(who.channel_id)
-      const teamRoot=(await this.db.query('SELECT id FROM chat_team_plans WHERE root_thread_id=$1',[thread.id]))[0]
+      const teamRoot=(await this.db.query('SELECT id FROM chat_team_plans WHERE root_thread_id=$1',[thread.team_root_thread_id ?? thread.id]))[0]
       if(teamRoot || thread.channel_id!==who.channel_id)
         check(await this.teamForThread(this.db,who,thread),'El hilo no pertenece a tu canal o equipo activo',403)
       if(operation==='chat_work_update')return updateWork(this.db,who.id,input)
@@ -413,7 +413,7 @@ export class LocalChat {
       check(rows.length,'El hilo no pertenece a tu canal',403); return rows[0]
     }
     check(who.nickname, 'Elegí tu propio nick con chat_set_nick antes de escribir.',409)
-    const requestHash=hash(JSON.stringify({thread:input.thread_id ?? null,channel:input.channel_id ?? null,title:input.title ?? null,task:input.task_id ?? null,text:input.text,reply:input.reply_to ?? null,mentions:[...new Set(input.mentions)].sort()}))
+    const requestHash=hash(JSON.stringify({thread:input.thread_id ?? null,team_root_thread:input.team_root_thread_id ?? null,channel:input.channel_id ?? null,title:input.title ?? null,task:input.task_id ?? null,text:input.text,reply:input.reply_to ?? null,mentions:[...new Set(input.mentions)].sort()}))
     const result = await this.db.transaction(async sql => {
       const prior = (await sql.query('SELECT * FROM chat_messages WHERE author_id=$1 AND request_id=$2',[who.id,input.request_id]))[0]
       if (prior) {
@@ -421,7 +421,20 @@ export class LocalChat {
         return prior
       }
       let thread
-      if (input.thread_id) thread = (await sql.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
+      if (input.thread_id) {
+        check(!input.team_root_thread_id,'team_root_thread_id sólo crea un hilo nuevo; no puede retaggear uno existente.',400)
+        thread = (await sql.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
+      }
+      else if(input.team_root_thread_id) {
+        check(input.title && !input.task_id,'Un hilo de equipo requiere title y no admite task_id.',400)
+        const root=(await sql.query('SELECT * FROM chat_threads WHERE id=$1',[input.team_root_thread_id]))[0]
+        check(root,'Hilo raíz inexistente',404)
+        const team=await this.teamForThread(sql,who,root)
+        check(team,'Sólo el coordinador o un miembro vigente puede crear un hilo de este equipo activo.',403)
+        check(!input.channel_id || input.channel_id===root.channel_id,'El hilo de equipo pertenece al canal master de su raíz.',400)
+        thread=(await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,team_root_thread_id) VALUES($1,$2,$3,$4,$5) RETURNING *',
+          [randomUUID(),root.channel_id,input.title,who.id,root.id]))[0]!
+      }
       else {
         check(input.title && input.channel_id === who.channel_id, 'Para iniciar un hilo usá el channel_id de tu sesión y un título',400)
         if (input.task_id) check((await sql.query('SELECT id FROM tasks WHERE id=$1 AND project_id=(SELECT project_id FROM chat_channels WHERE id=$2)',[input.task_id,who.channel_id])).length,'La tarea no pertenece al proyecto',400)
@@ -429,10 +442,10 @@ export class LocalChat {
       }
       check(thread,'Hilo inexistente',404)
       let linkedTeam:Record<string,any>|undefined
-      const teamRoot=(await sql.query('SELECT id FROM chat_team_plans WHERE root_thread_id=$1',[thread.id]))[0]
+      const teamRoot=(await sql.query('SELECT id FROM chat_team_plans WHERE root_thread_id=$1',[thread.team_root_thread_id ?? thread.id]))[0]
       if(teamRoot || thread.channel_id!==who.channel_id) {
         linkedTeam=await this.teamForThread(sql,who,thread)
-        check(linkedTeam,'Sólo el master y miembros vinculados pueden escribir en el hilo raíz activo de su equipo.',403)
+        check(linkedTeam,'Sólo el master y miembros vinculados pueden escribir en un hilo activo de su equipo.',403)
       }
       if (input.reply_to) check((await sql.query('SELECT id FROM chat_messages WHERE id=$1 AND thread_id=$2',[input.reply_to,thread.id])).length,'La respuesta debe apuntar al mismo hilo',400)
       for (const recipient of new Set(input.mentions as string[])) {
@@ -460,7 +473,7 @@ export class LocalChat {
       AND master.closed_at IS NULL AND source.closed_at IS NULL AND master.leader_id=t.created_by
       AND leader.closed_at IS NULL AND leader.removed_at IS NULL
       AND ((t.created_by=$3 AND t.master_channel_id=$2) OR EXISTS(SELECT 1 FROM chat_team_members m
-        WHERE m.team_id=t.id AND m.session_id=$3 AND m.channel_id=$2 AND m.state='joined'))`,[thread.id,who.channel_id,who.id]))[0]
+        WHERE m.team_id=t.id AND m.session_id=$3 AND m.channel_id=$2 AND m.state='joined'))`,[thread.team_root_thread_id ?? thread.id,who.channel_id,who.id]))[0]
   }
   private async teamRecipient(sql:Sql,team:Record<string,any>,recipientId:string) {
     return (await sql.query(`SELECT s.id FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id

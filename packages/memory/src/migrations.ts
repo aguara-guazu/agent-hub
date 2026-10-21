@@ -403,4 +403,8 @@ CREATE INDEX chat_read_receipts_message ON chat_read_receipts(message_id);
 -- chat_read historically advanced mention deliveries. Preserve that read state when upgrading.
 INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id,read_at)
  SELECT recipient_id,message_id,read_at FROM chat_deliveries WHERE read_at IS NOT NULL;
+`, String.raw`
+-- Child team threads live in the master channel but are ACL-bound to this immutable root.
+ALTER TABLE chat_threads ADD COLUMN team_root_thread_id TEXT REFERENCES chat_threads(id);
+CREATE INDEX chat_threads_team_root ON chat_threads(team_root_thread_id,updated_at);
 `]

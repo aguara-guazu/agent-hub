@@ -269,7 +269,8 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
         await sql.query(`UPDATE chat_team_members SET state=CASE WHEN state='joined' THEN state ELSE 'closed' END,
           invitation_hash=NULL,invitation_expires_at=NULL,updated_at=now() WHERE team_id=$1`,[plan.id])
         await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Equipo cerrado por su líder' WHERE handled_at IS NULL AND cancelled_at IS NULL
-          AND message_id IN (SELECT id FROM chat_messages WHERE thread_id=$1)`,[plan.root_thread_id])
+          AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_threads h ON h.id=m.thread_id
+            WHERE h.id=$1 OR h.team_root_thread_id=$1)`,[plan.root_thread_id])
         await this.event(sql,plan.id,null,'cancelled',who.id,who.channel_id,plan.root_thread_id,{reason:input.reason})
       }
       return this.view(plan.id,who,sql)
@@ -282,7 +283,8 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
       await sql.query(`UPDATE chat_team_members SET state='unknown',error='El Hub se reinició con un efecto pendiente; reconciliá Orca antes de continuar.',updated_at=now()
         WHERE state IN ('workspace_intent','workspace_created','launch_intent')`)
       await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Equipo pausado tras reinicio' WHERE handled_at IS NULL AND cancelled_at IS NULL
-        AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_team_plans t ON t.root_thread_id=m.thread_id WHERE t.state='launching')`)
+        AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_threads h ON h.id=m.thread_id
+          JOIN chat_team_plans t ON t.root_thread_id=COALESCE(h.team_root_thread_id,h.id) WHERE t.state='launching')`)
       await sql.query(`UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL
         WHERE team_id IN (SELECT id FROM chat_team_plans WHERE state='launching')`)
       await sql.query("UPDATE chat_team_plans SET state='paused',updated_at=now() WHERE state='launching'")
