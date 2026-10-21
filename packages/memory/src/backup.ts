@@ -15,8 +15,8 @@ const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identi
 const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries', 'chat_read_receipts',
   'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts', 'chat_turns'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–17 restore. */
-const BACKUP_SCHEMA_VERSION = 18
+/** Data-model version of agenthub-memory-v1; backups from 1–18 restore. */
+const BACKUP_SCHEMA_VERSION = 19
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -108,7 +108,9 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
     // Hook timestamps are not portable session activity; restored history must never create a new alert.
     await sql.query('UPDATE chat_turn_state SET alerted_at=COALESCE(alerted_at,$1)',[backup.exported_at])
     await sql.query('UPDATE chat_turns SET alerted_at=COALESCE(alerted_at,$1)',[backup.exported_at])
-    await sql.query("UPDATE chat_sessions SET label='Sin nick todavía' WHERE nickname IS NULL")
+    await sql.query(`UPDATE chat_deliveries SET cancelled_at=COALESCE(cancelled_at,$1),error='Aviso histórico restaurado'
+      WHERE handled_at IS NULL AND message_id IN (SELECT message_id FROM chat_turn_alerts)`,[backup.exported_at])
+    await sql.query("UPDATE chat_sessions SET label='Sin nick todavía' WHERE nickname IS NULL AND cli_kind<>'hub'")
     await mkdir(join(store.directory, 'originals'), { recursive: true, mode: 0o700 })
     for (const version of backup.tables.versions ?? []) {
       const path = String(version.original_path)

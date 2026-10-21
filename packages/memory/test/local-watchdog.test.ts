@@ -149,7 +149,7 @@ it('exposes shadow evidence through the authorized work list and marks version c
 it('preserves observation evidence in backup and restores without creating messages',async()=>{
   await work();await observer.tick()
   const store=new MemoryStore(db,directory),backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-  expect(backup.schema_version).toBe(18)
+  expect(backup.schema_version).toBe(19)
   const restored=new MemoryDatabase(join(directory,'restored.sqlite'));await restored.migrate()
   try {
     await restoreMemory(new MemoryStore(restored,join(directory,'restored')),backup)

@@ -432,4 +432,12 @@ CREATE TABLE chat_turns (
 CREATE INDEX chat_turns_pending ON chat_turns(terminal_at,alerted_at,chat_sent_at);
 INSERT INTO chat_turns(session_id,turn_id,opened_at,terminal_at,terminal_cause,chat_sent_at,alerted_at,last_event_at)
  SELECT session_id,turn_id,opened_at,terminal_at,terminal_cause,chat_sent_at,alerted_at,last_event_at FROM chat_turn_state;
+`, String.raw`
+-- Bind observations to the coordination scope in which the turn started.
+ALTER TABLE chat_turns ADD COLUMN channel_id TEXT REFERENCES chat_channels(id);
+ALTER TABLE chat_turns ADD COLUMN team_id TEXT REFERENCES chat_team_plans(id);
+ALTER TABLE chat_turns ADD COLUMN waiting_at_close INTEGER NOT NULL DEFAULT 0;
+UPDATE chat_turns SET channel_id=(SELECT channel_id FROM chat_sessions WHERE id=session_id);
+-- Earlier observations lack a scope snapshot and must not produce fresh notifications after upgrade.
+UPDATE chat_turns SET alerted_at=COALESCE(alerted_at,${NOW});
 `]

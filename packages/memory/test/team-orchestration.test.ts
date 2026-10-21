@@ -48,6 +48,47 @@ function members(count=2){return Array.from({length:count},(_,index)=>({worktree
   role:index?'revisor':'implementador',task:`Tarea ${index+1}`,prompt:`Atendé la tarea ${index+1}`}))}
 function invitation(prompt:string){const token=/invitation=([A-Za-z0-9_-]+)/.exec(prompt)?.[1];if(!token)throw new Error('missing invitation');return token}
 
+it('enruta cierres silenciosos al master offline en hilos breves y revoca los avisos al cerrar el equipo',async()=>{
+  const master=await session('master'),orca=new Orca()
+  orca.spaces.set(master.workspace,{id:master.workspace,path:dir,repo_id:'repo',head})
+  const teams=new TeamOrchestration(chat,new Catalog(),orca)
+  const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Avisos de turno',base_revision:head,members:members(1)},master.agent)
+  const launched=await teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Lanzar equipo de prueba'},master.agent)
+  const slot=launched.members[0],child=await session('child',slot.workspace_path,slot.workspace_id)
+  await teams.call('team_join',{session_key:child.key,invitation:invitation(orca.prompts.get(slot.workspace_id)!)},child.agent)
+  // A separate child leader must not receive a revoked or offline master's alerts.
+  const localLeader=await session('local-leader',slot.workspace_path,slot.workspace_id)
+  await db.query('UPDATE chat_channels SET leader_id=$2 WHERE id=$1',[child.channel.id,localLeader.session.id])
+  const t=Date.now()+1000
+  const event=(name:string,at:number,turn_id:string)=>chat.lifecycle(child.agent,{session_key:child.key,native_id:'child',event:name,at:new Date(at).toISOString(),turn_id})
+  await db.query("UPDATE chat_sessions SET closed_at=now(),state='offline' WHERE id=$1",[master.session.id])
+  await event('BeforeAgent',t,'one');await event('Stop',t+10,'one')
+  await chat.processTurnAlerts(t+2000,0)
+  const first=(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[child.session.id]))[0]
+  expect(first.recipient_id).toBe(master.session.id)
+  const thread=(await db.query('SELECT h.* FROM chat_threads h JOIN chat_messages m ON m.thread_id=h.id WHERE m.id=$1',[first.message_id]))[0]
+  expect(thread).toMatchObject({channel_id:master.channel.id,team_root_thread_id:plan.root_thread_id})
+  expect(thread.id).not.toBe(plan.root_thread_id)
+  await chat.lifecycle(master.agent,{session_key:master.key,native_id:'master',event:'SessionStart',at:new Date().toISOString()})
+  const inbox=await chat.call('chat_inbox',{session_key:master.key},master.agent)
+  expect(inbox.items.find((item:any)=>item.id===first.message_id)).toMatchObject({author_source:'hub',author_label:'Agent Hub'})
+  // The linked child can answer in this exact short thread; the system author is not a team member.
+  await chat.call('chat_send',{session_key:child.key,thread_id:thread.id,text:'Estado comprobado',mentions:[master.session.id],request_id:'answer-alert'},child.agent)
+  await event('BeforeAgent',t+20,'two');await event('Stop',t+30,'two')
+  await chat.processTurnAlerts(t+3000,0)
+  await event('BeforeAgent',t+40,'grace');await event('Stop',t+50,'grace')
+  await teams.call('team_close',{session_key:master.key,plan_id:plan.id,digest:plan.digest,reason:'Finalizó el equipo'},master.agent)
+  await chat.processTurnAlerts(t+4000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[child.session.id])).toHaveLength(2)
+  const deliveries=await db.query('SELECT d.* FROM chat_deliveries d JOIN chat_turn_alerts a ON a.message_id=d.message_id WHERE a.session_id=$1',[child.session.id])
+  expect(deliveries.every(d=>d.cancelled_at)).toBe(true)
+  expect(deliveries.some(d=>d.recipient_id===localLeader.session.id)).toBe(false)
+  // New work under the revoked membership cannot silently acquire the local leader as coordinator.
+  await event('BeforeAgent',t+60,'revoked');await event('Stop',t+70,'revoked')
+  await chat.processTurnAlerts(t+5000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[child.session.id])).toHaveLength(2)
+})
+
 it('prepara un plan inmutable sólo como líder Orca y no crea efectos externos',async()=>{
   const master=await session('master'),foreign=await session('foreign'),catalog=new Catalog(),orca=new Orca()
   orca.spaces.set(master.workspace,{id:master.workspace,path:dir,repo_id:'repo',head})
@@ -294,7 +335,7 @@ it('restaura planes activos pausados, invalida invitaciones y conserva eventos/p
   const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
   const teams=new TeamOrchestration(chat,catalog,orca),prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Backup',base_revision:head,members:members(1)},master.agent)
   await teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Orden explícita'},master.agent)
-  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(18)
+  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(19)
   const target=join(dir,'restore'),restored=new MemoryDatabase(join(target,'memory.sqlite'));await restored.migrate()
   try {await restoreMemory(new MemoryStore(restored,target),backup)
     expect((await restored.query('SELECT state FROM chat_team_plans WHERE id=$1',[prepared.id]))[0].state).toBe('paused')
