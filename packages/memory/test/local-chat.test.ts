@@ -79,6 +79,16 @@ it('serializa lectores concurrentes de una misma sesión sin duplicar la página
   expect([one,two].flatMap((page:any)=>page.items.map((item:any)=>item.id))).toEqual([message.id])
   expect(await db.query('SELECT * FROM chat_read_receipts WHERE session_id=$1 AND message_id=$2',[b.session.id,message.id])).toHaveLength(1)
 })
+it('no emite cambios por historial anónimo, y sí por una lectura identificada que cambia recibos',async()=> {
+  const a=await register('author'),b=await register('reader'),message=await send(a,b)
+  const changed=vi.fn();ops.chat.events.on('change',changed)
+  await ops.call('chat_read',{thread_id:message.thread_id})
+  expect(changed).not.toHaveBeenCalled()
+  await ops.call('chat_read',{session_key:b.k,thread_id:message.thread_id},'mcp',b.a)
+  expect(changed).toHaveBeenCalledTimes(1)
+  await ops.call('chat_read',{session_key:b.k,thread_id:message.thread_id},'mcp',b.a)
+  expect(changed).toHaveBeenCalledTimes(1)
+})
 it('persiste recibos de chat_read al reabrir la base',async()=> {
   const a=await register('author'),b=await register('reader'),message=await send(a,b)
   await ops.call('chat_read',{session_key:b.k,thread_id:message.thread_id},'mcp',b.a)

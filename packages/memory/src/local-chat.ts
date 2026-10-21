@@ -247,9 +247,11 @@ export class LocalChat {
       if(agent)await this.assertNotRemoved(agent,typeof (raw as any)?.session_key==='string' ? (raw as any).session_key : undefined)
       return this.callInner(operation,raw,agent)
     }
-    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_read','chat_send','chat_ack','chat_resolve','chat_kick']
-    const result=await (writes.includes(operation)?this.db.transaction(execute):execute())
-    if(writes.includes(operation))this.events.emit('change')
+    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick']
+    // UI/history polling has no routing key and must remain a true read: no writer lock or wake-up event.
+    const identifiedRead=operation==='chat_read' && typeof (raw as any)?.session_key==='string'
+    const result=await (writes.includes(operation) || identifiedRead ?this.db.transaction(execute):execute())
+    if(writes.includes(operation) || (operation==='chat_read' && result.__chatReadChanged))this.events.emit('change')
     return result
   }
   private async callInner(operation: string, raw: unknown, agent?: AgentContext) {
@@ -305,15 +307,18 @@ export class LocalChat {
             WHERE m.thread_id=$1 AND m.author_id<>$2 AND NOT EXISTS(SELECT 1 FROM chat_read_receipts r WHERE r.session_id=$2 AND r.message_id=m.id)`
         : `SELECT m.*,s.label AS author_label,s.cli_kind FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id WHERE m.thread_id=$1`
       const result = await this.page(query,unreadOnly ? [thread.id,who!.id] : [thread.id],'seq',input)
+      let changed=false
       if (who) for (const m of result.items) {
-        await this.db.query(`INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id) VALUES($1,$2)`,[who.id,m.id])
+        changed=(await this.db.query(`INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id) VALUES($1,$2) RETURNING message_id`,[who.id,m.id])).length>0 || changed
         // Keep mention delivery state for notifications/UI; reading is never an acknowledgement.
-        await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[m.id,who.id])
+        changed=(await this.db.query('UPDATE chat_deliveries SET read_at=now() WHERE message_id=$1 AND recipient_id=$2 AND read_at IS NULL AND cancelled_at IS NULL RETURNING message_id',[m.id,who.id])).length>0 || changed
       }
       // Pending pages must restart at zero: an offset can leave earlier unread messages untouched.
       const remaining=unreadOnly ? result.total-result.items.length : result.total-input.offset-result.items.length
-      return { ...result, thread, team:await this.team(thread.channel_id,false,who && who.channel_id===thread.channel_id?who.id:undefined),items: await this.receipts(result.items),
+      const response={ ...result, thread, team:await this.team(thread.channel_id,false,who && who.channel_id===thread.channel_id?who.id:undefined),items: await this.receipts(result.items),
         read:{unread_only:unreadOnly,remaining:Math.max(0,remaining),next_offset:remaining>0 ? unreadOnly ? 0 : input.offset+result.items.length : null} }
+      Object.defineProperty(response,'__chatReadChanged',{value:changed,enumerable:false})
+      return response
     }
     const who = agent ? await this.identity(agent, input.session_key) : undefined
     check(who && !who.closed_at, 'Sólo una sesión de agente abierta puede participar',403)
