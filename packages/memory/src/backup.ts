@@ -12,11 +12,11 @@ import { storageConverter, vectorValues } from './database.js'
 const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identities', 'fragments', 'fragment_projects', 'links', 'evidence', 'link_evidence',
   'embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'changes'] as const
 // Added by schema version 3; backups taken before it restore without them.
-const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries',
+const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries', 'chat_read_receipts',
   'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events'] as const
 const tables = [...requiredTables, ...laterTables] as const
 /** Data-model version of agenthub-memory-v1; backups from 1–14 restore. */
-const BACKUP_SCHEMA_VERSION = 14
+const BACKUP_SCHEMA_VERSION = 15
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -102,6 +102,9 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
       // Connectors need their own authorization after restore; credentials never travel in a backup.
       await sql.many(insert, rows.map(row => keys.map((k, i) => converters[i]!(table === 'connectors' && k === 'enabled' ? false : row[k]))))
     }
+    // Backups from before per-session receipts represented a read chat message through its mention delivery.
+    await sql.query(`INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id,read_at)
+      SELECT recipient_id,message_id,read_at FROM chat_deliveries WHERE read_at IS NOT NULL`)
     await sql.query("UPDATE chat_sessions SET label='Sin nick todavía' WHERE nickname IS NULL")
     await mkdir(join(store.directory, 'originals'), { recursive: true, mode: 0o700 })
     for (const version of backup.tables.versions ?? []) {

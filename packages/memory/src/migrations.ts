@@ -391,4 +391,16 @@ CREATE TABLE chat_watchdog_events (
  decision JSON NOT NULL, snapshot JSON NOT NULL, observed_at TIMESTAMP NOT NULL,
  FOREIGN KEY(session_id,work_id) REFERENCES chat_work_state(session_id,work_id) ON DELETE CASCADE
 );
+`, String.raw`
+-- Per-session read state is separate from mention deliveries: every reader advances independently.
+CREATE TABLE chat_read_receipts (
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+ read_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ PRIMARY KEY(session_id,message_id)
+);
+CREATE INDEX chat_read_receipts_message ON chat_read_receipts(message_id);
+-- chat_read historically advanced mention deliveries. Preserve that read state when upgrading.
+INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id,read_at)
+ SELECT recipient_id,message_id,read_at FROM chat_deliveries WHERE read_at IS NOT NULL;
 `]

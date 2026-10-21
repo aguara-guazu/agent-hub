@@ -30,7 +30,7 @@ export const chatDefinitions = {
   chat_channels: ['Explorar canales locales activos o históricos. unassigned=true devuelve sólo canales sin proyecto; los virtuales pendientes permanecen ocultos.', z.object({ ...scope, ...page }).strict()],
   chat_agents: ['Encontrar identidades de sesiones concretas para mencionarlas; por defecto excluye expulsados. Usá include_removed=true sólo para auditoría. unassigned=true limita a canales sin proyecto.', z.object({ ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), ...page }).strict()],
   chat_threads: ['Buscar hilos y mensajes históricos por texto, canal, proyecto, autor o estado. unassigned=true limita a canales sin proyecto. El historial permanece al cerrar los agentes.', z.object({ ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
-  chat_read: ['Leer una página de un hilo. Sólo registra lectura de las menciones devueltas destinadas a tu sesión; no las marca atendidas.', z.object({ ...session, project_id:id.optional(), thread_id: id, ...page }).strict()],
+  chat_read: ['Leer mensajes de un hilo. Con session_key, por defecto devuelve sólo mensajes pendientes para esa sesión (sin los propios) y registra únicamente los devueltos; seguí paginando pendientes con offset: 0. unread_only=false devuelve historial. Sin session_key es una lectura histórica anónima y read-only; unread_only=true requiere session_key.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
   chat_send: ['Crear un hilo por tarea (channel_id,title) o responder (thread_id). Fuera del canal propio sólo admite el hilo raíz de un equipo vinculado; mentions queda limitado a miembros del mismo equipo. request_id estable permite reintentar sin duplicar. Requiere autorización para colaborar.', z.object({ ...session, thread_id: id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Leer tus menciones pendientes. Marcarlas leídas no las atiende; pendientes sin atender permanecen visibles. No hacer polling con el modelo: el Hub notifica.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
   chat_kick: ['Expulsar una sesión del canal por orden de la persona. Sólo el líder reconocido puede hacerlo; indicá el motivo de la orden. Conserva el historial, cancela avisos y bloquea la reincorporación de esa sesión. No cierra su terminal ni detiene trabajos en curso.', chatKickInput.extend(session).strict()],
@@ -247,7 +247,7 @@ export class LocalChat {
       if(agent)await this.assertNotRemoved(agent,typeof (raw as any)?.session_key==='string' ? (raw as any).session_key : undefined)
       return this.callInner(operation,raw,agent)
     }
-    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick']
+    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_read','chat_send','chat_ack','chat_resolve','chat_kick']
     const result=await (writes.includes(operation)?this.db.transaction(execute):execute())
     if(writes.includes(operation))this.events.emit('change')
     return result
@@ -292,15 +292,30 @@ export class LocalChat {
       AND ($4='' OR instr(lower(t.title),lower($4))>0 OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND instr(lower(m.text),lower($4))>0))
       AND ($5 IS NULL OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.author_id=$5)) AND ($6=0 OR c.project_id IS NULL)`,
     [input.project_id ?? null,input.channel_id ?? null,input.state ?? null,input.query,input.author_id ?? null,input.unassigned ? 1 : 0], 'updated_at DESC,id',input)
-    const who = agent ? await this.identity(agent, input.session_key) : undefined
     if (operation === 'chat_read') {
+      check(!(input.unread_only===true && !input.session_key),'unread_only=true requiere session_key; sin identidad chat_read sólo permite historial read-only.',400)
+      // A routing key is the explicit reader identity. Native/UI reads without it remain historical and never write receipts.
+      const who = input.session_key ? await this.identity(agent, input.session_key) : undefined
+      const unreadOnly=input.unread_only ?? Boolean(input.session_key)
       const thread = (await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread, 'Hilo inexistente',404)
       if(input.project_id) check((await this.db.query('SELECT id FROM chat_channels WHERE id=$1 AND project_id=$2',[thread.channel_id,input.project_id])).length,'El hilo no pertenece al proyecto',404)
-      const result = await this.page(`SELECT m.*,s.label AS author_label,s.cli_kind FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id WHERE m.thread_id=$1`,[thread.id],'seq',input)
-      if (who) for (const m of result.items) await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[m.id,who.id])
-      return { ...result, thread, team:await this.team(thread.channel_id,false,who && who.channel_id===thread.channel_id?who.id:undefined),items: await this.receipts(result.items) }
+      const query=unreadOnly
+        ? `SELECT m.*,s.label AS author_label,s.cli_kind FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id
+            WHERE m.thread_id=$1 AND m.author_id<>$2 AND NOT EXISTS(SELECT 1 FROM chat_read_receipts r WHERE r.session_id=$2 AND r.message_id=m.id)`
+        : `SELECT m.*,s.label AS author_label,s.cli_kind FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id WHERE m.thread_id=$1`
+      const result = await this.page(query,unreadOnly ? [thread.id,who!.id] : [thread.id],'seq',input)
+      if (who) for (const m of result.items) {
+        await this.db.query(`INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id) VALUES($1,$2)`,[who.id,m.id])
+        // Keep mention delivery state for notifications/UI; reading is never an acknowledgement.
+        await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[m.id,who.id])
+      }
+      // Pending pages must restart at zero: an offset can leave earlier unread messages untouched.
+      const remaining=unreadOnly ? result.total-result.items.length : result.total-input.offset-result.items.length
+      return { ...result, thread, team:await this.team(thread.channel_id,false,who && who.channel_id===thread.channel_id?who.id:undefined),items: await this.receipts(result.items),
+        read:{unread_only:unreadOnly,remaining:Math.max(0,remaining),next_offset:remaining>0 ? unreadOnly ? 0 : input.offset+result.items.length : null} }
     }
+    const who = agent ? await this.identity(agent, input.session_key) : undefined
     check(who && !who.closed_at, 'Sólo una sesión de agente abierta puede participar',403)
     if (operation === 'chat_work_update' || operation === 'chat_work_list') {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
@@ -375,7 +390,11 @@ export class LocalChat {
       await this.db.query('UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[who.id,new Date(Date.now()+90000).toISOString()])
       const result = await this.page(`SELECT m.*,s.label AS author_label,t.title,d.read_at,d.handled_at FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id
         JOIN chat_threads t ON t.id=m.thread_id JOIN chat_sessions s ON s.id=m.author_id WHERE d.recipient_id=$1 AND d.handled_at IS NULL AND d.cancelled_at IS NULL AND ($2=0 OR d.read_at IS NULL)`,[who.id,input.unread_only ? 1 : 0],'seq',input)
-      for (const m of result.items) await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[m.id,who.id])
+      for (const m of result.items) {
+        await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[m.id,who.id])
+        // Inbox is another real reader: a returned mention must not be re-delivered by incremental chat_read.
+        await this.db.query('INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id) VALUES($1,$2)',[who.id,m.id])
+      }
       return {...result,team:await this.team(who.channel_id,false,who.id)}
     }
     await this.db.query('UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[who.id,new Date(Date.now()+90000).toISOString()])
