@@ -55,7 +55,14 @@ createInterface({input:process.stdin}).on('line',line=>{
    const complete=()=>out({method:'turn/completed',params:{threadId:'thread-native',turn:{id:active,status:mode==='failed'?'failed':'completed',error:{message:'SECRET ERROR'}}}});
    if(mode==='fast') complete();
    rpc(p.id,{turn:{id:active,status:'inProgress'}});
-   if(!['hold','fast','descendant'].includes(mode)) setTimeout(complete,20);
+   if(!['hold','fast','descendant','steerRejected','steerRace','steerWrongAck','steerTimeout','steerComplete'].includes(mode)) setTimeout(complete,20);
+  }
+  if(p.method==='turn/steer') {
+   if(p.params.expectedTurnId!==active||!p.params.clientUserMessageId||p.params.input[0].type!=='text')process.exit(11);
+   if(mode==='steerTimeout')return;
+   if(mode==='steerRace'||mode==='steerComplete')out({method:'turn/completed',params:{threadId:'thread-native',turn:{id:active,status:'completed'}}});
+   if(mode==='steerRejected'||mode==='steerRace')out({id:p.id,error:{message:'SECRET rejected steer'}});
+   else rpc(p.id,{turnId:mode==='steerWrongAck'?'unrelated-turn':active});
   }
   if(p.method==='turn/interrupt') {
    rpc(p.id,{});
@@ -123,6 +130,46 @@ describe('FleetProcessManager', () => {
     await expect(manager.send('one', 'parallel')).rejects.toThrow('fleet_not_idle')
     expect((await manager.interrupt('one')).state).toBe('busy')
     await until(() => manager.status('one')?.state === 'idle')
+  })
+  it('appends Codex input to the current turn without interrupting, starting a new turn or changing identity', async () => {
+    const { manager, input, events } = await setup('hold')
+    await manager.start(input)
+    expect(manager.supportsMidTurn('one')).toBe(true)
+    const before = manager.status('one')!
+    const eventCount = events.length
+    expect(await manager.enqueue('one', 'PRIVATE steer one')).toMatchObject({ state: 'busy', turn_id: before.turn_id, native_id: before.native_id })
+    expect(await manager.enqueue('one', 'PRIVATE steer two')).toMatchObject({ state: 'busy', turn_id: before.turn_id })
+    expect(events.slice(eventCount).map(e => e.state)).toEqual(['busy', 'busy'])
+    expect(JSON.stringify(events)).not.toMatch(/PRIVATE|SECRET/)
+  })
+  it.each(['steerRejected', 'steerRace'])('keeps the process available after a rejected steer (%s)', async mode => {
+    const { manager, input, events } = await setup(mode)
+    await manager.start(input)
+    await expect(manager.enqueue('one', 'PRIVATE')).rejects.toMatchObject({ message: 'fleet_steer_rejected', retryable: true })
+    expect(manager.status('one')?.state).toBe(mode === 'steerRace' ? 'idle' : 'busy')
+    expect(events.some(e => e.state === 'failed' || e.state === 'stopped')).toBe(false)
+    if (mode === 'steerRace') expect((await manager.send('one', 'NEXT')).state).toBe('busy')
+  })
+  it.each(['steerWrongAck', 'steerTimeout'])('does not claim or replay delivery after an uncertain steer (%s)', async mode => {
+    const { manager, input } = await setup(mode)
+    await manager.start(input)
+    await expect(manager.enqueue('one', 'PRIVATE')).rejects.toMatchObject({ message: 'fleet_steer_unconfirmed', retryable: false })
+    expect(manager.status('one')).toMatchObject({ state: 'busy', turn_id: 'turn-1' })
+  })
+  it('does not turn a completed native turn busy again when the steer ACK arrives late', async () => {
+    const { manager, input } = await setup('steerComplete')
+    await manager.start(input)
+    expect((await manager.enqueue('one', 'PRIVATE')).state).toBe('idle')
+    expect(manager.status('one')?.turn_id).toBeUndefined()
+  })
+  it('reports Claude mid-turn enqueue unsupported instead of guessing native queue completion', async () => {
+    const { manager, input } = await setup('hold')
+    input.cli = 'claude_code'
+    await manager.start(input)
+    const before = manager.status('one')
+    expect(manager.supportsMidTurn('one')).toBe(false)
+    await expect(manager.enqueue('one', 'PRIVATE')).rejects.toThrow('fleet_mid_turn_unsupported')
+    expect(manager.status('one')).toEqual(before)
   })
   it('runs Claude with permission bypass and waits for result, not assistant output', async () => {
     const { manager, input, events, launches } = await setup()

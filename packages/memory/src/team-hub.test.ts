@@ -37,6 +37,10 @@ createInterface({input:process.stdin}).on('line',line=>{
    out({method:'item/agentMessage/delta',params:{threadId:'native',delta:'PRIVATE output'}});
    if(mode!=='hold')setTimeout(()=>out({method:'turn/completed',params:{threadId:'native',turn:{id:turn,status:'completed'}}}),10);
   }
+  if(p.method==='turn/steer') {
+   if(p.params.expectedTurnId!==turn)out({id:p.id,error:{message:'PRIVATE stale turn'}});
+   else out({id:p.id,result:{turnId:turn}});
+  }
   if(p.method==='turn/interrupt'){
    out({id:p.id,result:{}});
    out({method:'turn/completed',params:{threadId:'native',turn:{id:turn,status:'interrupted'}}});
@@ -229,13 +233,15 @@ describe('HubTeamRuntime lifecycle', () => {
     await expect(restarted.stop(id)).rejects.toThrow('fleet_unknown_id')
     expect((await backend.status(id))?.state).toBe('busy')
   })
-  it('wakes only an idle owned session and retries busy or disabled bindings without respawning', async () => {
+  it('wakes an active Codex session natively and retries disabled bindings without respawning', async () => {
     const { backend, id, rows, launched, setEnabled } = setup('hold')
     const parent = await backend.workspace(join(directory, 'repo'))
     rows.get(id)!.session_id = 'joined'
     await backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE' })
     expect(await backend.wake('another-session', 'notice')).toBe(false)
-    await expect(backend.wake('joined', 'PRIVATE notice')).rejects.toThrow('todavía no está disponible')
+    expect(await backend.wake('joined', 'PRIVATE notice')).toBe(true)
+    expect((await backend.status(id))?.turn_id).toBe('turn-1')
+    expect((await backend.send(id, 'PRIVATE direct steer')).turn_id).toBe('turn-1')
     await backend.interrupt(id)
     await until(async () => (await backend.status(id))?.state === 'idle')
     setEnabled(false)
@@ -250,6 +256,16 @@ describe('HubTeamRuntime lifecycle', () => {
     expect((await backend.status(id))?.state).toBe('stopped')
     setEnabled(true)
     await expect(backend.wake('joined', 'PRIVATE notice')).rejects.toThrow('todavía no está disponible')
+    expect(launched).toHaveBeenCalledTimes(1)
+  })
+  it('keeps a busy Claude wake pending for native hook delivery', async () => {
+    const { backend, id, rows, launched } = setup('hold')
+    rows.get(id)!.session_id = 'joined'
+    const parent = await backend.workspace(join(directory, 'repo'))
+    await backend.launch(parent, { member_id: id, cli: 'claude_code', model: 'test', prompt: 'PRIVATE' })
+    await expect(backend.wake('joined', 'PRIVATE notice')).rejects.toThrow('todavía no está disponible')
+    await expect(backend.send(id, 'PRIVATE direct notice')).rejects.toThrow('fleet_not_idle')
+    expect((await backend.status(id))?.state).toBe('busy')
     expect(launched).toHaveBeenCalledTimes(1)
   })
   it('declines a binding whose recorded generation does not belong to this manager', async () => {

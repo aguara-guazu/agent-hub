@@ -272,6 +272,32 @@ export class FleetProcessManager {
       }
     } finally { s.submitting = false }
   }
+  supportsMidTurn(id: string): boolean {
+    const s = this.sessions.get(id)
+    return !!s && this.live(s) && s.status.cli === 'codex_cli'
+  }
+  /** Append input to the confirmed native turn. Never interrupt, restart or replay after a lost ACK. */
+  async enqueue(id: string, text: string): Promise<FleetStatus> {
+    const s = this.sessions.get(id)
+    if (!s || !this.live(s)) throw new Error('fleet_process_unavailable')
+    if (!this.supportsMidTurn(id)) throw new Error('fleet_mid_turn_unsupported')
+    if (s.status.state !== 'busy' || !s.status.turn_id || s.submitting) throw new Error('fleet_not_busy')
+    if (!text.length || text.length > 24_000 || text.includes('\0')) throw new Error('fleet_invalid_input')
+    const turnId = s.status.turn_id
+    let result: Packet
+    try {
+      result = await this.request(s, 'turn/steer', { threadId: s.status.native_id, expectedTurnId: turnId,
+        clientUserMessageId: randomUUID(), input: [{ type: 'text', text }] })
+    } catch (error) {
+      // An explicit rejection is safe to retry after refreshing state. A lost ACK is ambiguous.
+      if (error instanceof Error && error.message === 'fleet_rpc_error') throw Object.assign(new Error('fleet_steer_rejected'), { retryable: true })
+      throw Object.assign(new Error('fleet_steer_unconfirmed'), { retryable: false })
+    }
+    if (result.turnId !== turnId) throw Object.assign(new Error('fleet_steer_unconfirmed'), { retryable: false })
+    if (this.live(s) && s.status.state === 'busy' && s.status.turn_id === turnId) this.publish(s, 'busy')
+    await s.eventQueue
+    return { ...s.status }
+  }
   async send(id: string, text: string): Promise<FleetStatus> {
     const s = this.sessions.get(id)
     if (!s || !this.live(s) || s.status.state !== 'idle' || s.submitting) throw new Error('fleet_not_idle')

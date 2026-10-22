@@ -231,7 +231,7 @@ export class HubTeamRuntime implements TeamOrca {
       const owned = this.manager.status(handle)
       if (!runtime || !owned || this.generations.get(handle) !== runtime.generation) continue
       this.requireEnabled()
-      check(owned.state === 'idle', 'El agente del Hub todavía no está disponible para recibir el aviso. Reintentá después.', 409)
+      check(owned.state === 'idle' || (owned.state === 'busy' && this.manager.supportsMidTurn(handle)), 'El agente del Hub todavía no está disponible para recibir el aviso. Reintentá después.', 409)
       const authorized = (await this.chat.db.query(`SELECT m.id FROM chat_team_members m
         JOIN chat_team_plans t ON t.id=m.team_id
         JOIN chat_channels master ON master.id=t.master_channel_id
@@ -254,6 +254,7 @@ export class HubTeamRuntime implements TeamOrca {
   async send(handle: string, text: string): Promise<FleetStatus> {
     this.requireEnabled()
     check(text.length > 0 && text.length <= 24_000 && !text.includes('\0'), 'Instrucción inválida.', 400)
+    if (this.manager.status(handle)?.state === 'busy' && this.manager.supportsMidTurn(handle)) return this.manager.enqueue(handle, text)
     return this.manager.send(handle, text)
   }
   async interrupt(handle: string): Promise<FleetStatus> { this.requireEnabled(); return this.manager.interrupt(handle) }
