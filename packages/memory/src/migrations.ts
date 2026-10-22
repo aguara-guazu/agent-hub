@@ -499,4 +499,6 @@ CREATE TABLE usage_quota_transitions (
  before_state TEXT NOT NULL, after_state TEXT NOT NULL, observed_at TIMESTAMP NOT NULL,
  UNIQUE(pool_key,observed_at)
 );
+`, String.raw`
+ALTER TABLE chat_team_members ADD COLUMN runtime JSON;
 `]

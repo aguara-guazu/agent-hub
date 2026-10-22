@@ -15,8 +15,8 @@ const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identi
 const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries', 'chat_read_receipts',
   'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts', 'chat_turns', 'chat_status_notices', 'usage_quota_bindings', 'usage_quota_pools', 'usage_quota_memberships', 'usage_quota_transitions', 'usage_quota_notices'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–20 restore. */
-const BACKUP_SCHEMA_VERSION = 21
+/** Data-model version of agenthub-memory-v1; backups from 1–21 restore. */
+const BACKUP_SCHEMA_VERSION = 22
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -93,7 +93,7 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
         if (table === 'usage_quota_bindings') return {...value,active:false,binding_version:Number(value.binding_version)+1}
         if (table === 'chat_channels' && value.kind === 'virtual' && !value.closed_at) return {...value,closed_at:backup.exported_at,virtual_path:null}
         if (table === 'chat_team_plans' && !['completed','cancelled'].includes(String(value.state))) return {...value,state:'paused'}
-        if (table === 'chat_team_members') return {...value,invitation_hash:null,invitation_expires_at:null,
+        if (table === 'chat_team_members') return {...value,runtime:null,invitation_hash:null,invitation_expires_at:null,
           ...(['prepared','workspace_intent','workspace_created','launch_intent','accepted','unknown'].includes(String(value.state)) ? {state:'paused'} : {})}
         return value
       })
