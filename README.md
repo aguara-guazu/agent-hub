@@ -115,3 +115,5 @@ npm run package     # bundle local; no publica una release
 ```
 
 En macOS, `make install-app` empaqueta e instala en `/Applications`. Para regenerar estas capturas con datos ficticios: `npm run build && node scripts/readme-screenshots.mjs`.
+
+Las instalaciones locales de macOS reutilizan una identidad de firma guardada en `~/Library/Application Support/Agent Hub/local-signing`, con un llavero separado y confianza limitada a firma de código para el usuario actual. macOS puede pedir confirmar el certificado la primera vez y volver a autorizar las carpetas al migrar desde una firma ad hoc. No borres esa identidad entre builds: permite conservar la identidad que macOS usa para recordar permisos. El instalador verifica la firma antes de cerrar la app y conserva las firmas Developer ID de distribución. Este certificado local no reemplaza Developer ID y notarización para releases públicas; `npm run package` por sí solo sigue produciendo el bundle ad hoc de desarrollo.

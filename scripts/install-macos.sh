@@ -30,6 +30,15 @@ if [[ "$(uname -m)" == "arm64" ]]; then BUNDLE_DIR="mac-arm64"; else BUNDLE_DIR=
 BUNDLE="$ROOT/release/$BUNDLE_DIR/${APP_NAME}.app"
 [[ -n "$BUNDLE" && -d "$BUNDLE" ]] || { log "no se encontró el bundle en $ROOT/release (¿falló npm run package?)"; exit 1; }
 
+# Ad-hoc identities bind TCC permissions to each build's cdhash. Local installs
+# reuse a private code-signing identity; verify it before stopping the working app.
+# A Developer ID-signed distribution must retain its publisher's signature.
+signature="$(codesign -dv "$BUNDLE" 2>&1 || true)"
+if [[ "$signature" != *"Authority=Developer ID Application:"* ]]; then
+  log "== Firmando la instalación local con una identidad persistente"
+  node "$ROOT/desktop/scripts/local-signing.cjs" "$BUNDLE"
+fi
+
 # 1. Cerrar la app de escritorio (proceso principal, sin argumentos). Los gateways
 #    headless llevan --agenthub-headless y no se tocan.
 main_pids() { pgrep -f "/Contents/MacOS/${APP_NAME}( --hidden| --updated)*\$" || true; }
