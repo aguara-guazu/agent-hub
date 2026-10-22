@@ -82,3 +82,41 @@ it.each(['codex_cli','claude_code','gemini_cli'] as const)('registra sesiones de
   else expect(contents).not.toContain('asyncRewake')
   expect(planMemoryHooks(snapshot,endpoint,home)[0]).toHaveLength(0)
 })
+
+
+it('entrega avisos Claude tras cualquier herramienta, preserva hooks personales y retira sólo los propios',()=>{
+  const snapshot={cli_kind:'claude_code',servers:[{tools:[{name:'chat_join'}]}]} as PolicySnapshot
+  const endpoint=gatewayEndpoint({command:'/bin/node',args:['/app/cli.js','gateway','--agent','agent','--state-dir',join(home,'state')]})
+  const path=join(home,'.claude/settings.json')
+  mkdirSync(join(path,'..'),{recursive:true})
+  const personal={matcher:'Bash',hooks:[{type:'command',command:'echo personal'}]}
+  writeFileSync(path,JSON.stringify({hooks:{PostToolUse:[personal]}}))
+  const [changes,drift]=planMemoryHooks(snapshot,endpoint,home)
+  expect(drift).toEqual([])
+  applyChanges(changes)
+  const hooks=JSON.parse(readFileSync(path,'utf8')).hooks
+  expect(hooks.PreToolUse[0].matcher).toBe('.*hub.*')
+  expect(hooks.PostToolUse).toContainEqual(personal)
+  for(const event of ['PostToolUse','PostToolUseFailure']) {
+    const hub=hooks[event].find((entry:{matcher:string})=>entry.matcher==='.*')
+    expect(hub.hooks).toHaveLength(1)
+    expect(hub.hooks[0].command).toContain('--agenthub-memory-hook')
+    expect(hub.hooks[0]).not.toHaveProperty('async')
+    expect(hub.hooks[0]).not.toHaveProperty('asyncRewake')
+  }
+  expect(planMemoryHooks(snapshot,endpoint,home)[0]).toHaveLength(0)
+  applyChanges(planMemoryHooks({...snapshot,servers:[]},endpoint,home)[0])
+  const removed=JSON.parse(readFileSync(path,'utf8')).hooks
+  expect(removed.PostToolUse).toEqual([personal])
+  expect(removed.PostToolUseFailure ?? []).toEqual([])
+})
+
+it.each(['claude_code','codex_cli','gemini_cli'] as const)('no registra hooks de resultado adicionales para %s con sólo notas',kind=>{
+  const snapshot={cli_kind:kind,servers:[{tools:[{name:'finish_notes'}]}]} as PolicySnapshot
+  const endpoint=gatewayEndpoint({command:'/bin/node',args:['/app/cli.js','gateway','--agent','agent','--state-dir',join(home,'state')]})
+  applyChanges(planMemoryHooks(snapshot,endpoint,home)[0])
+  const path=join(home,kind==='codex_cli'?'.codex/hooks.json':kind==='claude_code'?'.claude/settings.json':'.gemini/settings.json')
+  const hooks=JSON.parse(readFileSync(path,'utf8')).hooks
+  expect(hooks).not.toHaveProperty('PostToolUse')
+  expect(hooks).not.toHaveProperty('PostToolUseFailure')
+})

@@ -103,6 +103,12 @@ export function planMemoryHooks(snapshot: Snapshot, endpoint: GatewayEndpoint, h
     SessionEnd: [{ hooks: [handler(kind === 'codex_cli' ? 3 : timeout)] }],
     ...(kind === 'codex_cli' ? { Interrupt: [{ hooks: [handler(3)] }] } : {}),
     ...(kind === 'claude_code' ? { StopFailure: [{ hooks: [handler(timeout)] }] } : {}),
+    // A message received during a long Bash/Edit call reaches the next model
+    // request through a result boundary, without interrupting the running tool.
+    ...(chat && kind === 'claude_code' ? {
+      PostToolUse: [{ matcher: '.*', hooks: [handler(timeout)] }],
+      PostToolUseFailure: [{ matcher: '.*', hooks: [handler(timeout)] }],
+    } : {}),
   } : {}
   const [change, drift] = planJsonHooks({ home, path, keyPath: ['hooks'], value: hooks, manifest, cliKind: kind })
   return withLauncher(change ? [change] : [], drift)

@@ -96,3 +96,33 @@ it('mantiene la identidad y el coordinador con guía compacta recuperable entre 
   expect(response).not.toContain('Al comenzar cada turno')
   expect(await localChatHook(state,'agent','codex_cli',{...raw,hook_event_name:'PreToolUse'})).toEqual({})
 })
+
+
+it.each(['PreToolUse','BeforeTool','PostToolUse','PostToolUseFailure'])('avisa pendientes en %s sin repetir bootstrap ni copiar contenido de mensajes',async(event)=>{
+  const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
+  const pending=Array.from({length:12},(_,index)=>({message_id:`message-${index}`,thread_id:'thread',text:'INJECTED MESSAGE BODY'}))
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({session:{label:'Agent',id:'native:one'},channel:{id:'channel',path:'/worktree'},team:{guidance:'FULL BOOTSTRAP'},pending})}))
+  const result=await localChatHook(state,'agent','claude_code',{session_id:'session',cwd:'/worktree',hook_event_name:event,tool_input:{prompt:'PRIVATE USER PROMPT'},tool_response:'PRIVATE TOOL OUTPUT'})
+  const output=result.output as {hookSpecificOutput:{hookEventName:string;additionalContext:string}}
+  expect(output.hookSpecificOutput.hookEventName).toBe(event)
+  const context=output.hookSpecificOutput.additionalContext
+  expect(context).toContain('12 avisos pendientes')
+  expect(context).toContain('message-0')
+  expect(context).not.toContain('message-10')
+  expect(context).toContain('lista parcial')
+  expect(context).toContain('memory_chat_inbox')
+  expect(context).toMatch(/session_key=[a-f0-9]{64}/)
+  expect(context).toContain('author_id')
+  expect(context).not.toMatch(/FULL BOOTSTRAP|INJECTED MESSAGE BODY|PRIVATE USER PROMPT|PRIVATE TOOL OUTPUT/)
+  expect(fetch).toHaveBeenCalledTimes(1)
+  const sent=JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)
+  expect(sent).not.toHaveProperty('tool_input')
+  expect(sent).not.toHaveProperty('tool_response')
+  expect(result.code).toBeUndefined()
+})
+
+it.each(['PreToolUse','BeforeTool','PostToolUse','PostToolUseFailure'])('no inyecta contexto en %s sin pendientes',async(event)=>{
+  const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({pending:[]})}))
+  expect(await localChatHook(state,'agent','claude_code',{session_id:'session',cwd:'/worktree',hook_event_name:event})).toEqual({})
+})
