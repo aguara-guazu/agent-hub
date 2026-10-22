@@ -24,6 +24,7 @@ export class FleetActivityBuffer {
   private redactionFull = false
   private tails = new Map<string, string>()
   private tailBytes = 0
+  private batch: { key: string; kind: FleetActivityItem['kind']; text: string; bytes: number } | undefined
   private streams = new Map<string, { length: number; final: boolean }>()
   constructor(prompt: string) { this.rememberSecrets(prompt) }
   private rememberSecrets(text: string) {
@@ -36,12 +37,25 @@ export class FleetActivityBuffer {
     if (this.secrets.size >= 128 || this.secretBytes + bytes > 16_384) { this.redactionFull = true; return }
     this.secrets.add(value); this.secretBytes += bytes
   }
-  add(kind: FleetActivityItem['kind'], value: unknown) {
-    if (typeof value !== 'string' || !value) return
+  private redact(value: string): string | undefined {
     this.rememberSecrets(value)
-    if (this.redactionFull) return
+    if (this.redactionFull) return undefined
     let text = value
     for (const secret of this.secrets) text = text.split(secret).join('[redacted]')
+    return text
+  }
+  private flush() {
+    const batch = this.batch
+    this.batch = undefined
+    if (batch) this.emit(batch.kind, batch.text)
+  }
+  add(kind: FleetActivityItem['kind'], value: unknown) {
+    this.flush()
+    if (typeof value === 'string' && value) this.emit(kind, value)
+  }
+  private emit(kind: FleetActivityItem['kind'], value: string) {
+    let text = this.redact(value)
+    if (!text) return
     // Bound before retention; a packet may contain megabytes of tool output.
     if (Buffer.byteLength(text) > 32_768) text = Buffer.from(text).subarray(0, 32_768).toString('utf8') + '\n[truncated]'
     const item = { seq: ++this.seq, at: new Date().toISOString(), kind, text }
@@ -73,7 +87,23 @@ export class FleetActivityBuffer {
         safe = safe.slice(0, -keep)
       }
     }
-    this.add(kind, safe)
+    // Store only redacted fragments, with at most one 2KiB unpublished batch.
+    // A stream switch flushes first so interleaved tool/chat order remains stable.
+    if (this.batch && (this.batch.key !== key || this.batch.kind !== kind)) this.flush()
+    const redacted = this.redact(safe)
+    if (redacted) {
+      for (let offset = 0; offset < redacted.length;) {
+        let end = Math.min(offset + 512, redacted.length)
+        if (end < redacted.length && /[\uD800-\uDBFF]/.test(redacted[end - 1]!)) end--
+        const chunk = redacted.slice(offset, end), bytes = Buffer.byteLength(chunk)
+        if (this.batch && this.batch.bytes + bytes > 2048) this.flush()
+        if (!this.batch) this.batch = { key, kind, text: '', bytes: 0 }
+        this.batch.text += chunk; this.batch.bytes += bytes
+        offset = end
+        if (this.batch.bytes >= 2048) this.flush()
+      }
+    }
+    if (final) this.flush()
     // Only byte-free offsets survive; full native output is held solely by the ring.
     this.streams.set(key, { length: final ? value.length : (previous?.length ?? 0) + value.length, final })
     while (this.streams.size > 500) {
@@ -84,6 +114,7 @@ export class FleetActivityBuffer {
     }
   }
   read(state: FleetState, after = 0): FleetActivity {
+    this.flush()
     return { supported: true, generation: this.generation, state, items: this.items.filter(item => item.seq > after).map(item => ({ ...item })),
       next_cursor: this.seq, truncated: (this.items[0]?.seq ?? 1) > after + 1 }
   }
