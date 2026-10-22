@@ -123,9 +123,9 @@ export class HubTeamRuntime implements TeamOrca {
     check(!id.startsWith('hub:') || id === canonical, 'El identificador del Hub no corresponde al worktree real.', 409)
     return { id: canonical, path: root, repo_id: `hub-repo:${encode(common)}`, head }
   }
-  private async unchanged(workspace: TeamWorkspace) {
+  private async unchanged(workspace: TeamWorkspace, resumeWorktree = false) {
     const current = await this.workspace(workspace.id)
-    check(current.id === workspace.id && current.path === workspace.path && current.repo_id === workspace.repo_id && current.head === workspace.head,
+    check(current.id === workspace.id && current.path === workspace.path && current.repo_id === workspace.repo_id && (resumeWorktree || current.head === workspace.head),
       'El worktree cambió desde la propuesta. Prepará un nuevo plan antes de crear recursos.', 409)
     return current
   }
@@ -146,7 +146,7 @@ export class HubTeamRuntime implements TeamOrca {
       'Git no confirmó el worktree hijo esperado. Conservá los recursos e inspeccioná el resultado.', 502)
     return child
   }
-  async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string }): Promise<HubTeamLaunchReceipt> {
+  async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean }): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
     const id = member.member_id ?? randomUUID()
     check(safeId(id) && id.length <= 200, 'Identificador de miembro inválido.', 400)
@@ -155,19 +155,27 @@ export class HubTeamRuntime implements TeamOrca {
     this.launching.add(id)
     try {
       await this.preflight([member])
-      const current = await this.unchanged(workspace)
+      const current = await this.unchanged(workspace, member.resume_worktree === true)
       this.requireEnabled()
       check(member.cli === 'claude_code' || member.cli === 'codex_cli', 'CLI no soportada por la flota del Hub.', 409)
       this.nextGenerations.set(id, randomUUID())
       const result = await this.manager.start({ id, cli: member.cli, cwd: current.path, model: member.model, prompt: member.prompt,
         ...(member.effort ? { effort: member.effort } : {}) })
+      await this.verifyLaunchEnabled(id)
       if (!['busy', 'idle'].includes(result.state)) {
         throw new MemoryError(503, 'El agente del Hub no confirmó la entrega inicial. Inspeccioná su estado antes de volver a lanzar.')
       }
       const runtime = await this.status(id)
       check(runtime, 'El Hub no confirmó los metadatos del agente.', 503)
+      await this.verifyLaunchEnabled(id)
       return { handle: id, kind: 'hub_process', prompt_outcome: 'input-accepted', runtime }
     } finally { this.launching.delete(id); this.nextGenerations.delete(id) }
+  }
+  private async verifyLaunchEnabled(id: string): Promise<void> {
+    if (this.enabled()) return
+    await this.manager.stop(id)
+    // Even if the switch changes again while stopping, this launch was cancelled.
+    throw new MemoryError(409, 'La flota de agentes del Hub se desactivó durante el lanzamiento. El proceso fue detenido.')
   }
   private async persist(event: FleetEvent, generation: string) {
     if (this.generations.get(event.id) !== generation) return
