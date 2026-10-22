@@ -1,7 +1,8 @@
 import { afterEach,beforeEach,expect,it,vi } from 'vitest'
-import { mkdtemp,mkdir,rm } from 'node:fs/promises'
+import { mkdtemp,mkdir,rm,realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
@@ -35,7 +36,7 @@ class Orca implements TeamOrca {
   workspace=vi.fn(async(id:string)=>{const value=this.spaces.get(id);if(!value)throw new Error('missing');return value})
 }
 
-beforeEach(async()=>{dir=await mkdtemp(join(tmpdir(),'hub-team-'));db=new MemoryDatabase(join(dir,'memory.sqlite'));await db.migrate();store=new MemoryStore(db,dir);chat=new LocalChat(store)})
+beforeEach(async()=>{dir=await realpath(await mkdtemp(join(tmpdir(),'hub-team-')));db=new MemoryDatabase(join(dir,'memory.sqlite'));await db.migrate();store=new MemoryStore(db,dir);chat=new LocalChat(store)})
 afterEach(async()=>{await db.close();await rm(dir,{recursive:true,force:true})})
 
 async function session(name:string,path=dir,workspace=`${randomUUID()}::${path}`,cli='kiro') {
@@ -364,7 +365,7 @@ it('restaura planes activos pausados, invalida invitaciones y conserva eventos/p
   const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
   const teams=new TeamOrchestration(chat,catalog,orca),prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Backup',base_revision:head,members:members(1)},master.agent)
   await teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Orden explícita'},master.agent)
-  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(21)
+  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(22)
   const target=join(dir,'restore'),restored=new MemoryDatabase(join(target,'memory.sqlite'));await restored.migrate()
   try {await restoreMemory(new MemoryStore(restored,target),backup)
     expect((await restored.query('SELECT state FROM chat_team_plans WHERE id=$1',[prepared.id]))[0].state).toBe('paused')
@@ -449,4 +450,149 @@ it('OFF oculta cuotas persistidas y evita lecturas y bloqueos indirectos por tea
   expect(usage.forCli).not.toHaveBeenCalled()
   chat.usageEnabled=()=>true
   expect((await teams.call('team_status',{session_key:master.key,plan_id:prepared.id},master.agent)).plan.usage[0].status).toBe('exhausted')
+})
+
+class HubBackend extends Orca {
+  readonly provider='hub' as const
+  runtimes=new Map<string,{generation:string;state:string;updated_at:string;native_id:string|null;turn_id:string|null}>()
+  stop=vi.fn(async(handle:string)=>{const runtime=this.runtimes.get(handle);if(runtime)this.runtimes.set(handle,{...runtime,state:'stopped',updated_at:new Date().toISOString()})})
+  send=vi.fn(async(_handle:string,_text:string)=>{})
+  interrupt=vi.fn(async(_handle:string)=>{})
+  bind=vi.fn(async(_memberId:string,_sessionId:string)=>{})
+  status=vi.fn(async(handle:string)=>this.runtimes.get(handle))
+  override launch=vi.fn(async(workspace:TeamWorkspace,member:{prompt:string})=>{
+    this.prompts.set(workspace.id,member.prompt)
+    const handle=`hub-${randomUUID()}`,runtime={generation:randomUUID(),state:'idle',updated_at:new Date().toISOString(),native_id:null,turn_id:null}
+    this.runtimes.set(handle,runtime)
+    return {handle,kind:'hub',prompt_outcome:'accepted',runtime}
+  })
+}
+async function hubSession(name:string,path=dir) {
+  await mkdir(path,{recursive:true})
+  execFileSync('git',['init','-q',path])
+  const agent=author(name,path,'unused');delete agent.orca_workspace_id
+  const key=randomUUID(),registered=await chat.lifecycle(agent,{session_key:key,native_id:name,event:'SessionStart',at:new Date().toISOString()})
+  const named=await chat.call('chat_set_nick',{session_key:key,nickname:`Agente ${name}`},agent)
+  return {agent,key,...registered,session:named.session}
+}
+async function hubTeam(enabled=()=>true) {
+  const master=await hubSession('hub-master'),backend=new HubBackend()
+  backend.spaces.set(dir,{id:`hub:${Buffer.from(dir).toString('base64url')}`,path:dir,repo_id:'repo',head})
+  backend.spaces.set(backend.spaces.get(dir)!.id,backend.spaces.get(dir)!)
+  // Workspace resolution accepts the channel path and returns the canonical Hub identifier.
+  const workspace=backend.workspace
+  backend.workspace=vi.fn(async(id:string)=>id===dir?backend.spaces.get(dir)!:workspace(id))
+  const teams=new TeamOrchestration(chat,new Catalog(),backend,undefined,enabled)
+  const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Flota Hub',base_revision:head,members:members(1)},master.agent)
+  const launched=await teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Confirmo el plan editable de flota'},master.agent)
+  return {master,backend,teams,plan,launched,slot:launched.members[0]}
+}
+
+it('prepara y lanza Hub sin metadatos Orca y vincula la incorporación por carpeta real',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  expect(plan.plan.permissions).toBe('full_access')
+  expect(plan.plan.planning_guidance).toContain('mezcla de CLI')
+  const child=await hubSession('hub-worker',slot.workspace_path)
+  const joined=await teams.call('team_join',{session_key:child.key,invitation:invitation(backend.prompts.get(slot.workspace_id)!)},child.agent)
+  expect(joined.member_id).toBe(slot.id)
+  expect(backend.bind).toHaveBeenCalledWith(slot.id,child.session.id)
+  expect(master.agent.orca_workspace_id).toBeUndefined()
+  expect(JSON.stringify(plan)).not.toContain('invitation=')
+})
+
+it('clear rota generación, identidad e invitación conservando worktree y CLI/modelo aprobados',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  const oldToken=invitation(backend.prompts.get(slot.workspace_id)!)
+  const child=await hubSession('first-worker',slot.workspace_path)
+  await teams.call('team_join',{session_key:child.key,invitation:oldToken},child.agent)
+  const control={session_key:master.key,plan_id:plan.id,member_id:slot.id,expected_generation:slot.runtime.generation}
+  await teams.call('team_control',{...control,action:'edit',role:'QA',task:'Revisar cambio',prompt:'Validá la solución'},master.agent)
+  const cleared=await teams.call('team_control',{...control,action:'clear'},master.agent)
+  const next=cleared.members[0]
+  expect(next).toMatchObject({workspace_id:slot.workspace_id,workspace_path:slot.workspace_path,role:'QA',task:'Revisar cambio',session_id:null,channel_id:null})
+  expect(next.runtime.generation).not.toBe(slot.runtime.generation)
+  expect(backend.stop).toHaveBeenCalledWith(slot.launch_handle)
+  expect(backend.launch.mock.calls[1]![1]).toMatchObject({cli:slot.cli,model:slot.model,member_id:slot.id})
+  expect(backend.prompts.get(slot.workspace_id)).toContain('Validá la solución')
+  const nextToken=invitation(backend.prompts.get(slot.workspace_id)!)
+  expect(nextToken).not.toBe(oldToken)
+  expect(JSON.stringify(cleared)).not.toContain(nextToken)
+  await expect(teams.call('team_control',{...control,action:'send',text:'viejo'},master.agent)).rejects.toThrow('generación')
+  await expect(teams.call('team_join',{session_key:child.key,invitation:oldToken},child.agent)).rejects.toThrow('Invitación')
+})
+
+it('serializa clear concurrentes y rechaza la segunda generación vencida',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  const input={session_key:master.key,plan_id:plan.id,member_id:slot.id,expected_generation:slot.runtime.generation,action:'clear'}
+  const results=await Promise.allSettled([teams.call('team_control',input,master.agent),teams.call('team_control',input,master.agent)])
+  expect(results.map(item=>item.status)).toEqual(['fulfilled','rejected'])
+  expect(backend.launch).toHaveBeenCalledTimes(2)
+})
+
+it('consulta sólo metadata, marca actividad vieja y no entrega outputs del backend',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  backend.status.mockResolvedValue({...slot.runtime,state:'busy',updated_at:new Date(Date.now()-100_000).toISOString(),transcript:'PRIVATE'} as any)
+  const status=await teams.call('team_status',{session_key:master.key,plan_id:plan.id},master.agent)
+  expect(status.members[0].runtime).toMatchObject({generation:slot.runtime.generation,state:'unknown',activity_stale:true})
+  expect(JSON.stringify(status)).not.toContain('PRIVATE')
+  expect(backend.status).toHaveBeenCalledWith(slot.launch_handle)
+})
+
+it('revalida colaboración antes de efectos, permite stop/start y cierra sólo procesos Hub propios',async()=>{
+  let enabled=true
+  const {master,backend,teams,plan,slot}=await hubTeam(()=>enabled)
+  const input={session_key:master.key,plan_id:plan.id,member_id:slot.id,expected_generation:slot.runtime.generation}
+  enabled=false
+  await expect(teams.call('team_control',{...input,action:'send',text:'Trabajo'},master.agent)).rejects.toThrow('deshabilitada')
+  expect(backend.send).not.toHaveBeenCalled()
+  enabled=true
+  await teams.call('team_control',{...input,action:'interrupt'},master.agent)
+  expect(backend.interrupt).toHaveBeenCalledWith(slot.launch_handle)
+  await teams.call('team_control',{...input,action:'stop'},master.agent)
+  const restarted=await teams.call('team_control',{...input,action:'start'},master.agent)
+  expect(restarted.members[0].runtime.generation).not.toBe(slot.runtime.generation)
+  await teams.call('team_close',{session_key:master.key,plan_id:plan.id,digest:plan.digest,reason:'Terminó'},master.agent)
+  expect(backend.stop).toHaveBeenCalledWith(restarted.members[0].launch_handle)
+  await expect(teams.call('team_control',{...input,expected_generation:restarted.members[0].runtime.generation,action:'send',text:'Trabajo'},master.agent)).rejects.toThrow('activo')
+})
+
+it('el reinicio de Hub conserva generación pero marca runtime desconocido sin relanzar',async()=>{
+  const {backend,teams,slot}=await hubTeam()
+  await teams.initialize()
+  const persisted=(await db.query('SELECT runtime FROM chat_team_members WHERE id=$1',[slot.id]))[0]!
+  expect(persisted.runtime).toMatchObject({generation:slot.runtime.generation,state:'unknown'})
+  expect(backend.launch).toHaveBeenCalledTimes(1)
+})
+
+it('rechaza controles de participantes y cambios de modelo fuera de otro plan confirmado',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  const child=await hubSession('unprivileged-worker',slot.workspace_path)
+  await teams.call('team_join',{session_key:child.key,invitation:invitation(backend.prompts.get(slot.workspace_id)!)},child.agent)
+  const input={plan_id:plan.id,member_id:slot.id,expected_generation:slot.runtime.generation}
+  await expect(teams.call('team_control',{...input,session_key:child.key,action:'send',text:'Instrucción'},child.agent)).rejects.toThrow('pertenece')
+  await expect(teams.call('team_control',{...input,session_key:master.key,action:'edit',model:'otro',task:'Cambio'},master.agent)).rejects.toThrow()
+  expect(backend.send).not.toHaveBeenCalled()
+})
+
+it('revalida autoridad después de preflight y antes de detener o relanzar un worker',async()=>{
+  let enabled=true
+  const {master,backend,teams,plan,slot}=await hubTeam(()=>enabled)
+  backend.preflight.mockImplementationOnce(async()=>{enabled=false})
+  await expect(teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
+    expected_generation:slot.runtime.generation,action:'clear'},master.agent)).rejects.toThrow('deshabilitada')
+  expect(backend.stop).not.toHaveBeenCalled()
+  expect(backend.launch).toHaveBeenCalledTimes(1)
+})
+
+it('revoca acceso del participante a la conversación anterior después de clear',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  const child=await hubSession('old-worker',slot.workspace_path)
+  await teams.call('team_join',{session_key:child.key,invitation:invitation(backend.prompts.get(slot.workspace_id)!)},child.agent)
+  await teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
+    expected_generation:slot.runtime.generation,action:'clear'},master.agent)
+  await expect(teams.call('team_status',{session_key:child.key,plan_id:plan.id},child.agent)).rejects.toThrow('pertenece')
+  const next=await hubSession('new-worker',slot.workspace_path)
+  const joined=await teams.call('team_join',{session_key:next.key,invitation:invitation(backend.prompts.get(slot.workspace_id)!)},next.agent)
+  expect(joined.session.id).toBe(next.session.id)
+  expect(backend.bind).toHaveBeenLastCalledWith(slot.id,next.session.id)
 })

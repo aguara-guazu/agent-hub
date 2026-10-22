@@ -9,9 +9,18 @@ import { check, MemoryError } from './contracts.js'
 import { validCliModel, type ExtractionCli } from './cli-extraction.js'
 
 export interface TeamWorkspace { id: string; path: string; repo_id: string; head: string }
-export interface TeamLaunchReceipt { handle: string; kind: string; operation_id?: string; prompt_outcome: string }
-export interface TeamLaunchMember { cli: ExtractionCli; model: string; effort?: string; prompt: string }
+export interface TeamLaunchReceipt { handle: string; kind: string; operation_id?: string; prompt_outcome: string; runtime?: TeamRuntimeMetadata }
+export interface TeamRuntimeMetadata { generation: string; state: string; native_id?: string | null; turn_id?: string | null; updated_at: string }
+export interface TeamLaunchMember { member_id?: string; cli: ExtractionCli; model: string; effort?: string; prompt: string }
 export interface TeamOrca {
+  readonly provider?: 'hub' | 'orca'
+  status?(handle: string): Promise<Partial<TeamRuntimeMetadata> | undefined>
+  send?(handle: string, text: string): Promise<unknown>
+  interrupt?(handle: string): Promise<unknown>
+  stop?(handle: string): Promise<unknown>
+  bind?(memberId: string, sessionId: string): Promise<unknown>
+  suspend?(): Promise<unknown>
+  close?(): Promise<unknown>
   preflight?(members: Array<{ cli: ExtractionCli; model: string; effort?: string }>): Promise<void>
   workspace(id: string): Promise<TeamWorkspace>
   create(parent: TeamWorkspace, name: string): Promise<TeamWorkspace>
