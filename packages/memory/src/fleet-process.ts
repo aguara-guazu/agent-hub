@@ -2,7 +2,7 @@ import { spawn, execFile, type ChildProcessWithoutNullStreams, type SpawnOptions
 import { randomUUID } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 
-export type FleetState = 'starting' | 'busy' | 'idle' | 'stopped' | 'failed' | 'unknown'
+export type FleetState = 'starting' | 'busy' | 'idle' | 'stopped' | 'failed' | 'unknown' | 'waiting_input'
 export interface FleetStart {
   id: string
   cli: 'claude_code' | 'codex_cli'
@@ -12,7 +12,17 @@ export interface FleetStart {
   prompt: string
   resume_id?: string
 }
-/** Deliberately contains no prompt, response, transcript, command output or CLI error text. */
+/** No prompts, transcripts, command output or CLI error text. Native questions are explicitly structured. */
+export interface FleetQuestion {
+  id: string
+  header: string
+  question: string
+  options?: Array<{ label: string; description: string }> | null
+  isOther?: boolean
+  isSecret?: boolean
+}
+export interface FleetPendingQuestion { id: string; questions: FleetQuestion[] }
+export type FleetQuestionAnswers = Record<string, { answers: string[] }>
 export interface FleetStatus {
   id: string
   cli: FleetStart['cli']
@@ -23,6 +33,7 @@ export interface FleetStatus {
   native_id?: string
   turn_id?: string
   error_code?: string
+  questions?: FleetPendingQuestion[]
 }
 export type FleetEvent = FleetStatus
 export interface FleetProcessOptions {
@@ -33,6 +44,14 @@ export interface FleetProcessOptions {
 }
 type Packet = Record<string, any>
 type Pending = { resolve: (value: Packet) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+type PendingQuestion = {
+  value: FleetPendingQuestion
+  rpcId: string | number
+  turnId: string
+  blocking: boolean
+  answering: boolean
+  claudeInput?: Packet
+}
 type Session = {
   status: FleetStatus
   child: ChildProcessWithoutNullStreams
@@ -41,6 +60,7 @@ type Session = {
   stopping: boolean
   seq: number
   pending: Map<number, Pending>
+  questions: Map<string, PendingQuestion>
   expectedNative: string | undefined
   ready: { resolve: () => void; reject: (error: Error) => void } | undefined
   submitting: boolean
@@ -58,16 +78,19 @@ export class FleetProcessManager {
 
   status(id: string): FleetStatus | undefined {
     const value = this.sessions.get(id)?.status
-    return value ? { ...value } : undefined
+    return value ? this.snapshot(value) : undefined
   }
-  list(): FleetStatus[] { return [...this.sessions.values()].map(s => ({ ...s.status })) }
+  list(): FleetStatus[] { return [...this.sessions.values()].map(s => this.snapshot(s.status)) }
 
+  private snapshot(value: FleetStatus): FleetStatus {
+    return { ...value, ...(value.questions ? { questions: structuredClone(value.questions) } : {}) }
+  }
   private publish(s: Session, state: FleetState, error_code?: string) {
     if (this.sessions.get(s.status.id) !== s) return
     s.status.state = state
     if (error_code) s.status.error_code = error_code
     else delete s.status.error_code
-    const event = { ...s.status }
+    const event = this.snapshot(s.status)
     // Serialize writes so a slow busy callback cannot overwrite a later idle callback.
     s.eventQueue = s.eventQueue.then(() => this.options.onEvent?.(event)).then(() => {}, () => {
       // Persistence failure cannot produce an unhandled rejection or claim healthy work.
@@ -100,6 +123,7 @@ export class FleetProcessManager {
   }
   private fail(s: Session, code: string) {
     if (this.sessions.get(s.status.id) !== s || s.stopping || s.status.state === 'failed') return
+    this.clearQuestions(s)
     this.publish(s, 'failed', code)
     this.rejectPending(s, code)
     void this.terminate(s)
@@ -107,6 +131,13 @@ export class FleetProcessManager {
   private receive(s: Session, packet: Packet) {
     if (!this.live(s)) return
     if (s.status.cli === 'claude_code') {
+      if (packet.type === 'control_request' && packet.request?.subtype === 'can_use_tool') {
+        if (packet.request.tool_name === 'AskUserQuestion') this.registerQuestions(s, packet, true)
+        else this.write(s, { type: 'control_response', response: { subtype: 'success', request_id: packet.request_id,
+          response: { behavior: 'deny', message: 'Unsupported interactive fleet request' } } })
+        return
+      }
+      if (packet.type === 'control_cancel_request') { this.cancelQuestion(s, packet.request_id); return }
       if (packet.type === 'system' && packet.subtype === 'init') {
         if (typeof packet.session_id !== 'string' || packet.session_id !== s.expectedNative) {
           this.fail(s, 'fleet_session_mismatch'); return
@@ -123,7 +154,8 @@ export class FleetProcessManager {
           s.completedTurns.add(packet.uuid)
           if (s.completedTurns.size > 256) s.completedTurns.delete(s.completedTurns.values().next().value!)
         }
-        if (s.status.state !== 'busy') return
+        if (!['busy', 'waiting_input'].includes(s.status.state)) return
+        this.clearQuestions(s)
         delete s.status.turn_id
         if (packet.is_error || packet.subtype !== 'success') this.fail(s, 'fleet_turn_failed')
         else this.publish(s, 'idle')
@@ -139,6 +171,7 @@ export class FleetProcessManager {
       return
     }
     if (packet.id !== undefined && packet.method) {
+      if (packet.method === 'item/tool/requestUserInput') { this.registerQuestions(s, packet, false); return }
       // Never grant unexpected server requests, even in a fully authorized child.
       this.write(s, { id: packet.id, error: { code: -32601, message: 'Unsupported fleet client request' } })
       this.fail(s, 'fleet_unexpected_server_request')
@@ -146,21 +179,94 @@ export class FleetProcessManager {
     }
     const params = packet.params ?? {}
     if (params.threadId !== s.status.native_id || !s.status.native_id) return
+    if (packet.method === 'serverRequest/resolved') { this.cancelQuestion(s, params.requestId); return }
     if (packet.method === 'turn/started' && typeof params.turn?.id === 'string') {
       if (s.completedTurns.has(params.turn.id)) return
       if (!s.submitting && s.status.turn_id !== params.turn.id) return
       s.status.turn_id = params.turn.id
-      this.publish(s, 'busy')
+      this.refreshQuestions(s)
     }
     if (packet.method === 'turn/completed' && params.turn?.id === s.status.turn_id) {
       const turn = params.turn
       s.completedTurns.add(turn.id)
       if (s.completedTurns.size > 256) s.completedTurns.delete(s.completedTurns.values().next().value!)
+      this.clearQuestions(s)
       delete s.status.turn_id
       if (turn.status === 'completed' || turn.status === 'interrupted') this.publish(s, 'idle')
       else this.fail(s, turn.status === 'failed' ? 'fleet_turn_failed' : 'fleet_invalid_turn_status')
     }
     if (packet.method === 'error' && params.willRetry === false) this.fail(s, 'fleet_turn_failed')
+  }
+
+  private clearQuestions(s: Session) {
+    s.questions.clear()
+    s.status.questions = []
+  }
+  private refreshQuestions(s: Session) {
+    s.status.questions = [...s.questions.values()].map(p => structuredClone(p.value))
+    this.publish(s, [...s.questions.values()].some(p => p.blocking) ? 'waiting_input' : 'busy')
+  }
+  private cancelQuestion(s: Session, rpcId: unknown) {
+    let changed = false
+    for (const [id, question] of s.questions) if (question.rpcId === rpcId) { s.questions.delete(id); changed = true }
+    if (changed) this.refreshQuestions(s)
+  }
+  private registerQuestions(s: Session, packet: Packet, claude: boolean) {
+    const raw = claude ? packet.request?.input?.questions : packet.params?.questions
+    const rpcId: unknown = claude ? packet.request_id : packet.id
+    const turnId = claude ? s.status.turn_id : packet.params?.turnId
+    const text = (value: unknown, max: number): value is string => typeof value === 'string' && value.length > 0 && value.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)
+    const reject = () => this.write(s, claude
+      ? { type: 'control_response', response: { subtype: 'error', request_id: rpcId, error: 'Invalid fleet question request' } }
+      : { id: rpcId, error: { code: -32602, message: 'Invalid fleet question request' } })
+    if ((!text(rpcId, 512) && !(typeof rpcId === 'number' && Number.isSafeInteger(rpcId))) || !text(turnId, 512) ||
+      !s.status.native_id || (!claude && packet.params?.threadId !== s.status.native_id) ||
+      (turnId !== s.status.turn_id && !(s.submitting && !s.status.turn_id)) ||
+      !Array.isArray(raw) || raw.length < 1 || raw.length > 8 || s.questions.size >= 32) { reject(); return }
+    if ([...s.questions.values()].some(p => p.rpcId === rpcId)) return
+    const questions: FleetQuestion[] = []
+    for (const [index, item] of raw.entries()) {
+      const id = claude ? `q${index + 1}` : item?.id
+      if (!text(id, 200) || ['__proto__', 'constructor', 'prototype'].includes(id) || !text(item?.header, 200) || !text(item?.question, 6000) ||
+        (item.options != null && (!Array.isArray(item.options) || item.options.length > 20 || item.options.some((o: Packet) => !text(o?.label, 300) || typeof o?.description !== 'string' || o.description.length > 2000)))) { reject(); return }
+      questions.push({ id, header: item.header, question: item.question,
+        options: item.options == null ? null : item.options.map((o: Packet) => ({ label: o.label, description: o.description })),
+        isOther: claude ? true : item.isOther === true, isSecret: !claude && item.isSecret === true })
+    }
+    if (new Set(questions.map(q => q.id)).size !== questions.length || (claude && new Set(questions.map(q => q.question)).size !== questions.length)) { reject(); return }
+    const value = { id: randomUUID(), questions }
+    const pending: PendingQuestion = { value, rpcId: rpcId as string | number, turnId, blocking: claude || packet.params?.isBlocking !== false, answering: false }
+    if (claude) pending.claudeInput = { questions: raw.map((q: Packet, i: number) => ({ question: q.question, header: q.header,
+      options: questions[i]!.options ?? [], multiSelect: q.multiSelect === true })) }
+    s.questions.set(value.id, pending)
+    s.status.turn_id = turnId
+    this.refreshQuestions(s)
+  }
+  async answer(id: string, questionId: string, answers: FleetQuestionAnswers): Promise<FleetStatus> {
+    const s = this.sessions.get(id)
+    if (!s || !this.live(s)) throw new Error('fleet_process_unavailable')
+    const pending = s.questions.get(questionId)
+    if (!pending || pending.turnId !== s.status.turn_id || pending.answering) throw new Error('fleet_question_unavailable')
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers) || Object.keys(answers).length !== pending.value.questions.length) throw new Error('fleet_invalid_answers')
+    const response: FleetQuestionAnswers = Object.create(null)
+    for (const q of pending.value.questions) {
+      const value = Object.hasOwn(answers, q.id) ? answers[q.id] : undefined
+      if (!Array.isArray(value?.answers) || value.answers.length < 1 || value.answers.length > 20 || value.answers.some(a => typeof a !== 'string' || !a.length || a.length > 10_000 || a.includes('\0'))) throw new Error('fleet_invalid_answers')
+      response[q.id] = { answers: [...value.answers] }
+    }
+    const packet = s.status.cli === 'codex_cli' ? { id: pending.rpcId, result: { answers: response } }
+      : { type: 'control_response', response: { subtype: 'success', request_id: pending.rpcId, response: { behavior: 'allow',
+        updatedInput: { ...pending.claudeInput, answers: Object.fromEntries(pending.value.questions.map(q => [q.question, response[q.id]!.answers.join(', ')])) } } } }
+    pending.answering = true
+    try {
+      await new Promise<void>((resolve, reject) => {
+        if (!this.live(s) || !s.child.stdin.writable) { reject(new Error('fleet_process_unavailable')); return }
+        s.child.stdin.write(JSON.stringify(packet) + '\n', error => error ? reject(new Error('fleet_answer_unconfirmed')) : resolve())
+      })
+    } catch { pending.answering = false; throw new Error('fleet_answer_unconfirmed') }
+    if (this.live(s) && s.questions.get(questionId) === pending) { s.questions.delete(questionId); this.refreshQuestions(s) }
+    await s.eventQueue
+    return this.snapshot(s.status)
   }
 
   async start(input: FleetStart): Promise<FleetStatus> {
@@ -181,7 +287,7 @@ export class FleetProcessManager {
     }
     const expectedNative = input.cli === 'claude_code' ? input.resume_id ?? randomUUID() : input.resume_id
     const args = input.cli === 'claude_code'
-      ? ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--model', input.model,
+      ? ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool=stdio', '--model', input.model,
         ...(input.effort ? ['--effort', input.effort] : []), ...(input.resume_id ? ['--resume', input.resume_id] : ['--session-id', expectedNative!])]
       : ['app-server', '--listen', 'stdio://']
     const env = { ...process.env }
@@ -191,7 +297,7 @@ export class FleetProcessManager {
     const status: FleetStatus = { id: input.id, cli: input.cli, cwd: input.cwd, model: input.model, state: 'starting', ...(input.effort ? { effort: input.effort } : {}) }
     let closed!: () => void
     const s: Session = { status, child, closed: new Promise(resolve => { closed = resolve }), exited: false, stopping: false, seq: 0,
-      pending: new Map(), expectedNative, ready: undefined, submitting: false, completedTurns: new Set(), eventQueue: Promise.resolve(), cleanup: undefined }
+      pending: new Map(), questions: new Map(), expectedNative, ready: undefined, submitting: false, completedTurns: new Set(), eventQueue: Promise.resolve(), cleanup: undefined }
     this.sessions.set(input.id, s)
     this.publish(s, 'starting')
     child.stdin.on('error', () => this.fail(s, 'fleet_stdin_failed'))
@@ -250,7 +356,7 @@ export class FleetProcessManager {
     }
     if (s.stopping && s.cleanup) await s.cleanup
     await s.eventQueue
-    return { ...s.status }
+    return this.snapshot(s.status)
   }
   private writeClaude(s: Session, text: string) {
     // The user message UUID is the local correlation ID; Claude supplies the native session ID.
@@ -267,7 +373,7 @@ export class FleetProcessManager {
       // Notifications can finish the turn before the RPC response arrives.
       if (this.live(s) && !s.completedTurns.has(id)) {
         s.status.turn_id = id
-        this.publish(s, 'busy')
+        this.refreshQuestions(s)
         if (response.turn.status === 'failed') this.fail(s, 'fleet_turn_failed')
         else if (['completed', 'interrupted'].includes(response.turn.status)) this.receive(s, { method: 'turn/completed', params: { threadId: s.status.native_id, turn: response.turn } })
       }
@@ -297,7 +403,7 @@ export class FleetProcessManager {
     if (result.turnId !== turnId) throw Object.assign(new Error('fleet_steer_unconfirmed'), { retryable: false })
     if (this.live(s) && s.status.state === 'busy' && s.status.turn_id === turnId) this.publish(s, 'busy')
     await s.eventQueue
-    return { ...s.status }
+    return this.snapshot(s.status)
   }
   async send(id: string, text: string): Promise<FleetStatus> {
     const s = this.sessions.get(id)
@@ -307,12 +413,12 @@ export class FleetProcessManager {
       else { this.writeClaude(s, text); this.publish(s, 'busy') }
     } catch { this.fail(s, 'fleet_send_failed') }
     await s.eventQueue
-    return { ...s.status }
+    return this.snapshot(s.status)
   }
   async interrupt(id: string): Promise<FleetStatus> {
     const s = this.sessions.get(id)
     if (!s || !this.live(s)) throw new Error('fleet_process_unavailable')
-    if (s.status.state !== 'busy') throw new Error('fleet_not_busy')
+    if (!['busy', 'waiting_input'].includes(s.status.state)) throw new Error('fleet_not_busy')
     try {
       if (s.status.cli === 'codex_cli') {
         if (!s.status.turn_id) throw new Error('fleet_missing_turn_id')
@@ -321,7 +427,7 @@ export class FleetProcessManager {
       // Only a result/completed notification can mark the worker idle.
     } catch { this.fail(s, 'fleet_interrupt_failed') }
     await s.eventQueue
-    return { ...s.status }
+    return this.snapshot(s.status)
   }
   private signal(s: Session, signal: NodeJS.Signals) {
     if (!s.child.pid) return
@@ -355,10 +461,11 @@ export class FleetProcessManager {
     const s = this.sessions.get(id)
     if (!s) throw new Error('fleet_unknown_id')
     await this.terminate(s)
+    this.clearQuestions(s)
     delete s.status.turn_id
     this.publish(s, s.exited ? 'stopped' : 'unknown', s.exited ? undefined : 'fleet_shutdown_timeout')
     await s.eventQueue
-    return { ...s.status }
+    return this.snapshot(s.status)
   }
   async close(): Promise<void> {
     this.closing = true

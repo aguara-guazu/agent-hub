@@ -25,7 +25,8 @@ createInterface({input:process.stdin}).on('line',line=>{
   if(p.type==='user'){
    if(!n++)out({type:'system',subtype:'init',session_id:session});
    out({type:'assistant',message:{content:'PRIVATE output'}});
-   if(mode!=='hold')setTimeout(()=>out({type:'result',subtype:'success',session_id:session,uuid:'result-'+n,result:'PRIVATE output'}),10);
+   if(mode==='question')out({type:'control_request',request_id:'question-raw',request:{subtype:'can_use_tool',tool_name:'AskUserQuestion',input:{questions:[{header:'Choice',question:'What should I do?',options:[{label:'Yes',description:'Proceed'},{label:'No',description:'Wait'}]}]}}});
+   if(!['hold','question'].includes(mode))setTimeout(()=>out({type:'result',subtype:'success',session_id:session,uuid:'result-'+n,result:'PRIVATE output'}),10);
   }
   if(p.type==='control_request')out({type:'result',subtype:'success',session_id:session,uuid:'interrupted'});
  } else {
@@ -35,7 +36,8 @@ createInterface({input:process.stdin}).on('line',line=>{
    turn='turn-'+(++n);
    out({id:p.id,result:{turn:{id:turn,status:'inProgress'}}});
    out({method:'item/agentMessage/delta',params:{threadId:'native',delta:'PRIVATE output'}});
-   if(mode!=='hold')setTimeout(()=>out({method:'turn/completed',params:{threadId:'native',turn:{id:turn,status:'completed'}}}),10);
+   if(mode==='question')out({method:'item/tool/requestUserInput',id:42,params:{threadId:'native',turnId:turn,isBlocking:true,questions:[{id:'choice',header:'Choice',question:'What should I do?',options:[{label:'Yes',description:'Proceed'},{label:'No',description:'Wait'}]}]}});
+   if(!['hold','question'].includes(mode))setTimeout(()=>out({method:'turn/completed',params:{threadId:'native',turn:{id:turn,status:'completed'}}}),10);
   }
   if(p.method==='turn/steer') {
    if(p.params.expectedTurnId!==turn)out({id:p.id,error:{message:'PRIVATE stale turn'}});
@@ -50,6 +52,7 @@ createInterface({input:process.stdin}).on('line',line=>{
 function mockChat() {
   const rows = new Map<string, { id: string; session_id: string | null; runtime: HubTeamStatus | null }>()
   let authorized = true
+  const managedQuestions = vi.fn(async (_sender: string, _questions: unknown[], _generation: string) => {})
   const lifecycle = vi.fn(async (_session: string, _event: string, _at: string, _turn?: string) => {})
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     if (sql.startsWith('SELECT m.id FROM chat_team_members')) return authorized && rows.get(String(params[0]))?.session_id === params[1] ? [{ id: params[0] }] : []
@@ -62,7 +65,7 @@ function mockChat() {
     }
     throw new Error('Unexpected test SQL')
   })
-  return { chat: { db: { query }, managedLifecycle: lifecycle } as unknown as LocalChat, rows, lifecycle, query, setAuthorized: (value: boolean) => { authorized = value } }
+  return { chat: { db: { query }, managedLifecycle: lifecycle, managedQuestions } as unknown as LocalChat, rows, lifecycle, managedQuestions, query, setAuthorized: (value: boolean) => { authorized = value } }
 }
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'hub-team-runtime-'))
@@ -82,7 +85,7 @@ function setup(mode = 'normal', extra: HubTeamOptions = {}) {
   const run = vi.fn<NonNullable<HubTeamOptions['run']>>(async (command, args, options) => command === 'git' ? exec(command, args, options) : { stdout: help })
   let enabled = true
   const backend = new HubTeamRuntime(mock.chat, join(directory, 'state'), () => enabled, {
-    requestTimeoutMs: 300, shutdownTimeoutMs: 50, launcher: launched, run, ...extra,
+    requestTimeoutMs: 1500, shutdownTimeoutMs: 50, launcher: launched, run, ...extra,
   })
   backends.push(backend)
   const id = randomUUID()
@@ -169,6 +172,24 @@ describe('HubTeamRuntime lifecycle', () => {
     expect(lifecycle.mock.calls.at(-1)?.[3]).toBe('turn-2')
     await backend.stop(id)
     expect(lifecycle).toHaveBeenLastCalledWith('joined', 'SessionEnd', expect.any(String), 'turn-2')
+  })
+  it.each(['codex_cli', 'claude_code'] as const)('publishes native %s questions to the master before join and rebinds idempotently', async cli => {
+    const { backend, id, rows, managedQuestions, lifecycle } = setup('question')
+    const parent = await backend.workspace(join(directory, 'repo'))
+    const receipt = await backend.launch(parent, { member_id: id, cli, model: 'test', prompt: 'PRIVATE' })
+    await until(async () => (await backend.status(id))?.state === 'waiting_input')
+    const waiting = (await backend.status(id))!
+    const pending = waiting.questions![0]!
+    expect(managedQuestions).toHaveBeenCalledWith(id, [pending], receipt.runtime.generation)
+    expect(lifecycle).not.toHaveBeenCalled()
+    rows.get(id)!.session_id = 'joined-late'
+    await backend.bind(id, 'joined-late')
+    expect(lifecycle).toHaveBeenLastCalledWith('joined-late', 'RequestUserInput', waiting.updated_at, waiting.turn_id)
+    expect(managedQuestions).toHaveBeenLastCalledWith(id, [pending], receipt.runtime.generation)
+    const after = await backend.answer(id, pending.id, { [pending.questions[0]!.id]: { answers: ['PRIVATE ANSWER'] } })
+    expect(after.state).toBe('busy')
+    expect((await backend.status(id))?.questions).toEqual([])
+    expect(JSON.stringify(rows.get(id)?.runtime)).not.toContain('PRIVATE ANSWER')
   })
   it('keeps failed startup metadata and never claims input delivery', async () => {
     const { backend, id, rows, lifecycle } = setup('invalid')

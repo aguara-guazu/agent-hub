@@ -47,6 +47,10 @@ createInterface({input:process.stdin}).on('line',line=>{
    if(p.params.approvalPolicy!=='never'||p.params.sandbox!=='danger-full-access')process.exit(9);
    rpc(p.id,{thread:{id:p.params.threadId||'thread-native'}});
   }
+  if(p.id===42&&p.result) {
+   if(p.result.answers.choice.answers[0]!=='PRIVATE ANSWER')process.exit(12);
+   out({method:'item/completed',params:{threadId:'thread-native',item:{type:'userInput'}}});
+  }
   if(p.method==='turn/start') {
    if(p.params.approvalPolicy!=='never'||p.params.sandboxPolicy.type!=='dangerFullAccess')process.exit(9);
    active='turn-'+(++n);
@@ -56,8 +60,14 @@ createInterface({input:process.stdin}).on('line',line=>{
    out({method:'turn/started',params:{threadId:'thread-native',turn:{id:active}}});
    const complete=()=>out({method:'turn/completed',params:{threadId:'thread-native',turn:{id:active,status:mode==='failed'?'failed':'completed',error:{message:'SECRET ERROR'}}}});
    if(mode==='fast') complete();
+   if(mode.startsWith('question')) {
+    const ask={method:'item/tool/requestUserInput',id:42,params:{threadId:'thread-native',turnId:active,isBlocking:true,questions:[{id:'choice',header:'Approach',question:'Which approach?',isOther:true,isSecret:false,options:[{label:'Yes',description:'Proceed'},{label:'No',description:'Wait'}]}]}};
+    out(ask);out(ask);
+    if(mode==='questionCancel')setTimeout(()=>out({method:'serverRequest/resolved',params:{threadId:'thread-native',requestId:42}}),150);
+    if(mode==='questionFinish')setTimeout(()=>out({method:'turn/completed',params:{threadId:'thread-native',turn:{id:active,status:'completed'}}}),150);
+   }
    rpc(p.id,{turn:{id:active,status:'inProgress'}});
-   if(!['hold','fast','descendant','steerRejected','steerRace','steerWrongAck','steerTimeout','steerComplete'].includes(mode)) setTimeout(complete,20);
+   if(!mode.startsWith('question')&&!['hold','fast','descendant','steerRejected','steerRace','steerWrongAck','steerTimeout','steerComplete'].includes(mode)) setTimeout(complete,20);
   }
   if(p.method==='turn/steer') {
    if(p.params.expectedTurnId!==active||!p.params.clientUserMessageId||p.params.input[0].type!=='text')process.exit(11);
@@ -74,8 +84,18 @@ createInterface({input:process.stdin}).on('line',line=>{
   if(p.type==='user') {
    if(!n++)out({type:'system',subtype:'init',session_id:session});
    out({type:'assistant',session_id:session,message:{content:[{text:'SECRET TRANSCRIPT'}]}});
+   if(mode.startsWith('question')) {
+    if(!args.includes('--permission-prompt-tool=stdio'))process.exit(13);
+    const ask={type:'control_request',request_id:'native-question-42',request:{subtype:'can_use_tool',tool_name:'AskUserQuestion',input:{questions:[{question:'Which approach?',header:'Approach',multiSelect:false,options:[{label:'Yes',description:'Proceed'},{label:'No',description:'Wait'}]}]}}};
+    out(ask);out(ask);
+    if(mode==='questionCancel')setTimeout(()=>out({type:'control_cancel_request',request_id:'native-question-42'}),150);
+    return;
+   }
    if(mode==='hold')return;
    setTimeout(()=>out({type:'result',subtype:mode==='failed'?'error_during_execution':'success',is_error:mode==='failed',session_id:session,uuid:'result-'+n,result:'SECRET RESULT'}),20);
+  }
+  if(p.type==='control_response') {
+   if(p.response.subtype!=='success'||p.response.response.behavior!=='allow'||p.response.response.updatedInput.answers['Which approach?']!=='PRIVATE ANSWER')process.exit(14);
   }
   if(p.type==='control_request') setTimeout(()=>out({type:'result',subtype:'success',session_id:session,uuid:'interrupted'}),20);
  }
@@ -87,7 +107,7 @@ async function setup(mode = 'normal', extra: FleetProcessOptions = {}) {
   const events: FleetEvent[] = []
   const launches: { command: string; args: string[]; env: NodeJS.ProcessEnv | undefined }[] = []
   const manager = new FleetProcessManager(dir, {
-    requestTimeoutMs: 200, shutdownTimeoutMs: 50,
+    requestTimeoutMs: 1500, shutdownTimeoutMs: 50,
     launcher: (command, args, options) => {
       launches.push({ command, args, env: options.env })
       return spawn(process.execPath, [file, command, JSON.stringify(args)], { ...options, env: { ...options.env, FIXTURE_MODE: mode }, stdio: 'pipe' })
@@ -172,6 +192,51 @@ describe('FleetProcessManager', () => {
     expect(manager.supportsMidTurn('one')).toBe(false)
     await expect(manager.enqueue('one', 'PRIVATE')).rejects.toThrow('fleet_mid_turn_unsupported')
     expect(manager.status('one')).toEqual(before)
+  })
+  it.each(['codex_cli', 'claude_code'] as const)('routes native %s questions with opaque IDs and responds without persisting answers', async cli => {
+    const { manager, input, events } = await setup('question')
+    input.cli = cli
+    await manager.start(input)
+    await until(() => manager.status('one')?.state === 'waiting_input')
+    const before = manager.status('one')!
+    expect(before.questions).toHaveLength(1)
+    const pending = before.questions![0]!
+    expect(pending.id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(pending.id).not.toBe('42')
+    expect(pending.questions[0]).toMatchObject({ header: 'Approach', question: 'Which approach?' })
+    before.questions![0]!.questions[0]!.question = 'mutated'
+    expect(manager.status('one')!.questions![0]!.questions[0]!.question).toBe('Which approach?')
+    const questionId = pending.questions[0]!.id
+    await expect(manager.answer('one', pending.id, { wrong: { answers: ['PRIVATE ANSWER'] } })).rejects.toThrow('fleet_invalid_answers')
+    const after = await manager.answer('one', pending.id, { [questionId]: { answers: ['PRIVATE ANSWER'] } })
+    expect(after).toMatchObject({ state: 'busy', turn_id: before.turn_id, questions: [] })
+    await expect(manager.answer('one', pending.id, { [questionId]: { answers: ['PRIVATE ANSWER'] } })).rejects.toThrow('fleet_question_unavailable')
+    expect(JSON.stringify(events)).not.toContain('PRIVATE ANSWER')
+    expect(events.some(e => e.state === 'failed')).toBe(false)
+  })
+  it.each(['codex_cli', 'claude_code'] as const)('invalidates native %s question handles after cancellation and restart', async cli => {
+    const { manager, input } = await setup('questionCancel')
+    input.cli = cli
+    await manager.start(input)
+    await until(() => manager.status('one')?.state === 'waiting_input')
+    const old = manager.status('one')!.questions![0]!
+    await until(() => manager.status('one')?.questions?.length === 0)
+    expect(manager.status('one')?.state).toBe('busy')
+    await expect(manager.answer('one', old.id, { choice: { answers: ['PRIVATE ANSWER'] } })).rejects.toThrow('fleet_question_unavailable')
+    await manager.stop('one')
+    await manager.start(input)
+    await until(() => manager.status('one')?.state === 'waiting_input')
+    expect(manager.status('one')!.questions![0]!.id).not.toBe(old.id)
+    await expect(manager.answer('one', old.id, { choice: { answers: ['PRIVATE ANSWER'] } })).rejects.toThrow('fleet_question_unavailable')
+  })
+  it('does not accept an answer after its Codex turn completed', async () => {
+    const { manager, input } = await setup('questionFinish')
+    await manager.start(input)
+    await until(() => manager.status('one')?.state === 'waiting_input')
+    const old = manager.status('one')!.questions![0]!
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(manager.status('one')?.questions).toEqual([])
+    await expect(manager.answer('one', old.id, { choice: { answers: ['PRIVATE ANSWER'] } })).rejects.toThrow('fleet_question_unavailable')
   })
   it('runs Claude with permission bypass and waits for result, not assistant output', async () => {
     const { manager, input, events, launches } = await setup()

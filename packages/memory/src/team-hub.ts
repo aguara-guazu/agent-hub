@@ -8,7 +8,7 @@ import { check, MemoryError } from './contracts.js'
 import { validCliModel, type ExtractionCli } from './cli-extraction.js'
 import type { LocalChat } from './local-chat.js'
 import type { TeamOrca, TeamWorkspace, TeamLaunchReceipt, TeamLaunchMember } from './team-orca.js'
-import { FleetProcessManager, type FleetEvent, type FleetProcessOptions, type FleetStatus } from './fleet-process.js'
+import { FleetProcessManager, type FleetEvent, type FleetProcessOptions, type FleetStatus, type FleetPendingQuestion, type FleetQuestionAnswers } from './fleet-process.js'
 
 const exec = promisify(execFile)
 type RunOptions = { cwd?: string; env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; windowsHide: boolean }
@@ -24,6 +24,7 @@ export interface HubTeamStatus extends FleetStatus {
 export interface HubTeamLaunchReceipt extends TeamLaunchReceipt { runtime: HubTeamStatus }
 type ManagedChat = LocalChat & {
   managedLifecycle(sessionId: string, event: string, at: string, turnId?: string): Promise<unknown>
+  managedQuestions(senderId: string, questions: FleetPendingQuestion[], generation: string): Promise<unknown>
 }
 const encode = (path: string) => Buffer.from(path, 'utf8').toString('base64url')
 const safeId = (id: string) => typeof id === 'string' && id.length > 0 && id.length <= 4000 && !/[\x00-\x1f\x7f]/.test(id)
@@ -165,7 +166,7 @@ export class HubTeamRuntime implements TeamOrca {
       const result = await this.manager.start({ id, cli: member.cli, cwd: current.path, model: member.model, prompt: member.prompt,
         ...(member.effort ? { effort: member.effort } : {}) })
       await this.verifyLaunchEnabled(id)
-      if (!['busy', 'idle'].includes(result.state)) {
+      if (!['busy', 'idle', 'waiting_input'].includes(result.state)) {
         throw new MemoryError(503, 'El agente del Hub no confirmó la entrega inicial. Inspeccioná su estado antes de volver a lanzar.')
       }
       const runtime = await this.status(id)
@@ -194,6 +195,7 @@ export class HubTeamRuntime implements TeamOrca {
     const turn = event.turn_id ?? (previous?.generation === generation ? previous.turn_id : undefined)
     const runtime: HubTeamStatus = { ...event, ...(turn ? { turn_id: turn } : {}), provider: 'hub', generation, updated_at: new Date().toISOString() }
     await this.chat.db.query('UPDATE chat_team_members SET runtime=$1 WHERE id=$2', [JSON.stringify(runtime), event.id])
+    if (runtime.questions) await (this.chat as ManagedChat).managedQuestions(event.id, runtime.questions, generation)
     if (member.session_id) await this.lifecycle(String(member.session_id), runtime)
   }
   private runtime(raw: unknown): HubTeamStatus | undefined {
@@ -205,6 +207,7 @@ export class HubTeamRuntime implements TeamOrca {
   }
   private async lifecycle(sessionId: string, runtime: HubTeamStatus) {
     const event = runtime.state === 'busy' && runtime.turn_id ? 'UserPromptSubmit'
+      : runtime.state === 'waiting_input' ? 'RequestUserInput'
       : runtime.state === 'idle' ? 'Stop'
       : runtime.state === 'stopped' ? 'SessionEnd'
       : runtime.state === 'failed' ? 'StopFailure' : undefined
@@ -216,7 +219,10 @@ export class HubTeamRuntime implements TeamOrca {
       const member = (await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE id=$1', [memberId]))[0]
       check(member?.session_id === sessionId, 'La sesión no corresponde al miembro del equipo.', 409)
       const runtime = this.runtime(member.runtime)
-      if (runtime && this.manager.status(memberId) && this.generations.get(memberId) === runtime.generation) await this.lifecycle(sessionId, runtime)
+      if (runtime && this.manager.status(memberId) && this.generations.get(memberId) === runtime.generation) {
+        await this.lifecycle(sessionId, runtime)
+        if (runtime.questions) await (this.chat as ManagedChat).managedQuestions(memberId, runtime.questions, runtime.generation)
+      }
     })
   }
   async status(handle: string): Promise<HubTeamStatus | undefined> {
@@ -262,6 +268,10 @@ export class HubTeamRuntime implements TeamOrca {
     check(text.length > 0 && text.length <= 24_000 && !text.includes('\0'), 'Instrucción inválida.', 400)
     if (this.manager.status(handle)?.state === 'busy' && this.manager.supportsMidTurn(handle)) return this.manager.enqueue(handle, text)
     return this.manager.send(handle, text)
+  }
+  async answer(handle: string, questionId: string, answers: FleetQuestionAnswers): Promise<FleetStatus> {
+    this.requireEnabled()
+    return this.manager.answer(handle, questionId, answers)
   }
   async interrupt(handle: string): Promise<FleetStatus> { this.requireEnabled(); return this.manager.interrupt(handle) }
   async stop(handle: string): Promise<FleetStatus> { return this.manager.stop(handle) }
