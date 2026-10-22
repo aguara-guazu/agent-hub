@@ -727,7 +727,7 @@ it('muestra preguntas nativas estructuradas y permite respuesta exacta sólo del
   expect(events[0]!.payload).toEqual({question_id:pending.input.question_id})
   expect(JSON.stringify(events)).not.toContain(secretAnswer)
   expect(JSON.stringify(await db.query('SELECT runtime FROM chat_team_members WHERE id=$1',[team.slot.id]))).not.toContain(secretAnswer)
-  await expect(team.teams.call('team_answer',pending.input,team.master.agent)).rejects.toThrow('ya no espera')
+  await expect(team.teams.call('team_answer',pending.input,team.master.agent)).rejects.toThrow('ya no está pendiente')
 })
 
 it('rechaza respuestas de otra generación, pregunta, sesión o estructura y estados desconocidos',async()=>{
@@ -759,4 +759,14 @@ it('el bootstrap de workers exige join primero y enruta dudas al master por Hub'
   expect(prompt).toContain(`root_thread_id=${team.plan.root_thread_id}`)
   expect(prompt).toContain(`master_session_id=${team.master.session.id}`)
   expect(prompt).toContain('No abras preguntas directas a la persona')
+})
+
+
+it('responde preguntas nativas no bloqueantes cuyo turno sigue busy',async()=>{
+  const team=await hubTeam(),pending=await waitingQuestion(team)
+  const nonblocking={...pending.runtime,state:'busy'}
+  team.backend.runtimes.set(team.slot.launch_handle,nonblocking)
+  await db.query('UPDATE chat_team_members SET runtime=$2 WHERE id=$1',[team.slot.id,JSON.stringify(nonblocking)])
+  await team.teams.call('team_answer',pending.input,team.master.agent)
+  expect(team.backend.answer).toHaveBeenCalledWith(team.slot.launch_handle,pending.input.question_id,pending.input.answers)
 })

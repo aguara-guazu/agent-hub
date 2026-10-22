@@ -454,7 +454,7 @@ Consultá dudas al líder master por el Hub en root_thread_id=${plan.root_thread
       }
       const {plan,item}=await validate()
       const current=await this.orca.status!(item.launch_handle)
-      check(current?.generation===input.expected_generation && current.state==='waiting_input','El worker ya no espera esta respuesta o su estado es desconocido',409)
+      check(current?.generation===input.expected_generation && ['waiting_input','busy'].includes(current.state ?? ''),'El worker ya no espera esta respuesta o su estado es desconocido',409)
       const pending=pendingQuestions.safeParse(current.questions)
       const request=pending.success?pending.data.find(question=>question.id===input.question_id):undefined
       check(request,'La pregunta ya no está pendiente en esta generación',409)
