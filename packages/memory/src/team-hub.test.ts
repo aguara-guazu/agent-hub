@@ -47,6 +47,7 @@ function mockChat() {
   const rows = new Map<string, { id: string; session_id: string | null; runtime: HubTeamStatus | null }>()
   const lifecycle = vi.fn(async (_session: string, _event: string, _at: string, _turn?: string) => {})
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+    if (sql.startsWith('SELECT id,session_id,runtime') && sql.includes('WHERE session_id=$1')) return [...rows.values()].filter(row => row.session_id === params[0]).map(row => ({ ...row }))
     if (sql.startsWith('SELECT id,session_id,runtime')) {
       const value = rows.get(String(params[0])); return value ? [{ ...value }] : []
     }
@@ -198,6 +199,37 @@ describe('HubTeamRuntime lifecycle', () => {
     expect((await restarted.status(id))?.state).toBe('unknown')
     await expect(restarted.stop(id)).rejects.toThrow('fleet_unknown_id')
     expect((await backend.status(id))?.state).toBe('busy')
+  })
+  it('wakes only an idle owned session and retries busy or disabled bindings without respawning', async () => {
+    const { backend, id, rows, launched, setEnabled } = setup('hold')
+    const parent = await backend.workspace(join(directory, 'repo'))
+    rows.get(id)!.session_id = 'joined'
+    await backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE' })
+    expect(await backend.wake('another-session', 'notice')).toBe(false)
+    await expect(backend.wake('joined', 'PRIVATE notice')).rejects.toThrow('todavía no está disponible')
+    await backend.interrupt(id)
+    await until(async () => (await backend.status(id))?.state === 'idle')
+    setEnabled(false)
+    await expect(backend.wake('joined', 'PRIVATE notice')).rejects.toThrow('desactivada')
+    setEnabled(true)
+    expect(await backend.wake('joined', 'PRIVATE notice')).toBe(true)
+    expect((await backend.status(id))?.state).toBe('busy')
+    expect(launched).toHaveBeenCalledTimes(1)
+    setEnabled(false)
+    await backend.suspend()
+    await expect(backend.wake('joined', 'PRIVATE notice')).rejects.toThrow('desactivada')
+    expect((await backend.status(id))?.state).toBe('stopped')
+    setEnabled(true)
+    await expect(backend.wake('joined', 'PRIVATE notice')).rejects.toThrow('todavía no está disponible')
+    expect(launched).toHaveBeenCalledTimes(1)
+  })
+  it('declines a binding whose recorded generation does not belong to this manager', async () => {
+    const { backend, id, rows } = setup('hold')
+    const parent = await backend.workspace(join(directory, 'repo'))
+    rows.get(id)!.session_id = 'joined'
+    await backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE' })
+    rows.get(id)!.runtime!.generation = randomUUID()
+    expect(await backend.wake('joined', 'PRIVATE notice')).toBe(false)
   })
   it('checks the enable switch again after asynchronous preflight before spawning', async () => {
     const value = setup('hold')

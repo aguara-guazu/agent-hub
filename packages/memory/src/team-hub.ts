@@ -213,6 +213,22 @@ export class HubTeamRuntime implements TeamOrca {
     if (!owned || this.generations.get(handle) !== runtime.generation) return { ...runtime, state: 'unknown', error_code: 'fleet_process_not_owned' }
     return { ...runtime }
   }
+  /** False permits another wake provider; an owned but unavailable worker must be retried. */
+  async wake(sessionId: string, text: string): Promise<boolean> {
+    const members = await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE session_id=$1', [sessionId])
+    for (const member of members) {
+      const handle = String(member.id)
+      const runtime = this.runtime(member.runtime)
+      const owned = this.manager.status(handle)
+      if (!runtime || !owned || this.generations.get(handle) !== runtime.generation) continue
+      this.requireEnabled()
+      check(owned.state === 'idle', 'El agente del Hub todavía no está disponible para recibir el aviso. Reintentá después.', 409)
+      const result = await this.send(handle, text)
+      check(result.state === 'busy' || result.state === 'idle', 'El agente del Hub no confirmó la entrega del aviso. Reintentá después.', 503)
+      return true
+    }
+    return false
+  }
   async send(handle: string, text: string): Promise<FleetStatus> {
     this.requireEnabled()
     check(text.length > 0 && text.length <= 24_000 && !text.includes('\0'), 'Instrucción inválida.', 400)
