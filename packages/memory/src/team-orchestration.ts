@@ -7,6 +7,7 @@ import type { LocalChat } from './local-chat.js'
 import { hash } from './store.js'
 import type { Sql } from './database.js'
 import type { ExtractionCli } from './cli-extraction.js'
+import type { UsageQuotas } from './usage-quotas.js'
 
 export interface TeamCatalog {
   catalog(): Promise<unknown>
@@ -62,7 +63,8 @@ const publicError = (phase:'workspace'|'launch') => phase==='workspace'
 
 export class TeamOrchestration {
   private recovery?:Promise<void>
-  constructor(readonly chat:LocalChat, private readonly catalog:TeamCatalog, private readonly orca:TeamOrca) {}
+  constructor(readonly chat:LocalChat, private readonly catalog:TeamCatalog, private readonly orca:TeamOrca,
+    private readonly usage?:Pick<UsageQuotas,'forCli'>) {}
   private get db() { return this.chat.db }
 
   async call(operation:string, raw:unknown, agent?:AgentContext):Promise<any> {
@@ -103,7 +105,21 @@ export class TeamOrchestration {
         return entry
       } catch {return {...entry,launchable:false,launch_reason:'El adaptador no confirmó los requisitos de lanzamiento de esta CLI en la plataforma actual.'}}
     }))
-    return {...catalog,clis,launch_context}
+    const models=await Promise.all((Array.isArray(catalog.models)?catalog.models:[]).map(async(model:Record<string,any>)=>({
+      ...model,usage:await this.quota(model.cli,model.id,who)})))
+    return {...catalog,clis,models,launch_context}
+  }
+
+  private quota(cli:string,model:string,who:Record<string,any>) {
+    if(!this.chat.usageEnabled(who.agent_id))return Promise.resolve({status:'unknown' as const,reason:'disabled',pools:[]})
+    return this.usage?.forCli(cli,model) ?? Promise.resolve({status:'unknown' as const,reason:'no_observation',pools:[]})
+  }
+  private async checkQuota(members:Record<string,any>[],who:Record<string,any>) {
+    for(const item of members) {
+      const usage=await this.quota(item.cli,item.model,who)
+      check(!['exhausted','cooldown'].includes(usage.status),
+        `La cuota observada de ${item.cli} / ${item.model} impide lanzar ahora. Consultá usage_status para revisar ventana y reinicio; el plan conserva sus worktrees y recibos.`,409)
+    }
   }
 
   private async master(who:Record<string,any>) {
@@ -142,8 +158,10 @@ export class TeamOrchestration {
     const validations=await this.validateMembers(input.members,who)
     await this.preflight(input.members,who)
     const planId=randomUUID(),members=input.members.map((item,index)=>({id:randomUUID(),ordinal:index,...item,capabilities:validations[index]}))
+    const usage=await Promise.all(input.members.map(async item=>({worktree_name:item.worktree_name,cli:item.cli,model:item.model,...await this.quota(item.cli,item.model,who)})))
     const document={schema_version:1,id:planId,objective:input.objective,master_channel_id:channel.id,created_by:who.id,
-      parent,base_revision:input.base_revision,catalog,members}
+      parent,base_revision:input.base_revision,catalog,members,usage,
+      usage_guidance:'Observación de cuotas, no reserva ni garantía de terminar. Unknown o datos vencidos requieren planificar con incertidumbre; varios agentes comparten saldo.'}
     const digest=hash(document)
     return this.db.transaction(async sql=>{
       const root=(await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by) VALUES($1,$2,$3,$4) RETURNING *',
@@ -166,6 +184,7 @@ export class TeamOrchestration {
     const document=plan.plan as Record<string,any>,parent=plan.parent as TeamWorkspace
     await this.validateMembers(document.members,who)
     await this.preflight(document.members,who)
+    await this.checkQuota(document.members,who)
     await this.master(who)
     const current=await this.orca.workspace(parent.id)
     await this.master(who)
@@ -206,6 +225,7 @@ export class TeamOrchestration {
 
   private async launchMember(plan:Record<string,any>,member:Record<string,any>,parent:TeamWorkspace,who:Record<string,any>):Promise<boolean> {
     if(!await this.launchActive(plan,who))return false
+    await this.checkQuota([member],who)
     const token=randomBytes(32).toString('base64url'),expires=new Date(Date.now()+30*60_000).toISOString()
     const intent=await this.db.query(`UPDATE chat_team_members SET state='workspace_intent',invitation_hash=$2,invitation_expires_at=$3,updated_at=now()
       WHERE id=$1 AND state='prepared' AND EXISTS(SELECT 1 FROM chat_team_plans t WHERE t.id=team_id AND t.state='launching') RETURNING id`,
@@ -224,6 +244,7 @@ export class TeamOrchestration {
       [member.id,workspace.id,workspace.path,workspace.repo_id,workspace.head])
     await this.event(this.db,plan.id,member.id,'workspace_created',who.id,who.channel_id,plan.root_thread_id,{workspace_id:workspace.id,head:workspace.head})
     if(!await this.launchActive(plan,who))return false
+    await this.checkQuota([member],who)
     const launching=await this.db.query(`UPDATE chat_team_members SET state='launch_intent',updated_at=now() WHERE id=$1 AND state='workspace_created'
       AND EXISTS(SELECT 1 FROM chat_team_plans t WHERE t.id=team_id AND t.state='launching') RETURNING id`,[member.id])
     if(!launching.length)return false
@@ -342,7 +363,7 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
       launch_handle,launch_kind,operation_id,prompt_outcome,error,invitation_expires_at,invitation_used_at,session_id,channel_id,created_at,updated_at
       FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal,id`,[planId])
     return {id:plan.id,digest:plan.digest,objective:plan.objective,state:plan.state,master_channel_id:plan.master_channel_id,
-      root_thread_id:plan.root_thread_id,created_by:plan.created_by,parent:plan.parent,base_revision:plan.base_revision,plan:plan.plan,
+      root_thread_id:plan.root_thread_id,created_by:plan.created_by,parent:plan.parent,base_revision:plan.base_revision,plan:this.chat.usageEnabled(who.agent_id)?plan.plan:{...plan.plan,usage:[],usage_guidance:'La consulta de cuotas está deshabilitada para este cliente.',usage_redacted:true},
       launch:{started_at:plan.launch_started_at,accepted_at:plan.launched_at,instruction_declared:Boolean(plan.human_instruction)},
       close:{at:plan.closed_at,reason:plan.close_reason},members}
   }

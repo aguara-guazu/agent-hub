@@ -1,3 +1,4 @@
+import type { UsageQuotaBinding, UsageQuotaObservation } from '@agenthub/shared'
 import { createHmac } from 'node:crypto'
 import { inspectNativeProcess, orcaWorkspaceId } from '@agenthub/gateway'
 import type { DaemonState } from './state.js'
@@ -11,7 +12,7 @@ export class NativeChatClient {
   private readonly token: string
   private readonly started = new Date().toISOString()
   private processInfo: { process_id:number; process_started:string } | undefined
-  constructor(state: DaemonState, readonly agentId: string, readonly nativeId: string, readonly cwd: string, readonly transport: ChatTransport) {
+  constructor(private readonly state: DaemonState, readonly agentId: string, readonly nativeId: string, readonly cwd: string, readonly transport: ChatTransport) {
     const credentials = state.loadCredentials(), snapshot = state.loadSnapshot(agentId)
     const servers = snapshot?.['servers'] as { tools?:{name:string}[] }[] | undefined
     if (!credentials || !servers?.some(s=>s.tools?.some(t=>t.name==='chat_join'))) throw new Error('Habilitá colaboración local para este agente en Agent Hub.')
@@ -33,6 +34,25 @@ export class NativeChatClient {
       signal:signal ? AbortSignal.any([signal,timeout]) : timeout})
     if (!response.ok) throw new ChatConnectionError(response.status)
     return response.json()
+  }
+  usageEnabled():boolean {
+    const servers=this.state.loadSnapshot(this.agentId)?.['servers'] as {tools?:{name:string}[]}[] | undefined
+    return !!servers?.some(server=>server.tools?.some(tool=>tool.name==='usage_status'))
+  }
+  private async usage(payload:Record<string,unknown>,signal?:AbortSignal) {
+    if(!this.usageEnabled())throw new ChatConnectionError(403)
+    const response=await fetch(new URL('/api/memory/usage/native',this.url),{method:'POST',
+      headers:{Authorization:`Bearer ${this.token}`,'Content-Type':'application/json'},
+      body:JSON.stringify({agent_id:this.agentId,native_id:this.nativeId,session_key:this.key,...payload}),signal:signal?AbortSignal.any([signal,AbortSignal.timeout(3500)]):AbortSignal.timeout(3500)})
+    if(!response.ok)throw new ChatConnectionError(response.status)
+    return response.json()
+  }
+  async bindUsage(provider:string, accountRef?:string, sampleStartedAt=new Date().toISOString(),profileRef?:string,signal?:AbortSignal):Promise<UsageQuotaBinding> {
+    const result=await this.usage({action:'bind',provider,account_ref:accountRef,sample_started_at:sampleStartedAt,profile_ref:profileRef},signal)
+    return result.binding
+  }
+  async reportUsage(binding:UsageQuotaBinding,observation:UsageQuotaObservation,signal?:AbortSignal):Promise<void> {
+    await this.usage({action:'observe',binding,observation},signal)
   }
   context() {
     return `Agent Hub: conservá tu identidad y session_key=${this.key}; usala en memory_chat_*. Aplicá local-collaboration; cargala sólo si falta su contexto. Si no tenés guía vigente o cambió guidance_version, recuperala con memory_chat_join. Si needs_nickname=true, elegí tu nick antes de escribir; al reanudar conservalo. Leé inbox al iniciar/reanudar, ante avisos o al recuperar conexión. Verificá líder y alcance en la guía; respondé en el hilo correspondiente y atendé la mención al resolverla. No hagas polling ni crees canales sin pedido explícito. El líder transmite sólo permisos reales de la persona; siguen vigentes las aprobaciones de esta CLI.`

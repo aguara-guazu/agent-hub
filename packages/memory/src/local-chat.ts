@@ -1,4 +1,5 @@
 import { workDefinitions, updateWork } from './local-work.js'
+import { UsageNotices } from './usage-notices.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { realpath, stat } from 'node:fs/promises'
@@ -95,6 +96,7 @@ async function virtualFolder(path: string) {
 
 /** Durable data; events are hints only. Reconnecting listeners always re-read SQLite. */
 export class LocalChat {
+  usageEnabled: (agentId:string)=>boolean = () => true
   readonly events = new EventEmitter().setMaxListeners(0)
   private readonly availability = new Map<string,{until:number;readOnly:Promise<boolean|null>}>()
   constructor(readonly store: MemoryStore, readonly turnAlertGraceMs=60_000) {}
@@ -563,7 +565,7 @@ export class LocalChat {
           await this.db.query('INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id) VALUES($1,$2)',[who.id,m.id])
         }
       }
-      return {...result,team:await this.team(who.channel_id,false,who.id)}
+      return {...result,team:await this.team(who.channel_id,false,who.id),usage_notices:await new UsageNotices(this).pending(who.id,true)}
     }
     await this.db.query('UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[who.id,new Date(Date.now()+90000).toISOString()])
     if (operation === 'chat_ack') {

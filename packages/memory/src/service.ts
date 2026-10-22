@@ -35,6 +35,7 @@ function selectedAI(ai: AIConfig, defaults: { target?: string; embedding_state?:
   return pending ? { ...ai, embedding_model: NATIVE_EMBEDDING_MODEL, embeddings_enabled: true } : ai
 }
 export class MemoryService {
+  usageEnabled:(agentId:string)=>boolean = ()=>true
   readonly defaults = new MemoryDefaults(this)
   readonly media: MediaRuntime
   readonly nativeEmbeddings: NativeEmbeddingPool
@@ -72,6 +73,7 @@ export class MemoryService {
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media,
       { catalog: new TeamCatalog(this.cliExtraction), orca: new LocalTeamOrca() })
+    operations.chat.usageEnabled=this.usageEnabled
     if (this.orchestrationOwner) await operations.teams?.initialize()
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     this.current = { db, store, ai, operations, runner, network: new SharedNetwork(operations.sharing) }

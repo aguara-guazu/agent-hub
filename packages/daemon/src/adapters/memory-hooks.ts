@@ -26,7 +26,7 @@ function powershellWord(value: string): string {
  * `&&`, con `;`. Codex no documenta su shell en Windows: `-EncodedCommand` reduce el script a un token base64 de
  * UTF-16LE sin espacios ni comillas que cmd.exe, Git Bash y PowerShell pasan tal cual.
  */
-function hookCommand(command: string, args: string[], encoded: boolean): string {
+export function hookCommand(command: string, args: string[], encoded: boolean): string {
   if (!WINDOWS) return `ELECTRON_RUN_AS_NODE=1 ${[command, ...args].map(shellWord).join(' ')}`
   const script = `$env:ELECTRON_RUN_AS_NODE='1'; & ${[command, ...args].map(powershellWord).join(' ')}`
   if (!encoded) return script

@@ -213,3 +213,13 @@
 .hub-oauth-client-fields input { flex: 1 1 14rem; min-width: 0; }
 
 .hub-client-logo.antigravity { color: #b3d5fd; background: #253345; }
+
+/* The same observed quotas are exposed to team leaders through memory_usage_status. */
+.hub-usage-quotas { margin-top: 2rem; }
+.hub-usage-quotas .hub-list-toolbar p { max-width: 60rem; }
+.hub-usage-quotas .hub-client-meta ul { margin: .25rem 0; padding-left: 1.25rem; }
+.hub-usage-quotas .hub-client-meta li { margin: .35rem 0; }
+@media (max-width: 600px) {
+  .hub-usage-quotas .hub-client-grid { grid-template-columns: minmax(0, 1fr); }
+  .hub-usage-quotas .hub-list-toolbar { flex-direction: column; align-items: flex-start; }
+}

@@ -469,4 +469,34 @@ UPDATE chat_deliveries SET cancelled_at=COALESCE(cancelled_at,${NOW}),error='Avi
  WHERE message_id IN (SELECT message_id FROM chat_turn_alerts);
 -- Never replay pre-upgrade activity under the new notification contract.
 UPDATE chat_turns SET alerted_at=COALESCE(alerted_at,${NOW});
+`, String.raw`
+-- Local native quota observations are not shared project events or credentials.
+CREATE TABLE usage_quota_bindings (
+ binding_id TEXT PRIMARY KEY, binding_version INTEGER NOT NULL,
+ cli TEXT NOT NULL, provider TEXT NOT NULL, account_ref TEXT,
+ active BOOLEAN NOT NULL DEFAULT 1, bound_at TIMESTAMP NOT NULL
+);
+CREATE TABLE usage_quota_pools (
+ id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_ref TEXT, pool_id TEXT NOT NULL,
+ scope TEXT NOT NULL CHECK(scope IN ('account','binding')),
+ active BOOLEAN NOT NULL DEFAULT 1, observation JSON NOT NULL, window_evidence JSON NOT NULL DEFAULT '{}', status_evidence JSON, last_known JSON, observed_status TEXT NOT NULL, event_state TEXT NOT NULL DEFAULT 'unknown',
+ observed_at TIMESTAMP NOT NULL, digest TEXT NOT NULL
+);
+CREATE TABLE usage_quota_memberships (
+ binding_id TEXT NOT NULL REFERENCES usage_quota_bindings(binding_id) ON DELETE CASCADE,
+ pool_key TEXT NOT NULL REFERENCES usage_quota_pools(id) ON DELETE CASCADE,
+ PRIMARY KEY(binding_id,pool_key)
+);
+CREATE TABLE usage_quota_notices (
+ id TEXT PRIMARY KEY, event_key TEXT NOT NULL, recipient_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ channel_id TEXT NOT NULL REFERENCES chat_channels(id), team_id TEXT REFERENCES chat_team_plans(id),
+ payload JSON NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, read_at TIMESTAMP, notified_at TIMESTAMP,
+ attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TIMESTAMP NOT NULL DEFAULT ${NOW}, UNIQUE(event_key,recipient_id)
+);
+CREATE INDEX usage_quota_notices_pending ON usage_quota_notices(recipient_id,read_at,next_attempt_at);
+CREATE TABLE usage_quota_transitions (
+ id TEXT PRIMARY KEY, pool_key TEXT NOT NULL REFERENCES usage_quota_pools(id) ON DELETE CASCADE,
+ before_state TEXT NOT NULL, after_state TEXT NOT NULL, observed_at TIMESTAMP NOT NULL,
+ UNIQUE(pool_key,observed_at)
+);
 `]

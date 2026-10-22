@@ -1,3 +1,4 @@
+import { launchQuotaHookProbe } from './usage-quota-hook.js'
 import { createHmac } from 'node:crypto'
 import { inspectNativeProcess, orcaWorkspaceId } from '@agenthub/gateway'
 import type { DaemonState } from './state.js'
@@ -66,6 +67,7 @@ export async function localChatHook(state: DaemonState, agentId: string, kind: s
   }
   try {
     const result = await send(event)
+    if(kind==='codex_cli' && ['SessionStart','Stop'].includes(event) && processInfo)launchQuotaHookProbe(state,agentId,nativeId,cwd,processInfo)
     if (['SessionStart','UserPromptSubmit','BeforeAgent','PreToolUse','BeforeTool'].includes(event)) {
       const waiting=result.channel.kind==='virtual' && !result.channel.activated_at
       const context = waiting

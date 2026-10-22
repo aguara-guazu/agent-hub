@@ -1,3 +1,4 @@
+import { startQuotaCollector } from './usage-quota-collector.js'
 import { resumedTuiSession } from '@agenthub/gateway'
 import { randomUUID } from 'node:crypto'
 import { spawn as spawnChild } from 'node:child_process'
@@ -57,6 +58,7 @@ export async function runChatTui(stateDir:string,agentId:string,args:string[]=[]
     name:process.env.TERM||'xterm-256color',cols:screen.cols,rows:screen.rows,cwd:process.cwd(),
     env:{...env,AGENTHUB_TUI_BINDINGS:bindings,AGENTHUB_TUI_SESSION:id,AGENTHUB_TUI_AGENT:agentId,AGENTHUB_TUI_KEY:broker.key,...(executable.prefix.length?{ELECTRON_RUN_AS_NODE:'1'}:{})},
   })
+  let stopQuotas:(()=>Promise<void>)|undefined
   let stopped=false,ready=false,injecting=false,pendingTurn=false,sawBusy=false,lastInput=0,lastOutput=0,userDraft=false,composerSeen=false
   let timer:ReturnType<typeof setTimeout>|undefined,listener:Promise<void>|undefined
   let events=Promise.resolve(),heldInput=''
@@ -119,6 +121,7 @@ export async function runChatTui(stateDir:string,agentId:string,args:string[]=[]
       while(!controller.signal.aborted){
         try {
           await broker.start();emit(ready?'Stop':'Interrupt')
+          if(kind!=='claude_code' && !stopQuotas)stopQuotas=startQuotaCollector({root:state.root,cli:kind,command:executable.command,prefix:executable.prefix,args,cwd:process.cwd(),env,broker,signal:controller.signal})
           await broker.listen(deliver,controller.signal,false);return
         } catch(error) {
           // Missing authorization/workspace is not repaired by retrying. Keep the native UI usable.
@@ -138,6 +141,6 @@ export async function runChatTui(stateDir:string,agentId:string,args:string[]=[]
   } finally {
     abort();clearTimeout(timer);notify();process.stdin.off('data',input);process.stdin.setRawMode(wasRaw);process.stdin.pause()
     process.stdout.off('resize',resize);process.off('SIGTERM',abort);process.off('SIGHUP',abort)
-    await listener;await events;await broker.send('SessionEnd').catch(()=>{});screen.dispose()
+    await stopQuotas?.();await listener;await events;await broker.send('SessionEnd').catch(()=>{});screen.dispose()
   }
 }
