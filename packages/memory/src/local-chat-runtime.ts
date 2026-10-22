@@ -24,7 +24,8 @@ export class LocalChatRuntime {
     await exec(js ? process.execPath : binary, [...(js ? [binary] : []),'queue','--thread',nativeId,'--message',text],
       { timeout: 15000, maxBuffer: 65536, windowsHide: true, env: { ...process.env, ...(js ? { ELECTRON_RUN_AS_NODE: '1' } : {}) } })
   }, private enabled: (agentId:string) => boolean = () => true,
-  private inspectProcess:typeof inspectNativeProcess = inspectNativeProcess) {}
+  private inspectProcess:typeof inspectNativeProcess = inspectNativeProcess,
+  private collaborationEnabled: () => boolean = () => true) {}
   start() {
     if (this.timer) return
     this.chat.events.on('change',this.kick)
@@ -39,6 +40,7 @@ export class LocalChatRuntime {
     await this.running
   }
   async tick() {
+    if (!this.collaborationEnabled()) return
     // PID birth time prevents a recycled PID from keeping a dead session online.
     const processes = await this.chat.db.query('SELECT s.id,s.process_id,s.process_started FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.closed_at IS NULL AND c.closed_at IS NULL AND s.process_id IS NOT NULL')
     for (const s of processes) {
@@ -68,6 +70,7 @@ export class LocalChatRuntime {
       const quota=new UsageNotices(this.chat),notices=await quota.claim(s.id)
       if (!deliveries.length && !notices.length) continue
       try {
+        if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) continue
         await this.queue(s.native_id,[deliveries.length?chatWakeText(deliveries.map(d=>d.message_id)):'',notices.length?usageWakeText:''].filter(Boolean).join('\n'))
         await quota.notified(s.id,notices.map(n=>String(n.id)))
         await this.notified(s.id,deliveries.map(d=>d.message_id))
@@ -85,6 +88,7 @@ export class LocalChatRuntime {
     for(const s of newcomers) {
       if(!this.enabled(s.agent_id))continue
       if(!await this.claimBootstrap(s.id))continue
+      if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) continue
       try {await this.queue(s.native_id,teamBootstrap)}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
     }
   }
@@ -125,14 +129,16 @@ export class LocalChatRuntime {
     try {
       while (!controller.signal.aborted && Date.now()<deadline) {
         const s = (await this.chat.db.query('SELECT s.*,c.leader_id,c.orca_workspace_id,c.closed_at AS channel_closed_at,c.kind AS channel_kind,c.activated_at FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.id=$1',[sid]))[0]
-        if (!s || s.closed_at || s.channel_closed_at || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
+        if (!this.collaborationEnabled() || !s || s.closed_at || s.channel_closed_at || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
         if (s.state === 'idle') {
           if(s.leader_id && await this.claimBootstrap(sid)) {
+            if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
             return {messages:[],bootstrap:true,context:teamBootstrap}
           }
           const deliveries = await this.claim(sid)
           const quota=new UsageNotices(this.chat),notices=await quota.claim(sid)
           if (deliveries.length || notices.length) {
+            if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
             const ids = deliveries.map(d=>String(d.message_id)); await this.notified(sid,ids)
             await quota.notified(sid,notices.map(n=>String(n.id)))
             return { messages:[...ids,...notices.map(n=>String(n.id))], context:[ids.length?chatWakeText(ids):'',notices.length?usageWakeText:''].filter(Boolean).join('\n') }

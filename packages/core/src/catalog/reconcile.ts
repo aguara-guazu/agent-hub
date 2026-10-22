@@ -1,3 +1,5 @@
+import { isCollaborationTool } from '@agenthub/memory'
+import { collaborationEnabled } from '../collaboration.js'
 /**
  * Reconciliación de las herramientas descubiertas en un sondeo. Espeja
  * `backend/agenthub/modules/catalog/__init__.py`.
@@ -104,6 +106,9 @@ export function applyProbeResult(store: Store, server: McpServerRow, result: Pro
 
   for (const [name, tool] of existing) {
     if (seen.has(name)) continue
+    // A disabled collaboration surface is temporarily filtered by the bundled MCP endpoint.
+    // It remains installed so turning the gate back on restores the original policy.
+    if (isBundledServer(store, server) && !collaborationEnabled(store) && isCollaborationTool(name)) continue
     outcome.missing.push(name)
     if (!tool.quarantined) {
       store.updateTool(tool.id, { quarantined: true, quarantine_reason: QUARANTINE_TOOL_MISSING })

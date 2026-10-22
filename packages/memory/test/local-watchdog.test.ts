@@ -179,3 +179,15 @@ it('does not require a coordinator to mention itself to persist its own report',
   await db.query('UPDATE chat_channels SET leader_id=$1',[session]);await observer.tick()
   expect((await observation()).decision).toMatchObject({action:'WAIT',reason:'coordinator_report_persisted'})
 })
+
+it('global disable leaves observation state untouched and re-enable resumes it', async () => {
+  await work()
+  await observer.close()
+  let enabled = false
+  observer = new LocalWatchdog(chat, () => true, () => now, undefined, () => enabled)
+  await observer.tick()
+  expect(await db.query('SELECT * FROM chat_watchdog_observations')).toHaveLength(0)
+  enabled = true
+  await observer.tick()
+  expect((await observation()).decision.action).toBe('ASK_STATUS')
+})

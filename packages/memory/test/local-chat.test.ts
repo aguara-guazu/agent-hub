@@ -779,3 +779,20 @@ it('rechaza acceso a estados ajenos fuera del canal y claves de otra sesión',as
   await expect(ops.call('chat_work_update',{session_key:outside.k,thread_id:m.thread_id,work_id:'x',request_id:'x',expected_version:0,event:'started',summary:'Ajeno'},'mcp',outside.a)).rejects.toMatchObject({statusCode:403})
   await expect(ops.call('chat_work_list',{session_key:a.k,thread_id:m.thread_id},'mcp',{...outside.a,agent_id:'foreign-client'})).rejects.toThrow('Registrate')
 })
+
+it('global disable suppresses runtime work and resumes delivery when re-enabled', async () => {
+  const leader = await register('toggle-leader'), member = await register('toggle-member')
+  await db.query("UPDATE chat_sessions SET capability='codex_queue',team_seen=1 WHERE id=$1", [member.session.id])
+  await send(leader, member)
+  let enabled = false
+  const queue = vi.fn(async () => {}), inspect = vi.fn(async () => undefined)
+  const runtime = new LocalChatRuntime(ops.chat, queue, () => true, inspect, () => enabled)
+  await runtime.tick()
+  expect(queue).not.toHaveBeenCalled()
+  expect(inspect).not.toHaveBeenCalled()
+  expect((await db.query('SELECT attempts FROM chat_deliveries WHERE recipient_id=$1', [member.session.id]))[0].attempts).toBe(0)
+  enabled = true
+  await runtime.tick()
+  expect(queue).toHaveBeenCalledTimes(1)
+  await runtime.close()
+})

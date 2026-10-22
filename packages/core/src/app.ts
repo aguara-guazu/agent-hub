@@ -1,3 +1,4 @@
+import { collaborationEnabled, COLLABORATION_ENABLED_SETTING } from './collaboration.js'
 /**
  * Aplicación Fastify del control plane local. Espeja la superficie HTTP de
  * `packages/core` implementa `docs/API_CONTRACT.md`: rutas, cuerpos, códigos y formas.
@@ -275,6 +276,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const jiraPool = new ConnectionPool(undefined, { oauthStore, detectContainers: false })
     fastify.addHook('onClose', async () => { await jiraPool.close() })
     const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
+      collaborationEnabled: () => collaborationEnabled(store),
       jiraMcp: createJiraTaskReader(store, owner.id, jiraPool, oauthStore),
       usageAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='usage_status')),
       chatAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='chat_join') && s.tools.some(t=>t.name==='chat_inbox')),
@@ -292,6 +294,21 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
         if (user.id !== owner.id) throw new HttpError(403, 'La memoria pertenece al dueño local del hub')
         return user
       },
+    })
+    fastify.get('/api/collaboration', async request => {
+      const user = await currentUser(request)
+      if (user.id !== owner.id) throw new HttpError(403, 'La configuración pertenece al dueño local del hub')
+      return { enabled: collaborationEnabled(store) }
+    })
+    fastify.put('/api/collaboration', async request => {
+      const user = await currentUser(request)
+      if (user.id !== owner.id) throw new HttpError(403, 'La configuración pertenece al dueño local del hub')
+      const input = request.body as { enabled?: unknown } | null
+      if (!input || typeof input.enabled !== 'boolean' || Object.keys(input).some(key => key !== 'enabled'))
+        throw new HttpError(422, 'Se requiere enabled booleano')
+      store.setSetting(COLLABORATION_ENABLED_SETTING, input.enabled ? '1' : '0')
+      publishPolicyChange(bus, store, 'user', owner.id)
+      return { enabled: collaborationEnabled(store) }
     })
     const registerCatalog = () => {
       const installedId = store.setting(MEMORY_CATALOG_SERVER_SETTING)

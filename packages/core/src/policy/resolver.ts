@@ -1,3 +1,5 @@
+import { isCollaborationTool, isCollaborationSkill } from '@agenthub/memory'
+import { collaborationEnabled } from '../collaboration.js'
 /**
  * Motor de resolución de exposición y snapshots.
  *
@@ -78,6 +80,7 @@ export interface ResolutionContext {
   servers: McpServerRow[]
   toolsByServer: Map<string, McpToolRow[]>
   skills: SkillRow[]
+  collaborationEnabled?: boolean
 }
 
 export function loadContext(store: Store, agentId: string, shared?: SharedResolution): ResolutionContext {
@@ -92,6 +95,7 @@ export function loadContext(store: Store, agentId: string, shared?: SharedResolu
     client.set(ruleKey(rule.resource_type, rule.resource_id), rule)
   }
   return {
+    collaborationEnabled: collaborationEnabled(store),
     agent,
     machine,
     user,
@@ -108,6 +112,10 @@ export function resolveResource(
   resourceId: string,
   base?: Decision,
 ): Decision {
+  if (ctx.collaborationEnabled === false && (resourceType === RESOURCE.tool
+    ? [...ctx.toolsByServer.values()].flat().some(tool => tool.id === resourceId && isCollaborationTool(tool.name))
+    : resourceType === RESOURCE.skill && ctx.skills.some(skill => skill.id === resourceId && isCollaborationSkill(skill.slug))))
+    return decision(false, 'collaboration_disabled', 'La colaboración está desactivada en Ajustes')
   if (!ctx.agent.enabled) return decision(false, 'client_disabled', 'Este cliente está pausado en el hub')
   const key = ruleKey(resourceType, resourceId)
   let current = base

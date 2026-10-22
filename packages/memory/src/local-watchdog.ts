@@ -13,7 +13,8 @@ export class LocalWatchdog {
   private running: Promise<void> | undefined
   private stopped = false
   constructor(private readonly chat: LocalChat, private readonly enabled: (agentId: string) => boolean = () => true,
-    private readonly clock: () => number = Date.now, private readonly onError: (error: unknown) => void = () => {}) {}
+    private readonly clock: () => number = Date.now, private readonly onError: (error: unknown) => void = () => {},
+    private readonly collaborationEnabled: () => boolean = () => true) {}
 
   start() {
     if (this.timer || this.stopped) return
@@ -25,7 +26,7 @@ export class LocalWatchdog {
   private kick = () => { void this.tick().catch(this.onError) }
   /** Coalesces simultaneous lifecycle events/timer calls; each turn scans at most 100 due tasks. */
   tick(): Promise<void> {
-    if (this.stopped) return Promise.resolve()
+    if (this.stopped || !this.collaborationEnabled()) return Promise.resolve()
     if (!this.running) this.running = this.observe().finally(() => { this.running = undefined })
     return this.running
   }

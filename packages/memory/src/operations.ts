@@ -1,3 +1,4 @@
+import { isCollaborationTool } from './collaboration.js'
 import { renderMemoryToolReference } from './skill.js'
 import { localCollaborationSkill, localOrchestrationReference } from './local-chat-skill.js'
 import { CLI_KINDS } from '@agenthub/shared'
@@ -126,13 +127,14 @@ export class MemoryOperations {
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime,
-    teamRuntime?: { catalog: TeamCatalog; orca: TeamOrca }) {
+    teamRuntime?: { catalog: TeamCatalog; orca: TeamOrca }, readonly collaborationEnabled: () => boolean = () => true) {
     this.chat = new LocalChat(store)
     this.usage = new UsageQuotas(store.db)
     this.usageNotices = new UsageNotices(this.chat)
     this.teams = teamRuntime ? new TeamOrchestration(this.chat, teamRuntime.catalog, teamRuntime.orca, this.usage) : undefined
   }
   async collaborationNotice(operation: string, raw: unknown, result: any, agent?: AgentContext) {
+    if (!this.collaborationEnabled()) return null
     if (!agent || !READ_OPERATIONS.has(operation) || operation === 'read_messages') return null
     const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
     let project = typeof input.project_id === 'string' ? input.project_id : operation === 'context' ? result?.project?.id
@@ -156,6 +158,8 @@ export class MemoryOperations {
   }
   /** `agent` identifies the calling agent session (from the gateway); it attributes notes and keeps the session alive for the notes board. */
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
+    if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
+      check(this.collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
     if (operation.startsWith('chat_')) return this.chat.call(operation, raw, agent)
     if (operation.startsWith('team_')) {
       check(this.teams, 'La orquestación de equipos no está disponible en este servicio.', 503)
@@ -172,7 +176,7 @@ export class MemoryOperations {
       case 'skill_reference': return {section:input.section,text:input.section==='memory-tools'?renderMemoryToolReference():input.section==='local-collaboration'?localCollaborationSkill.body:localOrchestrationReference}
 
       case 'usage_status': {
-        const who=agent ? await this.chat.identity(agent,input.session_key) : undefined
+        const who=agent && input.session_key && this.collaborationEnabled() ? await this.chat.identity(agent,input.session_key) : undefined
         if(who)check(!who.closed_at && !who.removed_at,'La sesión de colaboración está cerrada',403)
         const clis=await Promise.all((input.cli ? [input.cli] : CLI_KINDS).map(async (cli:string)=>({cli,...await this.usage.forCli(cli,input.model)})))
         return {generated_at:new Date().toISOString(),clis,notices:who ? await this.usageNotices.pending(who.id,true) : [],
@@ -185,7 +189,7 @@ export class MemoryOperations {
         const result = await workContext(store, input, agent)
         const projectId = result.project?.id
         const shared = projectId && (await db.query('SELECT id FROM shared_projects WHERE id=$1', [projectId])).length > 0
-        return { ...result, ...(shared ? { collaboration: { shared: true, project_id: projectId, skill: 'hub-collaboration' } } : {}) }
+        return { ...result, ...(shared && this.collaborationEnabled() ? { collaboration: { shared: true, project_id: projectId, skill: 'hub-collaboration' } } : {}) }
       }
       case 'shared_status': {
         const project = await this.sharing.get(input.project_id), who = await this.sharing.identity()

@@ -1,3 +1,4 @@
+import { applyProbeResult } from '../src/catalog/reconcile.js'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -9,7 +10,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { ConnectionPool, RemoteHttpRuntime, GatewayServer, PolicyStore } from '@agenthub/gateway'
 import { buildApp, type CoreApp } from '../src/app.js'
 import { ensureLocalOwner } from '../src/local.js'
-import { computeSnapshot } from '../src/policy/resolver.js'
+import { explain, computeSnapshot } from '../src/policy/resolver.js'
 import { createAccessToken, generateDaemonToken } from '../src/security.js'
 
 describe('memoria HTTP y gateway MCP', () => {
@@ -23,6 +24,67 @@ describe('memoria HTTP y gateway MCP', () => {
     token = await createAccessToken(app.settings, owner.id)
   })
   afterEach(async () => { await app?.fastify.close(); app?.db.close(); rmSync(directory, { recursive: true, force: true }); vi.unstubAllEnvs() })
+  it('apaga y restaura colaboración sin alterar memoria ni reglas y persiste al reiniciar', async () => {
+    const headers = { authorization: `Bearer ${token}` }, url = '/api/collaboration'
+    expect((await app.fastify.inject({ method: 'GET', url })).statusCode).toBe(401)
+    expect((await app.fastify.inject({ method: 'PUT', url, payload: { enabled: false } })).statusCode).toBe(401)
+    expect((await app.fastify.inject({ method: 'GET', url, headers })).json()).toEqual({ enabled: true })
+    expect((await app.fastify.inject({ method: 'PUT', url, headers, payload: { enabled: 'false' } })).statusCode).toBe(422)
+    const machine = app.store.insertMachine({ user_id: owner.id, hostname: 'collaboration', os: 'test', daemon_version: 'test' })
+    const agent = app.store.insertAgent({ machine_id: machine.id, cli_kind: 'codex_cli', cli_version: 'test', config_path: '' })
+    const before = computeSnapshot(app.store, agent.id)
+    const chat = before.servers.flatMap(s => s.tools).find(t => t.name === 'chat_join')!
+    const inbox = before.servers.flatMap(s => s.tools).find(t => t.name === 'chat_inbox')!
+    app.store.insertRule({ user_id: owner.id, agent_instance_id: agent.id, resource_type: 'mcp_tool', resource_id: chat.id, state: 'on', reason: 'personal allow' })
+    app.store.insertRule({ user_id: owner.id, agent_instance_id: null, resource_type: 'mcp_tool', resource_id: inbox.id, state: 'off', reason: 'personal deny' })
+    const rules = app.store.userRules(owner.id), clientRules = app.store.clientRules(agent.id)
+    const set = (enabled: boolean) => app.fastify.inject({ method: 'PUT', url, headers, payload: { enabled } })
+    expect((await set(false)).json()).toEqual({ enabled: false })
+    const off = computeSnapshot(app.store, agent.id)
+    expect(off.servers.flatMap(s => s.tools).some(t => /^(chat_|team_)/.test(t.name))).toBe(false)
+    expect(off.skills.map(s => s.slug)).toContain('memory')
+    expect(off.skills.map(s => s.slug)).not.toContain('local-collaboration')
+    expect(off.skills.map(s => s.slug)).not.toContain('hub-collaboration')
+    expect(explain(app.store, agent.id, 'mcp_tool', chat.id).source).toBe('collaboration_disabled')
+    const bundled = app.store.serverBySlug(owner.id, 'memory')!
+    const discovered = off.servers.find(s => s.id === bundled.id)!.tools
+    applyProbeResult(app.store, bundled, { ok: true, error: '', auth_required: false, server_name: 'agenthub-memory', server_version: '0.2.0',
+      tools: discovered.map(t => ({ name: t.name, title: t.title, description: t.description, input_schema: t.input_schema })) })
+    expect(app.store.tool(chat.id)!.quarantined).toBe(false)
+
+    for (const operation of ['chat_join', 'team_create', 'send_message', 'read_messages', 'claim_work']) {
+      expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/call', headers, payload: { operation, input: {} } })).statusCode).toBe(403)
+    }
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/call', headers, payload: { operation: 'skill_reference', input: { section: 'local-collaboration' } } })).statusCode).toBe(403)
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/call', headers, payload: { operation: 'create_entity', input: { kind: 'project', title: 'Memory remains' } } })).statusCode).toBe(200)
+    const base = await app.fastify.listen({ host: '127.0.0.1', port: 0 })
+    const direct = new Client({ name: 'collaboration-toggle-test', version: '1' })
+    try {
+      await direct.connect(new StreamableHTTPClientTransport(new URL(`${base}/api/memory/mcp`), {
+        requestInit: { headers: { authorization: readFileSync(join(directory, 'memory/secrets/memory-mcp'), 'utf8') } },
+      }))
+      expect((await direct.listTools()).tools.some(t => /^(chat_|team_)/.test(t.name))).toBe(false)
+      const denied = await direct.callTool({ name: 'chat_join', arguments: {} })
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied.content)).toContain('desactivada')
+      await set(true)
+      expect((await direct.listTools()).tools.some(t => t.name === 'chat_join')).toBe(true)
+      await set(false)
+    } finally { await direct.close() }
+    const native = await app.fastify.inject({ method: 'POST', url: '/api/memory/chat/native', headers, payload: { agent_id: agent.id, native_id: 'test', session_key: 'k'.repeat(64), cwd: directory, at: new Date().toISOString(), event: 'Heartbeat' } })
+    expect(native.statusCode).toBe(403)
+    await app.fastify.close(); app.db.close()
+    app = buildApp({ settings: { localMode: true, starterCatalog: false, databasePath: join(directory, 'hub.db') } })
+    expect((await app.fastify.inject({ method: 'GET', url, headers })).json()).toEqual({ enabled: false })
+    expect((await set(true)).json()).toEqual({ enabled: true })
+    const restored = computeSnapshot(app.store, agent.id)
+    expect(restored.servers.flatMap(s => s.tools).some(t => t.id === chat.id)).toBe(true)
+    expect(restored.servers.flatMap(s => s.tools).some(t => t.id === inbox.id)).toBe(false)
+    expect(restored.skills.map(s => s.slug)).toContain('local-collaboration')
+    expect(app.store.userRules(owner.id)).toEqual(rules)
+    expect(app.store.clientRules(agent.id)).toEqual(clientRules)
+    expect((await app.fastify.inject({ method: 'POST', url: '/api/memory/call', headers, payload: { operation: 'skill_reference', input: { section: 'local-collaboration' } } })).statusCode).toBe(200)
+  })
   it('exige sesión local y no entrega credenciales al consultar configuración', async () => {
     const denied = await app.fastify.inject({ method: 'GET', url: '/api/memory/status' })
     expect(denied.statusCode).toBe(401)
