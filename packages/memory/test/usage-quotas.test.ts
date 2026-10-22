@@ -112,7 +112,7 @@ it('rejects invalid amounts, dates, identities and unsupported raw fields',async
 it('restores historical quota observations with inactive bindings and invalid native tickets',async()=>{
   const ticket=await bind();await quotas.ingest(observation(),ticket)
   const store=new MemoryStore(db,dir),backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-  expect(backup.schema_version).toBe(21)
+  expect(backup.schema_version).toBe(22)
   const restoredDir=await mkdtemp(join(tmpdir(),'hub-quota-restore-')),restoredDb=new MemoryDatabase(join(restoredDir,'memory.sqlite'))
   try{
     await restoredDb.migrate();await restoreMemory(new MemoryStore(restoredDb,restoredDir),backup)

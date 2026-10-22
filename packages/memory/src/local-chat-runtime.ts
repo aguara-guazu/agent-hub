@@ -21,11 +21,17 @@ export class LocalChatRuntime {
     if (!binary) throw new Error('Codex CLI no está instalado')
     // No shell and no incoming message body in the command. Keep the existing CLI's approvals intact.
     const js = binary.endsWith('.js')
-    await exec(js ? process.execPath : binary, [...(js ? [binary] : []),'queue','--thread',nativeId,'--message',text],
-      { timeout: 15000, maxBuffer: 65536, windowsHide: true, env: { ...process.env, ...(js ? { ELECTRON_RUN_AS_NODE: '1' } : {}) } })
+    try {
+      await exec(js ? process.execPath : binary, [...(js ? [binary] : []),'queue','--thread',nativeId,'--message',text],
+        { timeout: 15000, maxBuffer: 65536, windowsHide: true, env: { ...process.env, ...(js ? { ELECTRON_RUN_AS_NODE: '1' } : {}) } })
+    } catch {
+      // Without a native rejection receipt, even a timeout may follow acceptance. Never replay it blindly.
+      throw Object.assign(new Error('Entrega de codex queue sin confirmar'),{retryable:false})
+    }
   }, private enabled: (agentId:string) => boolean = () => true,
   private inspectProcess:typeof inspectNativeProcess = inspectNativeProcess,
-  private collaborationEnabled: () => boolean = () => true) {}
+  private collaborationEnabled: () => boolean = () => true,
+  private fleet?: {wake(sessionId:string,text:string):Promise<boolean>;connected(sessionId:string):Promise<boolean>}) {}
   start() {
     if (this.timer) return
     this.chat.events.on('change',this.kick)
@@ -41,6 +47,9 @@ export class LocalChatRuntime {
   }
   async tick() {
     if (!this.collaborationEnabled()) return
+    if(this.fleet)for(const session of await this.chat.db.query("SELECT id FROM chat_sessions WHERE capability='hub_fleet' AND closed_at IS NULL")) {
+      if(await this.fleet.connected(String(session.id)))await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[session.id,new Date(Date.now()+90000).toISOString()])
+    }
     // PID birth time prevents a recycled PID from keeping a dead session online.
     const processes = await this.chat.db.query('SELECT s.id,s.process_id,s.process_started FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.closed_at IS NULL AND c.closed_at IS NULL AND s.process_id IS NOT NULL')
     for (const s of processes) {
@@ -59,53 +68,60 @@ export class LocalChatRuntime {
     // A managed app-server may not expose a per-TUI PID to hooks; its idle lease is
     // advisory presence, not a reason to silently suppress durable notifications.
     const sessions = await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
-      WHERE s.capability='codex_queue' AND s.native_id IS NOT NULL AND s.state='idle' AND s.closed_at IS NULL AND c.closed_at IS NULL
+      WHERE s.capability IN ('codex_queue','hub_fleet') AND s.native_id IS NOT NULL AND (s.state='idle' OR (s.state='busy' AND s.cli_kind='codex_cli')) AND s.closed_at IS NULL AND c.closed_at IS NULL
       AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL)
-      AND (EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)
-        OR EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.handled_at IS NULL AND n.cancelled_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5) OR EXISTS(SELECT 1 FROM usage_quota_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5))`)
+      AND (EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.notified_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)
+        OR EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.handled_at IS NULL AND n.cancelled_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5) OR EXISTS(SELECT 1 FROM usage_quota_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5))`)
     for (const s of sessions) {
       if (this.stopped) return
       if (!this.enabled(s.agent_id)) continue
-      const deliveries = await this.claim(s.id)
+      const deliveries = await this.claim(s.id,true)
       const quota=new UsageNotices(this.chat),notices=await quota.claim(s.id)
       if (!deliveries.length && !notices.length) continue
       try {
         if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) continue
-        await this.queue(s.native_id,[deliveries.length?chatWakeText(deliveries.map(d=>d.message_id)):'',notices.length?usageWakeText:''].filter(Boolean).join('\n'))
+        await this.dispatch(s,[deliveries.length?chatWakeText(deliveries.map(d=>d.message_id)):'',notices.length?usageWakeText:''].filter(Boolean).join('\n'))
         await quota.notified(s.id,notices.map(n=>String(n.id)))
         await this.notified(s.id,deliveries.map(d=>d.message_id))
-      } catch {
-        await this.chat.db.query('UPDATE chat_sessions SET wake_error=$2 WHERE id=$1',[s.id,'No se pudo notificar con codex queue; comprobá versión, sesión y conexión. Se reintentará hasta 5 veces.'])
+      } catch (error) {
+        const uncertain=(error as {retryable?:boolean}).retryable===false
+        await this.chat.db.query('UPDATE chat_sessions SET wake_error=$2 WHERE id=$1',[s.id,uncertain?'Entrega incierta; no se reenvía automáticamente. El mensaje sigue en inbox.':'No se pudo notificar a la sesión; comprobá versión, sesión y conexión. Se reintentará hasta 5 veces.'])
+        if(uncertain)for(const notice of notices)await this.chat.db.query('UPDATE usage_quota_notices SET attempts=5 WHERE id=$1 AND recipient_id=$2',[notice.id,s.id])
         for (const d of deliveries) {
           const table=d.kind==='status_notice'?'chat_status_notices':'chat_deliveries',column=d.kind==='status_notice'?'id':'message_id'
-          await this.chat.db.query(`UPDATE ${table} SET error='No se pudo notificar a la CLI' WHERE recipient_id=$1 AND ${column}=$2 AND cancelled_at IS NULL`,[s.id,d.message_id])
+          await this.chat.db.query(`UPDATE ${table} SET error=$3${uncertain?',attempts=5':''} WHERE recipient_id=$1 AND ${column}=$2 AND cancelled_at IS NULL`,[s.id,d.message_id,uncertain?'Entrega incierta; no se reenvía automáticamente. El mensaje sigue en inbox.':'No se pudo notificar a la CLI'])
         }
       }
     }
-    const newcomers=await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE c.leader_id IS NOT NULL AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND s.team_seen=0 AND s.bootstrap_attempts<5 AND (s.bootstrap_sent_at IS NULL OR s.bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) AND s.closed_at IS NULL AND s.state='idle' AND s.capability='codex_queue' AND s.native_id IS NOT NULL
+    const newcomers=await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE c.leader_id IS NOT NULL AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND s.team_seen=0 AND s.bootstrap_attempts<5 AND (s.bootstrap_sent_at IS NULL OR s.bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) AND s.closed_at IS NULL AND s.state='idle' AND s.capability IN ('codex_queue','hub_fleet') AND s.native_id IS NOT NULL
       AND NOT EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL)
       AND NOT EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.cancelled_at IS NULL)`)
     for(const s of newcomers) {
       if(!this.enabled(s.agent_id))continue
       if(!await this.claimBootstrap(s.id))continue
       if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) continue
-      try {await this.queue(s.native_id,teamBootstrap)}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
+      try {await this.dispatch(s,teamBootstrap)}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
     }
+  }
+  private async dispatch(session:Record<string,any>,text:string) {
+    if(session.capability==='hub_fleet') {
+      if(!await this.fleet?.wake(String(session.id),text))throw new Error('El Hub no controla esta sesión')
+    } else await this.queue(session.native_id,text)
   }
   private async claimBootstrap(sid:string) {
     return (await this.chat.db.query(`UPDATE chat_sessions SET bootstrap_sent_at=now(),bootstrap_attempts=bootstrap_attempts+1
       WHERE id=$1 AND team_seen=0 AND bootstrap_attempts<5 AND state='idle' AND closed_at IS NULL
       AND (bootstrap_sent_at IS NULL OR bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) RETURNING id`,[sid])).length>0
   }
-  private async claim(sid: string) {
+  private async claim(sid: string, midTurn=false) {
     return this.chat.db.transaction(async()=>{
       await this.chat.cancelInvalidTurnAlerts()
       const mentions=await this.chat.db.query(`UPDATE chat_deliveries SET attempts=attempts+1,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
-      WHERE recipient_id=$1 AND read_at IS NULL AND cancelled_at IS NULL AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND s.state='idle') AND attempts<5 AND next_attempt_at<=now() RETURNING message_id`,[sid])
+      WHERE recipient_id=$1 AND read_at IS NULL AND notified_at IS NULL AND cancelled_at IS NULL AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND (s.state='idle' OR ($2=1 AND s.state='busy' AND s.cli_kind='codex_cli'))) AND attempts<5 AND next_attempt_at<=now() RETURNING message_id`,[sid,midTurn?1:0])
       const notices=await this.chat.db.query(`UPDATE chat_status_notices SET attempts=attempts+1,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
         WHERE recipient_id=$1 AND read_at IS NULL AND handled_at IS NULL AND cancelled_at IS NULL AND notified_at IS NULL
-        AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND s.state='idle')
-        AND attempts<5 AND next_attempt_at<=now() RETURNING id AS message_id`,[sid])
+        AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND (s.state='idle' OR ($2=1 AND s.state='busy' AND s.cli_kind='codex_cli')))
+        AND attempts<5 AND next_attempt_at<=now() RETURNING id AS message_id`,[sid,midTurn?1:0])
       return [...mentions.map(d=>({message_id:String(d.message_id),kind:'mention'})),...notices.map(d=>({message_id:String(d.message_id),kind:'status_notice'}))]
     })
   }
@@ -128,28 +144,34 @@ export class LocalChatRuntime {
     const deadline = Date.now()+25000
     try {
       while (!controller.signal.aborted && Date.now()<deadline) {
-        const s = (await this.chat.db.query('SELECT s.*,c.leader_id,c.orca_workspace_id,c.closed_at AS channel_closed_at,c.kind AS channel_kind,c.activated_at FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.id=$1',[sid]))[0]
-        if (!this.collaborationEnabled() || !s || s.closed_at || s.channel_closed_at || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
-        if (s.state === 'idle') {
-          if(s.leader_id && await this.claimBootstrap(sid)) {
-            if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
-            return {messages:[],bootstrap:true,context:teamBootstrap}
-          }
-          const deliveries = await this.claim(sid)
-          const quota=new UsageNotices(this.chat),notices=await quota.claim(sid)
-          if (deliveries.length || notices.length) {
-            if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
-            const ids = deliveries.map(d=>String(d.message_id)); await this.notified(sid,ids)
-            await quota.notified(sid,notices.map(n=>String(n.id)))
-            return { messages:[...ids,...notices.map(n=>String(n.id))], context:[ids.length?chatWakeText(ids):'',notices.length?usageWakeText:''].filter(Boolean).join('\n') }
-          }
-        }
-        await new Promise<void>(resolve => {
-          const finish = () => { clearTimeout(timer); this.chat.events.off('change',finish); controller.signal.removeEventListener('abort',finish); resolve() }
-          const timer = setTimeout(finish,Math.min(5000,Math.max(1,deadline-Date.now())))
-          this.chat.events.once('change',finish); controller.signal.addEventListener('abort',finish,{once:true})
-          if (controller.signal.aborted) finish()
+        // Subscribe before reading the DB so a delivery between the query and wait cannot be lost.
+        let dispose=()=>{}
+        const change=new Promise<void>(resolve=>{
+          const finish=()=>{dispose();resolve()}
+          const timer=setTimeout(finish,Math.min(5000,Math.max(1,deadline-Date.now())))
+          dispose=()=>{clearTimeout(timer);this.chat.events.off('change',finish);controller.signal.removeEventListener('abort',finish)}
+          this.chat.events.once('change',finish);controller.signal.addEventListener('abort',finish,{once:true})
+          if(controller.signal.aborted)finish()
         })
+        try {
+          const s = (await this.chat.db.query('SELECT s.*,c.leader_id,c.orca_workspace_id,c.closed_at AS channel_closed_at,c.kind AS channel_kind,c.activated_at FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.id=$1',[sid]))[0]
+          if (!this.collaborationEnabled() || !s || s.capability==='hub_fleet' || s.closed_at || s.channel_closed_at || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
+          if (s.state === 'idle') {
+            if(s.leader_id && await this.claimBootstrap(sid)) {
+              if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
+              return {messages:[],bootstrap:true,context:teamBootstrap}
+            }
+            const deliveries = await this.claim(sid)
+            const quota=new UsageNotices(this.chat),notices=await quota.claim(sid)
+            if (deliveries.length || notices.length) {
+              if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
+              const ids = deliveries.map(d=>String(d.message_id)); await this.notified(sid,ids)
+              await quota.notified(sid,notices.map(n=>String(n.id)))
+              return { messages:[...ids,...notices.map(n=>String(n.id))], context:[ids.length?chatWakeText(ids):'',notices.length?usageWakeText:''].filter(Boolean).join('\n') }
+            }
+          }
+          await change
+        } finally {dispose()}
       }
       return { messages:[], ...(this.watchers.get(sid)?.started !== started ? {closed:true} : {}) }
     } finally { signal?.removeEventListener('abort',abort); this.controllers.delete(controller) }

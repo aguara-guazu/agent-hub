@@ -307,6 +307,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       if (!input || typeof input.enabled !== 'boolean' || Object.keys(input).some(key => key !== 'enabled'))
         throw new HttpError(422, 'Se requiere enabled booleano')
       store.setSetting(COLLABORATION_ENABLED_SETTING, input.enabled ? '1' : '0')
+      if (!input.enabled) await memory.service.suspendFleet()
       publishPolicyChange(bus, store, 'user', owner.id)
       return { enabled: collaborationEnabled(store) }
     })

@@ -1,3 +1,4 @@
+import type { TeamPendingQuestion } from './team-orca.js'
 import { workDefinitions, updateWork } from './local-work.js'
 import { UsageNotices } from './usage-notices.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -233,7 +234,7 @@ export class LocalChat {
     const terminal=['Stop','AfterAgent','SessionEnd','StopFailure','Interrupt'].includes(input.event)
     const repeatedClosedStart=input.turn_id && ['HubPromptSubmit','UserPromptSubmit','BeforeAgent'].includes(input.event) &&
       (await this.db.query('SELECT 1 FROM chat_turns WHERE session_id=$1 AND turn_id=$2 AND terminal_at IS NOT NULL',[sid,input.turn_id])).length>0
-    const accepted=(!known || known.event_at<=input.at) && !repeatedClosedStart && !(terminal && input.turn_id && latest?.turn_id!==input.turn_id)
+    const accepted=known?.capability!=='hub_fleet' && (!known || known.event_at<=input.at) && !repeatedClosedStart && !(terminal && input.turn_id && latest?.turn_id!==input.turn_id)
     if(accepted && ['UserPromptSubmit','BeforeAgent'].includes(input.event))await this.activate(sid)
     const state = ['SessionStart','Stop','AfterAgent'].includes(input.event) ? 'idle' : ['Interrupt','StopFailure'].includes(input.event) ? 'blocked' : input.event === 'SessionEnd' ? 'offline' : 'busy'
     if (accepted && input.event !== 'Heartbeat' && input.event !== 'Watch') {
@@ -243,7 +244,7 @@ export class LocalChat {
         WHERE id=$1 AND event_at<=$3`, [sid, state, input.at, new Date(Date.now()+90000).toISOString(), input.process_id ?? null, input.process_started ?? null, input.transport ?? null])
     } else if(input.event==='Heartbeat' || input.event==='Watch') {
       await this.db.query(`UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2,
-        capability=CASE WHEN $3='Watch' AND $4 IS NOT NULL THEN $4 WHEN $3='Watch' AND cli_kind='claude_code' THEN 'claude_rewake' ELSE capability END WHERE id=$1 AND closed_at IS NULL`,
+        capability=CASE WHEN capability='hub_fleet' THEN capability WHEN $3='Watch' AND $4 IS NOT NULL THEN $4 WHEN $3='Watch' AND cli_kind='claude_code' THEN 'claude_rewake' ELSE capability END WHERE id=$1 AND closed_at IS NULL`,
       [sid, new Date(Date.now()+90000).toISOString(), input.event,input.transport ?? null])
     }
     if(accepted)await this.recordTurnEvent(sid,input.event,input.at,input.turn_id)
@@ -258,6 +259,64 @@ export class LocalChat {
     })
     this.events.emit('change',result.session.id)
     return result
+  }
+  /** Authoritative native protocol from a Hub-owned process; never a caller-supplied tool. */
+  async managedLifecycle(sessionId:string,event:string,at:string,turnId?:string) {
+    check(['UserPromptSubmit','Stop','SessionEnd','StopFailure','RequestUserInput'].includes(event) && Number.isFinite(Date.parse(at)), 'Evento de flota inválido',400)
+    const changed=await this.db.transaction(async()=>{
+      const session=(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[sessionId]))[0]
+      if(!session || session.removed_at)return false
+      const member=(await this.db.query(`SELECT m.state,p.state AS plan_state,c.closed_at AS channel_closed_at
+        FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id JOIN chat_channels c ON c.id=m.channel_id
+        WHERE m.session_id=$1 AND m.channel_id=$2`,[sessionId,session.channel_id]))[0]
+      if(!member)return false
+      const active=!member.channel_closed_at && !['cancelled','completed','paused'].includes(member.plan_state) && member.state==='joined'
+      if(['UserPromptSubmit','RequestUserInput'].includes(event) && (!active || !turnId))return false
+      // Once bound, only native protocol timestamps may advance activity. Hooks can renew connection only.
+      if(session.capability==='hub_fleet' && session.event_at>at)return false
+      const latest=(await this.db.query('SELECT turn_id,terminal_at FROM chat_turns WHERE session_id=$1 ORDER BY opened_at DESC LIMIT 1',[sessionId]))[0]
+      if(event!=='UserPromptSubmit' && turnId && latest && latest.turn_id!==turnId && session.capability==='hub_fleet')return false
+      if(event==='UserPromptSubmit' && (await this.db.query('SELECT 1 FROM chat_turns WHERE session_id=$1 AND turn_id=$2 AND terminal_at IS NOT NULL',[sessionId,turnId])).length)return false
+      const state=event==='UserPromptSubmit'?'busy':event==='Stop'?'idle':event==='SessionEnd'?'offline':'blocked'
+      await this.db.query(`UPDATE chat_sessions SET capability='hub_fleet',state=$2,event_at=$3,last_seen_at=now(),lease_until=$4,
+        closed_at=CASE WHEN $2='offline' THEN $3 ELSE NULL END,process_id=NULL,process_started=NULL WHERE id=$1`,
+        [sessionId,state,at,new Date(Date.now()+90000).toISOString()])
+      if(active)await this.recordTurnEvent(sessionId,event,at,turnId)
+      return true
+    })
+    if(changed)this.events.emit('change',sessionId)
+  }
+  /** Structured native questions only; no terminal content. Works before the worker has joined. */
+  async managedQuestions(senderId:string,questions:TeamPendingQuestion[],generation:string) {
+    if(!questions.length)return
+    const changed=await this.db.transaction(async sql=>{
+      const member=(await sql.query(`SELECT m.*,p.created_by AS master_id,p.root_thread_id,p.master_channel_id,p.state AS plan_state,
+        c.leader_id,c.closed_at AS master_closed,leader.removed_at AS leader_removed,leader.channel_id AS leader_channel
+        FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+        JOIN chat_channels c ON c.id=p.master_channel_id JOIN chat_sessions leader ON leader.id=p.created_by
+        WHERE (m.id=$1 OR m.session_id=$1) AND m.runtime IS NOT NULL`,[senderId]))[0]
+      if(!member || member.runtime.generation!==generation || member.master_closed || member.leader_removed ||
+        member.leader_id!==member.master_id || member.leader_channel!==member.master_channel_id || ['paused','cancelled','completed','prepared'].includes(member.plan_state) || member.state==='closed')return false
+      const sender=`hub-system:${member.master_channel_id}`
+      let sent=false
+      for(const pending of questions) {
+        if(!member.runtime.questions?.some((item:TeamPendingQuestion)=>item.id===pending.id))continue
+        const request=`fleet-question:${generation}:${pending.id}`
+        if((await sql.query('SELECT id FROM chat_messages WHERE author_id=$1 AND request_id=$2',[sender,request])).length)continue
+        await sql.query(`INSERT OR IGNORE INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,closed_at)
+          VALUES($1,'agenthub-system',$2,'Agent Hub','hub',$3,'offline',now(),now())`,[sender,hash(randomUUID()),member.master_channel_id])
+        const detail=pending.questions.map(q=>`${q.id}: ${q.question}${q.options?.length?'\nOpciones: '+q.options.map(o=>o.label+' — '+o.description).join('; '):''}`).join('\n\n')
+        const text=`Agent Hub · consulta nativa de ${member.worktree_name}. El agente pide una respuesta al líder. Resolvé con el contexto y la autorización disponibles; si falta una decisión de la persona, consultala y luego devolvé la respuesta con memory_team_answer. No inventes permisos.\nplan_id=${member.team_id} member_id=${member.id} expected_generation=${generation} question_id=${pending.id}\n${detail}`.slice(0,15800)
+        const message=randomUUID()
+        await sql.query(`INSERT INTO chat_messages(id,thread_id,author_id,text,request_id,request_hash) VALUES($1,$2,$3,$4,$5,$6)`,
+          [message,member.root_thread_id,sender,text,request,hash(text)])
+        await sql.query('INSERT INTO chat_deliveries(message_id,recipient_id) VALUES($1,$2)',[message,member.master_id])
+        await sql.query('UPDATE chat_threads SET updated_at=now(),archived_notice=0 WHERE id=$1',[member.root_thread_id])
+        sent=true
+      }
+      return sent
+    })
+    if(changed)this.events.emit('change')
   }
   async pending(sid: string) {
     await this.cancelInvalidTurnAlerts()
@@ -548,7 +607,7 @@ export class LocalChat {
       await this.db.query('UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[who.id,new Date(Date.now()+90000).toISOString()])
       const result = await this.page(`SELECT * FROM (
         SELECT m.id,m.thread_id,m.author_id,m.text,m.reply_to,m.request_id,m.created_at,m.seq,
-          s.label AS author_label,s.cli_kind,'agent' AS author_source,'mention' AS kind,t.title,d.read_at,d.handled_at,
+          s.label AS author_label,s.cli_kind,CASE WHEN s.agent_id='agenthub-system' AND s.cli_kind='hub' THEN 'hub' ELSE 'agent' END AS author_source,'mention' AS kind,t.title,d.read_at,d.handled_at,
           NULL AS session_id,NULL AS turn_id,NULL AS cause,NULL AS work_thread_id
         FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id JOIN chat_threads t ON t.id=m.thread_id
           JOIN chat_sessions s ON s.id=m.author_id WHERE d.recipient_id=$1 AND d.handled_at IS NULL AND d.cancelled_at IS NULL AND ($2=0 OR d.read_at IS NULL)

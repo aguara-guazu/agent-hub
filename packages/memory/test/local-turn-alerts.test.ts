@@ -163,7 +163,9 @@ it('persiste dedupe tras reiniciar y restaura notificaciones históricas sin vol
 it('migra los hilos automáticos antiguos sin ocultar conversaciones con respuestas reales',async()=>{
   const leader=await register('leader'),member=await register('member'),legacy=new MemoryDatabase(join(directory,'legacy.sqlite'))
   try {
-    for(const migration of migrations.slice(0,-1))await legacy.execute(migration)
+    const privateNotices=migrations.findIndex(migration=>migration.includes('CREATE TABLE chat_status_notices'))
+    expect(privateNotices).toBeGreaterThan(0)
+    for(const migration of migrations.slice(0,privateNotices))await legacy.execute(migration)
     await legacy.transaction(async()=>{
       await legacy.query('PRAGMA defer_foreign_keys=ON')
     for(const table of ['chat_channels','chat_sessions'])for(const row of await db.query(`SELECT * FROM ${table}`)) {
@@ -181,7 +183,7 @@ it('migra los hilos automáticos antiguos sin ocultar conversaciones con respues
       await legacy.query("INSERT INTO chat_turn_alerts(id,session_id,turn_id,cause,recipient_id,message_id) VALUES($1,$2,$3,'normal',$4,$5)",[randomUUID(),member.session.id,`old-${i}`,leader.session.id,message])
     }
     await legacy.query("INSERT INTO chat_messages(id,thread_id,author_id,text,request_id,request_hash) VALUES($1,$2,$3,'Respuesta real','answer','hash')",[randomUUID(),threads[1],leader.session.id])
-    await legacy.execute(migrations.at(-1)!)
+    for(const migration of migrations.slice(privateNotices))await legacy.execute(migration)
     expect((await legacy.query('SELECT archived_notice FROM chat_threads WHERE id=$1',[threads[0]]))[0].archived_notice).toBe(1)
     expect((await legacy.query('SELECT archived_notice FROM chat_threads WHERE id=$1',[threads[1]]))[0].archived_notice).toBe(0)
     expect(await legacy.query('SELECT * FROM chat_messages')).toHaveLength(3)

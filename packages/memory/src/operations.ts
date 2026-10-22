@@ -124,14 +124,16 @@ export class MemoryOperations {
   readonly usageNotices: UsageNotices
   readonly chat: LocalChat
   readonly teams: TeamOrchestration | undefined
+  readonly fleet: TeamOrca | undefined
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime,
-    teamRuntime?: { catalog: TeamCatalog; orca: TeamOrca }, readonly collaborationEnabled: () => boolean = () => true) {
+    teamRuntime?: { catalog: TeamCatalog; orca: TeamOrca | ((chat:LocalChat)=>TeamOrca) }, readonly collaborationEnabled: () => boolean = () => true) {
     this.chat = new LocalChat(store)
     this.usage = new UsageQuotas(store.db)
     this.usageNotices = new UsageNotices(this.chat)
-    this.teams = teamRuntime ? new TeamOrchestration(this.chat, teamRuntime.catalog, teamRuntime.orca, this.usage) : undefined
+    this.fleet = typeof teamRuntime?.orca === 'function' ? teamRuntime.orca(this.chat) : teamRuntime?.orca
+    this.teams = teamRuntime && this.fleet ? new TeamOrchestration(this.chat, teamRuntime.catalog, this.fleet, this.usage, () => this.collaborationEnabled()) : undefined
   }
   async collaborationNotice(operation: string, raw: unknown, result: any, agent?: AgentContext) {
     if (!this.collaborationEnabled()) return null

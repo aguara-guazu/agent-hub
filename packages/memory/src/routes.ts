@@ -59,7 +59,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   let watchdog: LocalWatchdog | undefined
   const runtime = async () => {
     const { operations } = await service.get()
-    if (!chatRuntime) { chatRuntime = new LocalChatRuntime(operations.chat, undefined, agentId => collaborationEnabled() && (options.chatAgentEnabled?.(agentId) ?? true), undefined, collaborationEnabled); chatRuntime.start() }
+    if (!chatRuntime) { chatRuntime = new LocalChatRuntime(operations.chat, undefined, agentId => collaborationEnabled() && (options.chatAgentEnabled?.(agentId) ?? true), undefined, collaborationEnabled, {wake:(id,text)=>service.wakeFleet(id,text),connected:id=>service.fleetConnected(id)}); chatRuntime.start() }
     if (!watchdog) { watchdog = new LocalWatchdog(operations.chat, agentId => collaborationEnabled() && (options.chatAgentEnabled?.(agentId) ?? true), Date.now,
       () => app.log.warn('No se pudo registrar la observación del watchdog local'), collaborationEnabled); watchdog.start() }
     return chatRuntime
@@ -67,7 +67,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   if (options.authorizeChatAgent) app.post('/api/memory/chat/native', { bodyLimit: 16384 }, async (request, reply) => {
     const input = parse(z.object({ agent_id: z.string().min(1).max(200), native_id: z.string().min(1).max(300),
       orca_workspace_id: orcaWorkspaceSchema.optional(), session_key: z.string().min(32).max(200), cwd: z.string().min(1).max(4000), at: z.iso.datetime(),
-      event: z.enum(['SessionStart','HubPromptSubmit','UserPromptSubmit','BeforeAgent','PreToolUse','BeforeTool','Stop','AfterAgent','SessionEnd','Interrupt','StopFailure','Heartbeat','Watch']),
+      event: z.enum(['SessionStart','HubPromptSubmit','UserPromptSubmit','BeforeAgent','PreToolUse','BeforeTool','PostToolUse','PostToolUseFailure','Stop','AfterAgent','SessionEnd','Interrupt','StopFailure','Heartbeat','Watch']),
       turn_id:z.string().min(1).max(300).optional(),
       process_id: z.number().int().min(1).optional(), process_started: z.string().max(100).optional(), watch_started:z.iso.datetime().optional(),
       transport:z.enum(['opencode_prompt','acp_prompt','antigravity_stream','codex_appserver','tui_prompt']).optional() }).strict(), request.body)

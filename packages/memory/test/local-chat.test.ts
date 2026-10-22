@@ -424,7 +424,7 @@ it('activa y cierra canales virtuales sólo de forma explícita, sin robar lider
     expect(oldMemberships.every(row=>row.channel_id===b.channel.id)).toBe(true)
 
     const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-    expect(backup.schema_version).toBe(21)
+    expect(backup.schema_version).toBe(22)
     expect(backup.tables.chat_channels.find((channel:any)=>channel.id===future.channel.id)).toMatchObject({closed_at:null,virtual_path:a.channel.path})
     const restorePath=join(plain,'restore'),restored=new MemoryDatabase(join(restorePath,'memory.sqlite'));await restored.migrate()
     try {
@@ -795,4 +795,98 @@ it('global disable suppresses runtime work and resumes delivery when re-enabled'
   await runtime.tick()
   expect(queue).toHaveBeenCalledTimes(1)
   await runtime.close()
+})
+
+async function managedMember() {
+  const leader=await register('fleet-leader'),member=await register('fleet-member','Stop',worktree('fleet-worker'))
+  const thread=await ops.call('chat_send',{session_key:leader.k,channel_id:leader.channel.id,title:'Plan de flota',text:'Plan aprobado',mentions:[],request_id:randomUUID()},'mcp',leader.a)
+  const plan=randomUUID(),id=randomUUID()
+  await db.query(`INSERT INTO chat_team_plans(id,master_channel_id,root_thread_id,created_by,objective,parent,base_revision,plan,digest,state)
+    VALUES($1,$2,$3,$4,'Fixture','{}','base','{}',$5,'active')`,[plan,leader.channel.id,thread.thread_id,leader.session.id,randomUUID()])
+  await db.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,role,task,prompt,state,session_id,channel_id)
+    VALUES($1,$2,0,'worker','codex_cli','fixture','worker','task','prompt','joined',$3,$4)`,[id,plan,member.session.id,member.channel.id])
+  return {leader,member,plan,thread}
+}
+it('native fleet completion beats late hooks and privately alerts the master after grace',async()=>{
+  const {leader,member}=await managedMember(),at=Date.now()+1000
+  await ops.chat.managedLifecycle(member.session.id,'UserPromptSubmit',new Date(at).toISOString(),'native-turn')
+  await ops.chat.managedLifecycle(member.session.id,'Stop',new Date(at+10).toISOString(),'native-turn')
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'fleet-member',event:'PreToolUse',at:new Date(at+20).toISOString(),transport:'codex_queue'})
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'fleet-member',event:'Watch',at:new Date(at+30).toISOString(),transport:'codex_queue'})
+  expect((await db.query('SELECT state,capability,event_at FROM chat_sessions WHERE id=$1',[member.session.id]))[0]).toEqual({state:'idle',capability:'hub_fleet',event_at:new Date(at+10).toISOString()})
+  await ops.chat.processTurnAlerts(at+20,100)
+  expect(await db.query('SELECT * FROM chat_status_notices')).toHaveLength(0)
+  await ops.chat.processTurnAlerts(at+200,100)
+  expect((await db.query('SELECT recipient_id,session_id FROM chat_status_notices'))[0]).toEqual({recipient_id:leader.session.id,session_id:member.session.id})
+  expect(await db.query('SELECT * FROM chat_threads')).toHaveLength(1)
+})
+it('old native completion cannot close a newer fleet turn and revoked teams cannot become busy',async()=>{
+  const {member,plan}=await managedMember(),at=Date.now()+1000
+  await ops.chat.managedLifecycle(member.session.id,'UserPromptSubmit',new Date(at).toISOString(),'one')
+  await ops.chat.managedLifecycle(member.session.id,'UserPromptSubmit',new Date(at+10).toISOString(),'two')
+  await ops.chat.managedLifecycle(member.session.id,'Stop',new Date(at+20).toISOString(),'one')
+  expect((await db.query('SELECT state FROM chat_sessions WHERE id=$1',[member.session.id]))[0].state).toBe('busy')
+  await db.query("UPDATE chat_team_plans SET state='cancelled' WHERE id=$1",[plan])
+  await ops.chat.managedLifecycle(member.session.id,'SessionEnd',new Date(at+30).toISOString(),'two')
+  await ops.chat.managedLifecycle(member.session.id,'UserPromptSubmit',new Date(at+40).toISOString(),'three')
+  expect((await db.query('SELECT state FROM chat_sessions WHERE id=$1',[member.session.id]))[0].state).toBe('offline')
+  expect(await db.query("SELECT * FROM chat_turns WHERE session_id=$1 AND turn_id='three'",[member.session.id])).toHaveLength(0)
+})
+it('managed notifications use the owned transport and never a native queue or async re-wake',async()=>{
+  const {leader,member,thread}=await managedMember(),at=Date.now()+1000
+  await ops.chat.managedLifecycle(member.session.id,'UserPromptSubmit',new Date(at).toISOString(),'one')
+  await ops.chat.managedLifecycle(member.session.id,'Stop',new Date(at+10).toISOString(),'one')
+  await db.query('UPDATE chat_sessions SET team_seen=1 WHERE id=$1',[member.session.id])
+  await send(leader,member,'Reportá tu estatus en el Hub',thread.thread_id)
+  const queue=vi.fn(),wake=vi.fn(async()=>true)
+  const runtime=new LocalChatRuntime(ops.chat,queue,()=>true,async()=>undefined,()=>true,{wake,connected:async()=>true})
+  expect(await runtime.wait(member.session.id)).toEqual({closed:true,messages:[]})
+  await runtime.tick()
+  expect(wake).toHaveBeenCalledWith(member.session.id,expect.stringContaining('memory_chat_inbox'))
+  expect(queue).not.toHaveBeenCalled()
+  expect((await db.query('SELECT event_at FROM chat_sessions WHERE id=$1',[member.session.id]))[0].event_at).toBe(new Date(at+10).toISOString())
+  await runtime.close()
+})
+it('queues a mention once while Codex is busy without marking it read or changing activity',async()=>{
+  const leader=await register('sender'),recipient=await register('busy-codex'),at=new Date(Date.now()+1000).toISOString()
+  await ops.chat.lifecycle(recipient.a,{session_key:recipient.k,native_id:'busy-codex',event:'UserPromptSubmit',at,turn_id:'busy'})
+  const message=await send(leader,recipient,'Hallazgo que cambia la implementación')
+  const queue=vi.fn(async()=>{})
+  const runtime=new LocalChatRuntime(ops.chat,queue,()=>true,async()=>undefined)
+  await runtime.tick();await runtime.tick()
+  expect(queue).toHaveBeenCalledTimes(1)
+  expect(queue).toHaveBeenCalledWith('busy-codex',expect.stringContaining(message.id))
+  const delivery=(await db.query('SELECT * FROM chat_deliveries WHERE message_id=$1',[message.id]))[0]
+  expect(delivery.notified_at).toBeTruthy();expect(delivery.read_at).toBeNull();expect(delivery.handled_at).toBeNull()
+  expect((await db.query('SELECT state,event_at FROM chat_sessions WHERE id=$1',[recipient.session.id]))[0]).toEqual({state:'busy',event_at:at})
+  await runtime.close()
+})
+it('does not replay an uncertain native steer receipt but retains the unread message',async()=>{
+  const {leader,member,thread}=await managedMember(),at=new Date(Date.now()+1000).toISOString()
+  await ops.chat.managedLifecycle(member.session.id,'UserPromptSubmit',at,'busy')
+  const message=await send(leader,member,'Cambio de dirección',thread.thread_id)
+  const wake=vi.fn(async()=>{throw Object.assign(new Error('fleet_steer_unconfirmed'),{retryable:false})})
+  const runtime=new LocalChatRuntime(ops.chat,vi.fn(),()=>true,async()=>undefined,()=>true,{wake,connected:async()=>true})
+  await runtime.tick();await runtime.tick()
+  expect(wake).toHaveBeenCalledTimes(1)
+  const delivery=(await db.query('SELECT * FROM chat_deliveries WHERE message_id=$1',[message.id]))[0]
+  expect(delivery.attempts).toBe(5);expect(delivery.read_at).toBeNull();expect(delivery.error).toContain('incierta')
+  await runtime.close()
+})
+it('routes native questions before join once to the offline master without creating threads',async()=>{
+  const {leader,member,plan}=await managedMember(),generation=randomUUID(),questionId=randomUUID()
+  const id=(await db.query('SELECT id FROM chat_team_members WHERE team_id=$1',[plan]))[0].id
+  const questions=[{id:questionId,questions:[{id:'target',header:'Destino',question:'¿Qué entorno?',options:[{label:'dev',description:'Prueba'}]}]}]
+  await db.query("UPDATE chat_team_members SET state='accepted',session_id=NULL,channel_id=NULL,runtime=$2 WHERE id=$1",[id,JSON.stringify({provider:'hub',generation,state:'waiting_input',questions})])
+  await db.query("UPDATE chat_sessions SET state='offline',closed_at=now() WHERE id=$1",[leader.session.id])
+  await ops.chat.managedQuestions(id,questions,generation);await ops.chat.managedQuestions(id,questions,generation)
+  const deliveries=await db.query('SELECT m.text,d.recipient_id FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id WHERE m.request_id LIKE $1',['fleet-question:%'])
+  expect(deliveries).toHaveLength(1);expect(deliveries[0].recipient_id).toBe(leader.session.id)
+  expect(deliveries[0].text).toContain(questionId);expect(deliveries[0].text).toContain('memory_team_answer')
+  expect(await db.query('SELECT * FROM chat_threads')).toHaveLength(1)
+  expect((await ops.call('chat_agents',{channel_id:leader.channel.id},'mcp',leader.a)).items.some((item:any)=>item.cli_kind==='hub')).toBe(false)
+  await db.query("UPDATE chat_team_plans SET state='cancelled' WHERE id=$1",[plan])
+  await ops.chat.managedQuestions(id,[{...questions[0]!,id:randomUUID()}],generation)
+  expect(await db.query('SELECT * FROM chat_messages WHERE request_id LIKE $1',['fleet-question:%'])).toHaveLength(1)
+  expect(member.session.id).toBeTruthy()
 })

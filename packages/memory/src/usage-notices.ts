@@ -64,7 +64,7 @@ export class UsageNotices {
     if(!agent || !this.chat.usageEnabled(agent.agent_id))return []
     return this.db.query(`UPDATE usage_quota_notices SET attempts=attempts+1,
       next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
-      WHERE recipient_id=$1 AND read_at IS NULL AND attempts<5 AND next_attempt_at<=now() AND ${this.valid}
+      WHERE recipient_id=$1 AND read_at IS NULL AND notified_at IS NULL AND attempts<5 AND next_attempt_at<=now() AND ${this.valid}
       RETURNING id,payload,created_at`,[recipient])
   }
   async notified(recipient:string,ids:string[]) {

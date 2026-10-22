@@ -13,7 +13,7 @@ import { GoogleAuth } from './google-auth.js'
 import { OpenCodeRuntime } from './opencode.js'
 import { CliExtractionRuntime, extractionClis, isExtractionCli, validCliModel } from './cli-extraction.js'
 import { TeamCatalog } from './team-catalog.js'
-import { LocalTeamOrca } from './team-orca.js'
+import { HubTeamRuntime } from './team-hub.js'
 import { JobRunner } from './jobs.js'
 import { check, MemoryError, parse } from './contracts.js'
 import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
@@ -72,7 +72,7 @@ export class MemoryService {
     const store = new MemoryStore(db, this.directory)
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media,
-      { catalog: new TeamCatalog(this.cliExtraction), orca: new LocalTeamOrca() }, this.collaborationEnabled)
+      { catalog: new TeamCatalog(this.cliExtraction), orca: chat => new HubTeamRuntime(chat,this.directory,this.collaborationEnabled) }, this.collaborationEnabled)
     operations.chat.usageEnabled=this.usageEnabled
     if (this.orchestrationOwner) await operations.teams?.initialize()
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
@@ -134,5 +134,16 @@ export class MemoryService {
     if (deferred) void this.defaults.tick().catch(() => {})
     return config
   }
-  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.network.stop(); await current.db.close() } }
+  async suspendFleet() { await this.initializing; await this.current?.operations.fleet?.suspend?.() }
+  async wakeFleet(sessionId:string,text:string) {
+    const fleet=(await this.get()).operations.fleet
+    return fleet instanceof HubTeamRuntime ? fleet.wake(sessionId,text) : false
+  }
+  async fleetConnected(sessionId:string) {
+    const {operations,db}=await this.get()
+    const member=(await db.query('SELECT id FROM chat_team_members WHERE session_id=$1',[sessionId]))[0]
+    const status=member ? await operations.fleet?.status?.(String(member.id)) : undefined
+    return !!status && ['starting','busy','idle','waiting_input'].includes(status.state ?? '')
+  }
+  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.operations.fleet?.close?.(); await current.network.stop(); await current.db.close() } }
 }
