@@ -418,7 +418,8 @@ export class FleetProcessManager {
   async interrupt(id: string): Promise<FleetStatus> {
     const s = this.sessions.get(id)
     if (!s || !this.live(s)) throw new Error('fleet_process_unavailable')
-    if (!['busy', 'waiting_input'].includes(s.status.state)) throw new Error('fleet_not_busy')
+    // A question pauses the same active turn; it remains interruptible until native completion.
+    if (s.status.state !== 'busy' && s.status.state !== 'waiting_input') throw new Error('fleet_not_busy')
     try {
       if (s.status.cli === 'codex_cli') {
         if (!s.status.turn_id) throw new Error('fleet_missing_turn_id')

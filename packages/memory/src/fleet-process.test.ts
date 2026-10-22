@@ -229,6 +229,22 @@ describe('FleetProcessManager', () => {
     expect(manager.status('one')!.questions![0]!.id).not.toBe(old.id)
     await expect(manager.answer('one', old.id, { choice: { answers: ['PRIVATE ANSWER'] } })).rejects.toThrow('fleet_question_unavailable')
   })
+  it.each(['codex_cli', 'claude_code'] as const)('interrupts native %s input waiting and invalidates questions only on native completion', async cli => {
+    const { manager, input, events } = await setup('question')
+    input.cli = cli
+    await manager.start(input)
+    await until(() => manager.status('one')?.state === 'waiting_input')
+    const before = manager.status('one')!
+    const pending = before.questions![0]!
+    const interrupted = await manager.interrupt('one')
+    expect(interrupted).toMatchObject({ state: 'waiting_input', turn_id: before.turn_id, questions: [pending] })
+    expect(events.at(-1)?.state).toBe('waiting_input')
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(manager.status('one')?.questions).toEqual([])
+    expect(manager.status('one')?.turn_id).toBeUndefined()
+    await expect(manager.answer('one', pending.id, { [pending.questions[0]!.id]: { answers: ['PRIVATE ANSWER'] } })).rejects.toThrow('fleet_question_unavailable')
+    expect(events.some(e => e.state === 'failed' || e.state === 'stopped')).toBe(false)
+  })
   it('does not accept an answer after its Codex turn completed', async () => {
     const { manager, input } = await setup('questionFinish')
     await manager.start(input)
