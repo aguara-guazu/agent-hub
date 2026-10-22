@@ -60,7 +60,7 @@ export class LocalChatRuntime {
         await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[s.id,new Date(Date.now()+90000).toISOString()])
       } else {
         await this.chat.closeTurnForPid(s.id)
-        await this.chat.db.query("UPDATE chat_sessions SET state='offline',closed_at=now() WHERE id=$1",[s.id])
+        await this.chat.db.query("UPDATE chat_sessions SET state='offline',closed_at=now(),lease_until=NULL WHERE id=$1 AND closed_at IS NULL",[s.id])
       }
     }
     await this.chat.processTurnAlerts()

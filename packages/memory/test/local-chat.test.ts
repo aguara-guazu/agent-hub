@@ -178,19 +178,34 @@ it('sólo el destinatario consume lectura; humanos observan y no pueden escribir
   await ops.call('chat_ack',{message_id:m.id,session_key:b.k},'mcp',b.a)
   expect((await ops.call('chat_inbox',{session_key:b.k},'mcp',b.a)).total).toBe(0)
 })
-it('excluye expulsados antes de contar y paginar, conservando miembros offline e historial',async()=> {
-  const member=await register('remaining')
-  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'remaining',event:'SessionEnd',at:new Date().toISOString()})
+it('filtra cerrados, expulsados y pendientes antes de contar y paginar el roster',async()=> {
+  const member=await register('remaining'),closed=await register('closed')
+  await ops.chat.lifecycle(closed.a,{session_key:closed.k,native_id:'closed',event:'SessionEnd',at:new Date().toISOString()})
+  const pending=author('pending'),key=randomUUID()
+  await ops.chat.lifecycle(pending,{session_key:key,native_id:'pending',event:'SessionStart',at:new Date().toISOString()})
   for(let i=0;i<41;i++) {
-    await db.query(`INSERT INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,last_seen_at,removed_at,closed_at)
-      VALUES($1,'test-client',$2,'Expulsado','codex_cli',$3,'offline',$4,$4,$4,$4)`,
+    await db.query(`INSERT INTO chat_sessions(id,agent_id,key_hash,label,nickname,cli_kind,channel_id,state,event_at,last_seen_at,removed_at,closed_at)
+      VALUES($1,'test-client',$2,'Expulsado','Expulsado','codex_cli',$3,'offline',$4,$4,$4,$4)`,
       [`removed-${i}`,randomUUID(),member.channel.id,'2099-01-01T00:00:00.000Z'])
   }
   expect(await ops.call('chat_agents',{channel_id:member.channel.id,limit:40})).toMatchObject({
-    total:1,items:[expect.objectContaining({id:member.session.id,state:'offline'})],
+    total:1,items:[expect.objectContaining({id:member.session.id})],
   })
-  expect(await ops.call('chat_agents',{channel_id:member.channel.id,include_removed:true,limit:40})).toMatchObject({total:42})
-  expect((await ops.call('chat_agents',{channel_id:member.channel.id,include_removed:true,limit:40,offset:40})).items).toHaveLength(2)
+  expect(await ops.call('chat_agents',{channel_id:member.channel.id,include_closed:true})).toMatchObject({total:2})
+  expect(await ops.call('chat_agents',{channel_id:member.channel.id,include_pending:true})).toMatchObject({total:2})
+  expect(await ops.call('chat_agents',{channel_id:member.channel.id,include_removed:true,limit:40})).toMatchObject({total:43})
+  expect((await ops.call('chat_agents',{channel_id:member.channel.id,include_removed:true,limit:40,offset:40})).items).toHaveLength(3)
+})
+it('conserva orden y páginas del roster aunque cambie la actividad o venza el lease',async()=>{
+  const a=await register('a'),b=await register('b'),c=await register('c')
+  for(const [member,created] of [[a,'2000-01-01'],[b,'2000-01-02'],[c,'2000-01-02']] as const)
+    await db.query('UPDATE chat_sessions SET created_at=$2 WHERE id=$1',[member.session.id,created])
+  const expected=[a.session.id,...[b.session.id,c.session.id].sort()]
+  await db.query("UPDATE chat_sessions SET last_seen_at='2099-01-01',lease_until='2000-01-01' WHERE id=$1",[a.session.id])
+  expect((await ops.call('chat_agents',{limit:2})).items.map((s:any)=>s.id)).toEqual(expected.slice(0,2))
+  await db.query("UPDATE chat_sessions SET last_seen_at='2100-01-01' WHERE id=$1",[expected[2]])
+  expect((await ops.call('chat_agents',{limit:2,offset:2})).items.map((s:any)=>s.id)).toEqual(expected.slice(2))
+  expect((await ops.call('chat_agents',{})).total).toBe(3)
 })
 it('aísla canales y claves incluso con el mismo cliente instalado; no adivina una sesión',async()=> {
   const a=await register('a');worktree('other'); const b=await register('b','Stop',join(dir,'other'))
@@ -208,16 +223,21 @@ it('deduplica envío concurrente, conserva historial cerrado y busca por texto/a
   await ops.chat.lifecycle(a.a,{session_key:a.k,native_id:'a',event:'SessionEnd',at:new Date().toISOString()})
   const result=await ops.call('chat_threads',{project_id:projectId,query:'a - b',author_id:a.session.id})
   expect(result.total).toBe(1);expect(result.items[0].messages).toBe(1)
-  expect((await ops.call('chat_agents',{channel_id:a.channel.id})).items.find((s:any)=>s.id===a.session.id).state).toBe('offline')
+  expect((await ops.call('chat_agents',{channel_id:a.channel.id,include_closed:true})).items.find((s:any)=>s.id===a.session.id).state).toBe('offline')
   await db.close();db=new MemoryDatabase(join(dir,'memory.sqlite'));await db.migrate()
   const persisted=await db.query('SELECT text FROM chat_messages WHERE id=$1',[m.id]);expect(persisted[0]!.text).toBe(input.text)
 })
-it('no revive una sesión cerrada por heartbeat ni por un evento viejo',async()=> {
+it('sólo SessionStart explícito revive una sesión cerrada, nunca hooks tardíos',async()=> {
   const a=await register('a');const end=new Date(Date.now()+10).toISOString()
   await ops.chat.lifecycle(a.a,{session_key:a.k,native_id:'a',event:'SessionEnd',at:end})
   await ops.chat.lifecycle(a.a,{session_key:a.k,native_id:'a',event:'Heartbeat',at:new Date().toISOString()})
   await ops.chat.lifecycle(a.a,{session_key:a.k,native_id:'a',event:'Stop',at:'2000-01-01T00:00:00.000Z'})
-  expect((await ops.call('chat_agents',{})).items[0].state).toBe('offline')
+  for(const event of ['Watch','Stop','PreToolUse','UserPromptSubmit'])
+    await ops.chat.lifecycle(a.a,{session_key:a.k,native_id:'a',event,at:new Date(Date.now()+1000).toISOString()})
+  expect((await ops.call('chat_agents',{})).total).toBe(0)
+  expect((await ops.call('chat_agents',{include_closed:true})).items[0].state).toBe('offline')
+  await ops.chat.lifecycle(a.a,{session_key:a.k,native_id:'a',event:'SessionStart',at:new Date(Date.now()+2000).toISOString()})
+  expect((await ops.call('chat_agents',{})).items[0]).toMatchObject({id:a.session.id,state:'idle'})
 })
 it('un PID y listener vivos no sostienen busy cuando se perdió Stop; no inventa cierre ni aviso',async()=>{
   const leader=await register('leader'),a=await register('stale','UserPromptSubmit'),runtime=new LocalChatRuntime(ops.chat,vi.fn(),()=>true,async()=>({parent:1,started:'birth',command:'claude'}))
@@ -315,7 +335,11 @@ it('exige un nick elegido por la propia sesión y conserva la identidad al redef
   const a=author('new'),k=randomUUID()
   const r=await ops.chat.lifecycle(a,{session_key:k,native_id:'new',event:'SessionStart',at:new Date().toISOString()})
   expect(r.session).toMatchObject({nickname:null,needs_nickname:true,label:'Sin nick todavía'})
+  expect((await ops.call('chat_agents',{})).total).toBe(0)
+  expect((await ops.call('chat_inbox',{session_key:k},'mcp',a)).team.leader_id).toBeNull()
+  expect((await ops.call('chat_join',{session_key:k},'mcp',a)).session.needs_nickname).toBe(true)
   await expect(ops.call('chat_send',{session_key:k,channel_id:r.channel.id,title:'Hola',text:'Mensaje',request_id:'first'},'mcp',a)).rejects.toMatchObject({statusCode:409})
+  await expect(ops.call('chat_work_update',{session_key:k,thread_id:randomUUID(),work_id:'claim',event:'started',summary:'Claim',request_id:'claim',expected_version:0},'mcp',a)).rejects.toThrow('nick')
   const named=await ops.call('chat_set_nick',{session_key:k,nickname:'  Bruma   Azul  '},'mcp',a)
   expect(named.session).toMatchObject({id:r.session.id,label:'Bruma Azul',nickname:'Bruma Azul',needs_nickname:false})
   const message=await ops.call('chat_send',{session_key:k,channel_id:r.channel.id,title:'Hola',text:'Mensaje',request_id:'first'},'mcp',a)
@@ -349,7 +373,8 @@ it('migra identidades anteriores sin inventar nicks ni perder conversaciones',as
   await db.query("UPDATE chat_sessions SET label='Codex · abc123'")
   await db.query('DELETE FROM schema_versions WHERE version=$1',[migrations.findIndex(m=>m.includes('ADD COLUMN nickname TEXT'))+1])
   await db.migrate()
-  expect((await ops.call('chat_agents',{})).items.every((s:any)=>s.needs_nickname && s.label==='Sin nick todavía')).toBe(true)
+  expect((await ops.call('chat_agents',{})).total).toBe(0)
+  expect((await ops.call('chat_agents',{include_pending:true})).items).toHaveLength(2)
   expect((await ops.call('chat_read',{thread_id:m.thread_id})).items[0]).toMatchObject({id:m.id,author_id:a.session.id})
   await ops.call('chat_set_nick',{session_key:a.k,nickname:'Lumbre'},'mcp',a.a)
   expect((await ops.call('chat_read',{thread_id:m.thread_id})).items[0].author_label).toBe('Lumbre')
@@ -410,6 +435,8 @@ it('activa y cierra canales virtuales sólo de forma explícita, sin robar lider
     expect(c.channel.id).not.toBe(b.channel.id)
     expect(d.channel.id).toBe(c.channel.id)
     expect(c.channel.activated_at).toBeNull()
+    await ops.call('chat_set_nick',{session_key:kc,nickname:'Nube'},'mcp',third)
+    await ops.call('chat_set_nick',{session_key:kd,nickname:'Sol'},'mcp',fourth)
     const race=await Promise.allSettled([
       ops.call('chat_create_channel',{session_key:kc,name:'Siguiente'},'mcp',third),
       ops.call('chat_create_channel',{session_key:kd,name:'Competidor'},'mcp',fourth),
@@ -440,6 +467,7 @@ it('activa y cierra canales virtuales sólo de forma explícita, sin robar lider
       const pending=await restoredOps.chat.lifecycle(fresh,{session_key:freshKey,native_id:'restored',event:'SessionStart',at:new Date().toISOString()})
       expect(pending.channel).toMatchObject({kind:'virtual',activated_at:null,closed_at:null})
       expect(restoredChannels.some(channel=>channel.id===pending.channel.id)).toBe(false)
+      await restoredOps.call('chat_set_nick',{session_key:freshKey,nickname:'Renacido'},'mcp',fresh)
       const recreated=await restoredOps.call('chat_create_channel',{session_key:freshKey},'mcp',fresh)
       expect(recreated.channel).toMatchObject({id:pending.channel.id,leader_id:pending.session.id,closed_at:null})
     } finally {await restored.close()}
@@ -584,7 +612,7 @@ it('el host Orca no es un transporte: Kiro requiere su conexión nativa',async()
   expect(connected.session.capability).toBe('acp_prompt')
 })
 
-it('registra terminales pasivas sin elegir líder; el primer pedido humano incorpora a sus compañeras',async()=>{
+it('registra terminales pasivas sin elegir líder; el primer nick incorpora a sus compañeras',async()=>{
   const passive=async(name:string,path=dir)=> {
     const a=author(name,path),key=randomUUID()
     const r=await ops.chat.lifecycle(a,{session_key:key,native_id:name,event:'SessionStart',at:new Date().toISOString()})
@@ -595,10 +623,12 @@ it('registra terminales pasivas sin elegir líder; el primer pedido humano incor
   expect(first.team.leader_id).toBeNull()
   const queue=vi.fn().mockResolvedValue(undefined),runtime=new LocalChatRuntime(ops.chat,queue)
   await runtime.tick();expect(queue).not.toHaveBeenCalled()
+  await ops.call('chat_set_nick',{session_key:second.key,nickname:'Faro'},'mcp',second.a)
   const leader=await ops.chat.lifecycle(second.a,{session_key:second.key,native_id:'leader',event:'UserPromptSubmit',at:new Date().toISOString()})
   expect(leader.session.role).toBe('leader')
   await runtime.tick();expect(queue.mock.calls.map(c=>c[0]).sort()).toEqual(['early','third'])
   await runtime.tick();expect(queue).toHaveBeenCalledTimes(2)
+  await ops.call('chat_set_nick',{session_key:first.key,nickname:'Bruma'},'mcp',first.a)
   const joined=await ops.call('chat_join',{session_key:first.key},'mcp',first.a)
   expect(joined.team.leader_id).toBe(second.session.id);expect(joined.session.role).toBe('member')
   expect(joined.team.guidance).toContain('sin pedir que la persona repita')
@@ -614,6 +644,7 @@ it('registra terminales pasivas sin elegir líder; el primer pedido humano incor
 it('la incorporación por conexión nativa funciona también con metadatos de Orca y no consume menciones',async()=>{
   const workspace=`folder:${randomUUID()}`,a={...author('leader'),orca_workspace_id:workspace}
   const leader=await ops.chat.register(a,randomUUID())
+  await ops.call('chat_set_nick',{session_key:leader.session_key,nickname:'Faro'},'mcp',a)
   const b={...author('newcomer'),cli_kind:'kiro',orca_workspace_id:workspace},key=randomUUID()
   const newcomer=await ops.chat.lifecycle(b,{session_key:key,native_id:'kiro',event:'SessionStart',transport:'acp_prompt',at:new Date().toISOString()})
   const runtime=new LocalChatRuntime(ops.chat)
@@ -889,4 +920,25 @@ it('routes native questions before join once to the offline master without creat
   await ops.chat.managedQuestions(id,[{...questions[0]!,id:randomUUID()}],generation)
   expect(await db.query('SELECT * FROM chat_messages WHERE request_id LIKE $1',['fleet-question:%'])).toHaveLength(1)
   expect(member.session.id).toBeTruthy()
+})
+
+it('la salida confirmada del PID retira el roster y hooks tardíos no lo reincorporan',async()=>{
+  const a=await register('terminated'),runtime=new LocalChatRuntime(ops.chat,vi.fn(),()=>true,async()=>null)
+  await db.query('UPDATE chat_sessions SET process_id=123,process_started=$2 WHERE id=$1',[a.session.id,'birth'])
+  await runtime.tick()
+  for(const event of ['Watch','Heartbeat','Stop','PreToolUse'])
+    await ops.chat.lifecycle(a.a,{session_key:a.k,native_id:'terminated',event,at:new Date(Date.now()+1000).toISOString()})
+  expect((await ops.call('chat_agents',{})).total).toBe(0)
+  expect((await ops.call('chat_agents',{include_closed:true})).items[0]).toMatchObject({id:a.session.id,state:'offline'})
+  await runtime.close()
+})
+it('SessionEnd nativo retira la flota sin permitir eventos tardíos ni perder su aviso privado',async()=>{
+  const {leader,member}=await managedMember(),at=Date.now()+1000
+  await ops.chat.managedLifecycle(member.session.id,'UserPromptSubmit',new Date(at).toISOString(),'one')
+  await ops.chat.managedLifecycle(member.session.id,'SessionEnd',new Date(at+10).toISOString(),'one')
+  for(const event of ['Stop','UserPromptSubmit','RequestUserInput'])
+    await ops.chat.managedLifecycle(member.session.id,event,new Date(at+20).toISOString(),'two')
+  expect((await ops.call('chat_agents',{channel_id:member.channel.id})).total).toBe(0)
+  await ops.chat.processTurnAlerts(at+200,100)
+  expect((await db.query('SELECT recipient_id,session_id FROM chat_status_notices'))[0]).toEqual({recipient_id:leader.session.id,session_id:member.session.id})
 })

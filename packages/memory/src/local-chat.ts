@@ -30,7 +30,7 @@ export const chatDefinitions = {
   chat_close_channel: ['Cerrar explícitamente el canal virtual descartable de esta sesión. Sólo puede hacerlo su líder. Conserva historial y bloquea nuevas adhesiones; una conversación nueva podrá crear otro canal futuro en la misma carpeta.', z.object({ ...session }).strict()],
   chat_set_nick: ['Elegí libremente tu nick inventado (2–40 caracteres) antes de escribir. Debe ser único en este Hub, incluso entre sesiones desconectadas; ante conflicto elegí otro. Sólo cambia tu propia sesión y conserva su identidad e historial.', z.object({ ...session, nickname }).strict()],
   chat_channels: ['Explorar canales locales activos o históricos. unassigned=true devuelve sólo canales sin proyecto; los virtuales pendientes permanecen ocultos.', z.object({ ...scope, ...page }).strict()],
-  chat_agents: ['Encontrar identidades de sesiones concretas para mencionarlas; por defecto excluye expulsados. connection_state y last_seen_at describen conexión, no trabajo. state=unknown con state_reason=activity_stale indica actividad sin confirmar: pedí estatus por el Hub, no infieras que sigue trabajando ni que terminó. Usá include_removed=true sólo para auditoría. unassigned=true limita a canales sin proyecto.', z.object({ ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), ...page }).strict()],
+  chat_agents: ['Encontrar identidades de sesiones concretas para mencionarlas; por defecto excluye expulsados, sesiones cerradas e identidades sin nick. El orden es estable por fecha de registro. connection_state y last_seen_at describen conexión, no trabajo. state=unknown con state_reason=activity_stale indica actividad sin confirmar: pedí estatus por el Hub, no infieras que sigue trabajando ni que terminó. Usá include_removed, include_closed o include_pending sólo para auditoría. unassigned=true limita a canales sin proyecto.', z.object({ ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), include_closed: z.boolean().default(false), include_pending: z.boolean().default(false), ...page }).strict()],
   chat_threads: ['Buscar hilos y mensajes históricos por texto, canal, proyecto, autor o estado. unassigned=true limita a canales sin proyecto. El historial permanece al cerrar los agentes.', z.object({ ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
   chat_read: ['Leer mensajes de un hilo. Con session_key, por defecto devuelve sólo mensajes pendientes para esa sesión (sin los propios) y registra únicamente los devueltos; seguí paginando pendientes con offset: 0. unread_only=false devuelve historial. Sin session_key es una lectura histórica anónima y read-only; unread_only=true requiere session_key.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
   chat_send: ['Crear un hilo por tarea (channel_id,title), un hilo breve de un equipo vinculado (team_root_thread_id,title), o responder (thread_id). Fuera del canal propio sólo admite el root o hilos ligados persistentemente a un equipo vigente; mentions queda limitado a sus miembros. request_id estable permite reintentar sin duplicar. Requiere autorización para colaborar.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), request_id: z.string().min(1).max(200) }).strict()],
@@ -129,6 +129,7 @@ export class LocalChat {
       if('agent' in actor) {
         await this.assertNotRemoved(actor.agent,actor.session_key)
         const who=await this.identity(actor.agent,actor.session_key)
+        check(who.nickname, 'Elegí tu propio nick con chat_set_nick antes de participar.',409)
         check(!who.closed_at && who.channel_id===channel.id && channel.leader_id===who.id,'Sólo el líder reconocido de este canal puede expulsar agentes',403)
         check(who.id!==input.participant_id,'El líder no puede expulsarse a sí mismo; la persona puede hacerlo desde la UI',400)
         removedBy=`agent:${who.id}`
@@ -159,6 +160,8 @@ export class LocalChat {
       leader_offline:Boolean(c.closed_at),linked_team:linked,guidance_version:version,...(includeGuidance?{guidance:teamGuidance}:{})}
   }
   async activate(sid:string) {
+    // Registration and inbox bootstrap are available before choosing a nickname.
+    if(!(await this.db.query(`SELECT 1 FROM chat_sessions WHERE id=$1 AND nickname IS NOT NULL AND trim(nickname)<>''`,[sid])).length)return
     await this.db.query(`UPDATE chat_channels SET leader_id=$1 WHERE leader_id IS NULL AND closed_at IS NULL
       AND (kind<>'virtual' OR activated_at IS NOT NULL) AND id=(SELECT channel_id FROM chat_sessions WHERE id=$1 AND closed_at IS NULL)`,[sid])
     await this.db.query(`UPDATE chat_sessions SET team_seen=1 WHERE id=$1 AND EXISTS(
@@ -234,7 +237,7 @@ export class LocalChat {
     const terminal=['Stop','AfterAgent','SessionEnd','StopFailure','Interrupt'].includes(input.event)
     const repeatedClosedStart=input.turn_id && ['HubPromptSubmit','UserPromptSubmit','BeforeAgent'].includes(input.event) &&
       (await this.db.query('SELECT 1 FROM chat_turns WHERE session_id=$1 AND turn_id=$2 AND terminal_at IS NOT NULL',[sid,input.turn_id])).length>0
-    const accepted=known?.capability!=='hub_fleet' && (!known || known.event_at<=input.at) && !repeatedClosedStart && !(terminal && input.turn_id && latest?.turn_id!==input.turn_id)
+    const accepted=(!known?.closed_at || input.event==='SessionStart') && known?.capability!=='hub_fleet' && (!known || known.event_at<=input.at) && !repeatedClosedStart && !(terminal && input.turn_id && latest?.turn_id!==input.turn_id)
     if(accepted && ['UserPromptSubmit','BeforeAgent'].includes(input.event))await this.activate(sid)
     const state = ['SessionStart','Stop','AfterAgent'].includes(input.event) ? 'idle' : ['Interrupt','StopFailure'].includes(input.event) ? 'blocked' : input.event === 'SessionEnd' ? 'offline' : 'busy'
     if (accepted && input.event !== 'Heartbeat' && input.event !== 'Watch') {
@@ -265,7 +268,7 @@ export class LocalChat {
     check(['UserPromptSubmit','Stop','SessionEnd','StopFailure','RequestUserInput'].includes(event) && Number.isFinite(Date.parse(at)), 'Evento de flota inválido',400)
     const changed=await this.db.transaction(async()=>{
       const session=(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[sessionId]))[0]
-      if(!session || session.removed_at)return false
+      if(!session || session.removed_at || session.closed_at)return false
       const member=(await this.db.query(`SELECT m.state,p.state AS plan_state,c.closed_at AS channel_closed_at
         FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id JOIN chat_channels c ON c.id=m.channel_id
         WHERE m.session_id=$1 AND m.channel_id=$2`,[sessionId,session.channel_id]))[0]
@@ -491,8 +494,8 @@ export class LocalChat {
     }
     if (operation === 'chat_agents') {
       const result = await this.page(`SELECT s.*,CASE WHEN c.leader_id=s.id THEN 'leader' ELSE 'member' END AS role FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2)
-        AND s.cli_kind<>'hub' AND ($3=0 OR (c.closed_at IS NULL AND s.closed_at IS NULL AND s.lease_until>now())) AND ($4=1 OR s.removed_at IS NULL) AND ($5=0 OR c.project_id IS NULL)`,
-      [input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0,input.include_removed ? 1 : 0,input.unassigned ? 1 : 0], 'last_seen_at DESC,id',input)
+        AND s.cli_kind<>'hub' AND ($3=0 OR (c.closed_at IS NULL AND s.closed_at IS NULL AND s.lease_until>now())) AND ($4=1 OR s.removed_at IS NULL) AND ($5=0 OR c.project_id IS NULL) AND ($6=1 OR (s.closed_at IS NULL AND c.closed_at IS NULL)) AND ($7=1 OR (s.nickname IS NOT NULL AND trim(s.nickname)<>''))`,
+      [input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0,input.include_removed ? 1 : 0,input.unassigned ? 1 : 0,input.include_closed || input.include_removed ? 1 : 0,input.include_pending ? 1 : 0], 'created_at ASC,id',input)
       return { ...result, items: result.items.map(s=>({...publicSession(s),role:s.role})) }
     }
     if (operation === 'chat_threads') return this.page(`SELECT t.*,c.name AS channel_name,s.label AS author_label,
@@ -531,6 +534,8 @@ export class LocalChat {
     }
     const who = agent ? await this.identity(agent, input.session_key) : undefined
     check(who && !who.closed_at, 'Sólo una sesión de agente abierta puede participar',403)
+    if (!['chat_set_nick','chat_inbox','chat_ack','chat_work_list'].includes(operation))
+      check(who.nickname, 'Elegí tu propio nick con chat_set_nick antes de participar.',409)
     if (operation === 'chat_work_update' || operation === 'chat_work_list') {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread,'Hilo inexistente',404)
