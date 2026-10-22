@@ -465,6 +465,14 @@ class HubBackend extends Orca {
     }
     return undefined
   })
+  answer=vi.fn(async(handle:string,_questionId:string,_answers:Record<string,{answers:string[]}>)=>{
+    const runtime=this.runtimes.get(handle)
+    if(runtime) {
+      const next={...runtime,state:'busy',questions:[],provider:'hub',updated_at:new Date().toISOString()}
+      this.runtimes.set(handle,next)
+      await db.query('UPDATE chat_team_members SET runtime=$2 WHERE launch_handle=$1',[handle,JSON.stringify(next)])
+    }
+  })
   send=vi.fn(async(_handle:string,_text:string)=>{})
   interrupt=vi.fn(async(_handle:string)=>{})
   bind=vi.fn(async(_memberId:string,_sessionId:string)=>{})
@@ -695,4 +703,60 @@ it('no reemplaza un runtime cuyo apagado sigue desconocido ni adopta uno que per
   await db.query('UPDATE chat_team_members SET launch_handle=NULL,runtime=$2 WHERE id=$1',[slot.id,JSON.stringify({...slot.runtime,state:'unknown'})])
   await expect(teams.call('team_control',input,master.agent)).rejects.toThrow('proceso desconocido')
   expect(backend.launch).toHaveBeenCalledTimes(1)
+})
+
+
+async function waitingQuestion(team:Awaited<ReturnType<typeof hubTeam>>) {
+  const questions=[{id:randomUUID(),questions:[{id:'choice',header:'Diseño',question:'¿Qué opción aplicar?',options:[{label:'A',description:'Cambio acotado'},{label:'B',description:'Refactor mayor'}]}]}]
+  const runtime={...team.slot.runtime,state:'waiting_input',questions}
+  team.backend.runtimes.set(team.slot.launch_handle,runtime)
+  await db.query('UPDATE chat_team_members SET runtime=$2 WHERE id=$1',[team.slot.id,JSON.stringify(runtime)])
+  return {runtime,questions,input:{session_key:team.master.key,plan_id:team.plan.id,member_id:team.slot.id,
+    expected_generation:team.slot.runtime.generation,question_id:questions[0]!.id,answers:{choice:{answers:['A']}}}}
+}
+
+it('muestra preguntas nativas estructuradas y permite respuesta exacta sólo del master sin persistirla',async()=>{
+  const team=await hubTeam(),pending=await waitingQuestion(team)
+  const status=await team.teams.call('team_status',{session_key:team.master.key,plan_id:team.plan.id},team.master.agent)
+  expect(status.members[0].runtime).toMatchObject({state:'waiting_input',questions:pending.questions})
+  const secretAnswer='respuesta secreta sólo para el proceso'
+  await team.teams.call('team_answer',{...pending.input,answers:{choice:{answers:[secretAnswer]}}},team.master.agent)
+  expect(team.backend.answer).toHaveBeenCalledWith(team.slot.launch_handle,pending.input.question_id,{choice:{answers:[secretAnswer]}})
+  const events=await db.query("SELECT payload FROM chat_team_events WHERE team_id=$1 AND type='answer'",[team.plan.id])
+  expect(events).toHaveLength(1)
+  expect(events[0]!.payload).toEqual({question_id:pending.input.question_id})
+  expect(JSON.stringify(events)).not.toContain(secretAnswer)
+  expect(JSON.stringify(await db.query('SELECT runtime FROM chat_team_members WHERE id=$1',[team.slot.id]))).not.toContain(secretAnswer)
+  await expect(team.teams.call('team_answer',pending.input,team.master.agent)).rejects.toThrow('ya no espera')
+})
+
+it('rechaza respuestas de otra generación, pregunta, sesión o estructura y estados desconocidos',async()=>{
+  const team=await hubTeam(),pending=await waitingQuestion(team)
+  const call=(patch:Record<string,unknown>)=>team.teams.call('team_answer',{...pending.input,...patch},team.master.agent)
+  await expect(call({expected_generation:randomUUID()})).rejects.toThrow('generación')
+  await expect(call({question_id:randomUUID()})).rejects.toThrow('ya no está pendiente')
+  await expect(call({answers:{other:{answers:['A']}}})).rejects.toThrow('exactamente')
+  await expect(call({method:'turn/start'})).rejects.toThrow()
+  const child=await hubSession('answer-worker',team.slot.workspace_path)
+  await expect(team.teams.call('team_answer',{...pending.input,session_key:child.key},child.agent)).rejects.toThrow('pertenece')
+  team.backend.status.mockResolvedValueOnce({...pending.runtime,state:'unknown'})
+  await expect(call({})).rejects.toThrow('desconocido')
+  expect(team.backend.answer).not.toHaveBeenCalled()
+})
+
+it('revalida autoridad tras consultar la pregunta y antes de enviar la respuesta nativa',async()=>{
+  let enabled=true
+  const team=await hubTeam(()=>enabled),pending=await waitingQuestion(team)
+  team.backend.status.mockImplementationOnce(async()=>{enabled=false;return pending.runtime})
+  await expect(team.teams.call('team_answer',pending.input,team.master.agent)).rejects.toThrow('deshabilitada')
+  expect(team.backend.answer).not.toHaveBeenCalled()
+})
+
+it('el bootstrap de workers exige join primero y enruta dudas al master por Hub',async()=>{
+  const team=await hubTeam()
+  const prompt=team.backend.prompts.get(team.slot.workspace_id)!
+  expect(prompt).toContain('Primero usá memory_team_join')
+  expect(prompt).toContain(`root_thread_id=${team.plan.root_thread_id}`)
+  expect(prompt).toContain(`master_session_id=${team.master.session.id}`)
+  expect(prompt).toContain('No abras preguntas directas a la persona')
 })

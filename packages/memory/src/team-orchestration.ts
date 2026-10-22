@@ -13,8 +13,8 @@ export interface TeamCatalog {
   catalog(): Promise<unknown>
   validate(cli: ExtractionCli, model: string, effort?: string): Promise<unknown>
 }
-import type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata } from './team-orca.js'
-export type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata } from './team-orca.js'
+import type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata, TeamPendingQuestion } from './team-orca.js'
+export type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata, TeamPendingQuestion } from './team-orca.js'
 
 const session = { session_key: z.string().min(32).max(200).optional() }
 const identifier = z.string().uuid()
@@ -40,6 +40,13 @@ const joinInput = z.object({ ...session, invitation:z.string().min(32).max(500) 
 const closeInput = z.object({ ...session, plan_id:identifier, digest:z.string().length(64).regex(/^[a-f0-9]+$/),
   reason:z.string().trim().min(1).max(1000) }).strict()
 
+const questionSchema=z.object({id:z.string().min(1).max(200),header:z.string().max(300),question:z.string().min(1).max(8000),
+  isOther:z.boolean().optional(),isSecret:z.boolean().optional(),options:z.array(z.object({label:z.string().max(500),description:z.string().max(2000)}).strict()).max(30).nullable().optional()}).strict()
+const pendingQuestions=z.array(z.object({id:z.string().min(1).max(200),questions:z.array(questionSchema).min(1).max(20)}).strict()).max(20)
+const answerInput=z.object({...session,plan_id:identifier,member_id:identifier,expected_generation:identifier,
+  question_id:z.string().min(1).max(200),answers:z.record(z.string().min(1).max(200),z.object({answers:z.array(z.string().min(1).max(8000)).min(1).max(30)}).strict())
+    .refine(value=>Object.keys(value).length>0 && Object.keys(value).length<=20,'Una respuesta requiere entre 1 y 20 preguntas'),
+}).strict()
 const controlInput = z.object({ ...session, plan_id:identifier, member_id:identifier, expected_generation:z.union([identifier,z.literal('none')]),
   action:z.enum(['start','stop','interrupt','send','clear','edit']), text:z.string().trim().min(1).max(16000).optional(),
   role:member.shape.role.optional(), task:member.shape.task.optional(), prompt:member.shape.prompt.optional(),
@@ -54,6 +61,7 @@ export const teamDefinitions = {
   team_catalog: ['Consultar el catálogo real de CLI, modelos, esfuerzos y capacidades de lanzamiento. Un modelo listado no prueba cuota ni acceso.', z.object(session).strict()],
   team_prepare: ['Preparar como líder activo un plan inmutable de equipo Hub o Orca. Antes de lanzar, proponer un plan editable con mezcla de CLI según cuotas frescas confirmadas e idoneidad de los modelos; unknown no significa disponible. Pedir a la persona que elija y confirme el plan exacto. No crea worktrees ni agentes y devuelve el digest exacto para la elección de la persona.', prepareInput],
   team_launch: ['Lanzar el plan exacto elegido por la persona. Requiere plan_id, digest sin cambios y referencia textual a la instrucción humana declarada por el líder; conserva permisos nativos y nunca degrada modelo o esfuerzo.', launchInput],
+  team_answer: ['Responder como líder vigente una pregunta nativa pendiente de un worker Hub del plan activo. Requiere generación y question_id actuales; answers mapea los IDs de preguntas a {answers:[texto]}. Resolver con el contexto disponible o consultar a la persona y después responder al worker. Las respuestas no se guardan en eventos ni se envían a otro proceso.',answerInput],
   team_control: ['Controlar un miembro Hub del plan aprobado: start, stop, interrupt, send, clear o edit de role/task/prompt. Requiere la generación actual. clear inicia una conversación nueva conservando worktree; cambiar CLI/modelo exige preparar y confirmar otro plan. Devuelve sólo metadatos, nunca terminal, logs ni transcripciones.', controlInput],
   team_status: ['Consultar plan, efectos persistidos, incorporaciones y resultados inciertos sin exponer invitaciones ni claves.', statusInput],
   team_join: ['Consumir una invitación de equipo de un solo uso desde el worktree y la CLI asignados. Conserva la session_key, canal y liderazgo propios.', joinInput],
@@ -86,6 +94,7 @@ export class TeamOrchestration {
     if(operation==='team_launch')return this.launch(input,who)
     if(operation==='team_status')return this.status(input.plan_id,who)
     if(operation==='team_join')return this.join(input.invitation,who,agent!)
+    if(operation==='team_answer')return this.answer(input,who)
     if(operation==='team_control')return this.control(input,who)
     if(operation==='team_close')return this.close(input,who)
     throw new Error('unreachable')
@@ -264,9 +273,7 @@ export class TeamOrchestration {
       AND EXISTS(SELECT 1 FROM chat_team_plans t WHERE t.id=team_id AND t.state='launching') RETURNING id`,[member.id])
     if(!launching.length)return false
     if(!await this.launchActive(plan,who))return false
-    const prompt=`${member.prompt}
-
-Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identidad y canal. Usá memory_team_join con invitation=${token}. La invitación vence y se consume una sola vez.`
+    const prompt=this.workerPrompt(plan,member,token)
     let receipt:TeamLaunchReceipt
     try {receipt=await this.orca.launch(workspace,{member_id:member.id,authorize:async()=>{
       await this.checkQuota([member],who)
@@ -395,6 +402,11 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
     })
   }
 
+  private workerPrompt(plan:Record<string,any>,member:Record<string,any>,token:string) {
+    return `${member.prompt}\n\nAgent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identidad y canal. Primero usá memory_team_join con invitation=${token}; la invitación vence y se consume una sola vez.
+Consultá dudas al líder master por el Hub en root_thread_id=${plan.root_thread_id}, mencionando a master_session_id=${plan.created_by}. Incluí contexto mínimo, opciones y recomendación, y esperá su respuesta antes de avanzar en lo que depende de ella. No abras preguntas directas a la persona con AskUserQuestion/request_user_input; preferí el hilo del Hub. Si la CLI emite una pregunta nativa, el Hub la deriva al master para que la resuelva o consulte a la persona y te devuelva la respuesta.`
+  }
+
   private serial<T>(memberId:string,operation:()=>Promise<T>):Promise<T> {
     const previous=this.memberOperations.get(memberId) ?? Promise.resolve()
     const current=previous.catch(()=>undefined).then(operation)
@@ -404,8 +416,9 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
   }
 
   private runtime(value:Partial<TeamRuntimeMetadata>|null|undefined,generation?:string):TeamRuntimeMetadata {
+    const questions=pendingQuestions.safeParse(value?.questions)
     const safe=(text:unknown)=>typeof text==='string' && text.length<=512 && !/[\x00-\x1f\x7f]/.test(text)
-    return {...(this.orca.provider==='hub'?{provider:'hub' as const}:{}),generation:generation ?? (typeof value?.generation==='string'?value.generation:randomUUID()),
+    return {...(this.orca.provider==='hub'?{provider:'hub' as const}:{}),...(questions.success?{questions:questions.data as TeamPendingQuestion[]}:{}),generation:generation ?? (typeof value?.generation==='string'?value.generation:randomUUID()),
       state:safe(value?.state)?value!.state!:'unknown',native_id:safe(value?.native_id)?value!.native_id!:null,
       turn_id:safe(value?.turn_id)?value!.turn_id!:null,updated_at:typeof value?.updated_at==='string' && Number.isFinite(Date.parse(value.updated_at))?value.updated_at:new Date().toISOString()}
   }
@@ -428,6 +441,30 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
     check(plan && plan.created_by===who.id && plan.master_channel_id===who.channel_id,'El plan no pertenece al líder vigente',403)
     check(activePlan(plan.state) && !['prepared','launching'].includes(plan.state) && plan.human_instruction,'El plan no está aprobado y activo',409)
     return plan
+  }
+
+  private async answer(input:z.infer<typeof answerInput>,who:Record<string,any>) {
+    check(this.orca.provider==='hub' && this.orca.answer && this.orca.status,'Las respuestas nativas requieren un runtime Hub conectado',409)
+    return this.serial(input.member_id,async()=>{
+      const validate=async()=>{
+        const plan=await this.controlAuthority(input.plan_id,who)
+        const item=(await this.db.query('SELECT * FROM chat_team_members WHERE id=$1 AND team_id=$2',[input.member_id,plan.id]))[0]
+        check(item?.launch_handle && item.runtime?.generation===input.expected_generation,'La generación o el runtime de la pregunta cambiaron',409)
+        return {plan,item}
+      }
+      const {plan,item}=await validate()
+      const current=await this.orca.status!(item.launch_handle)
+      check(current?.generation===input.expected_generation && current.state==='waiting_input','El worker ya no espera esta respuesta o su estado es desconocido',409)
+      const pending=pendingQuestions.safeParse(current.questions)
+      const request=pending.success?pending.data.find(question=>question.id===input.question_id):undefined
+      check(request,'La pregunta ya no está pendiente en esta generación',409)
+      const ids=new Set(request.questions.map(question=>question.id)),answers=Object.keys(input.answers)
+      check(ids.size===answers.length && answers.every(id=>ids.has(id)),'Las respuestas deben corresponder exactamente a las preguntas pendientes',422)
+      await validate() // A status read may await protocol persistence; recheck authority immediately before answering.
+      await this.orca.answer!(item.launch_handle,input.question_id,input.answers)
+      await this.event(this.db,plan.id,item.id,'answer',who.id,who.channel_id,plan.root_thread_id,{question_id:input.question_id})
+      return this.view(plan.id,who)
+    })
   }
 
   private async control(input:z.infer<typeof controlInput>,who:Record<string,any>) {
@@ -472,7 +509,7 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
           [item.id,invitationHash(token),expires])
         // Revalidate authority immediately before the external launch; the per-member lock protects the rotated generation.
         await this.controlAuthority(plan.id,who)
-        const prompt=`${item.prompt}\n\nAgent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identidad y canal. Usá memory_team_join con invitation=${token}. La invitación vence y se consume una sola vez.`
+        const prompt=this.workerPrompt(plan,item,token)
         try {
           const receipt=await this.orca.launch({id:item.workspace_id,path:item.workspace_path,repo_id:item.workspace_repo_id,head:item.workspace_head},
             {member_id:item.id,resume_worktree:true,authorize:async()=>{

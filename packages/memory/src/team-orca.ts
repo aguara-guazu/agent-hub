@@ -10,11 +10,15 @@ import { validCliModel, type ExtractionCli } from './cli-extraction.js'
 
 export interface TeamWorkspace { id: string; path: string; repo_id: string; head: string }
 export interface TeamLaunchReceipt { handle: string; kind: string; operation_id?: string; prompt_outcome: string; runtime?: TeamRuntimeMetadata }
-export interface TeamRuntimeMetadata { provider?: 'hub' | 'orca'; generation: string; state: string; native_id?: string | null; turn_id?: string | null; updated_at: string }
+export interface TeamQuestion { id: string; header: string; question: string; isOther?: boolean; isSecret?: boolean; options?: Array<{label:string;description:string}> | null }
+export interface TeamPendingQuestion { id: string; questions: TeamQuestion[] }
+export type TeamQuestionAnswers = Record<string,{answers:string[]}>
+export interface TeamRuntimeMetadata { questions?: TeamPendingQuestion[]; provider?: 'hub' | 'orca'; generation: string; state: string; native_id?: string | null; turn_id?: string | null; updated_at: string }
 export interface TeamLaunchMember { member_id?: string; resume_worktree?: boolean; authorize?: () => Promise<void>; cli: ExtractionCli; model: string; effort?: string; prompt: string }
 export interface TeamOrca {
   readonly provider?: 'hub' | 'orca'
   status?(handle: string): Promise<Partial<TeamRuntimeMetadata> | undefined>
+  answer?(handle: string, questionId: string, answers: TeamQuestionAnswers): Promise<unknown>
   send?(handle: string, text: string): Promise<unknown>
   interrupt?(handle: string): Promise<unknown>
   stop?(handle: string): Promise<unknown>
