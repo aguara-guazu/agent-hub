@@ -450,10 +450,9 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
           item=await load()
         }
         const token=randomBytes(32).toString('base64url'),expires=new Date(Date.now()+30*60_000).toISOString()
-        const generation=randomUUID()
         await this.db.query(`UPDATE chat_team_members SET state='launch_intent',session_id=NULL,channel_id=NULL,
           invitation_used_at=NULL,invitation_hash=$2,invitation_expires_at=$3,launch_handle=NULL,error=NULL,runtime=$4,updated_at=now() WHERE id=$1`,
-          [item.id,invitationHash(token),expires,JSON.stringify({generation,state:'starting',updated_at:new Date().toISOString()})])
+          [item.id,invitationHash(token),expires,item.runtime?JSON.stringify({...item.runtime,state:'starting',updated_at:new Date().toISOString()}):null])
         // Revalidate authority immediately before the external launch; the per-member lock protects the rotated generation.
         await this.controlAuthority(plan.id,who)
         const prompt=`${item.prompt}\n\nAgent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identidad y canal. Usá memory_team_join con invitation=${token}. La invitación vence y se consume una sola vez.`
@@ -462,7 +461,7 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
             {member_id:item.id,cli:item.cli,model:item.model,...(item.effort?{effort:item.effort}:{}),prompt})
           await this.db.query(`UPDATE chat_team_members SET state=CASE WHEN state='joined' THEN state ELSE 'accepted' END,
             launch_handle=$2,launch_kind=$3,operation_id=$4,prompt_outcome=$5,runtime=$6,updated_at=now() WHERE id=$1`,
-            [item.id,receipt.handle,receipt.kind,receipt.operation_id ?? null,receipt.prompt_outcome,JSON.stringify(this.runtime(receipt.runtime ?? {generation,state:'unknown'}))])
+            [item.id,receipt.handle,receipt.kind,receipt.operation_id ?? null,receipt.prompt_outcome,JSON.stringify(this.runtime(receipt.runtime ?? {state:'unknown'}))])
           try {await this.controlAuthority(plan.id,who)} catch(error) {
             await this.orca.stop?.(receipt.handle)
             await this.updateRuntime(item.id,{state:'stopped'})
