@@ -4,17 +4,24 @@ import type { DaemonState } from './state.js'
 
 /** Only a real CLI ancestor is a liveness witness. Shared daemons are deliberately excluded. */
 export async function cliProcess(kind: string): Promise<{ process_id: number; process_started: string } | undefined> {
-  let pid = process.ppid
-  for (let i=0; i<8 && pid>1; i++) {
-    const info=await inspectNativeProcess(pid)
-    if(!info)return undefined
-    const name=kind==='claude_code'?'claude':kind==='codex_cli'?'codex':''
-    const invocation=info.command.split(/\s+-c\s+/)[0]!
-    if(name && new RegExp(`(?:^|[/\\\\])${name}(?:\\.exe)?(?:\\s|$)`).test(invocation) && !/\b(daemon|app-server|queue)\b/.test(invocation))
-      return {process_id:pid,process_started:info.started}
-    pid=info.parent
-  }
-  return undefined
+  const name=kind==='claude_code'?'claude':kind==='codex_cli'?'codex':''
+  if(!name)return undefined
+  // Optional evidence must not consume the host's hook deadline before the lifecycle POST.
+  // One budget for the entire ancestry walk; abort also terminates the pending OS query.
+  const controller=new AbortController()
+  const timer=setTimeout(()=>controller.abort(),process.platform==='win32'?1500:400)
+  try {
+    let pid = process.ppid
+    for (let i=0; i<8 && pid>1 && !controller.signal.aborted; i++) {
+      const info=await inspectNativeProcess(pid,controller.signal)
+      if(!info||controller.signal.aborted)return undefined
+      const invocation=info.command.split(/\s+-c\s+/)[0]!
+      if(name && new RegExp(`(?:^|[/\\\\])${name}(?:\\.exe)?(?:\\s|$)`).test(invocation) && !/\b(daemon|app-server|queue)\b/.test(invocation))
+        return {process_id:pid,process_started:info.started}
+      pid=info.parent
+    }
+    return undefined
+  } finally { clearTimeout(timer) }
 }
 
 export async function localChatHook(state: DaemonState, agentId: string, kind: string, raw: Record<string, any>, override?: string): Promise<{ output?: Record<string, unknown>; error?: string; code?: number }> {

@@ -68,6 +68,12 @@ it.each(['codex_cli','claude_code','gemini_cli'] as const)('registra sesiones de
   const contents=readFileSync(path,'utf8'),hooks=JSON.parse(contents).hooks
   expect(hooks.SessionStart).toHaveLength(1)
   expect(hooks[kind==='gemini_cli'?'BeforeAgent':'UserPromptSubmit']).toHaveLength(1)
+  const timeout=process.platform==='win32'?10:5
+  expect(hooks.SessionStart[0].hooks[0].timeout).toBe(kind==='gemini_cli'?timeout*1000:timeout)
+  if(kind==='codex_cli') {
+    expect(hooks.SessionEnd[0].hooks[0].timeout).toBe(3)
+    expect(hooks.Interrupt[0].hooks[0].timeout).toBe(3)
+  }
   expect(contents).not.toContain('bypass');expect(contents).not.toContain('permissionDecision')
   if (kind==='claude_code') {
     expect(hooks.Stop[0].hooks[1]).toMatchObject({asyncRewake:true,timeout:604800})

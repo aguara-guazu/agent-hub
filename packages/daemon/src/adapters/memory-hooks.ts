@@ -63,7 +63,7 @@ export function planMemoryHooks(snapshot: Snapshot, endpoint: GatewayEndpoint, h
       // Antigravity uses named definitions, flat Stop handlers and camelCase payloads.
       // Its payload has no event name, so each command carries the event explicitly.
       const handler = (event: string) => ({ type: 'command',
-        command: hookCommand(endpoint.command, [...args, '--hook-event', event], true), timeout: WINDOWS ? 10 : 3 })
+        command: hookCommand(endpoint.command, [...args, '--hook-event', event], true), timeout: WINDOWS ? 10 : 5 })
       const value = enabled ? {
         PreToolUse: [{ matcher: '^mcp_hub_.*', hooks: [handler('PreToolUse')] }],
         Stop: [handler('Stop')],
@@ -91,8 +91,9 @@ export function planMemoryHooks(snapshot: Snapshot, endpoint: GatewayEndpoint, h
   const handler = (timeout: number) => kind === 'codex_cli' && WINDOWS ? { type: 'command', command, commandWindows: command, timeout }
     : { type: 'command', command, timeout, ...(kind === 'claude_code' && WINDOWS ? { shell: 'powershell' } : {}) }
   // Gemini mide en milisegundos y el resto en segundos. Arrancar PowerShell y Electron como Node tarda más en Windows;
+  // El presupuesto incluye arranque, inspección acotada del proceso y HTTP (1,8 s).
   // Codex limita SessionEnd e Interrupt a 3 s.
-  const timeout = kind === 'gemini_cli' ? (WINDOWS ? 10_000 : 2500) : WINDOWS ? 10 : 3
+  const timeout = kind === 'gemini_cli' ? (WINDOWS ? 10_000 : 5000) : WINDOWS ? 10 : 5
   const before = kind === 'gemini_cli' ? 'BeforeTool' : 'PreToolUse'
   const stop = kind === 'gemini_cli' ? 'AfterAgent' : 'Stop'
   const hooks: Record<string, unknown[]> = enabled ? {

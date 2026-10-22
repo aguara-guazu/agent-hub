@@ -3,7 +3,34 @@ import type { DaemonState } from './state.js'
 import { cliProcess,localChatHook } from './local-chat-hook.js'
 import { inspectNativeProcess,orcaWorkspaceId } from '@agenthub/gateway'
 vi.mock('@agenthub/gateway',()=>({inspectNativeProcess:vi.fn(),orcaWorkspaceId:vi.fn(),orcaTerminalHandle:vi.fn()}))
-afterEach(()=>{vi.resetAllMocks();vi.unstubAllGlobals()})
+afterEach(()=>{vi.resetAllMocks();vi.unstubAllGlobals();vi.useRealTimers()})
+it('no inspecciona procesos de clientes sin identificación compatible',async()=>{
+  expect(await cliProcess('gemini_cli')).toBeUndefined()
+  expect(inspectNativeProcess).not.toHaveBeenCalled()
+})
+it('limita toda la búsqueda de ancestros y envía el evento aunque la inspección se demore',async()=>{
+  vi.useFakeTimers()
+  const budget=process.platform==='win32'?1500:400
+  vi.mocked(inspectNativeProcess).mockImplementationOnce(async()=>{
+    await new Promise(resolve=>setTimeout(resolve,budget/2))
+    return {parent:42,started:'birth',command:'/bin/sh'}
+  }).mockImplementationOnce(async(_pid,signal)=>new Promise(resolve=>{
+    signal!.addEventListener('abort',()=>resolve(undefined),{once:true})
+  }))
+  const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({session:{label:'Agent',id:'native:one'},channel:{id:'channel',path:'/worktree'},pending:[]})}))
+  const result=localChatHook(state,'agent','claude_code',{session_id:'session',cwd:'/worktree',hook_event_name:'UserPromptSubmit'})
+  await vi.advanceTimersByTimeAsync(budget-1)
+  expect(fetch).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(JSON.stringify((await result).output)).toContain('Agent Hub')
+  expect(inspectNativeProcess).toHaveBeenCalledTimes(2)
+  expect(vi.mocked(inspectNativeProcess).mock.calls[1]![1]!.aborted).toBe(true)
+  const sent=JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)
+  expect(sent.event).toBe('UserPromptSubmit')
+  expect(sent).not.toHaveProperty('process_id')
+  expect(sent).not.toHaveProperty('process_started')
+})
 it('reconoce Codex aunque sus argumentos incluyan comandos de hooks',async()=> {
   vi.mocked(inspectNativeProcess).mockResolvedValue({parent:1,started:'birth',command:'codex --no-alt-screen -c hooks.Stop=[{command="node memory-hook"}]'})
   expect(await cliProcess('codex_cli')).toEqual({process_id:process.ppid,process_started:'birth'})
