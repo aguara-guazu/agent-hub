@@ -60,6 +60,7 @@ it.each(['human','permission','schedule','tool','agent'])('protects a %s wait ev
 it('does not treat busy silence or an expired lease as a stuck process',async()=>{
   await work();await db.query("UPDATE chat_sessions SET state='busy' WHERE id=$1",[session]);await observer.tick()
   expect((await observation()).decision.action).toBe('UNKNOWN')
+  expect((await observation()).snapshot.session.state).toBe('unknown')
   now+=31_000;await db.query("UPDATE chat_sessions SET state='idle',lease_until=$2 WHERE id=$1",[session,iso(now-1)])
   await observer.tick();expect((await observation()).decision.reason).toBe('session_lease_expired')
 })

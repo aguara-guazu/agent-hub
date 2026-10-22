@@ -7,7 +7,7 @@ import { CLI_LABELS, type CliKind } from '../lib/types'
 import { ErrorBox, formatTime, Pager, useMemory, type Page } from '../lib/memory'
 
 interface Channel { id:string; name:string; path:string; branch:string|null; threads:number; orca_workspace_id?:string|null; read_only?:boolean|null; kind?:string; closed_at?:string|null }
-interface Participant { id:string; channel_id:string; removed_at?:string|null; removal_reason?:string|null; removed_by?:string|null; label:string; cli_kind:string; state:string; capability:string; last_seen_at:string; wake_error:string|null; role?:string; needs_nickname?:boolean }
+interface Participant { id:string; channel_id:string; removed_at?:string|null; removal_reason?:string|null; removed_by?:string|null; label:string; cli_kind:string; state:string; state_reason?:string|null; state_observed_at?:string; connection_state?:string; capability:string; last_seen_at:string; wake_error:string|null; role?:string; needs_nickname?:boolean }
 interface Thread { id:string; channel_id:string; title:string; state:string; channel_name:string; messages:number; preview:string; author_label:string; updated_at:string; task_id:string|null }
 interface Receipt { recipient_id:string; cancelled_at?:string|null; label:string; notified_at:string|null; read_at:string|null; handled_at:string|null; attempts:number; error:string|null }
 interface Message { id:string; author_id:string; author_label:string; text:string; created_at:string; reply_to:string|null; mentions:Receipt[] }
@@ -88,9 +88,10 @@ export function ProjectCollaboration({ projectId, unassigned = false }: { projec
         <ErrorBox error={agents.error} retry={agents.refetch}/>
         {agents.isPending && <p className="local-chat-help" role="status">Cargando agentes…</p>}
         <div className="local-chat-agents-list">{visibleAgents.map(a=><div key={a.id} className={`local-chat-agent ${author===a.id?'selected':''}`}>
-          <button className="local-chat-agent-profile" onClick={()=>selectAgent(a)} title={`Ver sus mensajes · Última señal: ${formatTime(a.last_seen_at)}`}>
+          <button className="local-chat-agent-profile" onClick={()=>selectAgent(a)} title={`Ver sus mensajes · Última conexión: ${formatTime(a.last_seen_at)}${a.state_observed_at ? ` · Último estado observado: ${formatTime(a.state_observed_at)}` : ''}`}>
             <strong><span className={`local-chat-presence ${a.state}`}/>{a.label}{a.role==='leader' && <span className="local-chat-tag">Líder</span>}</strong>
-            <small>{CLI_LABELS[a.cli_kind as CliKind] ?? a.cli_kind} · {states[a.state] ?? a.state} · {capabilities[a.capability] ?? a.capability}</small>
+            <small>{CLI_LABELS[a.cli_kind as CliKind] ?? a.cli_kind} · {a.state_reason==='activity_stale'?'Actividad sin confirmar':states[a.state] ?? a.state} · {capabilities[a.capability] ?? a.capability}</small>
+            {a.state_reason==='activity_stale' && <small>La conexión sigue activa; no confirma que esté trabajando.</small>}
           </button>
           <button className="btn btn-ghost btn-sm local-chat-remove" aria-label={`Expulsar a ${a.label}`} onClick={()=>{kick.reset();setReason('');setRemoving(a)}}>Expulsar del canal</button>
           {a.wake_error && <small className="local-chat-warning">{a.wake_error}</small>}

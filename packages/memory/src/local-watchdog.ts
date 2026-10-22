@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { LocalChat } from './local-chat.js'
+import { sessionStatus, type LocalChat } from './local-chat.js'
 import { defaultWatchdogConfig, evaluateWatchdog, POLICY_VERSION, type WatchdogSnapshot } from './local-watchdog-policy.js'
 
 const BATCH_SIZE = 100
@@ -65,7 +65,7 @@ export class LocalWatchdog {
         const snapshot: WatchdogSnapshot = {
           now, work: {status:row.status,updatedAt:milliseconds(row.updated_at) ?? NaN,
             lastProgressAt:milliseconds(row.last_progress_at),waitingFor:row.waiting_for,reportMessageId:row.report_message_id},
-          session: {state:row.session_closed_at ? 'offline' : row.session_state,
+          session: {state:sessionStatus({state:row.session_state,event_at:row.event_at,closed_at:row.session_closed_at,lease_until:row.lease_until},now).state,
             observedAt:milliseconds(row.last_seen_at),stateSince:milliseconds(row.event_at),leaseUntil:milliseconds(row.lease_until)},
           // Observing a hypothetical wake is not an attempt. Never escalate based on a wake we did not send.
           recovery: {statusAttempts:0,lastStatusAttemptAt:null,alertedAt:null},

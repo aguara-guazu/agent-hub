@@ -24,7 +24,7 @@ export async function cliProcess(kind: string): Promise<{ process_id: number; pr
   } finally { clearTimeout(timer) }
 }
 
-export async function localChatHook(state: DaemonState, agentId: string, kind: string, raw: Record<string, any>, override?: string): Promise<{ output?: Record<string, unknown>; error?: string; code?: number }> {
+export async function localChatHook(state: DaemonState, agentId: string, kind: string, raw: Record<string, any>, override?: string, observedAt=new Date().toISOString()): Promise<{ output?: Record<string, unknown>; error?: string; code?: number }> {
   if(process.env.AGENTHUB_TUI_SESSION && process.env.AGENTHUB_TUI_AGENT===agentId)return {}
   const credentials = state.loadCredentials(), snapshot = state.loadSnapshot(agentId)
   if (!credentials || !snapshot) return {}
@@ -41,12 +41,12 @@ export async function localChatHook(state: DaemonState, agentId: string, kind: s
   // Native waking is a local-machine capability; never transmit this endpoint to a remote control plane.
   if (!['127.0.0.1','localhost','[::1]'].includes(url.hostname)) return {}
   url.pathname = '/api/memory/chat/native'; url.search=''; url.hash=''
-  const watchStarted = new Date().toISOString()
-  const base = { agent_id:agentId, native_id:nativeId, cwd, orca_workspace_id:orcaWorkspaceId(), session_key:sessionKey, ...(event==='Watch' ? {watch_started:watchStarted}: {}) }
+  const base = { agent_id:agentId, native_id:nativeId, cwd, orca_workspace_id:orcaWorkspaceId(), session_key:sessionKey,
+    ...(event==='Watch' ? {watch_started:observedAt}: {}) }
   const processInfo = ['SessionStart','UserPromptSubmit','Stop','Watch'].includes(event) ? await cliProcess(kind) : undefined
   const send = async (name: string, timeout=1800) => {
     const response = await fetch(url,{ method:'POST', headers:{ Authorization:`Bearer ${credentials.token}`, 'Content-Type':'application/json' },
-      body:JSON.stringify({ ...base,event:name,at:new Date().toISOString(),...processInfo }), signal:AbortSignal.timeout(timeout) })
+      body:JSON.stringify({ ...base,event:name,at:name==='Watch'?new Date().toISOString():observedAt,...processInfo }), signal:AbortSignal.timeout(timeout) })
     if (!response.ok) throw new Error(String(response.status))
     return await response.json() as any
   }

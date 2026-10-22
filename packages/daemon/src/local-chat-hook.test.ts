@@ -39,6 +39,13 @@ it('no atribuye la vida de un daemon compartido a una terminal concreta',async()
   vi.mocked(inspectNativeProcess).mockResolvedValue({parent:1,started:'birth',command:'/bin/codex app-server --managed-daemon'})
   expect(await cliProcess('codex_cli')).toBeUndefined()
 })
+it('conserva la fecha observada aunque la inspección del proceso demore el POST',async()=>{
+  const observedAt='2026-10-22T10:00:00.000Z'
+  const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({})}))
+  await localChatHook(state,'agent','claude_code',{session_id:'session',cwd:'/worktree',hook_event_name:'Stop'},undefined,observedAt)
+  expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string).at).toBe(observedAt)
+})
 it('reconoce el ejecutable nativo de Windows',async()=> {
   vi.mocked(inspectNativeProcess).mockResolvedValue({parent:1,started:'birth',command:'C:\\tools\\codex.exe --no-alt-screen'})
   expect(await cliProcess('codex_cli')).toMatchObject({process_id:process.ppid})

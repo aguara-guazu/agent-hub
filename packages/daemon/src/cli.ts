@@ -513,9 +513,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       let raw = ''
       for await (const chunk of process.stdin) { raw += String(chunk); if (raw.length > 2_000_000) return EXIT_ERROR }
       const event = JSON.parse(raw || '{}') as Record<string, unknown>
+      const observedAt=new Date().toISOString()
       if (snapshot['cli_kind'] === 'antigravity') event['hook_event_name'] = args.hookEvent
       await recordLifecycle(integrationDirectory(args.stateDir, args.agent), args.agent, String(snapshot['cli_kind'] ?? ''), event)
-      const chat = await localChatHook(state,args.agent,String(snapshot['cli_kind'] ?? ''),event,args.hookEvent)
+      const chat = await localChatHook(state,args.agent,String(snapshot['cli_kind'] ?? ''),event,args.hookEvent,observedAt)
       if (chat.error) warn(chat.error)
       if (chat.code) return chat.code
       if (chat.output) { say(JSON.stringify(chat.output)); return EXIT_OK }

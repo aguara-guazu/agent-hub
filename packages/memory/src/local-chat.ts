@@ -28,7 +28,7 @@ export const chatDefinitions = {
   chat_close_channel: ['Cerrar explícitamente el canal virtual descartable de esta sesión. Sólo puede hacerlo su líder. Conserva historial y bloquea nuevas adhesiones; una conversación nueva podrá crear otro canal futuro en la misma carpeta.', z.object({ ...session }).strict()],
   chat_set_nick: ['Elegí libremente tu nick inventado (2–40 caracteres) antes de escribir. Debe ser único en este Hub, incluso entre sesiones desconectadas; ante conflicto elegí otro. Sólo cambia tu propia sesión y conserva su identidad e historial.', z.object({ ...session, nickname }).strict()],
   chat_channels: ['Explorar canales locales activos o históricos. unassigned=true devuelve sólo canales sin proyecto; los virtuales pendientes permanecen ocultos.', z.object({ ...scope, ...page }).strict()],
-  chat_agents: ['Encontrar identidades de sesiones concretas para mencionarlas; por defecto excluye expulsados. Usá include_removed=true sólo para auditoría. unassigned=true limita a canales sin proyecto.', z.object({ ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), ...page }).strict()],
+  chat_agents: ['Encontrar identidades de sesiones concretas para mencionarlas; por defecto excluye expulsados. connection_state y last_seen_at describen conexión, no trabajo. state=unknown con state_reason=activity_stale indica actividad sin confirmar: pedí estatus por el Hub, no infieras que sigue trabajando ni que terminó. Usá include_removed=true sólo para auditoría. unassigned=true limita a canales sin proyecto.', z.object({ ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), ...page }).strict()],
   chat_threads: ['Buscar hilos y mensajes históricos por texto, canal, proyecto, autor o estado. unassigned=true limita a canales sin proyecto. El historial permanece al cerrar los agentes.', z.object({ ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
   chat_read: ['Leer mensajes de un hilo. Con session_key, por defecto devuelve sólo mensajes pendientes para esa sesión (sin los propios) y registra únicamente los devueltos; seguí paginando pendientes con offset: 0. unread_only=false devuelve historial. Sin session_key es una lectura histórica anónima y read-only; unread_only=true requiere session_key.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
   chat_send: ['Crear un hilo por tarea (channel_id,title), un hilo breve de un equipo vinculado (team_root_thread_id,title), o responder (thread_id). Fuera del canal propio sólo admite el root o hilos ligados persistentemente a un equipo vigente; mentions queda limitado a sus miembros. request_id estable permite reintentar sin duplicar. Requiere autorización para colaborar.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), request_id: z.string().min(1).max(200) }).strict()],
@@ -39,9 +39,20 @@ export const chatDefinitions = {
 } satisfies Record<string, [string, z.ZodType]>
 export const chatReadOperations = ['chat_work_list','chat_channels','chat_agents','chat_threads','chat_read']
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
-const publicSession = (s: Record<string, any>) => ({ id: s.id, label: s.label, nickname: s.nickname, needs_nickname: !s.nickname, cli_kind: s.cli_kind, channel_id: s.channel_id,
-  state: s.removed_at ? 'removed' : s.closed_at ? 'offline' : !s.lease_until || Date.parse(s.lease_until) < Date.now() ? 'unknown' : s.state,
-  capability: s.capability, last_seen_at: s.last_seen_at, created_at: s.created_at, closed_at: s.closed_at, wake_error: s.wake_error, removed_at:s.removed_at, removed_by:s.removed_by, removal_reason:s.removal_reason })
+export function sessionStatus(s: Record<string, any>,now=Date.now()) {
+  const connected=Date.parse(s.lease_until)>now
+  // PID checks and listener heartbeats prove connection only. They cannot renew busy evidence.
+  const activityStale=s.state==='busy' && !(Date.parse(s.event_at)>=now-90_000)
+  const state=s.removed_at?'removed':s.closed_at?'offline':!connected||activityStale?'unknown':s.state
+  return {state,state_reason:state==='unknown'?(connected?'activity_stale':'connection_stale'):null,state_observed_at:s.event_at,
+    connection_state:s.removed_at||s.closed_at?'offline':connected?'online':'unknown'}
+}
+const publicSession = (s: Record<string, any>) => {
+  return { id:s.id,label:s.label,nickname:s.nickname,needs_nickname:!s.nickname,cli_kind:s.cli_kind,channel_id:s.channel_id,
+    ...sessionStatus(s),
+    capability:s.capability,last_seen_at:s.last_seen_at,created_at:s.created_at,closed_at:s.closed_at,wake_error:s.wake_error,
+    removed_at:s.removed_at,removed_by:s.removed_by,removal_reason:s.removal_reason }
+}
 
 export async function chatFolder(path: string) {
   try {
@@ -467,8 +478,8 @@ export class LocalChat {
       if(teamRoot || thread.channel_id!==who.channel_id)
         check(await this.teamForThread(this.db,who,thread),'El hilo no pertenece a tu canal o equipo activo',403)
       if(operation==='chat_work_update')return updateWork(this.db,who.id,input)
-      const result=await this.page(`SELECT w.*,CASE WHEN s.removed_at IS NOT NULL THEN 'removed' WHEN s.closed_at IS NOT NULL THEN 'offline'
-        WHEN s.lease_until IS NULL OR s.lease_until<now() THEN 'unknown' ELSE s.state END AS session_state,s.closed_at AS session_closed_at,'agent' AS source,
+      const result=await this.page(`SELECT w.*,s.state AS session_state,s.closed_at AS session_closed_at,'agent' AS source,
+        s.removed_at AS session_removed_at,s.lease_until AS session_lease_until,
         s.event_at AS session_event_at,o.work_version AS observed_version,o.policy_version,o.decision,o.last_observed_at,o.snapshot AS watchdog_snapshot,
         t.state AS watched_thread_state,c.closed_at AS watched_channel_closed_at,c.leader_id AS watched_recipient_id,
         recipient.closed_at AS watched_recipient_closed_at,recipient.removed_at AS watched_recipient_removed_at,recipient.lease_until AS watched_recipient_lease_until,
@@ -480,10 +491,12 @@ export class LocalChat {
         LEFT JOIN chat_watchdog_observations o ON o.session_id=w.session_id AND o.work_id=w.work_id
         LEFT JOIN chat_deliveries d ON d.message_id=w.report_message_id AND d.recipient_id=c.leader_id
         WHERE w.thread_id=$1`,[thread.id],'updated_at DESC,session_id,work_id',input)
-      return {...result,items:result.items.map(({session_event_at,observed_version,policy_version,decision,last_observed_at,watchdog_snapshot,
+      return {...result,items:result.items.map(({session_event_at,session_removed_at,session_lease_until,observed_version,policy_version,decision,last_observed_at,watchdog_snapshot,
         watched_thread_state,watched_channel_closed_at,watched_recipient_id,watched_recipient_closed_at,watched_recipient_removed_at,watched_recipient_lease_until,
         receipt_id,receipt_notified_at,receipt_read_at,receipt_handled_at,
         receipt_cancelled_at,receipt_attempts,receipt_next_attempt_at,receipt_error,...item})=>{
+        const presence=sessionStatus({state:item.session_state,event_at:session_event_at,closed_at:item.session_closed_at,removed_at:session_removed_at,lease_until:session_lease_until})
+        item.session_state=presence.state
         const at=(value:unknown)=>typeof value==='string'?Date.parse(value):null
         const receipt=receipt_id?{notifiedAt:at(receipt_notified_at),readAt:at(receipt_read_at),handledAt:at(receipt_handled_at),
           cancelledAt:at(receipt_cancelled_at),attempts:receipt_attempts,nextAttemptAt:at(receipt_next_attempt_at),error:receipt_error}:null
@@ -492,7 +505,8 @@ export class LocalChat {
           watchdog_snapshot?.recipientAvailable!==Boolean(watched_recipient_id && !watched_recipient_closed_at && !watched_recipient_removed_at && (at(watched_recipient_lease_until)??0)>Date.now()) ||
           JSON.stringify(receipt)!==JSON.stringify(watchdog_snapshot?.delivery) ||
           Date.parse(session_event_at)>Date.parse(last_observed_at) || Date.now()-Date.parse(last_observed_at)>60_000 || Date.parse(last_observed_at)>Date.now()
-        return {...item,watchdog:last_observed_at?{mode:'shadow',work_version:observed_version,policy_version,decision,last_observed_at,stale}:null}
+        return {...item,session_state_reason:presence.state_reason,session_state_observed_at:presence.state_observed_at,
+          connection_state:presence.connection_state,watchdog:last_observed_at?{mode:'shadow',work_version:observed_version,policy_version,decision,last_observed_at,stale}:null}
       })}
     }
     if (operation === 'chat_create_channel') {
