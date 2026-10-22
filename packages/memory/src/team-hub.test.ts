@@ -45,8 +45,10 @@ createInterface({input:process.stdin}).on('line',line=>{
 });`
 function mockChat() {
   const rows = new Map<string, { id: string; session_id: string | null; runtime: HubTeamStatus | null }>()
+  let authorized = true
   const lifecycle = vi.fn(async (_session: string, _event: string, _at: string, _turn?: string) => {})
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+    if (sql.startsWith('SELECT m.id FROM chat_team_members')) return authorized && rows.get(String(params[0]))?.session_id === params[1] ? [{ id: params[0] }] : []
     if (sql.startsWith('SELECT id,session_id,runtime') && sql.includes('WHERE session_id=$1')) return [...rows.values()].filter(row => row.session_id === params[0]).map(row => ({ ...row }))
     if (sql.startsWith('SELECT id,session_id,runtime')) {
       const value = rows.get(String(params[0])); return value ? [{ ...value }] : []
@@ -56,7 +58,7 @@ function mockChat() {
     }
     throw new Error('Unexpected test SQL')
   })
-  return { chat: { db: { query }, managedLifecycle: lifecycle } as unknown as LocalChat, rows, lifecycle, query }
+  return { chat: { db: { query }, managedLifecycle: lifecycle } as unknown as LocalChat, rows, lifecycle, query, setAuthorized: (value: boolean) => { authorized = value } }
 }
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'hub-team-runtime-'))
@@ -257,6 +259,38 @@ describe('HubTeamRuntime lifecycle', () => {
     await backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE' })
     rows.get(id)!.runtime!.generation = randomUUID()
     expect(await backend.wake('joined', 'PRIVATE notice')).toBe(false)
+  })
+  it('revalidates launch authority after native help and Git checks, before spawning', async () => {
+    const { backend, id, launched, run } = setup('hold')
+    const parent = await backend.workspace(join(directory, 'repo'))
+    let verified = false
+    const authorize = vi.fn(async () => {
+      verified = run.mock.calls.at(-1)?.[0] === 'git'
+      throw new Error('Plan cancelled while checking the CLI')
+    })
+    await expect(backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE', authorize })).rejects.toThrow('Plan cancelled')
+    expect(verified).toBe(true)
+    expect(authorize).toHaveBeenCalledTimes(1)
+    expect(launched).not.toHaveBeenCalled()
+  })
+  it('revalidates current team and session authority immediately before waking an idle worker', async () => {
+    const { backend, id, rows, setAuthorized, query, launched } = setup('hold')
+    const parent = await backend.workspace(join(directory, 'repo'))
+    rows.get(id)!.session_id = 'joined'
+    await backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE' })
+    await backend.interrupt(id)
+    await until(async () => (await backend.status(id))?.state === 'idle')
+    setAuthorized(false)
+    await expect(backend.wake('joined', 'PRIVATE notice')).rejects.toThrow('ya no están autorizados')
+    expect((await backend.status(id))?.state).toBe('idle')
+    expect(launched).toHaveBeenCalledTimes(1)
+    const validation = query.mock.calls.find(call => call[0].startsWith('SELECT m.id FROM chat_team_members'))![0]
+    expect(validation).toContain('master.leader_id=t.created_by')
+    expect(validation).toContain('leader.removed_at IS NULL')
+    expect(validation).toContain('participant.removed_at IS NULL')
+    expect(validation).toContain("t.state NOT IN ('paused','cancelled','completed','prepared')")
+    setAuthorized(true)
+    expect(await backend.wake('joined', 'PRIVATE notice')).toBe(true)
   })
   it('checks the enable switch again after asynchronous preflight before spawning', async () => {
     const value = setup('hold')

@@ -146,7 +146,7 @@ export class HubTeamRuntime implements TeamOrca {
       'Git no confirmó el worktree hijo esperado. Conservá los recursos e inspeccioná el resultado.', 502)
     return child
   }
-  async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean }): Promise<HubTeamLaunchReceipt> {
+  async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean; authorize?: () => Promise<void> }): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
     const id = member.member_id ?? randomUUID()
     check(safeId(id) && id.length <= 200, 'Identificador de miembro inválido.', 400)
@@ -156,6 +156,7 @@ export class HubTeamRuntime implements TeamOrca {
     try {
       await this.preflight([member])
       const current = await this.unchanged(workspace, member.resume_worktree === true)
+      await member.authorize?.()
       this.requireEnabled()
       check(member.cli === 'claude_code' || member.cli === 'codex_cli', 'CLI no soportada por la flota del Hub.', 409)
       this.nextGenerations.set(id, randomUUID())
@@ -231,6 +232,19 @@ export class HubTeamRuntime implements TeamOrca {
       if (!runtime || !owned || this.generations.get(handle) !== runtime.generation) continue
       this.requireEnabled()
       check(owned.state === 'idle', 'El agente del Hub todavía no está disponible para recibir el aviso. Reintentá después.', 409)
+      const authorized = (await this.chat.db.query(`SELECT m.id FROM chat_team_members m
+        JOIN chat_team_plans t ON t.id=m.team_id
+        JOIN chat_channels master ON master.id=t.master_channel_id
+        JOIN chat_sessions leader ON leader.id=t.created_by
+        JOIN chat_sessions participant ON participant.id=m.session_id
+        JOIN chat_channels child ON child.id=m.channel_id
+        WHERE m.id=$1 AND m.session_id=$2 AND m.state='joined'
+        AND t.state NOT IN ('paused','cancelled','completed','prepared') AND t.human_instruction IS NOT NULL
+        AND master.closed_at IS NULL AND master.leader_id=t.created_by
+        AND leader.channel_id=master.id AND leader.closed_at IS NULL AND leader.removed_at IS NULL
+        AND participant.channel_id=child.id AND participant.closed_at IS NULL AND participant.removed_at IS NULL
+        AND child.closed_at IS NULL AND child.path=m.workspace_path`, [handle, sessionId]))[0]
+      check(authorized, 'El equipo o sus sesiones ya no están autorizados para recibir el aviso.', 403)
       const result = await this.send(handle, text)
       check(result.state === 'busy' || result.state === 'idle', 'El agente del Hub no confirmó la entrega del aviso. Reintentá después.', 503)
       return true
