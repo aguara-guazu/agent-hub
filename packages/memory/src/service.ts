@@ -1,3 +1,4 @@
+import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { SharedNetwork } from './sharing/network.js'
 import { MemoryDefaults, DEFAULTS_KEY } from './defaults.js'
 import { MediaRuntime } from './media-runtime.js'
@@ -138,6 +139,11 @@ export class MemoryService {
   async wakeFleet(sessionId:string,text:string) {
     const fleet=(await this.get()).operations.fleet
     return fleet instanceof HubTeamRuntime ? fleet.wake(sessionId,text) : false
+  }
+  async fleetActivity(sessionId: string, after = 0): Promise<FleetActivity> {
+    const { operations, db } = await this.get()
+    check((await db.query('SELECT id FROM chat_sessions WHERE id=$1', [sessionId]))[0], 'Sesión inexistente.', 404)
+    return operations.fleet instanceof HubTeamRuntime ? operations.fleet.activity(sessionId, after) : unavailableActivity()
   }
   async fleetConnected(sessionId:string) {
     const {operations,db}=await this.get()

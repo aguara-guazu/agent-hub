@@ -246,6 +246,19 @@ describe('HubTeamRuntime lifecycle', () => {
     await expect(value.backend.wake('unknown-session', 'notice')).resolves.toBe(false)
     expect(value.launched).toHaveBeenCalledTimes(1)
   })
+  it('exposes bounded activity only for the currently owned member/session binding', async () => {
+    const { backend, id, chat, rows } = setup('hold')
+    const parent = await backend.workspace(join(directory, 'repo'))
+    await backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'Synthetic human task' })
+    rows.get(id)!.session_id = 'session'
+    expect((await backend.activity('session')).supported).toBe(true)
+    expect((await backend.activity('session')).items[0]!.text).toBe('Synthetic human task')
+    expect((await backend.activity('external')).supported).toBe(false)
+    const restarted = new HubTeamRuntime(chat, join(directory, 'restart')); backends.push(restarted)
+    expect((await restarted.activity('session')).supported).toBe(false)
+    rows.get(id)!.runtime!.generation = randomUUID()
+    expect((await backend.activity('session')).supported).toBe(false)
+  })
   it('does not claim ownership of stale database metadata after a Hub restart', async () => {
     const { backend, id, chat } = setup('hold')
     const parent = await backend.workspace(join(directory, 'repo'))

@@ -1,6 +1,7 @@
 import { spawn, execFile, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { isAbsolute } from 'node:path'
+import { FleetActivityBuffer, unavailableActivity, type FleetActivity } from './fleet-activity.js'
 
 export type FleetState = 'starting' | 'busy' | 'idle' | 'stopped' | 'failed' | 'unknown' | 'waiting_input'
 export interface FleetStart {
@@ -54,6 +55,8 @@ type PendingQuestion = {
 }
 type Session = {
   status: FleetStatus
+  activity: FleetActivityBuffer
+  claudeMessageId?: string
   child: ChildProcessWithoutNullStreams
   closed: Promise<void>
   exited: boolean
@@ -79,6 +82,11 @@ export class FleetProcessManager {
   status(id: string): FleetStatus | undefined {
     const value = this.sessions.get(id)?.status
     return value ? this.snapshot(value) : undefined
+  }
+  /** Called only by the owner-authenticated human HTTP route. */
+  activity(id: string, after = 0): FleetActivity {
+    const s = this.sessions.get(id)
+    return s ? s.activity.read(s.status.state, after) : unavailableActivity()
   }
   list(): FleetStatus[] { return [...this.sessions.values()].map(s => this.snapshot(s.status)) }
 
@@ -131,6 +139,7 @@ export class FleetProcessManager {
   private receive(s: Session, packet: Packet) {
     if (!this.live(s)) return
     if (s.status.cli === 'claude_code') {
+      if (packet.session_id === s.status.native_id && s.status.native_id) this.observeClaude(s, packet)
       if (packet.type === 'control_request' && packet.request?.subtype === 'can_use_tool') {
         if (packet.request.tool_name === 'AskUserQuestion') this.registerQuestions(s, packet, true)
         else this.write(s, { type: 'control_response', response: { subtype: 'success', request_id: packet.request_id,
@@ -179,6 +188,7 @@ export class FleetProcessManager {
     }
     const params = packet.params ?? {}
     if (params.threadId !== s.status.native_id || !s.status.native_id) return
+    this.observeCodex(s, packet)
     if (packet.method === 'serverRequest/resolved') { this.cancelQuestion(s, params.requestId); return }
     if (packet.method === 'turn/started' && typeof params.turn?.id === 'string') {
       if (s.completedTurns.has(params.turn.id)) return
@@ -196,6 +206,45 @@ export class FleetProcessManager {
       else this.fail(s, turn.status === 'failed' ? 'fleet_turn_failed' : 'fleet_invalid_turn_status')
     }
     if (packet.method === 'error' && params.willRetry === false) this.fail(s, 'fleet_turn_failed')
+  }
+
+  private observeCodex(s: Session, packet: Packet) {
+    const p = packet.params ?? {}, item = p.item
+    const key = `${p.turnId ?? s.status.turn_id ?? ''}:${p.itemId ?? item?.id ?? ''}`
+    if (packet.method === 'item/agentMessage/delta' && typeof p.itemId === 'string') s.activity.stream(key + ':text', 'assistant', p.delta)
+    if (packet.method === 'item/commandExecution/outputDelta' && typeof p.itemId === 'string') s.activity.stream(key + ':output', 'tool', p.delta)
+    if (!['item/started', 'item/completed'].includes(packet.method) || !item || typeof item.id !== 'string') return
+    const final = packet.method === 'item/completed'
+    if (item.type === 'agentMessage' && final) s.activity.stream(key + ':text', 'assistant', item.text, true)
+    if (item.type === 'commandExecution') {
+      s.activity.stream(key + ':command', 'tool', item.command, true)
+      if (final) s.activity.stream(key + ':output', 'tool', item.aggregatedOutput, true)
+    }
+  }
+  private observeClaude(s: Session, packet: Packet) {
+    if (packet.type === 'stream_event') {
+      const event = packet.event
+      if (event?.type === 'message_start' && typeof event.message?.id === 'string') s.claudeMessageId = event.message.id
+      if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && s.claudeMessageId && Number.isInteger(event.index)) {
+        s.activity.stream(`claude:${s.claudeMessageId}:${event.index}`, 'assistant', event.delta.text)
+      }
+      return
+    }
+    if (!['assistant', 'user'].includes(packet.type) || !Array.isArray(packet.message?.content)) return
+    const messageId = packet.message.id ?? packet.uuid
+    if (typeof messageId !== 'string') return
+    for (const [index, block] of packet.message.content.entries()) {
+      const key = `claude:${messageId}:${index}`
+      if (block.type === 'text' && packet.type === 'assistant') s.activity.stream(key, 'assistant', block.text, true)
+      if (block.type === 'tool_use' && block.name !== 'AskUserQuestion' && typeof block.name === 'string') {
+        s.activity.stream(key, 'tool', `${block.name} ${JSON.stringify(block.input ?? {})}`, true)
+      }
+      if (block.type === 'tool_result') {
+        const content = typeof block.content === 'string' ? block.content : Array.isArray(block.content)
+          ? block.content.filter((b: Packet) => b.type === 'text' && typeof b.text === 'string').map((b: Packet) => b.text).join('\n') : ''
+        s.activity.stream(key, 'tool', content, true)
+      }
+    }
   }
 
   private clearQuestions(s: Session) {
@@ -257,6 +306,7 @@ export class FleetProcessManager {
     const packet = s.status.cli === 'codex_cli' ? { id: pending.rpcId, result: { answers: response } }
       : { type: 'control_response', response: { subtype: 'success', request_id: pending.rpcId, response: { behavior: 'allow',
         updatedInput: { ...pending.claudeInput, answers: Object.fromEntries(pending.value.questions.map(q => [q.question, response[q.id]!.answers.join(', ')])) } } } }
+    for (const q of pending.value.questions) if (q.isSecret) for (const value of response[q.id]!.answers) s.activity.secret(value)
     pending.answering = true
     try {
       await new Promise<void>((resolve, reject) => {
@@ -296,7 +346,7 @@ export class FleetProcessManager {
     const child = launcher(input.cli === 'claude_code' ? 'claude' : 'codex', args, { cwd: input.cwd, env, detached: process.platform !== 'win32', windowsHide: true })
     const status: FleetStatus = { id: input.id, cli: input.cli, cwd: input.cwd, model: input.model, state: 'starting', ...(input.effort ? { effort: input.effort } : {}) }
     let closed!: () => void
-    const s: Session = { status, child, closed: new Promise(resolve => { closed = resolve }), exited: false, stopping: false, seq: 0,
+    const s: Session = { status, activity: new FleetActivityBuffer(input.prompt), child, closed: new Promise(resolve => { closed = resolve }), exited: false, stopping: false, seq: 0,
       pending: new Map(), questions: new Map(), expectedNative, ready: undefined, submitting: false, completedTurns: new Set(), eventQueue: Promise.resolve(), cleanup: undefined }
     this.sessions.set(input.id, s)
     this.publish(s, 'starting')
@@ -307,7 +357,7 @@ export class FleetProcessManager {
     child.stdout.on('data', (chunk: string) => {
       if (!this.live(s)) return
       buffer += chunk
-      // Bound both incomplete lines and parsed packets. Tool output is never retained.
+      // Bound both incomplete lines and parsed packets. Raw protocol packets are never retained.
       let newline: number
       while ((newline = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1)
@@ -361,10 +411,12 @@ export class FleetProcessManager {
   private writeClaude(s: Session, text: string) {
     // The user message UUID is the local correlation ID; Claude supplies the native session ID.
     s.status.turn_id = randomUUID()
+    s.activity.add('user', text)
     this.write(s, { type: 'user', uuid: s.status.turn_id, session_id: s.expectedNative, message: { role: 'user', content: text }, parent_tool_use_id: null })
   }
   private async submit(s: Session, text: string) {
     s.submitting = true
+    s.activity.add('user', text)
     try {
       const response = await this.request(s, 'turn/start', { threadId: s.status.native_id, input: [{ type: 'text', text }],
         model: s.status.model, approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' }, ...(s.status.effort ? { effort: s.status.effort } : {}) })
@@ -400,6 +452,7 @@ export class FleetProcessManager {
       if (error instanceof Error && error.message === 'fleet_rpc_error') throw Object.assign(new Error('fleet_steer_rejected'), { retryable: true })
       throw Object.assign(new Error('fleet_steer_unconfirmed'), { retryable: false })
     }
+    s.activity.add('user', text)
     if (result.turnId !== turnId) throw Object.assign(new Error('fleet_steer_unconfirmed'), { retryable: false })
     if (this.live(s) && s.status.state === 'busy' && s.status.turn_id === turnId) this.publish(s, 'busy')
     await s.eventQueue

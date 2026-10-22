@@ -54,6 +54,14 @@ createInterface({input:process.stdin}).on('line',line=>{
   if(p.method==='turn/start') {
    if(p.params.approvalPolicy!=='never'||p.params.sandboxPolicy.type!=='dangerFullAccess')process.exit(9);
    active='turn-'+(++n);
+   if(mode==='observer') {
+    out({method:'item/agentMessage/delta',params:{threadId:'unrelated',itemId:'foreign',delta:'FOREIGN OUTPUT'}});
+    out({method:'item/agentMessage/delta',params:{threadId:'thread-native',turnId:active,itemId:'message',delta:'Hello '}});
+    out({method:'item/completed',params:{threadId:'thread-native',turnId:active,item:{id:'message',type:'agentMessage',text:'Hello human'}}});
+    out({method:'item/started',params:{threadId:'thread-native',turnId:active,item:{id:'command',type:'commandExecution',command:'echo synthetic'}}});
+    out({method:'item/commandExecution/outputDelta',params:{threadId:'thread-native',turnId:active,itemId:'command',delta:'synthetic'}});
+    out({method:'item/completed',params:{threadId:'thread-native',turnId:active,item:{id:'command',type:'commandExecution',command:'echo synthetic',aggregatedOutput:'synthetic output'}}});
+   }
    out({method:'turn/started',params:{threadId:'unrelated',turn:{id:'not-ours'}}});
    out({method:'item/agentMessage/delta',params:{threadId:'thread-native',delta:'SECRET TRANSCRIPT'}});
    process.stderr.write('SECRET STDERR\n');
@@ -84,6 +92,12 @@ createInterface({input:process.stdin}).on('line',line=>{
   if(p.type==='user') {
    if(!n++)out({type:'system',subtype:'init',session_id:session});
    out({type:'assistant',session_id:session,message:{content:[{text:'SECRET TRANSCRIPT'}]}});
+   if(mode==='observer') {
+    out({type:'stream_event',session_id:session,event:{type:'message_start',message:{id:'message'}}});
+    out({type:'stream_event',session_id:session,event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Hello '}}});
+    out({type:'assistant',session_id:session,message:{id:'message',content:[{type:'text',text:'Hello human'},{type:'tool_use',name:'Bash',input:{command:'echo synthetic'}}]}});
+    out({type:'user',uuid:'tool-result',session_id:session,message:{content:[{type:'tool_result',content:[{type:'text',text:'synthetic output'}]}]}});
+   }
    if(mode.startsWith('question')) {
     if(!args.includes('--permission-prompt-tool=stdio'))process.exit(13);
     const ask={type:'control_request',request_id:'native-question-42',request:{subtype:'can_use_tool',tool_name:'AskUserQuestion',input:{questions:[{question:'Which approach?',header:'Approach',multiSelect:false,options:[{label:'Yes',description:'Proceed'},{label:'No',description:'Wait'}]}]}}};
@@ -122,6 +136,22 @@ async function until(predicate: () => boolean) {
   await expect.poll(predicate, { timeout: 2000, interval: 10 }).toBe(true)
 }
 describe('FleetProcessManager', () => {
+  it.each(['codex_cli', 'claude_code'] as const)('captures only structured owned %s activity for the human observer', async cli => {
+    const { manager, input, events } = await setup('observer')
+    await manager.start({ ...input, cli, prompt: 'Task invitation=synthetic-invitation-credential-12345' })
+    await until(() => manager.status('one')?.state === 'idle')
+    const activity = manager.activity('one')
+    expect(activity.supported).toBe(true)
+    expect(activity.items.filter(item => item.kind === 'assistant').map(item => item.text).join('')).toBe('Hello human')
+    expect(activity.items.filter(item => item.kind === 'tool').map(item => item.text).join('')).toContain('synthetic output')
+    expect(JSON.stringify(activity)).not.toMatch(/FOREIGN OUTPUT|SECRET STDERR|synthetic-invitation-credential/)
+    expect(JSON.stringify([events, manager.status('one'), manager.list()])).not.toMatch(/Hello human|synthetic output/)
+    await manager.stop('one')
+    expect(manager.activity('one').items).toEqual(activity.items)
+    await manager.start({ ...input, cli })
+    expect(manager.activity('one').generation).not.toBe(activity.generation)
+    expect(manager.activity('external').supported).toBe(false)
+  })
   it('owns a background Codex conversation and emits metadata through interleaved output', async () => {
     const { manager, input, events, launches } = await setup()
     expect((await manager.start(input)).state).toBe('busy')

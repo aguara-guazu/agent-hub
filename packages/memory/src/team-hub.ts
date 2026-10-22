@@ -1,3 +1,4 @@
+import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, realpath } from 'node:fs/promises'
@@ -224,6 +225,16 @@ export class HubTeamRuntime implements TeamOrca {
         if (runtime.questions) await (this.chat as ManagedChat).managedQuestions(memberId, runtime.questions, runtime.generation)
       }
     })
+  }
+  /** Human observer; deliberately excluded from the fleet tool/status interface. */
+  async activity(sessionId: string, after = 0): Promise<FleetActivity> {
+    const members = await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE session_id=$1', [sessionId])
+    for (const member of members) {
+      const handle = String(member.id)
+      const runtime = this.runtime(member.runtime)
+      if (runtime && this.manager.status(handle) && this.generations.get(handle) === runtime.generation) return this.manager.activity(handle, after)
+    }
+    return unavailableActivity()
   }
   async status(handle: string): Promise<HubTeamStatus | undefined> {
     await this.queues.get(handle)

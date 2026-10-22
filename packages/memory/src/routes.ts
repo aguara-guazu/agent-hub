@@ -96,6 +96,13 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   })
   app.addHook('onListen', async () => { void runtime().catch(() => {}) })
   sharingRoutes(app, service, options.authorize)
+  // Human owner authorization only: never register activity in the MCP operation dispatcher.
+  app.get('/api/memory/chat/agents/:sessionId/activity', { preHandler: auth }, async (request, reply) => {
+    const { sessionId } = parse(z.object({ sessionId: z.string().min(1).max(300) }), request.params)
+    const { after } = parse(z.object({ after: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0) }), request.query)
+    reply.header('Cache-Control', 'no-store')
+    return service.fleetActivity(sessionId, after)
+  })
   app.get('/api/memory/status', { preHandler: auth }, () => service.status())
   // Public issue: kind, state, stage, model and the worker lines of this job only. Source titles and payloads stay out
   // because they name clients and projects.
