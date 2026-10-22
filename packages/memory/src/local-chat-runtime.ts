@@ -6,7 +6,7 @@ import { LocalChat } from './local-chat.js'
 import { teamBootstrap } from './local-chat-team.js'
 
 const exec = promisify(execFile)
-export const chatWakeText = (ids: string[]) => `Agent Hub: tenés menciones locales pendientes (${ids.join(', ')}). Leé memory_chat_inbox con tu session_key antes de continuar y verificá team.leader_id. Respondé en el mismo hilo y usá memory_chat_ack sólo cuando hayas atendido el pedido. No hagas polling ni envíes respuestas automáticas sin contenido.`
+export const chatWakeText = (ids: string[]) => `Agent Hub: tenés menciones o avisos privados pendientes (${ids.join(', ')}). Leé memory_chat_inbox con tu session_key antes de continuar y verificá team.leader_id. Para menciones respondé en su hilo; para avisos privados de estado pedile al agente que se reporte en el Hub, usando work_thread_id si está disponible. Nunca leas la terminal, salida, logs ni transcripción de otro agente. Usá memory_chat_ack con el id recibido sólo cuando hayas atendido el pedido. No hagas polling ni envíes respuestas automáticas sin contenido.`
 
 /** Only the local Hub owns the dispatcher. No inference process is created to listen. */
 export class LocalChatRuntime {
@@ -58,7 +58,8 @@ export class LocalChatRuntime {
     const sessions = await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
       WHERE s.capability='codex_queue' AND s.native_id IS NOT NULL AND s.state='idle' AND s.closed_at IS NULL AND c.closed_at IS NULL
       AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL)
-      AND EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)`)
+      AND (EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)
+        OR EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.handled_at IS NULL AND n.cancelled_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5))`)
     for (const s of sessions) {
       if (this.stopped) return
       if (!this.enabled(s.agent_id)) continue
@@ -69,11 +70,15 @@ export class LocalChatRuntime {
         await this.notified(s.id,deliveries.map(d=>d.message_id))
       } catch {
         await this.chat.db.query('UPDATE chat_sessions SET wake_error=$2 WHERE id=$1',[s.id,'No se pudo notificar con codex queue; comprobá versión, sesión y conexión. Se reintentará hasta 5 veces.'])
-        for (const d of deliveries) await this.chat.db.query("UPDATE chat_deliveries SET error='No se pudo notificar a la CLI' WHERE recipient_id=$1 AND message_id=$2 AND cancelled_at IS NULL",[s.id,d.message_id])
+        for (const d of deliveries) {
+          const table=d.kind==='status_notice'?'chat_status_notices':'chat_deliveries',column=d.kind==='status_notice'?'id':'message_id'
+          await this.chat.db.query(`UPDATE ${table} SET error='No se pudo notificar a la CLI' WHERE recipient_id=$1 AND ${column}=$2 AND cancelled_at IS NULL`,[s.id,d.message_id])
+        }
       }
     }
     const newcomers=await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE c.leader_id IS NOT NULL AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND s.team_seen=0 AND s.bootstrap_attempts<5 AND (s.bootstrap_sent_at IS NULL OR s.bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) AND s.closed_at IS NULL AND s.state='idle' AND s.capability='codex_queue' AND s.native_id IS NOT NULL
-      AND NOT EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL)`)
+      AND NOT EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.cancelled_at IS NULL)`)
     for(const s of newcomers) {
       if(!this.enabled(s.agent_id))continue
       if(!await this.claimBootstrap(s.id))continue
@@ -88,12 +93,20 @@ export class LocalChatRuntime {
   private async claim(sid: string) {
     return this.chat.db.transaction(async()=>{
       await this.chat.cancelInvalidTurnAlerts()
-      return this.chat.db.query(`UPDATE chat_deliveries SET attempts=attempts+1,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
+      const mentions=await this.chat.db.query(`UPDATE chat_deliveries SET attempts=attempts+1,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
       WHERE recipient_id=$1 AND read_at IS NULL AND cancelled_at IS NULL AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND s.state='idle') AND attempts<5 AND next_attempt_at<=now() RETURNING message_id`,[sid])
+      const notices=await this.chat.db.query(`UPDATE chat_status_notices SET attempts=attempts+1,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
+        WHERE recipient_id=$1 AND read_at IS NULL AND handled_at IS NULL AND cancelled_at IS NULL AND notified_at IS NULL
+        AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND s.state='idle')
+        AND attempts<5 AND next_attempt_at<=now() RETURNING id AS message_id`,[sid])
+      return [...mentions.map(d=>({message_id:String(d.message_id),kind:'mention'})),...notices.map(d=>({message_id:String(d.message_id),kind:'status_notice'}))]
     })
   }
   private async notified(sid: string, ids: string[]) {
-    for (const id of ids) await this.chat.db.query('UPDATE chat_deliveries SET notified_at=COALESCE(notified_at,now()),error=NULL WHERE recipient_id=$1 AND message_id=$2 AND cancelled_at IS NULL',[sid,id])
+    for (const id of ids) {
+      await this.chat.db.query('UPDATE chat_deliveries SET notified_at=COALESCE(notified_at,now()),error=NULL WHERE recipient_id=$1 AND message_id=$2 AND cancelled_at IS NULL',[sid,id])
+      await this.chat.db.query('UPDATE chat_status_notices SET notified_at=COALESCE(notified_at,now()),error=NULL WHERE recipient_id=$1 AND id=$2 AND cancelled_at IS NULL',[sid,id])
+    }
     await this.chat.db.query('UPDATE chat_sessions SET wake_error=NULL WHERE id=$1',[sid])
   }
   /** Native asyncRewake hook, not a model tool. HTTP waits are renewed without consuming context. */

@@ -440,4 +440,33 @@ ALTER TABLE chat_turns ADD COLUMN waiting_at_close INTEGER NOT NULL DEFAULT 0;
 UPDATE chat_turns SET channel_id=(SELECT channel_id FROM chat_sessions WHERE id=session_id);
 -- Earlier observations lack a scope snapshot and must not produce fresh notifications after upgrade.
 UPDATE chat_turns SET alerted_at=COALESCE(alerted_at,${NOW});
+`, String.raw`
+-- Private status notifications do not belong to the team's conversation history.
+CREATE TABLE chat_status_notices (
+ id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ turn_id TEXT NOT NULL, cause TEXT NOT NULL, channel_id TEXT NOT NULL REFERENCES chat_channels(id),
+ team_id TEXT REFERENCES chat_team_plans(id), recipient_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ work_thread_id TEXT REFERENCES chat_threads(id), text TEXT NOT NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, notified_at TIMESTAMP, read_at TIMESTAMP,
+ handled_at TIMESTAMP, cancelled_at TIMESTAMP, error TEXT,
+ attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ UNIQUE(session_id,turn_id)
+);
+CREATE INDEX chat_status_notices_recipient ON chat_status_notices(recipient_id,read_at,next_attempt_at);
+CREATE UNIQUE INDEX chat_status_notices_pending ON chat_status_notices(session_id,recipient_id)
+ WHERE handled_at IS NULL AND cancelled_at IS NULL;
+ALTER TABLE chat_turns ADD COLUMN report_recipient_id TEXT REFERENCES chat_sessions(id);
+ALTER TABLE chat_threads ADD COLUMN archived_notice INTEGER NOT NULL DEFAULT 0;
+-- Retain legacy content for audit, but hide automatic-only notice threads from conversations.
+UPDATE chat_threads SET archived_notice=1 WHERE id IN (
+ SELECT m.thread_id FROM chat_turn_alerts a JOIN chat_messages m ON m.id=a.message_id
+ JOIN chat_sessions s ON s.id=m.author_id WHERE s.agent_id='agenthub-system' AND s.cli_kind='hub'
+) AND NOT EXISTS (
+ SELECT 1 FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id
+ WHERE m.thread_id=chat_threads.id AND (s.agent_id<>'agenthub-system' OR s.cli_kind<>'hub')
+);
+UPDATE chat_deliveries SET cancelled_at=COALESCE(cancelled_at,${NOW}),error='Aviso automático legado retirado'
+ WHERE message_id IN (SELECT message_id FROM chat_turn_alerts);
+-- Never replay pre-upgrade activity under the new notification contract.
+UPDATE chat_turns SET alerted_at=COALESCE(alerted_at,${NOW});
 `]

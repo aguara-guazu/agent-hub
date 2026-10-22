@@ -13,10 +13,10 @@ const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identi
   'embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'changes'] as const
 // Added by schema version 3; backups taken before it restore without them.
 const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries', 'chat_read_receipts',
-  'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts', 'chat_turns'] as const
+  'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts', 'chat_turns', 'chat_status_notices'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–18 restore. */
-const BACKUP_SCHEMA_VERSION = 19
+/** Data-model version of agenthub-memory-v1; backups from 1–19 restore. */
+const BACKUP_SCHEMA_VERSION = 20
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -110,6 +110,12 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
     await sql.query('UPDATE chat_turns SET alerted_at=COALESCE(alerted_at,$1)',[backup.exported_at])
     await sql.query(`UPDATE chat_deliveries SET cancelled_at=COALESCE(cancelled_at,$1),error='Aviso histórico restaurado'
       WHERE handled_at IS NULL AND message_id IN (SELECT message_id FROM chat_turn_alerts)`,[backup.exported_at])
+    await sql.query(`UPDATE chat_threads SET archived_notice=1 WHERE id IN (
+      SELECT m.thread_id FROM chat_turn_alerts a JOIN chat_messages m ON m.id=a.message_id
+      JOIN chat_sessions s ON s.id=m.author_id WHERE s.agent_id='agenthub-system' AND s.cli_kind='hub'
+      ) AND NOT EXISTS (SELECT 1 FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id
+        WHERE m.thread_id=chat_threads.id AND (s.agent_id<>'agenthub-system' OR s.cli_kind<>'hub'))`)
+    await sql.query('UPDATE chat_status_notices SET cancelled_at=COALESCE(cancelled_at,$1),error=\'Aviso histórico restaurado\'', [backup.exported_at])
     await sql.query("UPDATE chat_sessions SET label='Sin nick todavía' WHERE nickname IS NULL AND cli_kind<>'hub'")
     await mkdir(join(store.directory, 'originals'), { recursive: true, mode: 0o700 })
     for (const version of backup.tables.versions ?? []) {

@@ -32,9 +32,9 @@ export const chatDefinitions = {
   chat_threads: ['Buscar hilos y mensajes históricos por texto, canal, proyecto, autor o estado. unassigned=true limita a canales sin proyecto. El historial permanece al cerrar los agentes.', z.object({ ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
   chat_read: ['Leer mensajes de un hilo. Con session_key, por defecto devuelve sólo mensajes pendientes para esa sesión (sin los propios) y registra únicamente los devueltos; seguí paginando pendientes con offset: 0. unread_only=false devuelve historial. Sin session_key es una lectura histórica anónima y read-only; unread_only=true requiere session_key.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
   chat_send: ['Crear un hilo por tarea (channel_id,title), un hilo breve de un equipo vinculado (team_root_thread_id,title), o responder (thread_id). Fuera del canal propio sólo admite el root o hilos ligados persistentemente a un equipo vigente; mentions queda limitado a sus miembros. request_id estable permite reintentar sin duplicar. Requiere autorización para colaborar.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), request_id: z.string().min(1).max(200) }).strict()],
-  chat_inbox: ['Leer tus menciones pendientes. Marcarlas leídas no las atiende; pendientes sin atender permanecen visibles. No hacer polling con el modelo: el Hub notifica.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
+  chat_inbox: ['Leer tus menciones y avisos privados pendientes. Un aviso privado no tiene hilo; usá work_thread_id para pedir estado al agente. Marcarlas leídas no las atiende; pendientes sin atender permanecen visibles. No hacer polling con el modelo: el Hub notifica.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
   chat_kick: ['Expulsar una sesión del canal por orden de la persona. Sólo el líder reconocido puede hacerlo; indicá el motivo de la orden. Conserva el historial, cancela avisos y bloquea la reincorporación de esa sesión. No cierra su terminal ni detiene trabajos en curso.', chatKickInput.extend(session).strict()],
-  chat_ack: ['Marcar como atendida una mención propia después de resolverla o responder. No acepta la tarea por sólo haberla leído.', z.object({ ...session, message_id: id }).strict()],
+  chat_ack: ['Marcar como atendida una mención o aviso privado propio (message_id=id del item) después de resolverla o responder. No acepta la tarea por sólo haberla leído.', z.object({ ...session, message_id: id }).strict()],
   chat_resolve: ['Cerrar o reabrir un hilo del canal de tu sesión. No borra el historial ni marca mensajes ajenos como atendidos.', z.object({ ...session, thread_id: id, state: z.enum(['open','resolved']) }).strict()],
 } satisfies Record<string, [string, z.ZodType]>
 export const chatReadOperations = ['chat_work_list','chat_channels','chat_agents','chat_threads','chat_read']
@@ -86,7 +86,7 @@ async function virtualFolder(path: string) {
 export class LocalChat {
   readonly events = new EventEmitter().setMaxListeners(0)
   private readonly availability = new Map<string,{until:number;readOnly:Promise<boolean|null>}>()
-  constructor(readonly store: MemoryStore, readonly turnAlertGraceMs=1200) {}
+  constructor(readonly store: MemoryStore, readonly turnAlertGraceMs=60_000) {}
   get db() { return this.store.db }
   private async project(...paths: string[]) {
     let best: { id:string; length:number } | null = null
@@ -236,6 +236,7 @@ export class LocalChat {
     if(accepted)await this.recordTurnEvent(sid,input.event,input.at,input.turn_id)
     if(accepted && input.event==='SessionStart') {
       await this.db.query('UPDATE chat_deliveries SET attempts=0,next_attempt_at=now(),error=NULL WHERE recipient_id=$1 AND read_at IS NULL',[sid])
+      await this.db.query('UPDATE chat_status_notices SET attempts=0,next_attempt_at=now(),error=NULL WHERE recipient_id=$1 AND read_at IS NULL AND notified_at IS NULL AND cancelled_at IS NULL',[sid])
       await this.db.query('UPDATE chat_sessions SET bootstrap_attempts=0,bootstrap_sent_at=NULL WHERE id=$1 AND team_seen=0',[sid])
     }
     const s = (await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[sid]))[0]!
@@ -247,9 +248,15 @@ export class LocalChat {
   }
   async pending(sid: string) {
     await this.cancelInvalidTurnAlerts()
-    return (await this.db.query(`SELECT d.message_id,m.thread_id FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id
-      WHERE d.recipient_id=$1 AND d.read_at IS NULL AND d.cancelled_at IS NULL ORDER BY m.seq LIMIT 100`, [sid]))
+    return this.db.query(`SELECT * FROM (
+      SELECT d.message_id,m.thread_id,m.created_at FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id
+       WHERE d.recipient_id=$1 AND d.read_at IS NULL AND d.cancelled_at IS NULL
+      UNION ALL
+      SELECT id AS message_id,NULL AS thread_id,created_at FROM chat_status_notices
+       WHERE recipient_id=$1 AND read_at IS NULL AND handled_at IS NULL AND cancelled_at IS NULL
+      ) ORDER BY created_at,message_id LIMIT 100`,[sid])
   }
+
   /** Hook events are evidence of a turn boundary, not proof of task completion. */
   private async recordTurnEvent(sessionId:string,event:string,at:string,turnId?:string) {
     if(!['HubPromptSubmit','UserPromptSubmit','BeforeAgent','Stop','AfterAgent','SessionEnd','StopFailure','Interrupt'].includes(event))return
@@ -281,36 +288,51 @@ export class LocalChat {
     await this.db.query(`UPDATE chat_turns SET terminal_at=$3,terminal_cause=$4,last_event_at=$3,waiting_at_close=$5
       WHERE session_id=$1 AND turn_id=$2 AND terminal_at IS NULL`,[sessionId,current.turn_id,at,cause,waiting?1:0])
   }
-  private async recordTurnChat(sql:Sql,sessionId:string,receipt?:{turn_id:string;receivedAt:number}) {
+  private async recordTurnChat(sql:Sql,sessionId:string,message:Record<string,any>,receipt?:{turn_id:string;receivedAt:number},replay=false) {
     if(!receipt)return
-    await sql.query(`UPDATE chat_turns SET chat_sent_at=now() WHERE session_id=$1 AND turn_id=$2 AND alerted_at IS NULL
-      AND (terminal_at IS NULL OR terminal_at>=$3)`,[sessionId,receipt.turn_id,new Date(receipt.receivedAt-this.turnAlertGraceMs).toISOString()])
+    const turn=(await sql.query('SELECT * FROM chat_turns WHERE session_id=$1 AND turn_id=$2',[sessionId,receipt.turn_id]))[0]
+    if(!turn || (replay && message.created_at<turn.opened_at))return
+    const route=await this.turnAlertRoute(sql,turn)
+    if(!route || !(await sql.query('SELECT 1 FROM chat_deliveries WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[message.id,route.recipient.id])).length)return
+    await sql.query('UPDATE chat_turns SET chat_sent_at=now(),report_recipient_id=$3 WHERE session_id=$1 AND turn_id=$2',[sessionId,receipt.turn_id,route.recipient.id])
+    // A report delivered before a pending notice is handled makes that notice obsolete.
+    await sql.query(`UPDATE chat_status_notices SET cancelled_at=now(),error='El agente ya reportó al coordinador'
+      WHERE session_id=$1 AND recipient_id=$2 AND channel_id=$3 AND (team_id=$4 OR (team_id IS NULL AND $4 IS NULL))
+      AND turn_id IN (SELECT turn_id FROM chat_turns WHERE session_id=$1 AND opened_at<=$5)
+      AND handled_at IS NULL AND cancelled_at IS NULL`,[sessionId,route.recipient.id,turn.channel_id,turn.team_id,turn.opened_at])
   }
   async closeTurnForPid(sessionId:string,at=new Date().toISOString()) {
     await this.db.query(`UPDATE chat_turns SET terminal_at=$2,terminal_cause='pid_exit',last_event_at=$2,waiting_at_close=0
       WHERE session_id=$1 AND turn_id=(SELECT turn_id FROM chat_turns WHERE session_id=$1 AND terminal_at IS NULL AND opened_at<=$2 ORDER BY opened_at DESC LIMIT 1) AND terminal_at IS NULL`,[sessionId,at])
   }
-  /** Called by the local runtime; grace avoids races between a terminal hook and a final successful send. */
+  /** Wait for a real idle interval, then notify the coordinator privately once. */
   async processTurnAlerts(now=Date.now(),graceMs=this.turnAlertGraceMs) {
     await this.cancelInvalidTurnAlerts()
     const cutoff=new Date(now-graceMs).toISOString()
     const turns=await this.db.query(`SELECT t.* FROM chat_turns t
-      WHERE t.terminal_at IS NOT NULL AND t.terminal_at<=$1 AND t.alerted_at IS NULL AND t.chat_sent_at IS NULL`,[cutoff])
+      WHERE t.terminal_at IS NOT NULL AND t.terminal_at<=$1 AND t.alerted_at IS NULL AND t.chat_sent_at IS NULL
+      ORDER BY t.opened_at DESC`,[cutoff])
     for(const turn of turns) await this.db.transaction(async sql=>{
       const fresh=(await sql.query('SELECT * FROM chat_turns WHERE session_id=$1 AND turn_id=$2',[turn.session_id,turn.turn_id]))[0]
       if(!fresh || fresh.alerted_at || fresh.chat_sent_at || !fresh.terminal_at || fresh.terminal_at>cutoff)return
+      const finish=()=>sql.query('UPDATE chat_turns SET alerted_at=$3 WHERE session_id=$1 AND turn_id=$2',[turn.session_id,turn.turn_id,new Date(now).toISOString()])
+      // A newer turn supersedes the old idle interval. Never wake a coordinator about historical silence.
+      if((await sql.query('SELECT 1 FROM chat_turns WHERE session_id=$1 AND opened_at>$2 LIMIT 1',[turn.session_id,fresh.opened_at])).length){await finish();return}
       const route=await this.turnAlertRoute(sql,fresh)
-      if(fresh.waiting_at_close || !route) { await sql.query('UPDATE chat_turns SET alerted_at=now() WHERE session_id=$1 AND turn_id=$2',[turn.session_id,turn.turn_id]);return }
-      const {source,recipient,channelId,root}=route
-      const hub=await this.hubSession(sql,channelId)
-      const thread=(await sql.query(`INSERT INTO chat_threads(id,channel_id,title,created_by,team_root_thread_id,task_id)
-        VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[randomUUID(),channelId,`Aviso Hub: ${source.label} (${fresh.turn_id.slice(0,24)})`,hub.id,root?.id ?? null,root?.task_id ?? null]))[0]!
-      const cause=({pid_exit:'Su proceso terminó sin cierre normal ni actualización.',Interrupt:'El turno fue interrumpido sin enviar una actualización.',StopFailure:'El turno terminó con un fallo sin enviar una actualización.',SessionEnd:'La sesión terminó sin enviar una actualización.'} as Record<string,string>)[fresh.terminal_cause] ?? 'Terminó un turno sin enviar una actualización.'
-      const message=(await sql.query(`INSERT INTO chat_messages(id,thread_id,author_id,text,request_id,request_hash) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
-        [randomUUID(),thread.id,hub.id,`Agent Hub [sesión ${source.id}, turno ${fresh.turn_id}, causa ${fresh.terminal_cause}]: ${source.label} ${cause}`,`turn-alert:${source.id}:${fresh.turn_id}:${fresh.terminal_cause}`,hash(JSON.stringify([source.id,fresh.turn_id,fresh.terminal_cause]))]))[0]!
-      await sql.query('INSERT INTO chat_deliveries(message_id,recipient_id) VALUES($1,$2)',[message.id,recipient.id])
-      await sql.query('INSERT INTO chat_turn_alerts(id,session_id,turn_id,cause,recipient_id,message_id) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),source.id,fresh.turn_id,fresh.terminal_cause,recipient.id,message.id])
-      await sql.query('UPDATE chat_turns SET alerted_at=now() WHERE session_id=$1 AND turn_id=$2',[source.id,fresh.turn_id])
+      if(fresh.waiting_at_close || !route || route.source.state==='busy') {await finish();return}
+      const waiting=await sql.query("SELECT status,waiting_for FROM chat_work_state WHERE session_id=$1 AND status<>'completed'",[turn.session_id])
+      if(waiting.length && waiting.every(w=>w.status==='waiting' && ['human','permission','schedule','agent','tool'].includes(w.waiting_for))){await finish();return}
+      const {source,recipient,root}=route
+      const existing=await sql.query(`SELECT 1 FROM chat_status_notices WHERE session_id=$1 AND recipient_id=$2
+        AND ((handled_at IS NULL AND cancelled_at IS NULL) OR created_at>$3) LIMIT 1`,[source.id,recipient.id,new Date(now-300_000).toISOString()])
+      if(existing.length)return // Defer, never discard a newer missing report because of cooldown.
+      const workThread=root?.id ?? (await sql.query(`SELECT h.id FROM chat_threads h JOIN chat_messages m ON m.thread_id=h.id
+        WHERE h.channel_id=$1 AND h.archived_notice=0 AND h.state='open' AND (m.author_id=$2 OR EXISTS(
+          SELECT 1 FROM chat_deliveries d WHERE d.message_id=m.id AND d.recipient_id=$2)) ORDER BY m.seq DESC LIMIT 1`,[source.channel_id,source.id]))[0]?.id ?? null
+      const text=`${source.label} terminó su actividad y pasó el plazo de reporte sin avisar al coordinador. Pedile que se reporte en el Hub con su estatus, mencionándolo en el hilo de trabajo. Nunca leas su terminal, salida, logs ni transcripción para averiguar su estado. No reinicies ni cierres procesos. Si ya reportó o tiene una espera explícita, atendé este aviso sin despertarlo. Si está desconectado, informá esa limitación. Este aviso es privado y no es un hilo.`
+      await sql.query(`INSERT INTO chat_status_notices(id,session_id,turn_id,cause,channel_id,team_id,recipient_id,work_thread_id,text,created_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[randomUUID(),source.id,fresh.turn_id,fresh.terminal_cause,fresh.channel_id,fresh.team_id,recipient.id,workThread,text,new Date(now).toISOString()])
+      await finish()
     })
   }
   /** Presence is deliberately not an authorization condition: an offline leader retains a durable notice. */
@@ -339,23 +361,15 @@ export class LocalChat {
   /** Revalidate both read and wake paths; a durable message never grants a revoked coordination scope. */
   async cancelInvalidTurnAlerts() {
     await this.db.transaction(async sql=>{
-      const pending=await sql.query(`SELECT a.*,t.channel_id,t.team_id FROM chat_turn_alerts a
-        LEFT JOIN chat_turns t ON t.session_id=a.session_id AND t.turn_id=a.turn_id
-        JOIN chat_deliveries d ON d.message_id=a.message_id AND d.recipient_id=a.recipient_id
-        WHERE d.handled_at IS NULL AND d.cancelled_at IS NULL`)
+      const pending=await sql.query('SELECT * FROM chat_status_notices WHERE handled_at IS NULL AND cancelled_at IS NULL')
       for(const alert of pending) {
         const route=await this.turnAlertRoute(sql,alert)
-        if(route?.recipient.id===alert.recipient_id)continue
-        await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Alcance de coordinación revocado'
-          WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL`,[alert.message_id,alert.recipient_id])
+        const newer=(await sql.query(`SELECT 1 FROM chat_turns WHERE session_id=$1 AND opened_at>(
+          SELECT opened_at FROM chat_turns WHERE session_id=$1 AND turn_id=$2) LIMIT 1`,[alert.session_id,alert.turn_id])).length>0
+        if(route?.recipient.id===alert.recipient_id && !newer)continue
+        await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Aviso superado o alcance revocado' WHERE id=$1",[alert.id])
       }
     })
-  }
-  private async hubSession(sql:Sql,channelId:string) {
-    const id=`hub:${channelId}`,existing=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[id]))[0]
-    if(existing)return existing
-    return (await sql.query(`INSERT INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,event_at,state,closed_at)
-      VALUES($1,'agenthub-system',$2,'Agent Hub','hub',$3,'1970-01-01T00:00:00.000Z','offline',now()) RETURNING *`,[id,hash(`hub-turn-alert:${channelId}`),channelId]))[0]!
   }
   async call(operation: string, raw: unknown, agent?: AgentContext):Promise<any> {
     // Snapshot before joining the writer queue. A later start must not steal an in-flight send's receipt.
@@ -400,7 +414,7 @@ export class LocalChat {
         const project=await this.project(c.path,c.repository ?? c.path)
         if ((project?.id ?? null)!==c.project_id) await this.db.query('UPDATE chat_channels SET project_id=$2 WHERE id=$1',[c.id,project?.id ?? null])
       }
-      const result = await this.page(`SELECT c.*,(SELECT label FROM chat_sessions WHERE id=c.leader_id) AS leader_label,(SELECT count(*) FROM chat_threads t WHERE t.channel_id=c.id) AS threads FROM chat_channels c WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3=0 OR c.project_id IS NULL)`, [input.project_id ?? null,input.channel_id ?? null,input.unassigned ? 1 : 0], 'updated_at DESC,id', input)
+      const result = await this.page(`SELECT c.*,(SELECT label FROM chat_sessions WHERE id=c.leader_id) AS leader_label,(SELECT count(*) FROM chat_threads t WHERE t.channel_id=c.id AND t.archived_notice=0) AS threads FROM chat_channels c WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3=0 OR c.project_id IS NULL)`, [input.project_id ?? null,input.channel_id ?? null,input.unassigned ? 1 : 0], 'updated_at DESC,id', input)
       return { ...result,items:await Promise.all(result.items.map(async c=>({...c,read_only:await this.channelReadOnly(c)}))) }
     }
     if (operation === 'chat_agents') {
@@ -413,7 +427,7 @@ export class LocalChat {
       (SELECT count(*) FROM chat_messages m WHERE m.thread_id=t.id) AS messages,
       (SELECT text FROM chat_messages m WHERE m.thread_id=t.id ORDER BY seq DESC LIMIT 1) AS preview
       FROM chat_threads t JOIN chat_channels c ON c.id=t.channel_id JOIN chat_sessions s ON s.id=t.created_by
-      WHERE ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3 IS NULL OR t.state=$3)
+      WHERE t.archived_notice=0 AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3 IS NULL OR t.state=$3)
       AND ($4='' OR instr(lower(t.title),lower($4))>0 OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND instr(lower(m.text),lower($4))>0))
       AND ($5 IS NULL OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.author_id=$5)) AND ($6=0 OR c.project_id IS NULL)`,
     [input.project_id ?? null,input.channel_id ?? null,input.state ?? null,input.query,input.author_id ?? null,input.unassigned ? 1 : 0], 'updated_at DESC,id',input)
@@ -516,19 +530,33 @@ export class LocalChat {
     if (operation === 'chat_inbox') {
       await this.activate(who.id)
       await this.db.query('UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[who.id,new Date(Date.now()+90000).toISOString()])
-      const result = await this.page(`SELECT m.*,s.label AS author_label,s.cli_kind,CASE WHEN s.agent_id='agenthub-system' AND s.cli_kind='hub' THEN 'hub' ELSE 'agent' END AS author_source,t.title,d.read_at,d.handled_at FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id
-        JOIN chat_threads t ON t.id=m.thread_id JOIN chat_sessions s ON s.id=m.author_id WHERE d.recipient_id=$1 AND d.handled_at IS NULL AND d.cancelled_at IS NULL AND ($2=0 OR d.read_at IS NULL)`,[who.id,input.unread_only ? 1 : 0],'seq',input)
+      const result = await this.page(`SELECT * FROM (
+        SELECT m.id,m.thread_id,m.author_id,m.text,m.reply_to,m.request_id,m.created_at,m.seq,
+          s.label AS author_label,s.cli_kind,'agent' AS author_source,'mention' AS kind,t.title,d.read_at,d.handled_at,
+          NULL AS session_id,NULL AS turn_id,NULL AS cause,NULL AS work_thread_id
+        FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id JOIN chat_threads t ON t.id=m.thread_id
+          JOIN chat_sessions s ON s.id=m.author_id WHERE d.recipient_id=$1 AND d.handled_at IS NULL AND d.cancelled_at IS NULL AND ($2=0 OR d.read_at IS NULL)
+        UNION ALL
+        SELECT id,NULL,'agenthub-system',text,NULL,NULL,created_at,NULL,
+          'Agent Hub','hub','hub','status_notice',NULL,read_at,handled_at,session_id,turn_id,cause,work_thread_id
+        FROM chat_status_notices WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL AND ($2=0 OR read_at IS NULL)
+        )`,[who.id,input.unread_only ? 1 : 0],'created_at,id',input)
       for (const m of result.items) {
-        await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[m.id,who.id])
-        // Inbox is another real reader: a returned mention must not be re-delivered by incremental chat_read.
-        await this.db.query('INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id) VALUES($1,$2)',[who.id,m.id])
+        if(m.kind==='status_notice') {
+          await this.db.query('UPDATE chat_status_notices SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[m.id,who.id])
+        } else {
+          await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[m.id,who.id])
+          await this.db.query('INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id) VALUES($1,$2)',[who.id,m.id])
+        }
       }
       return {...result,team:await this.team(who.channel_id,false,who.id)}
     }
     await this.db.query('UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[who.id,new Date(Date.now()+90000).toISOString()])
     if (operation === 'chat_ack') {
       const rows = await this.db.query('UPDATE chat_deliveries SET read_at=COALESCE(read_at,now()),handled_at=COALESCE(handled_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL RETURNING *',[input.message_id,who.id])
-      check(rows.length, 'La mención no está destinada a esta sesión',403); return rows[0]
+      if(rows.length)return rows[0]
+      const notices=await this.db.query('UPDATE chat_status_notices SET read_at=COALESCE(read_at,now()),handled_at=COALESCE(handled_at,now()) WHERE id=$1 AND recipient_id=$2 RETURNING id,handled_at',[input.message_id,who.id])
+      check(notices.length, 'La mención o aviso no está destinado a esta sesión',403); return notices[0]
     }
     if (operation === 'chat_resolve') {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
@@ -548,7 +576,7 @@ export class LocalChat {
       const prior = (await sql.query('SELECT * FROM chat_messages WHERE author_id=$1 AND request_id=$2',[who.id,input.request_id]))[0]
       if (prior) {
         check(prior.request_hash===requestHash, 'request_id ya usado con otro mensaje',409)
-        await this.recordTurnChat(sql,who.id,receipt)
+        await this.recordTurnChat(sql,who.id,prior,receipt,true)
         return prior
       }
       let thread
@@ -592,10 +620,10 @@ export class LocalChat {
       const message = (await sql.query('INSERT INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
         [randomUUID(),thread.id,who.id,input.text,input.reply_to ?? null,input.request_id,requestHash]))[0]!
       for (const recipient of new Set(input.mentions as string[])) await sql.query('INSERT INTO chat_deliveries(message_id,recipient_id) VALUES($1,$2)',[message.id,recipient])
-      await this.recordTurnChat(sql,who.id,receipt)
+      await this.recordTurnChat(sql,who.id,message,receipt)
       if(linkedTeam)await sql.query(`INSERT INTO chat_team_events(id,team_id,type,actor_session_id,source_channel_id,target_thread_id,payload)
         VALUES($1,$2,'chat_message',$3,$4,$5,$6)`,[randomUUID(),linkedTeam.id,who.id,who.channel_id,thread.id,JSON.stringify({message_id:message.id,request_hash:requestHash})])
-      await sql.query('UPDATE chat_threads SET updated_at=now() WHERE id=$1',[thread.id])
+      await sql.query('UPDATE chat_threads SET updated_at=now(),archived_notice=0 WHERE id=$1',[thread.id])
       return message
     })
     return result

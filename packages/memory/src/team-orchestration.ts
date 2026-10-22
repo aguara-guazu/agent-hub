@@ -271,6 +271,7 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
         await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Equipo cerrado por su líder' WHERE handled_at IS NULL AND cancelled_at IS NULL
           AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_threads h ON h.id=m.thread_id
             WHERE h.id=$1 OR h.team_root_thread_id=$1)`,[plan.root_thread_id])
+        await this.chat.cancelInvalidTurnAlerts()
         await this.event(sql,plan.id,null,'cancelled',who.id,who.channel_id,plan.root_thread_id,{reason:input.reason})
       }
       return this.view(plan.id,who,sql)
