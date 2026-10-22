@@ -42,7 +42,7 @@ const closeInput = z.object({ ...session, plan_id:identifier, digest:z.string().
 
 const questionSchema=z.object({id:z.string().min(1).max(200),header:z.string().max(300),question:z.string().min(1).max(8000),
   isOther:z.boolean().optional(),isSecret:z.boolean().optional(),options:z.array(z.object({label:z.string().max(500),description:z.string().max(2000)}).strict()).max(30).nullable().optional()}).strict()
-const pendingQuestions=z.array(z.object({id:z.string().min(1).max(200),questions:z.array(questionSchema).min(1).max(20)}).strict()).max(20)
+const pendingQuestions=z.array(z.object({id:z.string().min(1).max(200),questions:z.array(questionSchema).min(1).max(20)}).strict()).max(32)
 const answerInput=z.object({...session,plan_id:identifier,member_id:identifier,expected_generation:identifier,
   question_id:z.string().min(1).max(200),answers:z.record(z.string().min(1).max(200),z.object({answers:z.array(z.string().min(1).max(8000)).min(1).max(30)}).strict())
     .refine(value=>Object.keys(value).length>0 && Object.keys(value).length<=20,'Una respuesta requiere entre 1 y 20 preguntas'),

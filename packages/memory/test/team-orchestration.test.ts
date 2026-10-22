@@ -770,3 +770,16 @@ it('responde preguntas nativas no bloqueantes cuyo turno sigue busy',async()=>{
   await team.teams.call('team_answer',pending.input,team.master.agent)
   expect(team.backend.answer).toHaveBeenCalledWith(team.slot.launch_handle,pending.input.question_id,pending.input.answers)
 })
+
+
+it('conserva y responde hasta 32 requests nativas pendientes sin descartar el conjunto',async()=>{
+  const team=await hubTeam(),pending=await waitingQuestion(team)
+  const questions=Array.from({length:32},(_,index)=>({id:randomUUID(),questions:[{id:'choice',header:'Diseño',question:`Pregunta ${index+1}`}]}))
+  const runtime={...pending.runtime,questions}
+  team.backend.runtimes.set(team.slot.launch_handle,runtime)
+  await db.query('UPDATE chat_team_members SET runtime=$2 WHERE id=$1',[team.slot.id,JSON.stringify(runtime)])
+  const status=await team.teams.call('team_status',{session_key:team.master.key,plan_id:team.plan.id},team.master.agent)
+  expect(status.members[0].runtime.questions).toEqual(questions)
+  await team.teams.call('team_answer',{...pending.input,question_id:questions[31]!.id},team.master.agent)
+  expect(team.backend.answer).toHaveBeenCalledWith(team.slot.launch_handle,questions[31]!.id,pending.input.answers)
+})
