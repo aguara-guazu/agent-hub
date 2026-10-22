@@ -38,7 +38,7 @@ createInterface({input:process.stdin}).on('line',line=>{
  if(mode==='secretError') {out({id:p.id,error:{message:'SECRET TRANSCRIPT'}});return;}
  if(kind==='codex') {
   if(p.method==='initialize') {
-   if(process.env.ORCA_WORKTREE_ID||process.env.AGENTHUB_TUI_AGENT_ID||process.env.CLAUDECODE||process.env.CODEX_THREAD_ID) process.exit(8);
+   if(process.env.ORCA_WORKTREE_ID||process.env.AGENTHUB_CHAT_SESSION_KEY||process.env.AGENTHUB_TUI_AGENT_ID||process.env.ELECTRON_RUN_AS_NODE||process.env.CLAUDECODE||process.env.CODEX_THREAD_ID) process.exit(8);
    rpc(p.id,{});
   }
   if(p.method==='thread/start'||p.method==='thread/resume') {
@@ -171,11 +171,15 @@ describe('FleetProcessManager', () => {
   it('sanitizes parent identities and returns defensive metadata copies', async () => {
     const { manager, input, launches } = await setup('hold')
     const previous = process.env.ORCA_WORKTREE_ID
+    const previousKey = process.env.AGENTHUB_CHAT_SESSION_KEY
+    process.env.AGENTHUB_CHAT_SESSION_KEY = 'PRIVATE PARENT SESSION'
     process.env.ORCA_WORKTREE_ID = 'parent'
     try { await manager.start(input) } finally {
       if (previous === undefined) delete process.env.ORCA_WORKTREE_ID; else process.env.ORCA_WORKTREE_ID = previous
+      if (previousKey === undefined) delete process.env.AGENTHUB_CHAT_SESSION_KEY; else process.env.AGENTHUB_CHAT_SESSION_KEY = previousKey
     }
     expect(launches[0]?.env?.ORCA_WORKTREE_ID).toBeUndefined()
+    expect(launches[0]?.env?.AGENTHUB_CHAT_SESSION_KEY).toBeUndefined()
     const status = manager.status('one')!; status.state = 'idle'
     expect(manager.status('one')?.state).toBe('busy')
     await manager.close()

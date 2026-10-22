@@ -184,7 +184,7 @@ export class FleetProcessManager {
         ...(input.effort ? ['--effort', input.effort] : []), ...(input.resume_id ? ['--resume', input.resume_id] : ['--session-id', expectedNative!])]
       : ['app-server', '--listen', 'stdio://']
     const env = { ...process.env }
-    for (const key of Object.keys(env)) if (/^(AGENTHUB_TUI_|ORCA_|CLAUDECODE$|CLAUDE_CODE_ENTRYPOINT$|CODEX_THREAD_ID$)/i.test(key)) delete env[key]
+    for (const key of Object.keys(env)) if (/^(AGENTHUB_|ORCA_|ELECTRON_RUN_AS_NODE$|CLAUDECODE$|CLAUDE_CODE_ENTRYPOINT$|CODEX_THREAD_ID$)/i.test(key)) delete env[key]
     const launcher = this.options.launcher ?? ((command, argv, options) => spawn(command, argv, { ...options, stdio: 'pipe' }))
     const child = launcher(input.cli === 'claude_code' ? 'claude' : 'codex', args, { cwd: input.cwd, env, detached: process.platform !== 'win32', windowsHide: true })
     const status: FleetStatus = { id: input.id, cli: input.cli, cwd: input.cwd, model: input.model, state: 'starting', ...(input.effort ? { effort: input.effort } : {}) }
