@@ -7,6 +7,7 @@ import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import { MemoryService } from '../src/service.js'
 import { LocalChat } from '../src/local-chat.js'
+import { LocalWatchdog } from '../src/local-watchdog.js'
 import { TeamOrchestration,type TeamCatalog,type TeamOrca,type TeamWorkspace } from '../src/team-orchestration.js'
 import { exportMemory,readBackup,restoreMemory } from '../src/backup.js'
 import type { AgentContext } from '../src/agents.js'
@@ -46,6 +47,47 @@ async function session(name:string,path=dir,workspace=`${randomUUID()}::${path}`
 function members(count=2){return Array.from({length:count},(_,index)=>({worktree_name:`member-${index+1}`,cli:'kiro' as const,model:'modelo-real',effort:'high',
   role:index?'revisor':'implementador',task:`Tarea ${index+1}`,prompt:`Atendé la tarea ${index+1}`}))}
 function invitation(prompt:string){const token=/invitation=([A-Za-z0-9_-]+)/.exec(prompt)?.[1];if(!token)throw new Error('missing invitation');return token}
+
+it('enruta cierres silenciosos al master offline en hilos breves y revoca los avisos al cerrar el equipo',async()=>{
+  const master=await session('master'),orca=new Orca()
+  orca.spaces.set(master.workspace,{id:master.workspace,path:dir,repo_id:'repo',head})
+  const teams=new TeamOrchestration(chat,new Catalog(),orca)
+  const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Avisos de turno',base_revision:head,members:members(1)},master.agent)
+  const launched=await teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Lanzar equipo de prueba'},master.agent)
+  const slot=launched.members[0],child=await session('child',slot.workspace_path,slot.workspace_id)
+  await teams.call('team_join',{session_key:child.key,invitation:invitation(orca.prompts.get(slot.workspace_id)!)},child.agent)
+  // A separate child leader must not receive a revoked or offline master's alerts.
+  const localLeader=await session('local-leader',slot.workspace_path,slot.workspace_id)
+  await db.query('UPDATE chat_channels SET leader_id=$2 WHERE id=$1',[child.channel.id,localLeader.session.id])
+  const t=Date.now()+1000
+  const event=(name:string,at:number,turn_id:string)=>chat.lifecycle(child.agent,{session_key:child.key,native_id:'child',event:name,at:new Date(at).toISOString(),turn_id})
+  await db.query("UPDATE chat_sessions SET closed_at=now(),state='offline' WHERE id=$1",[master.session.id])
+  await event('BeforeAgent',t,'one');await event('Stop',t+10,'one')
+  await chat.processTurnAlerts(t+2000,0)
+  const first=(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[child.session.id]))[0]
+  expect(first.recipient_id).toBe(master.session.id)
+  const thread=(await db.query('SELECT h.* FROM chat_threads h JOIN chat_messages m ON m.thread_id=h.id WHERE m.id=$1',[first.message_id]))[0]
+  expect(thread).toMatchObject({channel_id:master.channel.id,team_root_thread_id:plan.root_thread_id})
+  expect(thread.id).not.toBe(plan.root_thread_id)
+  await chat.lifecycle(master.agent,{session_key:master.key,native_id:'master',event:'SessionStart',at:new Date().toISOString()})
+  const inbox=await chat.call('chat_inbox',{session_key:master.key},master.agent)
+  expect(inbox.items.find((item:any)=>item.id===first.message_id)).toMatchObject({author_source:'hub',author_label:'Agent Hub'})
+  // The linked child can answer in this exact short thread; the system author is not a team member.
+  await chat.call('chat_send',{session_key:child.key,thread_id:thread.id,text:'Estado comprobado',mentions:[master.session.id],request_id:'answer-alert'},child.agent)
+  await event('BeforeAgent',t+20,'two');await event('Stop',t+30,'two')
+  await chat.processTurnAlerts(t+3000,0)
+  await event('BeforeAgent',t+40,'grace');await event('Stop',t+50,'grace')
+  await teams.call('team_close',{session_key:master.key,plan_id:plan.id,digest:plan.digest,reason:'Finalizó el equipo'},master.agent)
+  await chat.processTurnAlerts(t+4000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[child.session.id])).toHaveLength(2)
+  const deliveries=await db.query('SELECT d.* FROM chat_deliveries d JOIN chat_turn_alerts a ON a.message_id=d.message_id WHERE a.session_id=$1',[child.session.id])
+  expect(deliveries.every(d=>d.cancelled_at)).toBe(true)
+  expect(deliveries.some(d=>d.recipient_id===localLeader.session.id)).toBe(false)
+  // New work under the revoked membership cannot silently acquire the local leader as coordinator.
+  await event('BeforeAgent',t+60,'revoked');await event('Stop',t+70,'revoked')
+  await chat.processTurnAlerts(t+5000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[child.session.id])).toHaveLength(2)
+})
 
 it('prepara un plan inmutable sólo como líder Orca y no crea efectos externos',async()=>{
   const master=await session('master'),foreign=await session('foreign'),catalog=new Catalog(),orca=new Orca()
@@ -103,6 +145,9 @@ it('consume invitación one-shot sólo desde workspace/CLI asignados y conserva 
   const joined=await teams.call('team_join',{session_key:child.key,invitation:token},child.agent)
   expect(joined).toMatchObject({team_id:prepared.id,member_id:assigned.id,root_thread_id:prepared.root_thread_id,master_session_id:master.session.id,session:{id:child.session.id,channel_id:child.channel.id}})
   expect(joined.guidance).toContain('master coordina desde root_thread_id')
+  const context=await chat.call('chat_inbox',{session_key:child.key},child.agent)
+  expect(context.team).toMatchObject({scope:'channel',leader_id:child.session.id,linked_team:{team_id:prepared.id,master_leader_id:master.session.id,root_thread_id:prepared.root_thread_id}})
+  expect(context.team.guidance).toBeUndefined()
   await expect(teams.call('team_join',{session_key:child.key,invitation:token},child.agent)).rejects.toMatchObject({statusCode:409})
   expect((await db.query('SELECT channel_id FROM chat_sessions WHERE id=$1',[master.session.id]))[0].channel_id).toBe(master.channel.id)
   expect((await db.query('SELECT channel_id FROM chat_sessions WHERE id=$1',[child.session.id]))[0].channel_id).toBe(child.channel.id)
@@ -123,12 +168,79 @@ it('limita chat cross-channel al hilo raíz y a miembros vinculados con proceden
   const event=(await db.query("SELECT * FROM chat_team_events WHERE type='chat_message' AND payload->>'message_id'=$1",[report.id]))[0]
   expect(event).toMatchObject({actor_session_id:child.session.id,source_channel_id:child.channel.id,target_thread_id:prepared.root_thread_id})
   expect(reply).toBeTruthy()
+  const work={session_key:child.key,thread_id:prepared.root_thread_id,work_id:'review',request_id:'work-start',expected_version:0,event:'started',summary:'Revisión'}
+  await chat.call('chat_work_update',work,child.agent)
+  const observer=new LocalWatchdog(chat)
+  await observer.tick();await observer.close()
+  expect((await db.query('SELECT snapshot FROM chat_watchdog_observations WHERE session_id=$1',[child.session.id]))[0].snapshot.recipientId).toBe(master.session.id)
+  expect((await chat.call('chat_work_list',{session_key:master.key,thread_id:prepared.root_thread_id},master.agent)).items[0].session_id).toBe(child.session.id)
+  await expect(chat.call('chat_work_list',{session_key:sameChannel.key,thread_id:prepared.root_thread_id},sameChannel.agent)).rejects.toMatchObject({statusCode:403})
+  const linkedVersion=(await chat.call('chat_inbox',{session_key:child.key},child.agent)).team.guidance_version
   const outsider=await session('outsider')
   await expect(chat.call('chat_send',{session_key:outsider.key,thread_id:prepared.root_thread_id,text:'Intrusión',request_id:'outsider'},outsider.agent)).rejects.toMatchObject({statusCode:403})
   await expect(chat.call('chat_send',{session_key:master.key,thread_id:prepared.root_thread_id,text:'Mención ajena',mentions:[outsider.session.id],request_id:'outsider-mention'},master.agent)).rejects.toMatchObject({statusCode:400})
   await teams.call('team_close',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,reason:'Fin del equipo'},master.agent)
+  await db.query('DELETE FROM chat_watchdog_observations')
+  const afterClose=new LocalWatchdog(chat);await afterClose.tick();await afterClose.close()
+  expect(await db.query('SELECT * FROM chat_watchdog_observations')).toHaveLength(0)
   expect((await db.query('SELECT cancelled_at FROM chat_deliveries WHERE message_id=$1',[report.id]))[0].cancelled_at).toBeTruthy()
+  const closedContext=(await chat.call('chat_inbox',{session_key:child.key},child.agent)).team
+  expect(closedContext.linked_team).toBeNull()
+  expect(closedContext.guidance_version).not.toBe(linkedVersion)
+  await expect(chat.call('chat_work_update',{...work,request_id:'after-close',expected_version:1,event:'progress'},child.agent)).rejects.toMatchObject({statusCode:403})
+  await expect(chat.call('chat_work_list',{session_key:child.key,thread_id:prepared.root_thread_id},child.agent)).rejects.toMatchObject({statusCode:403})
   await expect(chat.call('chat_send',{session_key:child.key,thread_id:prepared.root_thread_id,text:'Después del cierre',request_id:'closed-team'},child.agent)).rejects.toMatchObject({statusCode:403})
+})
+
+it('crea hilos breves ligados al root de un equipo y conserva su ACL al cerrar o revocar',async()=>{
+  const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
+  const teams=new TeamOrchestration(chat,catalog,orca),plan=await teams.call('team_prepare',{session_key:master.key,objective:'Hilos',base_revision:head,members:members(2)},master.agent)
+  const launched=await teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Orden explícita'},master.agent)
+  const [firstAssignment,secondAssignment]=launched.members
+  const first=await session('first',firstAssignment.workspace_path,firstAssignment.workspace_id),second=await session('second',secondAssignment.workspace_path,secondAssignment.workspace_id)
+  await teams.call('team_join',{session_key:first.key,invitation:invitation(orca.prompts.get(firstAssignment.workspace_id)!)},first.agent)
+  await teams.call('team_join',{session_key:second.key,invitation:invitation(orca.prompts.get(secondAssignment.workspace_id)!)},second.agent)
+  const projectId=randomUUID(),otherProjectId=randomUUID(),taskId=randomUUID(),foreignTaskId=randomUUID()
+  await db.query("INSERT INTO entities(id,kind,title,data) VALUES($1,'project','Proyecto','{}'),($2,'project','Otro','{}')",[projectId,otherProjectId])
+  await db.query('UPDATE chat_channels SET project_id=$2 WHERE id=$1',[master.channel.id,projectId])
+  await db.query("INSERT INTO tasks(id,project_id,kind,title,status,created_by,updated_by) VALUES($1,$2,'pending','Propia','todo','test','test'),($3,$4,'pending','Ajena','todo','test','test')",[taskId,projectId,foreignTaskId,otherProjectId])
+  const one=await chat.call('chat_send',{session_key:first.key,team_root_thread_id:plan.root_thread_id,title:'API',text:'Abrir API',task_id:taskId,mentions:[master.session.id],request_id:'child-thread-one'},first.agent)
+  const two=await chat.call('chat_send',{session_key:master.key,team_root_thread_id:plan.root_thread_id,title:'UI',text:'Abrir UI',mentions:[second.session.id],request_id:'master-thread-two'},master.agent)
+  const threads=await db.query('SELECT id,channel_id,task_id,team_root_thread_id FROM chat_threads WHERE id IN ($1,$2) ORDER BY id',[one.thread_id,two.thread_id])
+  expect(threads).toHaveLength(2);expect(threads.every(thread=>thread.channel_id===master.channel.id && thread.team_root_thread_id===plan.root_thread_id)).toBe(true)
+  expect(threads.find(thread=>thread.id===one.thread_id).task_id).toBe(taskId)
+  expect((await db.query('SELECT team_root_thread_id FROM chat_threads WHERE id=$1',[plan.root_thread_id]))[0].team_root_thread_id).toBeNull()
+  await expect(chat.call('chat_send',{session_key:first.key,team_root_thread_id:plan.root_thread_id,title:'Ticket ajeno',text:'No',task_id:foreignTaskId,request_id:'foreign-task'},first.agent)).rejects.toMatchObject({statusCode:400})
+  const beforeNested=Number((await db.query('SELECT count(*) AS n FROM chat_threads'))[0].n)
+  await expect(chat.call('chat_send',{session_key:first.key,team_root_thread_id:one.thread_id,title:'Anidado',text:'No',request_id:'nested-thread'},first.agent)).rejects.toMatchObject({statusCode:400})
+  expect(Number((await db.query('SELECT count(*) AS n FROM chat_threads'))[0].n)).toBe(beforeNested)
+  await chat.call('chat_send',{session_key:second.key,thread_id:one.thread_id,text:'Respuesta miembro',mentions:[first.session.id],request_id:'second-reply'},second.agent)
+  await chat.call('chat_send',{session_key:master.key,thread_id:two.thread_id,text:'Respuesta master',mentions:[first.session.id],request_id:'master-reply'},master.agent)
+  await chat.call('chat_resolve',{session_key:first.key,thread_id:one.thread_id,state:'resolved'},first.agent)
+  await chat.call('chat_resolve',{session_key:second.key,thread_id:one.thread_id,state:'open'},second.agent)
+  await chat.call('chat_resolve',{session_key:master.key,thread_id:two.thread_id,state:'resolved'},master.agent)
+  await expect(chat.call('chat_send',{session_key:first.key,team_root_thread_id:plan.root_thread_id,channel_id:first.channel.id,title:'Canal ajeno',text:'No',request_id:'wrong-channel'},first.agent)).rejects.toMatchObject({statusCode:400})
+  const outsider=await session('outsider')
+  await expect(chat.call('chat_send',{session_key:outsider.key,thread_id:one.thread_id,text:'Intrusión',request_id:'outside'},outsider.agent)).rejects.toMatchObject({statusCode:403})
+  await expect(chat.call('chat_resolve',{session_key:outsider.key,thread_id:one.thread_id,state:'resolved'},outsider.agent)).rejects.toMatchObject({statusCode:403})
+  const masterOutsider=await session('master-outsider',dir,master.workspace)
+  expect(masterOutsider.channel.id).toBe(master.channel.id)
+  await expect(chat.call('chat_resolve',{session_key:masterOutsider.key,thread_id:one.thread_id,state:'resolved'},masterOutsider.agent)).rejects.toMatchObject({statusCode:403})
+  await expect(chat.call('chat_send',{session_key:outsider.key,team_root_thread_id:plan.root_thread_id,title:'No',text:'No',request_id:'outside-create'},outsider.agent)).rejects.toMatchObject({statusCode:403})
+  const otherPlan=await teams.call('team_prepare',{session_key:master.key,objective:'Otro equipo',base_revision:head,members:members(1)},master.agent)
+  const otherLaunch=await teams.call('team_launch',{session_key:master.key,plan_id:otherPlan.id,digest:otherPlan.digest,human_instruction:'Orden explícita'},master.agent)
+  const otherAssignment=otherLaunch.members[0],other=await session('other-team',otherAssignment.workspace_path,otherAssignment.workspace_id)
+  await teams.call('team_join',{session_key:other.key,invitation:invitation(orca.prompts.get(otherAssignment.workspace_id)!)},other.agent)
+  await expect(chat.call('chat_send',{session_key:other.key,thread_id:one.thread_id,text:'Otro equipo',request_id:'other-team-thread'},other.agent)).rejects.toMatchObject({statusCode:403})
+  await expect(chat.call('chat_send',{session_key:first.key,thread_id:one.thread_id,team_root_thread_id:plan.root_thread_id,text:'Retag',request_id:'retag'},first.agent)).rejects.toMatchObject({statusCode:400})
+  expect((await db.query('SELECT channel_id FROM chat_sessions WHERE id IN ($1,$2)',[first.session.id,second.session.id])).map(row=>row.channel_id).sort()).toEqual([first.channel.id,second.channel.id].sort())
+  await db.query('UPDATE chat_sessions SET removed_at=now() WHERE id=$1',[second.session.id])
+  await expect(chat.call('chat_send',{session_key:second.key,thread_id:two.thread_id,text:'Revocado',request_id:'revoked-child-thread'},second.agent)).rejects.toMatchObject({statusCode:410})
+  await teams.call('team_close',{session_key:master.key,plan_id:plan.id,digest:plan.digest,reason:'Fin'},master.agent)
+  expect((await db.query('SELECT cancelled_at FROM chat_deliveries WHERE message_id=$1',[one.id]))[0].cancelled_at).toBeTruthy()
+  await expect(chat.call('chat_send',{session_key:first.key,thread_id:one.thread_id,text:'Cerrado',request_id:'closed-child-thread'},first.agent)).rejects.toMatchObject({statusCode:403})
+  await expect(chat.call('chat_resolve',{session_key:first.key,thread_id:one.thread_id,state:'resolved'},first.agent)).rejects.toMatchObject({statusCode:403})
+  await expect(chat.call('chat_resolve',{session_key:master.key,thread_id:one.thread_id,state:'resolved'},master.agent)).rejects.toMatchObject({statusCode:403})
 })
 
 it('rechaza migrar una conversación nativa existente a otro canal',async()=>{
@@ -223,7 +335,7 @@ it('restaura planes activos pausados, invalida invitaciones y conserva eventos/p
   const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
   const teams=new TeamOrchestration(chat,catalog,orca),prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Backup',base_revision:head,members:members(1)},master.agent)
   await teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Orden explícita'},master.agent)
-  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(12)
+  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(19)
   const target=join(dir,'restore'),restored=new MemoryDatabase(join(target,'memory.sqlite'));await restored.migrate()
   try {await restoreMemory(new MemoryStore(restored,target),backup)
     expect((await restored.query('SELECT state FROM chat_team_plans WHERE id=$1',[prepared.id]))[0].state).toBe('paused')

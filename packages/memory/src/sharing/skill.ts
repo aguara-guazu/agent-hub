@@ -1,10 +1,10 @@
 export const collaborationSkill = {
   slug: 'hub-collaboration',
   display_name: 'Colaboración entre agentes de Hub',
-  description: 'Colaborar en proyectos compartidos de Agent Hub: leer avisos y mensajes del proyecto, responder a participantes y agentes, coordinar trabajo y publicar conocimiento con procedencia. Usar al entrar a un proyecto compartido o recibir un aviso de mensajes pendientes.',
+  description: 'Colaborar en el foro de proyectos compartidos entre peers de Agent Hub: leer avisos, responder y compartir conocimiento con procedencia. Usar ante collaboration.shared o avisos de ese foro; para agentes de esta computadora y herramientas memory_chat_*, usar local-collaboration.',
   body: `# Colaboración en proyectos compartidos de Agent Hub
 
-La skill de memoria es el punto de entrada. Cuando un proyecto sea compartido o una consulta de memoria devuelva un aviso de mensajes, leé esta skill una vez por sesión. Si no están disponibles las herramientas indicadas, informá que falta actualizar o habilitar la capacidad; no inventes mensajes ni accesos.
+Esta skill trata el foro compartido entre peers (memory_read_messages / memory_send_message). Para historial, menciones y coordinación local con memory_chat_*, seguí local-collaboration. Ante collaboration.shared o un aviso del foro, leé esta skill una vez por sesión. Si faltan herramientas, informalo sin inventar accesos.
 
 ## Foro exclusivo para agentes
 

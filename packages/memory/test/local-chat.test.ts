@@ -4,7 +4,7 @@ import { mkdtemp, rm, mkdir, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
@@ -34,6 +34,125 @@ async function register(name:string, event='Stop', path=dir) {
 async function send(from:Awaited<ReturnType<typeof register>>, to:Awaited<ReturnType<typeof register>>, text='Revisá suma', thread_id?:string) {
   return await ops.call('chat_send',{session_key:from.k,...(thread_id ? {thread_id}:{channel_id:from.channel.id,title:'Revisión'}),text,mentions:[to.session.id],request_id:randomUUID()},'mcp',from.a)
 }
+it('conserva el hash legado de request_id cuando no usa hilo de equipo',async()=> {
+  const a=await register('author'),b=await register('reader'),request_id='legacy-retry'
+  const input={session_key:a.k,channel_id:a.channel.id,title:'Legacy',text:'Mensaje durable',mentions:[b.session.id],request_id}
+  const message=await ops.call('chat_send',input,'mcp',a.a)
+  const legacy=JSON.stringify({thread:null,channel:a.channel.id,title:'Legacy',task:null,text:'Mensaje durable',reply:null,mentions:[b.session.id]})
+  expect((await db.query('SELECT request_hash FROM chat_messages WHERE id=$1',[message.id]))[0].request_hash).toBe(createHash('sha256').update(legacy).digest('hex'))
+  expect((await ops.call('chat_send',input,'mcp',a.a)).id).toBe(message.id)
+})
+it('avisa al líder con autoría Agent Hub sólo al cerrar un turno sin chat actual',async()=> {
+  const leader=await register('leader'),member=await register('member')
+  const start=new Date(Date.now()+1000),stop=new Date(start.getTime()+10)
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'UserPromptSubmit',at:start.toISOString(),turn_id:'turn-1'})
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'Stop',at:stop.toISOString(),turn_id:'turn-1'})
+  await ops.chat.processTurnAlerts(stop.getTime()+2000,0)
+  const alert=(await db.query(`SELECT m.*,s.label FROM chat_turn_alerts a JOIN chat_messages m ON m.id=a.message_id JOIN chat_sessions s ON s.id=m.author_id WHERE a.session_id=$1`,[member.session.id]))[0]
+  expect(alert).toMatchObject({label:'Agent Hub'});expect(alert.text.toLowerCase()).toContain('terminó un turno sin enviar una actualización')
+  expect((await ops.call('chat_inbox',{session_key:leader.k},'mcp',leader.a)).items.some((item:any)=>item.id===alert.id)).toBe(true)
+  await ops.call('chat_ack',{session_key:leader.k,message_id:alert.id},'mcp',leader.a)
+  await ops.chat.processTurnAlerts(stop.getTime()+3000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[member.session.id])).toHaveLength(1)
+})
+it('sólo un chat_send exitoso del turno actual suprime su aviso',async()=> {
+  const leader=await register('leader'),member=await register('member')
+  const old=new Date(Date.now()+1000),start=new Date(old.getTime()+20),stop=new Date(start.getTime()+10)
+  await send(member,leader,'mensaje anterior')
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'BeforeAgent',at:start.toISOString(),turn_id:'turn-current'})
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'Stop',at:stop.toISOString(),turn_id:'turn-current'})
+  await ops.chat.processTurnAlerts(stop.getTime()+2000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[member.session.id])).toHaveLength(1)
+  const next=new Date(stop.getTime()+20),done=new Date(next.getTime()+10)
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'BeforeAgent',at:next.toISOString(),turn_id:'turn-chat'})
+  await send(member,leader,'mensaje actual')
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'Stop',at:done.toISOString(),turn_id:'turn-chat'})
+  await ops.chat.processTurnAlerts(done.getTime()+2000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1',[member.session.id])).toHaveLength(1)
+})
+it('conserva el cierre silencioso anterior cuando ya empezó el turno siguiente',async()=> {
+  const leader=await register('leader'),member=await register('member'),at=Date.now()+1000
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'BeforeAgent',at:new Date(at).toISOString(),turn_id:'one'})
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'Stop',at:new Date(at+10).toISOString(),turn_id:'one'})
+  await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'BeforeAgent',at:new Date(at+20).toISOString(),turn_id:'two'})
+  await ops.chat.processTurnAlerts(at+2000,0)
+  expect(await db.query('SELECT * FROM chat_turn_alerts WHERE session_id=$1 AND turn_id=$2',[member.session.id,'one'])).toHaveLength(1)
+  expect((await ops.call('chat_inbox',{session_key:leader.k},'mcp',leader.a)).total).toBeGreaterThan(0)
+})
+it('lee chat_read incrementalmente por sesión sin saltar páginas ni mensajes sin mención',async()=> {
+  const a=await register('author'),b=await register('reader'),c=await register('other')
+  const first=await send(a,b,'uno')
+  const second=await ops.call('chat_send',{session_key:a.k,thread_id:first.thread_id,text:'dos sin mención',mentions:[],request_id:randomUUID()},'mcp',a.a)
+  const third=await send(a,b,'tres',first.thread_id)
+
+  const page1=await ops.call('chat_read',{session_key:b.k,thread_id:first.thread_id,limit:1},'mcp',b.a)
+  expect(page1.items.map((m:any)=>m.id)).toEqual([first.id]);expect(page1.read).toEqual({unread_only:true,remaining:2,next_offset:0})
+  // An out-of-order offset only consumes what it actually returns; offset zero still finds the skipped message.
+  const jumped=await ops.call('chat_read',{session_key:b.k,thread_id:first.thread_id,limit:1,offset:1},'mcp',b.a)
+  expect(jumped.items.map((m:any)=>m.id)).toEqual([third.id]);expect(jumped.read).toEqual({unread_only:true,remaining:1,next_offset:0})
+  const skipped=await ops.call('chat_read',{session_key:b.k,thread_id:first.thread_id,limit:10,offset:0},'mcp',b.a)
+  expect(skipped.items.map((m:any)=>m.id)).toEqual([second.id]);expect(skipped.read.next_offset).toBeNull()
+  expect((await ops.call('chat_read',{session_key:b.k,thread_id:first.thread_id},'mcp',b.a)).items).toEqual([])
+
+  // Receipts are isolated: another session sees the complete unread stream.
+  const other=await ops.call('chat_read',{session_key:c.k,thread_id:first.thread_id,limit:10},'mcp',c.a)
+  expect(other.items.map((m:any)=>m.id)).toEqual([first.id,second.id,third.id])
+  expect(await db.query('SELECT session_id,message_id FROM chat_read_receipts WHERE session_id=$1 ORDER BY message_id',[b.session.id])).toHaveLength(3)
+})
+it('inbox shares only returned mention receipts with incremental chat_read, while anonymous history is read-only',async()=> {
+  const a=await register('author'),b=await register('reader'),c=await register('historian')
+  const mentioned=await send(a,b,'mención')
+  const plain=await ops.call('chat_send',{session_key:a.k,thread_id:mentioned.thread_id,text:'sin mención',mentions:[],request_id:randomUUID()},'mcp',a.a)
+  const inbox=await ops.call('chat_inbox',{session_key:b.k,limit:1},'mcp',b.a)
+  expect(inbox.items.map((m:any)=>m.id)).toEqual([mentioned.id])
+  const incremental=await ops.call('chat_read',{session_key:b.k,thread_id:mentioned.thread_id},'mcp',b.a)
+  expect(incremental.items.map((m:any)=>m.id)).toEqual([plain.id])
+  await expect(ops.call('chat_read',{thread_id:mentioned.thread_id,unread_only:true})).rejects.toThrow('requiere session_key')
+  const historical=await ops.call('chat_read',{thread_id:mentioned.thread_id,unread_only:false})
+  expect(historical.items.map((m:any)=>m.id)).toEqual([mentioned.id,plain.id])
+  const identifiedHistory=await ops.call('chat_read',{session_key:c.k,thread_id:mentioned.thread_id,unread_only:false},'mcp',c.a)
+  expect(identifiedHistory.items.map((m:any)=>m.id)).toEqual([mentioned.id,plain.id])
+  expect((await ops.call('chat_read',{session_key:c.k,thread_id:mentioned.thread_id},'mcp',c.a)).items).toEqual([])
+  expect((await db.query('SELECT * FROM chat_read_receipts WHERE session_id=$1',[b.session.id]))).toHaveLength(2)
+})
+it('serializa lectores concurrentes de una misma sesión sin duplicar la página',async()=> {
+  const a=await register('author'),b=await register('reader'),message=await send(a,b)
+  const [one,two]=await Promise.all([
+    ops.call('chat_read',{session_key:b.k,thread_id:message.thread_id,limit:1},'mcp',b.a),
+    ops.call('chat_read',{session_key:b.k,thread_id:message.thread_id,limit:1},'mcp',b.a),
+  ])
+  expect([one,two].flatMap((page:any)=>page.items.map((item:any)=>item.id))).toEqual([message.id])
+  expect(await db.query('SELECT * FROM chat_read_receipts WHERE session_id=$1 AND message_id=$2',[b.session.id,message.id])).toHaveLength(1)
+})
+it('no emite cambios por historial anónimo, y sí por una lectura identificada que cambia recibos',async()=> {
+  const a=await register('author'),b=await register('reader'),message=await send(a,b)
+  const changed=vi.fn();ops.chat.events.on('change',changed)
+  await ops.call('chat_read',{thread_id:message.thread_id})
+  expect(changed).not.toHaveBeenCalled()
+  await ops.call('chat_read',{session_key:b.k,thread_id:message.thread_id},'mcp',b.a)
+  expect(changed).toHaveBeenCalledTimes(1)
+  await ops.call('chat_read',{session_key:b.k,thread_id:message.thread_id},'mcp',b.a)
+  expect(changed).toHaveBeenCalledTimes(1)
+})
+it('persiste recibos de chat_read al reabrir la base',async()=> {
+  const a=await register('author'),b=await register('reader'),message=await send(a,b)
+  await ops.call('chat_read',{session_key:b.k,thread_id:message.thread_id},'mcp',b.a)
+  await db.close();db=new MemoryDatabase(join(dir,'memory.sqlite'));await db.migrate()
+  store=new MemoryStore(db,dir);ops=new MemoryOperations(store,new MemoryAI(async()=>defaultAI,new Vault(dir)))
+  expect(await db.query('SELECT session_id,message_id FROM chat_read_receipts WHERE session_id=$1 AND message_id=$2',[b.session.id,message.id])).toHaveLength(1)
+  expect((await ops.call('chat_read',{session_key:b.k,thread_id:message.thread_id},'mcp',b.a)).items).toEqual([])
+})
+it('migra y restaura lecturas históricas de menciones como recibos incrementales',async()=> {
+  const a=await register('author'),b=await register('reader'),message=await send(a,b)
+  await db.query('UPDATE chat_deliveries SET read_at=now() WHERE message_id=$1 AND recipient_id=$2',[message.id,b.session.id])
+  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
+  backup.schema_version=14;delete backup.tables.chat_read_receipts
+  const restoredDir=join(dir,'receipt-restore'),restored=new MemoryDatabase(join(restoredDir,'memory.sqlite'));await restored.migrate()
+  try {
+    await restoreMemory(new MemoryStore(restored,restoredDir),backup)
+    expect(await restored.query('SELECT * FROM chat_read_receipts WHERE session_id=$1 AND message_id=$2',[b.session.id,message.id])).toHaveLength(1)
+  } finally { await restored.close() }
+})
 it('asigna identidades por sesión, normaliza rutas y reanuda sin perder el canal',async()=> {
   const a=await register('one'),b=await register('two')
   expect(a.session.id).not.toBe(b.session.id);expect(a.channel.id).toBe(b.channel.id);expect(a.channel.project_id).toBe(projectId)
@@ -281,7 +400,7 @@ it('activa y cierra canales virtuales sólo de forma explícita, sin robar lider
     expect(oldMemberships.every(row=>row.channel_id===b.channel.id)).toBe(true)
 
     const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-    expect(backup.schema_version).toBe(12)
+    expect(backup.schema_version).toBe(19)
     expect(backup.tables.chat_channels.find((channel:any)=>channel.id===future.channel.id)).toMatchObject({closed_at:null,virtual_path:a.channel.path})
     const restorePath=join(plain,'restore'),restored=new MemoryDatabase(join(restorePath,'memory.sqlite'));await restored.migrate()
     try {
@@ -557,4 +676,82 @@ it('serializa un envío concurrente con expulsión: no quedan entregas activas d
  expect(results[1].status).toBe('fulfilled')
  expect(await db.query('SELECT * FROM chat_deliveries WHERE recipient_id=$1 AND cancelled_at IS NULL',[member.session.id])).toHaveLength(0)
  await expect(send(member,leader)).rejects.toMatchObject({statusCode:410})
+})
+
+
+it('entrega guía recuperable en join y metadatos compactos en inbox; la versión cambia con el líder',async()=>{
+  const a=await register('a'),b=await register('b')
+  const first=await ops.call('chat_join',{session_key:b.k},'mcp',b.a)
+  expect(first.team).toMatchObject({scope:'channel',channel_id:b.channel.id,linked_team:null,guidance:expect.any(String),guidance_version:expect.any(String)})
+  const inbox=await ops.call('chat_inbox',{session_key:b.k},'mcp',b.a)
+  expect(inbox.team.guidance).toBeUndefined()
+  expect(inbox.team.guidance_version).toBe(first.team.guidance_version)
+  // Compaction/reconnect explicitly re-fetches the same guidance; no per-process cache.
+  expect((await ops.call('chat_join',{session_key:b.k},'mcp',b.a)).team.guidance).toBe(first.team.guidance)
+  await ops.chat.kick({channel_id:a.channel.id,participant_id:a.session.id,reason:'Cambio de líder solicitado'},{user_id:'owner'})
+  const changed=await ops.call('chat_inbox',{session_key:b.k},'mcp',b.a)
+  expect(changed.team.leader_id).toBe(b.session.id)
+  expect(changed.team.guidance_version).not.toBe(first.team.guidance_version)
+})
+it('recupera referencias bajo demanda sin perder operaciones del catálogo ni sus argumentos',async()=>{
+  const reference=await ops.call('skill_reference',{section:'memory-tools'})
+  expect(reference.text).toContain('memory_chat_work_update')
+  const orchestration=await ops.call('skill_reference',{section:'team-orchestration'})
+  expect(orchestration.text).toContain('memory_team_launch')
+  expect(orchestration.text).toContain('digest')
+  const entry=await ops.call('skill_reference',{section:'local-collaboration'})
+  expect(entry.text).toContain('team-orchestration')
+  expect(entry.text.length).toBeLessThan(14000)
+  await expect(ops.call('skill_reference',{section:'../../private'})).rejects.toThrow()
+})
+it('conserva progreso explícito separado de heartbeat, Stop, esperas y reintentos',async()=>{
+  const a=await register('a'),b=await register('b'),m=await send(a,b)
+  const start={session_key:a.k,thread_id:m.thread_id,work_id:'fix-login',request_id:'start',expected_version:0,event:'started',summary:'Corregir login'}
+  const initial=await ops.call('chat_work_update',start,'mcp',a.a)
+  expect(initial).toMatchObject({version:1,status:'active',last_progress_at:null,report_message_id:null})
+  const progress={...start,event:'progress',summary:'Regresión reproducida',expected_version:1,request_id:'progress'}
+  const updated=await ops.call('chat_work_update',progress,'mcp',a.a)
+  expect(updated).toMatchObject({version:2,last_progress_at:expect.any(String)})
+  const wait={...start,event:'waiting',waiting_for:'permission',summary:'Espero aprobación',expected_version:2,request_id:'wait'}
+  expect(await ops.call('chat_work_update',wait,'mcp',a.a)).toMatchObject({version:3,status:'waiting',waiting_for:'permission'})
+  // A late retry returns its original receipt without overwriting a subsequent wait.
+  expect(await ops.call('chat_work_update',progress,'mcp',a.a)).toEqual(updated)
+  await expect(ops.call('chat_work_update',{...progress,summary:'Otro evento'},'mcp',a.a)).rejects.toMatchObject({statusCode:409})
+  await expect(ops.call('chat_work_update',{...progress,request_id:'stale'},'mcp',a.a)).rejects.toMatchObject({statusCode:409})
+  for(const event of ['Heartbeat','Stop'])await ops.chat.lifecycle(a.a,{session_key:a.k,native_id:'a',event,at:new Date().toISOString()})
+  const listed=await ops.call('chat_work_list',{session_key:b.k,thread_id:m.thread_id},'mcp',b.a)
+  expect(listed.items[0]).toMatchObject({version:3,status:'waiting',waiting_for:'permission',last_progress_at:updated.last_progress_at,report_message_id:null,session_state:'idle'})
+  expect(JSON.stringify(listed)).not.toContain(a.k)
+})
+it('finalización exige un reporte propio del mismo hilo y no simula lectura del destinatario',async()=>{
+  const a=await register('a'),b=await register('b'),m=await send(a,b)
+  const start={session_key:a.k,thread_id:m.thread_id,work_id:'fix',request_id:'start',expected_version:0,event:'started',summary:'Trabajo'}
+  await ops.call('chat_work_update',start,'mcp',a.a)
+  const complete={...start,event:'completed',summary:'Terminado',expected_version:1,request_id:'done'}
+  await expect(ops.call('chat_work_update',complete,'mcp',a.a)).rejects.toThrow()
+  const other=await send(b,a,'Reporte de otra sesión',m.thread_id)
+  await expect(ops.call('chat_work_update',{...complete,report_message_id:other.id},'mcp',a.a)).rejects.toMatchObject({statusCode:400})
+  const wrongThread=await send(a,b,'Otro trabajo')
+  await expect(ops.call('chat_work_update',{...complete,report_message_id:wrongThread.id},'mcp',a.a)).rejects.toMatchObject({statusCode:400})
+  const report=await send(a,b,'Pruebas pasaron; detalle del resultado',m.thread_id)
+  const done=await ops.call('chat_work_update',{...complete,report_message_id:report.id},'mcp',a.a)
+  expect(done).toMatchObject({status:'completed',report_receipt:'persisted',report_message_id:report.id,reported_at:expect.any(String)})
+  const delivery=(await db.query('SELECT read_at,handled_at FROM chat_deliveries WHERE message_id=$1',[report.id]))[0]
+  expect(delivery).toMatchObject({read_at:null,handled_at:null})
+  await expect(ops.call('chat_work_update',{...start,event:'progress',expected_version:2,request_id:'reopen'},'mcp',a.a)).rejects.toMatchObject({statusCode:409})
+  const exported=await exportMemory(store),backup=JSON.parse(await readBackup(store,exported.id))
+  expect(backup.tables.chat_work_state).toHaveLength(1)
+  const target=join(dir,'restore-work'),restored=new MemoryDatabase(join(target,'memory.sqlite'));await restored.migrate()
+  try {
+    await restoreMemory(new MemoryStore(restored,target),backup)
+    expect((await restored.query('SELECT status,report_message_id FROM chat_work_state'))[0]).toMatchObject({status:'completed',report_message_id:report.id})
+    expect((await restored.query('SELECT count(*) AS n FROM chat_work_events'))[0].n).toBe(2)
+    expect(await restored.query('PRAGMA foreign_key_check')).toEqual([])
+  } finally {await restored.close()}
+})
+it('rechaza acceso a estados ajenos fuera del canal y claves de otra sesión',async()=>{
+  const a=await register('a'),b=await register('b'),m=await send(a,b),outside=await register('outside','Stop',worktree('outside'))
+  await expect(ops.call('chat_work_list',{session_key:outside.k,thread_id:m.thread_id},'mcp',outside.a)).rejects.toMatchObject({statusCode:403})
+  await expect(ops.call('chat_work_update',{session_key:outside.k,thread_id:m.thread_id,work_id:'x',request_id:'x',expected_version:0,event:'started',summary:'Ajeno'},'mcp',outside.a)).rejects.toMatchObject({statusCode:403})
+  await expect(ops.call('chat_work_list',{session_key:a.k,thread_id:m.thread_id},'mcp',{...outside.a,agent_id:'foreign-client'})).rejects.toThrow('Registrate')
 })

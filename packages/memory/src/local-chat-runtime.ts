@@ -3,10 +3,10 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { findExtractionCli } from './cli-extraction.js'
 import { LocalChat } from './local-chat.js'
-import { teamBootstrap, teamGuidance } from './local-chat-team.js'
+import { teamBootstrap } from './local-chat-team.js'
 
 const exec = promisify(execFile)
-export const chatWakeText = (ids: string[]) => `Agent Hub: tenés menciones locales pendientes (${ids.join(', ')}). Leé memory_chat_inbox con tu session_key antes de continuar y verificá team.leader_id. ${teamGuidance} Respondé en el mismo hilo y usá memory_chat_ack sólo cuando hayas atendido el pedido. No hagas polling ni envíes respuestas automáticas sin contenido.`
+export const chatWakeText = (ids: string[]) => `Agent Hub: tenés menciones locales pendientes (${ids.join(', ')}). Leé memory_chat_inbox con tu session_key antes de continuar y verificá team.leader_id. Respondé en el mismo hilo y usá memory_chat_ack sólo cuando hayas atendido el pedido. No hagas polling ni envíes respuestas automáticas sin contenido.`
 
 /** Only the local Hub owns the dispatcher. No inference process is created to listen. */
 export class LocalChatRuntime {
@@ -22,7 +22,8 @@ export class LocalChatRuntime {
     const js = binary.endsWith('.js')
     await exec(js ? process.execPath : binary, [...(js ? [binary] : []),'queue','--thread',nativeId,'--message',text],
       { timeout: 15000, maxBuffer: 65536, windowsHide: true, env: { ...process.env, ...(js ? { ELECTRON_RUN_AS_NODE: '1' } : {}) } })
-  }, private enabled: (agentId:string) => boolean = () => true) {}
+  }, private enabled: (agentId:string) => boolean = () => true,
+  private inspectProcess:typeof inspectNativeProcess = inspectNativeProcess) {}
   start() {
     if (this.timer) return
     this.chat.events.on('change',this.kick)
@@ -40,12 +41,17 @@ export class LocalChatRuntime {
     // PID birth time prevents a recycled PID from keeping a dead session online.
     const processes = await this.chat.db.query('SELECT s.id,s.process_id,s.process_started FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.closed_at IS NULL AND c.closed_at IS NULL AND s.process_id IS NOT NULL')
     for (const s of processes) {
-      const live=await inspectNativeProcess(s.process_id)
+      const live=await this.inspectProcess(s.process_id)
       if(live===undefined)continue
+      if(live && !s.process_started)continue // No birth identity: a live PID cannot prove replacement.
       if(live && live.started===s.process_started) {
         await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[s.id,new Date(Date.now()+90000).toISOString()])
-      } else await this.chat.db.query("UPDATE chat_sessions SET state='offline',closed_at=now() WHERE id=$1",[s.id])
+      } else {
+        await this.chat.closeTurnForPid(s.id)
+        await this.chat.db.query("UPDATE chat_sessions SET state='offline',closed_at=now() WHERE id=$1",[s.id])
+      }
     }
+    await this.chat.processTurnAlerts()
     // Native queue addresses the exact conversation and verifies it at delivery time.
     // A managed app-server may not expose a per-TUI PID to hooks; its idle lease is
     // advisory presence, not a reason to silently suppress durable notifications.
@@ -80,8 +86,11 @@ export class LocalChatRuntime {
       AND (bootstrap_sent_at IS NULL OR bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) RETURNING id`,[sid])).length>0
   }
   private async claim(sid: string) {
-    return this.chat.db.query(`UPDATE chat_deliveries SET attempts=attempts+1,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
+    return this.chat.db.transaction(async()=>{
+      await this.chat.cancelInvalidTurnAlerts()
+      return this.chat.db.query(`UPDATE chat_deliveries SET attempts=attempts+1,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
       WHERE recipient_id=$1 AND read_at IS NULL AND cancelled_at IS NULL AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND s.state='idle') AND attempts<5 AND next_attempt_at<=now() RETURNING message_id`,[sid])
+    })
   }
   private async notified(sid: string, ids: string[]) {
     for (const id of ids) await this.chat.db.query('UPDATE chat_deliveries SET notified_at=COALESCE(notified_at,now()),error=NULL WHERE recipient_id=$1 AND message_id=$2 AND cancelled_at IS NULL',[sid,id])

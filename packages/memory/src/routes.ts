@@ -1,6 +1,7 @@
 import { orcaWorkspaceSchema } from './agents.js'
 import { chatKickInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
+import { LocalWatchdog } from './local-watchdog.js'
 import { nativeSession } from '@agenthub/gateway'
 import { sharingRoutes } from './sharing/routes.js'
 import { pdfPreview } from './pdf.js'
@@ -47,15 +48,19 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }
   let chatRuntime: LocalChatRuntime | undefined
+  let watchdog: LocalWatchdog | undefined
   const runtime = async () => {
     const { operations } = await service.get()
     if (!chatRuntime) { chatRuntime = new LocalChatRuntime(operations.chat, undefined, options.chatAgentEnabled); chatRuntime.start() }
+    if (!watchdog) { watchdog = new LocalWatchdog(operations.chat, options.chatAgentEnabled, Date.now,
+      () => app.log.warn('No se pudo registrar la observación del watchdog local')); watchdog.start() }
     return chatRuntime
   }
   if (options.authorizeChatAgent) app.post('/api/memory/chat/native', { bodyLimit: 16384 }, async (request, reply) => {
     const input = parse(z.object({ agent_id: z.string().min(1).max(200), native_id: z.string().min(1).max(300),
       orca_workspace_id: orcaWorkspaceSchema.optional(), session_key: z.string().min(32).max(200), cwd: z.string().min(1).max(4000), at: z.iso.datetime(),
       event: z.enum(['SessionStart','HubPromptSubmit','UserPromptSubmit','BeforeAgent','PreToolUse','BeforeTool','Stop','AfterAgent','SessionEnd','Interrupt','StopFailure','Heartbeat','Watch']),
+      turn_id:z.string().min(1).max(300).optional(),
       process_id: z.number().int().min(1).optional(), process_started: z.string().max(100).optional(), watch_started:z.iso.datetime().optional(),
       transport:z.enum(['opencode_prompt','acp_prompt','antigravity_stream','codex_appserver','tui_prompt']).optional() }).strict(), request.body)
     const client = await options.authorizeChatAgent!(request,input.agent_id)
@@ -266,6 +271,6 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     prepare(); void service.get().then(({ network }) => network.start()).catch(() => {})
     defaultsTimer = setInterval(prepare, 5000); defaultsTimer.unref(); worker.start()
   })
-  app.addHook('onClose', async () => { clearInterval(defaultsTimer); await chatRuntime?.close(); service.defaults.stop(); await worker.stop(); await service.close() })
+  app.addHook('onClose', async () => { clearInterval(defaultsTimer); await watchdog?.close(); await chatRuntime?.close(); service.defaults.stop(); await worker.stop(); await service.close() })
   return { service, credentialReference: credential.reference, tools: memoryTools }
 }

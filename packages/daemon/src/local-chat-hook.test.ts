@@ -48,3 +48,17 @@ it('transmite la identidad del espacio en hooks de clientes compatibles',async()
   }
   for(const [,options] of vi.mocked(fetch).mock.calls) expect(JSON.parse(options!.body as string)).toMatchObject({orca_workspace_id:id,cwd:'/same'})
 })
+
+it('mantiene la identidad y el coordinador con guía compacta recuperable entre turnos',async()=>{
+  const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
+  const context={session:{label:'Revisor',id:'child',needs_nickname:false},channel:{id:'child-channel',path:'/worktree'},team:{scope:'channel',leader_id:'child',guidance_version:'v1',linked_team:{master_leader_id:'master'}},pending:[]}
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>context}))
+  const raw={session_id:'session',cwd:'/worktree',hook_event_name:'UserPromptSubmit'}
+  const response=JSON.stringify((await localChatHook(state,'agent','codex_cli',raw)).output)
+  expect(response).toContain('líder del canal: child')
+  expect(response).toContain('Coordinador del equipo vinculado: master')
+  expect(response).toContain('versión de guía: v1')
+  expect(response).toContain('recuperala con memory_chat_join')
+  expect(response).not.toContain('Al comenzar cada turno')
+  expect(await localChatHook(state,'agent','codex_cli',{...raw,hook_event_name:'PreToolUse'})).toEqual({})
+})

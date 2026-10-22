@@ -361,4 +361,83 @@ CREATE TABLE chat_team_events (
  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
 CREATE INDEX chat_team_events_team ON chat_team_events(team_id,seq);
+`, String.raw`
+CREATE TABLE chat_work_state (
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id), work_id TEXT NOT NULL,
+ thread_id TEXT NOT NULL REFERENCES chat_threads(id), status TEXT NOT NULL CHECK(status IN ('active','waiting','completed')),
+ summary TEXT NOT NULL, waiting_for TEXT, last_progress_at TIMESTAMP, reported_at TIMESTAMP,
+ report_message_id TEXT REFERENCES chat_messages(id), version INTEGER NOT NULL, updated_at TIMESTAMP NOT NULL,
+ PRIMARY KEY(session_id,work_id)
+);
+CREATE INDEX chat_work_thread ON chat_work_state(thread_id,updated_at);
+CREATE TABLE chat_work_events (
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id), request_id TEXT NOT NULL,
+ request_hash TEXT NOT NULL, snapshot JSON NOT NULL, PRIMARY KEY(session_id,request_id)
+);
+`, String.raw`
+-- Shadow observations are evidence, never delivery/recovery attempts or agent messages.
+CREATE TABLE chat_watchdog_observations (
+ session_id TEXT NOT NULL, work_id TEXT NOT NULL, work_version INTEGER NOT NULL,
+ policy_version TEXT NOT NULL, policy_config JSON NOT NULL, decision JSON NOT NULL, snapshot JSON NOT NULL,
+ fingerprint TEXT NOT NULL, first_observed_at TIMESTAMP NOT NULL, last_observed_at TIMESTAMP NOT NULL,
+ next_scan_at TIMESTAMP NOT NULL,
+ PRIMARY KEY(session_id,work_id),
+ FOREIGN KEY(session_id,work_id) REFERENCES chat_work_state(session_id,work_id) ON DELETE CASCADE
+);
+CREATE INDEX chat_watchdog_due ON chat_watchdog_observations(next_scan_at);
+CREATE TABLE chat_watchdog_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, work_id TEXT NOT NULL,
+ work_version INTEGER NOT NULL, policy_version TEXT NOT NULL, policy_config JSON NOT NULL,
+ decision JSON NOT NULL, snapshot JSON NOT NULL, observed_at TIMESTAMP NOT NULL,
+ FOREIGN KEY(session_id,work_id) REFERENCES chat_work_state(session_id,work_id) ON DELETE CASCADE
+);
+`, String.raw`
+-- Per-session read state is separate from mention deliveries: every reader advances independently.
+CREATE TABLE chat_read_receipts (
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+ read_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ PRIMARY KEY(session_id,message_id)
+);
+CREATE INDEX chat_read_receipts_message ON chat_read_receipts(message_id);
+-- chat_read historically advanced mention deliveries. Preserve that read state when upgrading.
+INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id,read_at)
+ SELECT recipient_id,message_id,read_at FROM chat_deliveries WHERE read_at IS NOT NULL;
+`, String.raw`
+-- Child team threads live in the master channel but are ACL-bound to this immutable root.
+ALTER TABLE chat_threads ADD COLUMN team_root_thread_id TEXT REFERENCES chat_threads(id);
+CREATE INDEX chat_threads_team_root ON chat_threads(team_root_thread_id,updated_at);
+`, String.raw`
+-- Hook-observed turns are deliberately separate from work state and messages.
+CREATE TABLE chat_turn_state (
+ session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ turn_id TEXT NOT NULL, opened_at TIMESTAMP NOT NULL, terminal_at TIMESTAMP,
+ terminal_cause TEXT, chat_sent_at TIMESTAMP, alerted_at TIMESTAMP, last_event_at TIMESTAMP NOT NULL
+);
+CREATE TABLE chat_turn_alerts (
+ id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ turn_id TEXT NOT NULL, cause TEXT NOT NULL, recipient_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ message_id TEXT NOT NULL UNIQUE REFERENCES chat_messages(id), created_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ UNIQUE(session_id,turn_id,cause)
+);
+CREATE INDEX chat_turn_alerts_recipient ON chat_turn_alerts(recipient_id,created_at);
+`, String.raw`
+-- A session can close one turn while the next is already open; retain every turn independently.
+CREATE TABLE chat_turns (
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ turn_id TEXT NOT NULL, opened_at TIMESTAMP NOT NULL, terminal_at TIMESTAMP,
+ terminal_cause TEXT, chat_sent_at TIMESTAMP, alerted_at TIMESTAMP, last_event_at TIMESTAMP NOT NULL,
+ PRIMARY KEY(session_id,turn_id)
+);
+CREATE INDEX chat_turns_pending ON chat_turns(terminal_at,alerted_at,chat_sent_at);
+INSERT INTO chat_turns(session_id,turn_id,opened_at,terminal_at,terminal_cause,chat_sent_at,alerted_at,last_event_at)
+ SELECT session_id,turn_id,opened_at,terminal_at,terminal_cause,chat_sent_at,alerted_at,last_event_at FROM chat_turn_state;
+`, String.raw`
+-- Bind observations to the coordination scope in which the turn started.
+ALTER TABLE chat_turns ADD COLUMN channel_id TEXT REFERENCES chat_channels(id);
+ALTER TABLE chat_turns ADD COLUMN team_id TEXT REFERENCES chat_team_plans(id);
+ALTER TABLE chat_turns ADD COLUMN waiting_at_close INTEGER NOT NULL DEFAULT 0;
+UPDATE chat_turns SET channel_id=(SELECT channel_id FROM chat_sessions WHERE id=session_id);
+-- Earlier observations lack a scope snapshot and must not produce fresh notifications after upgrade.
+UPDATE chat_turns SET alerted_at=COALESCE(alerted_at,${NOW});
 `]
