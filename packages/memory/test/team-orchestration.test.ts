@@ -461,7 +461,9 @@ class HubBackend extends Orca {
       const stopped={...runtime,state:'stopped',updated_at:new Date().toISOString(),provider:'hub'}
       this.runtimes.set(handle,stopped)
       await db.query('UPDATE chat_team_members SET runtime=$2 WHERE launch_handle=$1',[handle,JSON.stringify(stopped)])
+      return stopped
     }
+    return undefined
   })
   send=vi.fn(async(_handle:string,_text:string)=>{})
   interrupt=vi.fn(async(_handle:string)=>{})
@@ -641,6 +643,7 @@ it('stop conserva unknown cuando el backend no confirma terminar el proceso',asy
   const {master,backend,teams,plan,slot}=await hubTeam()
   backend.stop.mockImplementationOnce(async()=>{
     await db.query('UPDATE chat_team_members SET runtime=$2 WHERE id=$1',[slot.id,JSON.stringify({...slot.runtime,state:'unknown'})])
+    return {...slot.runtime,state:'unknown'}
   })
   const result=await teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
     expected_generation:slot.runtime.generation,action:'stop'},master.agent)
@@ -677,4 +680,19 @@ it('revalida cuota si se agota durante los chequeos internos antes del spawn',as
   await expect(teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
     expected_generation:slot.runtime.generation,action:'clear'},master.agent)).rejects.toThrow('cuota')
   expect(accepted).toBe(false)
+})
+
+
+it('no reemplaza un runtime cuyo apagado sigue desconocido ni adopta uno que perdió ownership',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  const input={session_key:master.key,plan_id:plan.id,member_id:slot.id,expected_generation:slot.runtime.generation,action:'clear'}
+  backend.stop.mockImplementationOnce(async()=>({...slot.runtime,state:'unknown'}))
+  await expect(teams.call('team_control',input,master.agent)).rejects.toThrow('no se lanzará un reemplazo')
+  expect(backend.launch).toHaveBeenCalledTimes(1)
+  backend.stop.mockRejectedValueOnce(new Error('fleet_unknown_id'))
+  await expect(teams.call('team_control',input,master.agent)).rejects.toThrow('ni se adoptarán procesos ajenos')
+  expect(backend.launch).toHaveBeenCalledTimes(1)
+  await db.query('UPDATE chat_team_members SET launch_handle=NULL,runtime=$2 WHERE id=$1',[slot.id,JSON.stringify({...slot.runtime,state:'unknown'})])
+  await expect(teams.call('team_control',input,master.agent)).rejects.toThrow('proceso desconocido')
+  expect(backend.launch).toHaveBeenCalledTimes(1)
 })

@@ -453,10 +453,17 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
         await this.preflight([item],who)
         await this.checkQuota([item],who)
         item=await load()
+        check(item.launch_handle || !item.runtime || ['stopped','failed'].includes(item.runtime.state),
+          'El runtime no tiene un recibo verificable para confirmar su detención. No se lanzará un reemplazo de un proceso desconocido.',409)
         // An unknown process may still exist. Stop the owned handle before replacing it.
         if(item.launch_handle) {
           check(this.orca.stop,'El backend no permite detener el worker',409)
-          await this.orca.stop(item.launch_handle)
+          let stopped:unknown
+          try {stopped=await this.orca.stop(item.launch_handle)} catch {
+            check(false,'El Hub no pudo confirmar la detención de este runtime. Conservá el estado desconocido; no se lanzará un reemplazo ni se adoptarán procesos ajenos.',409)
+          }
+          check(stopped && typeof stopped==='object' && ['stopped','failed'].includes(String((stopped as {state?:unknown}).state)),
+            'El Hub no confirmó la detención del worker. Su estado sigue desconocido; no se lanzará un reemplazo.',409)
           item=await load()
         }
         const token=randomBytes(32).toString('base64url'),expires=new Date(Date.now()+30*60_000).toISOString()
