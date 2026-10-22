@@ -15,12 +15,12 @@ export type TeamModelDescriptionSource = 'native' | 'heuristic'
 export type UnsupportedTeamCli = 'gemini_cli' | 'opencode' | 'antigravity' | 'claude_desktop'
 export type TeamCatalogCliId = ExtractionCli | UnsupportedTeamCli
 export type TeamRole = 'exploration' | 'implementation' | 'design' | 'review'
-export type TeamLaunchRoute = 'agent_launch' | 'native_terminal' | 'unsupported'
+export type TeamLaunchRoute = 'hub_fleet' | 'unsupported'
 
-const launchRoutes: Record<ExtractionCli, Exclude<TeamLaunchRoute, 'unsupported'>> = {
-  claude_code: 'agent_launch',
-  codex_cli: 'agent_launch',
-  kiro: 'native_terminal',
+const launchRoutes: Record<ExtractionCli, TeamLaunchRoute> = {
+  claude_code: 'hub_fleet',
+  codex_cli: 'hub_fleet',
+  kiro: 'unsupported',
 }
 
 const unsupportedClis: ReadonlyArray<{ id: UnsupportedTeamCli; label: string }> = [
@@ -37,7 +37,7 @@ export interface TeamCatalogCli {
   installed: boolean | null
   catalogable: boolean
   model_selectable: boolean
-  /** Native candidate; team_catalog also checks the current Orca context and adapter preflight. */
+  /** Hub fleet candidate; team_catalog also checks the current workspace and runtime preflight. */
   launchable: boolean
   launch_route: TeamLaunchRoute
   checked_at: string
@@ -98,10 +98,10 @@ function token(value: string, name: string): boolean {
 /** Qualitative family guidance only. Unknown families receive no inferred role. */
 function roleHints(model: CliModel): TeamRoleHint[] {
   const family = `${model.id} ${model.name}`
-  if (token(family, 'haiku')) return [{ role: 'exploration', rationale: 'Considerar esta familia para exploración y uso liviano de herramientas.', source: 'heuristic' }]
-  if (token(family, 'sol')) return [{ role: 'implementation', rationale: 'Considerar esta familia para tareas de implementación.', source: 'heuristic' }]
+  if (token(family, 'luna') || token(family, 'haiku')) return [{ role: 'exploration', rationale: 'Preferir esta familia para tooling repetitivo, búsquedas acotadas y exploración con objetivos y resultados delimitados.', source: 'heuristic' }]
+  if (token(family, 'terra') || token(family, 'sonnet') || token(family, 'sol')) return [{ role: 'implementation', rationale: 'Considerar esta familia para programación habitual; Terra o Sonnet son preferencias medianas y medium es el esfuerzo inicial cuando el catálogo lo admite.', source: 'heuristic' }]
   if (token(family, 'astra') || token(family, 'opus')) return [
-    { role: 'design', rationale: 'Considerar esta familia para tareas de diseño.', source: 'heuristic' },
+    { role: 'design', rationale: 'Considerar esta familia para coordinación, razonamiento y diseño con ambigüedad o dificultad que justifique mayor capacidad.', source: 'heuristic' },
     { role: 'review', rationale: 'Considerar esta familia para tareas de revisión.', source: 'heuristic' },
   ]
   return []
@@ -151,7 +151,7 @@ function catalogCli(cli: ExtractionCli, status: CatalogStatus): TeamCatalogCli {
     installed: status.installed,
     catalogable: true,
     model_selectable: modelSelectable,
-    launchable: modelSelectable,
+    launchable: modelSelectable && launchRoutes[cli] !== 'unsupported',
     launch_route: launchRoutes[cli],
     checked_at: status.checked_at,
     source: status.source,
@@ -159,7 +159,7 @@ function catalogCli(cli: ExtractionCli, status: CatalogStatus): TeamCatalogCli {
   }
 }
 
-/** Models available to the three launch adapters. Each native discovery is
+/** Models discovered independently of Hub fleet launch support. Each native discovery is
  * independent, so one broken CLI cannot hide the other catalog entries. */
 export class TeamCatalog {
   constructor(private readonly runtime: CliExtractionRuntime) {}
@@ -193,7 +193,7 @@ export class TeamCatalog {
     const client = catalogCli(cli, status)
     check(client.catalogable, `${cliLabels[cli]} no admite catálogo de modelos para equipos.`, 409)
     check(client.installed === true, `${cliLabels[cli]} no está instalado o no se pudo verificar.`, 409)
-    check(client.model_selectable && client.launchable, `${cliLabels[cli]} no devolvió un catálogo de modelos; no se puede lanzar el miembro.`, 409)
+    check(client.model_selectable, `${cliLabels[cli]} no devolvió un catálogo de modelos; no se puede lanzar el miembro.`, 409)
     const discovered = status.models.find(candidate => candidate.id === model)
     check(discovered, `${cliLabels[cli]} no ofrece el modelo elegido. Actualizá el catálogo y volvé a elegirlo.`, 409)
     const selected = catalogModel(cli, status, discovered)
