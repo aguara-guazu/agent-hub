@@ -88,7 +88,10 @@ export class TeamOrchestration {
     const input=parse(definition[1] as z.ZodType,raw ?? {}) as any
     const who=await this.chat.identity(agent,input.session_key)
     check(!who.closed_at,'La sesión de colaboración está cerrada',403)
-    if(!teamReadOperations.includes(operation))check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
+    if(!teamReadOperations.includes(operation)) {
+      check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
+      check(who.nickname?.trim(),'Elegí tu propio nick con chat_set_nick antes de participar.',409)
+    }
     if(operation==='team_catalog')return this.catalogView(who)
     if(operation==='team_prepare')return this.prepare(input,who)
     if(operation==='team_launch')return this.launch(input,who)

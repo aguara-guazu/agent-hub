@@ -783,3 +783,11 @@ it('conserva y responde hasta 32 requests nativas pendientes sin descartar el co
   await team.teams.call('team_answer',{...pending.input,question_id:questions[31]!.id},team.master.agent)
   expect(team.backend.answer).toHaveBeenCalledWith(team.slot.launch_handle,questions[31]!.id,pending.input.answers)
 })
+
+it('impide operar la flota con una identidad pendiente de elegir nick',async()=>{
+  const master=await session('unnamed-master'),orca=new Orca(),catalog=new Catalog()
+  await db.query('UPDATE chat_sessions SET nickname=NULL,nickname_key=NULL WHERE id=$1',[master.session.id])
+  const teams=new TeamOrchestration(chat,catalog,orca)
+  await expect(teams.call('team_prepare',{session_key:master.key,objective:'Sin nombre',base_revision:head,members:members(1)},master.agent)).rejects.toMatchObject({statusCode:409})
+  expect(orca.create).not.toHaveBeenCalled();expect(orca.launch).not.toHaveBeenCalled()
+})

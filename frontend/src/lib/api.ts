@@ -74,7 +74,7 @@ async function request<T>(method: string, path: string, body?: unknown, retry = 
 
 export const api = {
   download: (path: string) => request<Blob>('GET', path, undefined, true, true),
-  get: <T>(path: string) => request<T>('GET', path),
+  get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, true, false, signal),
   post: <T>(path: string, body?: unknown, signal?: AbortSignal) => request<T>('POST', path, body, true, false, signal),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),

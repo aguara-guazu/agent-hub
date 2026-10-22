@@ -5,9 +5,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach,beforeEach,expect,it,vi } from 'vitest'
 import { installFetch,jsonResponse } from '../test-utils'
 import { ProjectCollaboration } from './MemoryCollaboration'
-let root:Root,container:HTMLDivElement,client:QueryClient,calls:any[],historical:boolean,removed:boolean,failKick:boolean,agentTotal:number|null,staleActivity:boolean
+let root:Root,container:HTMLDivElement,client:QueryClient,calls:any[],historical:boolean,removed:boolean,failKick:boolean,agentTotal:number|null,staleActivity:boolean,reverseOrder:boolean
 beforeEach(()=> {
-  globalThis.IS_REACT_ACT_ENVIRONMENT=true;vi.useFakeTimers();calls=[];historical=false;removed=false;failKick=false;agentTotal=null;staleActivity=false
+  globalThis.IS_REACT_ACT_ENVIRONMENT=true;vi.useFakeTimers();calls=[];historical=false;removed=false;failKick=false;agentTotal=null;staleActivity=false;reverseOrder=false
   container=document.createElement('div');document.body.appendChild(container);root=createRoot(container)
   client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:0}}})
   installFetch({handle:call=> {
@@ -16,34 +16,39 @@ beforeEach(()=> {
       if(failKick)return jsonResponse({error:'No se pudo expulsar'},403)
       removed=true;return jsonResponse({session:{id:'old-agent',state:'removed'}})
     }
+    if(call.path.includes('/activity'))return jsonResponse({supported:false,items:[],next_cursor:0})
     if(call.path!=='/memory/call')return
     const body=call.body as any;calls.push(body)
-    const items=body.operation==='chat_channels'?[{id:'channel',name:'feature/review',path:'/project/worktree',branch:'review',threads:1,read_only:historical}]
+    const items:any[]=body.operation==='chat_channels'?[{id:'channel',name:'feature/review',path:'/project/worktree',branch:'review',threads:1,read_only:historical}]
       :body.operation==='chat_agents'?[
-        {id:'old-agent',channel_id:'channel',label:'Bruma',cli_kind:'codex_cli',state:removed?'removed':staleActivity?'unknown':'offline',state_reason:staleActivity?'activity_stale':null,connection_state:staleActivity?'online':'offline',state_observed_at:'2026-10-18T23:00:00Z',removed_at:removed?'2026-10-19T12:00:00Z':null,removal_reason:removed?'Retiro manual':null,capability:'codex_queue',last_seen_at:'2026-10-19T00:00:00Z'},
+        {id:'old-agent',channel_id:'channel',label:'Bruma',cli_kind:'codex_cli',nickname:'Bruma',created_at:'2026-10-18T00:00:00Z',state:removed?'removed':staleActivity?'unknown':'idle',state_reason:staleActivity?'activity_stale':null,connection_state:staleActivity?'online':'offline',state_observed_at:'2026-10-18T23:00:00Z',removed_at:removed?'2026-10-19T12:00:00Z':null,removal_reason:removed?'Retiro manual':null,capability:'codex_queue',last_seen_at:'2026-10-19T00:00:00Z'},
         {id:'removed-at',channel_id:'channel',label:'Eco removido',cli_kind:'kiro',state:'offline',removed_at:'2026-10-18T12:00:00Z',capability:'tui_prompt',last_seen_at:'2026-10-18T00:00:00Z'},
         {id:'removed-state',channel_id:'channel',label:'Sombra removida',cli_kind:'kiro',state:'removed',removed_at:null,capability:'tui_prompt',last_seen_at:'2026-10-18T00:00:00Z'}]
       :body.operation==='chat_threads'?[{id:'thread',channel_id:'channel',title:'Revisión de suma',state:'open',channel_name:'feature/review',messages:1,preview:'Error en resta',updated_at:'2026-10-19T00:00:00Z'}]
       :[{id:'message',author_id:'author',author_label:'Junco',text:'Error en resta <script>bad()</script>',created_at:'2026-10-19T00:00:00Z',reply_to:null,mentions:[{recipient_id:'old-agent',label:'Bruma',notified_at:null,read_at:null,handled_at:null,attempts:0}]}]
+    if(body.operation==='chat_agents') {
+      items.push({id:'pending',channel_id:'channel',label:'session-id',needs_nickname:true,state:'idle'}, {id:'closed',label:'Cerrado',closed_at:'2026-10-22',state:'idle'})
+      if(reverseOrder)items.unshift({id:'second',channel_id:'channel',nickname:'Segundo',label:'Segundo',created_at:'2026-10-19T00:00:00Z',state:'busy',cli_kind:'codex_cli',last_seen_at:'2026-10-22T00:00:00Z'})
+    }
     return jsonResponse({items,total:body.operation==='chat_agents' && agentTotal!==null?agentTotal:items.length,limit:40,offset:body.input.offset??0,...(body.operation==='chat_read'?{thread:{id:'thread',channel_id:'channel',title:'Revisión de suma',state:'open'}}:{})})
   }})
 })
 afterEach(()=> {act(()=>root.unmount());client.clear();container.remove();vi.useRealTimers();vi.unstubAllGlobals()})
 async function tick(){await act(async()=> {await vi.advanceTimersByTimeAsync(30)})}
 async function mount(url='/?tab=collaboration',unassigned=false){await act(async()=>{root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><ProjectCollaboration {...(unassigned ? {unassigned:true}:{projectId:'project'})}/></MemoryRouter></QueryClientProvider>)});await tick();await tick()}
-async function click(text:string){const button=[...container.querySelectorAll('button')].find(b=>b.textContent?.includes(text))!;expect(button).toBeTruthy();await act(async()=>button.click());await tick();await tick()}
+async function click(text:string){const button=[...document.querySelectorAll('button')].find(b=>b.textContent?.includes(text)||b.getAttribute('aria-label')===text)!;expect(button).toBeTruthy();await act(async()=>button.click());await tick();await tick()}
 it('distingue conexión reciente de actividad sin confirmar',async()=>{
   staleActivity=true
   await mount();await click('Mostrar agentes')
   const panel=container.querySelector('[aria-label="Agentes vigentes"]')!
   expect(panel.textContent).toContain('Actividad sin confirmar')
-  expect(panel.textContent).toContain('La conexión sigue activa; no confirma que esté trabajando.')
+  expect(panel.querySelector('.local-chat-agent-profile')!.getAttribute('title')).toContain('La conexión sigue activa; no confirma que esté trabajando.')
   expect(panel.textContent).not.toContain('Trabajando')
   expect(panel.querySelector('.local-chat-agent-profile')!.getAttribute('title')).toContain('Último estado observado:')
 })
 it('permite recorrer canales e historial sin participar ni consumir mensajes',async()=> {
   await mount();expect(container.textContent).toContain('Chat de sólo lectura');expect(container.querySelector('[aria-label="Agentes vigentes"]')).toBeNull()
-  await click('Mostrar agentes');expect(container.textContent).toContain('Desconectado')
+  await click('Mostrar agentes');expect(container.textContent).toContain('Disponible')
   await click('# feature/review');expect(calls.some(c=>c.operation==='chat_threads'&&c.input.channel_id==='channel')).toBe(true)
   await click('Abrir hilo');expect(container.textContent).toContain('Error en resta <script>bad()</script>');expect(container.querySelector('script')).toBeNull()
   expect(container.querySelector('[aria-label="Hilos del canal"]')).toBeNull()
@@ -61,12 +66,12 @@ it('oculta el panel inicialmente, excluye expulsados por fecha o estado y permit
   expect(show.getAttribute('aria-expanded')).toBe('false')
   await click('Mostrar agentes')
   const panel=container.querySelector('[aria-label="Agentes vigentes"]')!
-  expect(panel.textContent).toContain('Bruma');expect(panel.textContent).not.toContain('Eco removido');expect(panel.textContent).not.toContain('Sombra removida')
+  expect(panel.textContent).toContain('Bruma');expect(panel.textContent).not.toContain('Eco removido');expect(panel.textContent).not.toContain('Sombra removida');expect(panel.textContent).not.toContain('session-id');expect(panel.textContent).not.toContain('Cerrado')
   expect([...container.querySelectorAll('button')].find(button=>button.textContent?.includes('Ocultar agentes'))?.getAttribute('aria-expanded')).toBe('true')
   await click('Ocultar agentes');expect(container.querySelector('[aria-label="Agentes vigentes"]')).toBeNull()
 })
-it('permite filtrar por una identidad desconectada y sigue refrescando las lecturas',async()=> {
-  await mount();await click('Mostrar agentes');await click('Bruma')
+it('permite inspeccionar una identidad y filtrar sus mensajes y sigue refrescando las lecturas',async()=> {
+  await mount();await click('Mostrar agentes');await click('Bruma');await click('Ver mensajes en el Hub')
   expect(calls.some(c=>c.operation==='chat_threads'&&c.input.author_id==='old-agent')).toBe(true)
   await click('Quitar filtro de agente');expect(calls.at(-1).input.author_id).toBeUndefined()
   const count=calls.length;await act(async()=>{await vi.advanceTimersByTimeAsync(5100)});expect(calls.length).toBeGreaterThan(count)
@@ -97,7 +102,7 @@ it('identifica canales históricos sin impedir consultar sus mensajes',async()=>
 })
 
 it('expulsa manualmente sólo después de confirmar, lo quita de vigentes y conserva el historial',async()=>{
- await mount('/?channel=channel');await click('Mostrar agentes');await click('Expulsar del canal')
+ await mount('/?channel=channel');await click('Mostrar agentes');await click('Expulsar a Bruma')
  expect(calls.some(c=>c.operation==='ui_kick')).toBe(false)
  const dialog=document.querySelector('[role=dialog]')!
  expect(dialog.textContent).toContain('Bruma');expect(dialog.textContent).toContain('terminal seguirá abierta')
@@ -109,11 +114,11 @@ it('expulsa manualmente sólo después de confirmar, lo quita de vigentes y cons
  await click('Abrir hilo');expect(container.textContent).toContain('Junco');expect(container.textContent).toContain('@Bruma');expect(container.textContent).toContain('Error en resta')
 })
 it('cancelar no expulsa y los errores quedan visibles sin fingir éxito',async()=>{
- await mount();await click('Mostrar agentes');await click('Expulsar del canal')
+ await mount();await click('Mostrar agentes');await click('Expulsar a Bruma')
  let dialog=document.querySelector('[role=dialog]')!
  await act(async()=>[...dialog.querySelectorAll('button')].find(b=>b.textContent==='Cancelar')!.click());await tick()
  expect(calls.some(c=>c.operation==='ui_kick')).toBe(false)
- failKick=true;await click('Expulsar del canal');dialog=document.querySelector('[role=dialog]')!
+ failKick=true;await click('Expulsar a Bruma');dialog=document.querySelector('[role=dialog]')!
  await act(async()=>[...dialog.querySelectorAll('button')].find(b=>b.textContent==='Confirmar expulsión')!.click());await tick();await tick()
  expect(document.querySelector('[role=dialog] [role=alert]')).not.toBeNull()
  expect(container.querySelector('[aria-label="Expulsar a Bruma"]')).not.toBeNull()
@@ -127,7 +132,7 @@ it('consulta colaboración sin proyecto y permite expulsar sin inventar una asoc
    expect(input.unassigned).toBe(true)
    expect(input.project_id).toBeUndefined()
  }
- await click('Mostrar agentes');await click('Expulsar del canal')
+ await click('Mostrar agentes');await click('Expulsar a Bruma')
  const dialog=document.querySelector('[role=dialog]')!
  await act(async()=>[...dialog.querySelectorAll('button')].find(b=>b.textContent==='Confirmar expulsión')!.click());await tick();await tick()
  expect(calls.find(c=>c.operation==='ui_kick').input).toEqual({channel_id:'channel',participant_id:'old-agent',reason:'Expulsado por la persona desde la UI'})
@@ -142,8 +147,16 @@ it('usa el total paginado de agentes vigentes y vuelve a la primera página desp
  agentTotal=81
  await mount('/?channel=channel&agent_offset=80')
  expect(container.textContent).toContain('Mostrar agentes (81)')
- await click('Mostrar agentes');await click('Expulsar del canal')
+ await click('Mostrar agentes');await click('Expulsar a Bruma')
  const dialog=document.querySelector('[role=dialog]')!
  await act(async()=>[...dialog.querySelectorAll('button')].find(b=>b.textContent==='Confirmar expulsión')!.click());await tick();await tick()
  expect(calls.filter(c=>c.operation==='chat_agents').at(-1).input.offset).toBe(0)
+})
+
+it('mantiene el orden de registro aunque la respuesta se ordene por actividad',async()=>{
+  reverseOrder=true;await mount();await click('Mostrar agentes')
+  const names=()=>[...container.querySelectorAll('.local-chat-agent-profile strong')].map(node=>node.textContent)
+  expect(names()).toEqual(['Bruma','Segundo'])
+  staleActivity=true;await act(async()=>{await vi.advanceTimersByTimeAsync(5100)})
+  expect(names()).toEqual(['Bruma','Segundo'])
 })

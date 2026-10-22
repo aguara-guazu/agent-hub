@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { AgentActivity } from './AgentActivity'
 import { Modal } from '../components/Modal'
 import { api } from '../lib/api'
 import { useSearchParams } from 'react-router-dom'
@@ -7,15 +8,15 @@ import { CLI_LABELS, type CliKind } from '../lib/types'
 import { ErrorBox, formatTime, Pager, useMemory, type Page } from '../lib/memory'
 
 interface Channel { id:string; name:string; path:string; branch:string|null; threads:number; orca_workspace_id?:string|null; read_only?:boolean|null; kind?:string; closed_at?:string|null }
-interface Participant { id:string; channel_id:string; removed_at?:string|null; removal_reason?:string|null; removed_by?:string|null; label:string; cli_kind:string; state:string; state_reason?:string|null; state_observed_at?:string; connection_state?:string; capability:string; last_seen_at:string; wake_error:string|null; role?:string; needs_nickname?:boolean }
+interface Participant { nickname?:string|null; closed_at?:string|null; created_at?:string; id:string; channel_id:string; removed_at?:string|null; removal_reason?:string|null; removed_by?:string|null; label:string; cli_kind:string; state:string; state_reason?:string|null; state_observed_at?:string; connection_state?:string; capability:string; last_seen_at:string; wake_error:string|null; role?:string; needs_nickname?:boolean }
 interface Thread { id:string; channel_id:string; title:string; state:string; channel_name:string; messages:number; preview:string; author_label:string; updated_at:string; task_id:string|null }
 interface Receipt { recipient_id:string; cancelled_at?:string|null; label:string; notified_at:string|null; read_at:string|null; handled_at:string|null; attempts:number; error:string|null }
 interface Message { id:string; author_id:string; author_label:string; text:string; created_at:string; reply_to:string|null; mentions:Receipt[] }
 const states:Record<string,string> = { idle:'Disponible',busy:'Trabajando',blocked:'Bloqueado',offline:'Desconectado',unknown:'Sin señal reciente',removed:'Expulsado' }
-const capabilities:Record<string,string> = { codex_queue:'Notificación nativa',claude_rewake:'Escucha nativa',tui_prompt:'TUI conectada',codex_appserver:'Terminal conectada',next_turn:'Al próximo turno',opencode_prompt:'Escucha nativa',acp_prompt:'Terminal conectada',antigravity_stream:'Terminal conectada' }
+const capabilities:Record<string,string> = { hub_fleet:'Flota del Hub',codex_queue:'Notificación nativa',claude_rewake:'Escucha nativa',tui_prompt:'TUI conectada',codex_appserver:'Terminal conectada',next_turn:'Al próximo turno',opencode_prompt:'Escucha nativa',acp_prompt:'Terminal conectada',antigravity_stream:'Terminal conectada' }
 
 export function ProjectCollaboration({ projectId, unassigned = false }: { projectId?:string; unassigned?:boolean }) {
-  const cache=useQueryClient(),[removing,setRemoving]=useState<Participant|null>(null),[reason,setReason]=useState(''),[agentsOpen,setAgentsOpen]=useState(false)
+  const cache=useQueryClient(),[removing,setRemoving]=useState<Participant|null>(null),[reason,setReason]=useState(''),[agentsOpen,setAgentsOpen]=useState(false),[inspecting,setInspecting]=useState<Participant|null>(null)
   const kick=useMutation({mutationFn:(input:{project_id?:string;channel_id:string;participant_id:string;reason:string})=>api.post('/memory/chat/kick',input),
     onSuccess:()=>{setRemoving(null);setReason('');change({agent_offset:0});void cache.invalidateQueries({queryKey:['memory']})}})
   const [params,setParams] = useSearchParams()
@@ -37,7 +38,7 @@ export function ProjectCollaboration({ projectId, unassigned = false }: { projec
   const agents = useMemory<Page<Participant>>('chat_agents',{ ...scope,...(visibleChannelId ? {channel_id:visibleChannelId}:{}),limit:40,offset:agentOffset })
   const selectedChannel=useMemory<Page<Channel>>('chat_channels',{...scope,channel_id:visibleChannelId},!!visibleChannelId && !!channels.data && !channels.data.items.some(c=>c.id===visibleChannelId))
   const channel = channels.data?.items.find(c=>c.id===visibleChannelId) ?? selectedChannel.data?.items[0]
-  const visibleAgents = agents.data?.items.filter(agent=>!agent.removed_at && agent.state!=='removed') ?? []
+  const visibleAgents = agents.data?.items.filter(agent=>!agent.removed_at && !agent.closed_at && !['removed','offline'].includes(agent.state) && !agent.needs_nickname && agent.label.trim() && (agent.nickname===undefined || !!agent.nickname?.trim())).sort((a,b)=>(a.created_at??'').localeCompare(b.created_at??'') || a.id.localeCompare(b.id)) ?? []
   const selectAgent = (agent:Participant) => change({chat_author:author===agent.id?null:agent.id,chat_offset:0,...(threadId ? {thread:null,channel:agent.channel_id,message_offset:null}: {})})
   return <section className="local-chat" aria-label="Colaboración local">
     <div className="local-chat-heading"><div><h2>Colaboración</h2><p>Conversaciones de los agentes de esta computadora, organizadas por espacio de trabajo y tarea.</p></div><span className="local-chat-observer">Chat de sólo lectura</span></div>
@@ -88,19 +89,18 @@ export function ProjectCollaboration({ projectId, unassigned = false }: { projec
         <ErrorBox error={agents.error} retry={agents.refetch}/>
         {agents.isPending && <p className="local-chat-help" role="status">Cargando agentes…</p>}
         <div className="local-chat-agents-list">{visibleAgents.map(a=><div key={a.id} className={`local-chat-agent ${author===a.id?'selected':''}`}>
-          <button className="local-chat-agent-profile" onClick={()=>selectAgent(a)} title={`Ver sus mensajes · Última conexión: ${formatTime(a.last_seen_at)}${a.state_observed_at ? ` · Último estado observado: ${formatTime(a.state_observed_at)}` : ''}`}>
+          <button className="local-chat-agent-profile" onClick={()=>setInspecting(a)} title={`Ver actividad · ${capabilities[a.capability] ?? a.capability}${a.state_reason==='activity_stale' ? ' · La conexión sigue activa; no confirma que esté trabajando.' : ''} · Última conexión: ${formatTime(a.last_seen_at)}${a.state_observed_at ? ` · Último estado observado: ${formatTime(a.state_observed_at)}` : ''}${a.wake_error ? ` · Aviso: ${a.wake_error}` : ''}`}>
             <strong><span className={`local-chat-presence ${a.state}`}/>{a.label}{a.role==='leader' && <span className="local-chat-tag">Líder</span>}</strong>
-            <small>{CLI_LABELS[a.cli_kind as CliKind] ?? a.cli_kind} · {a.state_reason==='activity_stale'?'Actividad sin confirmar':states[a.state] ?? a.state} · {capabilities[a.capability] ?? a.capability}</small>
-            {a.state_reason==='activity_stale' && <small>La conexión sigue activa; no confirma que esté trabajando.</small>}
+            <small>{CLI_LABELS[a.cli_kind as CliKind] ?? a.cli_kind} · {a.state_reason==='activity_stale'?'Actividad sin confirmar':states[a.state] ?? a.state}</small>
           </button>
-          <button className="btn btn-ghost btn-sm local-chat-remove" aria-label={`Expulsar a ${a.label}`} onClick={()=>{kick.reset();setReason('');setRemoving(a)}}>Expulsar del canal</button>
-          {a.wake_error && <small className="local-chat-warning">{a.wake_error}</small>}
+          <button className="btn btn-ghost btn-sm local-chat-remove" aria-label={`Expulsar a ${a.label}`} onClick={()=>{kick.reset();setReason('');setRemoving(a)}} title={`Expulsar a ${a.label}`}>×</button>
         </div>)}</div>
         {agents.data && !agents.isPending && visibleAgents.length===0 && <p className="local-chat-help">No hay agentes vigentes en esta página.</p>}
         {agents.data && agents.data.total>40 && <Pager {...agents.data} setOffset={v=>change({agent_offset:v})}/>}
-        <p className="local-chat-help">Las sesiones expulsadas no aparecen aquí; sus autores y mensajes siguen en el historial.</p>
+        <p className="local-chat-help">Las sesiones cerradas, expulsadas o pendientes de elegir nombre no aparecen aquí. Sus mensajes se conservan en el historial.</p>
       </aside>}
     </div>
+    {inspecting && <AgentActivity key={inspecting.id} agent={inspecting} onClose={()=>setInspecting(null)} onMessages={()=>{selectAgent(inspecting);setInspecting(null)}}/>}
     <Modal open={!!removing} title={`Expulsar a ${removing?.label ?? 'agente'}`} busy={kick.isPending} onClose={()=>setRemoving(null)} footer={<>
       <button className="btn" disabled={kick.isPending} onClick={()=>setRemoving(null)}>Cancelar</button>
       <button className="btn btn-danger" disabled={kick.isPending} onClick={()=>removing && kick.mutate({...projectScope,channel_id:removing.channel_id,participant_id:removing.id,reason:reason.trim() || 'Expulsado por la persona desde la UI'})}>{kick.isPending?'Expulsando…':'Confirmar expulsión'}</button>
