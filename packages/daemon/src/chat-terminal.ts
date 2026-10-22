@@ -106,7 +106,7 @@ export async function runChatTerminal(stateDir:string,agentId:string,extra:strin
       ...(process.platform==='win32'?[process.env.APPDATA && join(process.env.APPDATA,'npm'),process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA,'agy/bin')]:['/opt/homebrew/bin','/usr/local/bin'])].filter(Boolean).join(delimiter)
     const executable=chatExecutable(invocation.command,executablePath)
     protocol=new ChatProtocol(invocation.format,executable.command,[...executable.prefix,...invocation.args],cwd,say,async params=>{
-      await session?.broker.send('Interrupt').catch(report)
+      // An approval pauses the same native turn; it is not a terminal interruption or a new prompt.
       const options=params.options as {optionId:string;name:string;kind:string}[]
       if(!process.stdin.isTTY || inputEnded || !Array.isArray(options))return {outcome:{outcome:'cancelled'}}
       say(`\nPermiso solicitado: ${params.toolCall?.title ?? 'herramienta'}\n${options.map((o,i)=>`${i+1}. ${o.name}`).join('\n')}\nElegí un número; Enter cancela: `)
@@ -114,7 +114,6 @@ export async function runChatTerminal(stateDir:string,agentId:string,extra:strin
       permissionReply=undefined
       const selected=/^[1-9]\d*$/.test(answer.trim())?options[Number(answer.trim())-1]:undefined
       if(!selected)return {outcome:{outcome:'cancelled'}}
-      await session?.broker.send('HubPromptSubmit').catch(report)
       return {outcome:{outcome:'selected',optionId:selected.optionId}}
     },{...process.env,PATH:executablePath,...(executable.prefix.length?{ELECTRON_RUN_AS_NODE:'1'}:{})})
     void protocol.closed.then(exit)
@@ -125,7 +124,8 @@ export async function runChatTerminal(stateDir:string,agentId:string,extra:strin
     const registration=await broker.start()
     session=new ConnectedChatSession(protocol,broker)
     say(`\n${registration.session.label} · ${cwd}\nSesión ${nativeId}. Escucha activa; /exit para cerrar.\n> `)
-    listener=broker.listen(text=>session!.submit(text,true),controller.signal).catch(error=>{report(error);exit()})
+    // submit adds identity/context once; do not prepend the same context in the listener too.
+    listener=broker.listen(text=>session!.submit(text,true),controller.signal,false).catch(error=>{report(error);exit()})
     for(const line of queued)submit(line)
     await protocol.closed
     return 0

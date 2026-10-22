@@ -60,7 +60,21 @@ export class ChatProtocol {
     if(this.format==='codex' && packet.method) {
       const params=packet.params ?? {}
       if(packet.id!==undefined) {
-        if(['item/commandExecution/requestApproval','item/fileChange/requestApproval'].includes(packet.method)) {
+        if(packet.method==='mcpServer/elicitation/request') {
+          // Empty forms are yes/no consent, not a request to invent credentials or fill arbitrary fields.
+          const schema=params.requestedSchema
+          const simple=params.mode==='form' && typeof params.serverName==='string' && typeof params.message==='string' &&
+            schema?.type==='object' && schema.properties && typeof schema.properties==='object' && !Array.isArray(schema.properties) &&
+            Object.keys(schema.properties).length===0 && (!schema.required || schema.required.length===0)
+          const matchingTurn=params.turnId==null || (typeof params.turnId==='string' && params.turnId.length>0 && params.turnId===this.turnId)
+          const result=params.threadId===this.sessionId && matchingTurn && simple
+            ? await this.permission({toolCall:{title:`${params.serverName}: ${params.message}`},
+              elicitation:{serverName:params.serverName,message:params.message},
+              options:[{optionId:'accept',name:'Permitir una vez',kind:'allow_once'},{optionId:'decline',name:'Rechazar',kind:'reject_once'}]}) : undefined
+          const choice=result?.outcome?.outcome==='selected' ? result.outcome.optionId : 'cancel'
+          const action=['accept','decline'].includes(choice)?choice:'cancel'
+          this.write({id:packet.id,result:{action,...(action==='accept'?{content:{}}:{})}})
+        } else if(['item/commandExecution/requestApproval','item/fileChange/requestApproval'].includes(packet.method)) {
           const result=params.threadId===this.sessionId ? await this.permission({
             toolCall:{title:[params.command ?? 'Cambios de archivos',params.reason,params.cwd].filter(Boolean).join('\n')},
             options:[{optionId:'accept',name:'Permitir una vez',kind:'allow_once'},{optionId:'decline',name:'Rechazar',kind:'reject_once'}]

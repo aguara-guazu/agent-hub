@@ -101,3 +101,30 @@ it('un aviso del Hub mantiene ocupado al receptor sin atribuirlo a un pedido hum
  await session.submit('mensaje del equipo',true)
  expect(send.mock.calls.flat()).toEqual(['HubPromptSubmit','Stop']);await session.close()
 })
+
+it.each([
+ {name:'acepta una vez',choice:'accept',foreign:false,fields:false,mode:'form',oldTurn:false,action:'accept',asked:true},
+ {name:'rechaza',choice:'decline',foreign:false,fields:false,mode:'form',oldTurn:false,action:'decline',asked:true},
+ {name:'cancela sin consentimiento',choice:null,foreign:false,fields:false,mode:'form',oldTurn:false,action:'cancel',asked:true},
+ {name:'rechaza otra sesión',choice:'accept',foreign:true,fields:false,mode:'form',oldTurn:false,action:'cancel',asked:false},
+ {name:'rechaza otro turno',choice:'accept',foreign:false,fields:false,mode:'form',oldTurn:true,action:'cancel',asked:false},
+ {name:'rechaza turno vacío',choice:'accept',foreign:false,fields:false,mode:'form',oldTurn:'empty',action:'cancel',asked:false},
+ {name:'rechaza turno no textual',choice:'accept',foreign:false,fields:false,mode:'form',oldTurn:'number',action:'cancel',asked:false},
+ {name:'no inventa campos',choice:'accept',foreign:false,fields:true,mode:'form',oldTurn:false,action:'cancel',asked:false},
+ {name:'no abre autorizaciones URL',choice:'accept',foreign:false,fields:false,mode:'url',oldTurn:false,action:'cancel',asked:false},
+])('Codex MCP elicitation: $name',async test=>{
+ const params={threadId:test.foreign?'foreign':'codex-native',turnId:test.oldTurn==='empty'?'':test.oldTurn==='number'?0:test.oldTurn?'older':'turn-one',serverName:'hub',mode:test.mode,
+  message:'Allow tool?',requestedSchema:{type:'object',properties:test.fields?{secret:{type:'string'}}:{}}}
+ const code=`const {createInterface}=require('node:readline');const send=x=>console.log(JSON.stringify(x));
+ createInterface({input:process.stdin}).on('line',line=>{const p=JSON.parse(line);
+ if(p.method==='initialize')return send({id:p.id,result:{}});
+ if(p.method==='thread/start')return send({id:p.id,result:{thread:{id:'codex-native'}}});
+ if(p.method==='turn/start'){const turn={id:'turn-one',status:'inProgress'};send({id:p.id,result:{turn}});send({method:'turn/started',params:{threadId:'codex-native',turn}});return send({id:900,method:'mcpServer/elicitation/request',params:${JSON.stringify(params)}})}
+ if(p.id===900){send({method:'item/agentMessage/delta',params:{threadId:'codex-native',delta:JSON.stringify(p.result)}});send({method:'turn/completed',params:{threadId:'codex-native',turn:{id:'turn-one',status:'completed'}}})}
+ });`
+ const output=vi.fn(),permission=vi.fn(async()=>test.choice?{outcome:{outcome:'selected',optionId:test.choice}}:{outcome:{outcome:'cancelled'}})
+ const p=new ChatProtocol('codex',process.execPath,['-e',code],process.cwd(),output,permission);processes.push(p)
+ await p.start(process.cwd(),[]);await p.prompt('test')
+ expect(permission).toHaveBeenCalledTimes(test.asked?1:0)
+ expect(JSON.parse(output.mock.calls.flat().join(''))).toEqual({action:test.action,...(test.action==='accept'?{content:{}}:{})})
+})

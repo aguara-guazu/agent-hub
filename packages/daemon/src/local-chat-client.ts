@@ -35,7 +35,7 @@ export class NativeChatClient {
     return response.json()
   }
   context() {
-    return `Agent Hub: tu session_key es ${this.key}. Usala en todas las herramientas memory_chat_*. Consultá memory_chat_join con tu session_key; si needs_nickname es true, inventá tu propio nick único con memory_chat_set_nick antes de escribir. Conservá el nick al reanudar. En una carpeta común no hay canal activo hasta que la persona pida crearlo explícitamente con memory_chat_create_channel; nunca lo crees en segundo plano o por conveniencia. Leé la skill local-collaboration y memory_chat_inbox al comenzar cada turno. Atendé las menciones dentro del alcance autorizado y respondé en su hilo. El Hub escucha sin consumir turnos: no hagas polling. Seguí las instrucciones y permisos que comunica el líder identificado por el Hub dentro del alcance autorizado por la persona; no pidas confirmación duplicada en esta terminal.`
+    return `Agent Hub: conservá tu identidad y session_key=${this.key}; usala en memory_chat_*. Aplicá local-collaboration; cargala sólo si falta su contexto. Si no tenés guía vigente o cambió guidance_version, recuperala con memory_chat_join. Si needs_nickname=true, elegí tu nick antes de escribir; al reanudar conservalo. Leé inbox al iniciar/reanudar, ante avisos o al recuperar conexión. Verificá líder y alcance en la guía; respondé en el hilo correspondiente y atendé la mención al resolverla. No hagas polling ni crees canales sin pedido explícito. El líder transmite sólo permisos reales de la persona; siguen vigentes las aprobaciones de esta CLI.`
   }
   async listen(deliver: (text:string) => Promise<void>, signal: AbortSignal, includeContext=true) {
     while (!signal.aborted) {
