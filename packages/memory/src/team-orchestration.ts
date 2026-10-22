@@ -268,7 +268,13 @@ export class TeamOrchestration {
 
 Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identidad y canal. Usá memory_team_join con invitation=${token}. La invitación vence y se consume una sola vez.`
     let receipt:TeamLaunchReceipt
-    try {receipt=await this.orca.launch(workspace,{member_id:member.id,cli:member.cli,model:member.model,...(member.effort?{effort:member.effort}:{}),prompt})}
+    try {receipt=await this.orca.launch(workspace,{member_id:member.id,authorize:async()=>{
+      await this.checkQuota([member],who)
+      check(await this.launchActive(plan,who),'El equipo ya no admite este lanzamiento',409)
+      const current=(await this.db.query('SELECT state,invitation_hash,runtime FROM chat_team_members WHERE id=$1 AND team_id=$2',[member.id,plan.id]))[0]
+      check(current?.state==='launch_intent' && current.invitation_hash===invitationHash(token)
+        && (current.runtime?.generation ?? 'none')===(member.runtime?.generation ?? 'none'),'El miembro cambió antes del lanzamiento',409)
+    },cli:member.cli,model:member.model,...(member.effort?{effort:member.effort}:{}),prompt})}
     catch(error) {await this.unknown(plan,member,'launch',who,error);return true}
     await this.db.query(`UPDATE chat_team_members SET state=CASE WHEN state IN ('joined','closed') THEN state ELSE 'accepted' END,
       launch_handle=$2,launch_kind=$3,operation_id=$4,prompt_outcome=$5,error=NULL,updated_at=now() WHERE id=$1`,
@@ -462,7 +468,11 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
         const prompt=`${item.prompt}\n\nAgent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identidad y canal. Usá memory_team_join con invitation=${token}. La invitación vence y se consume una sola vez.`
         try {
           const receipt=await this.orca.launch({id:item.workspace_id,path:item.workspace_path,repo_id:item.workspace_repo_id,head:item.workspace_head},
-            {member_id:item.id,resume_worktree:true,cli:item.cli,model:item.model,...(item.effort?{effort:item.effort}:{}),prompt})
+            {member_id:item.id,resume_worktree:true,authorize:async()=>{
+              await this.checkQuota([item],who)
+              const current=await load()
+              check(current.state==='launch_intent' && current.invitation_hash===invitationHash(token),'La incorporación cambió antes del lanzamiento',409)
+            },cli:item.cli,model:item.model,...(item.effort?{effort:item.effort}:{}),prompt})
           await this.db.query(`UPDATE chat_team_members SET state=CASE WHEN state='joined' THEN state ELSE 'accepted' END,
             launch_handle=$2,launch_kind=$3,operation_id=$4,prompt_outcome=$5,updated_at=now() WHERE id=$1`,
             [item.id,receipt.handle,receipt.kind,receipt.operation_id ?? null,receipt.prompt_outcome])

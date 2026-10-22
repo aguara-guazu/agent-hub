@@ -11,7 +11,7 @@ import { validCliModel, type ExtractionCli } from './cli-extraction.js'
 export interface TeamWorkspace { id: string; path: string; repo_id: string; head: string }
 export interface TeamLaunchReceipt { handle: string; kind: string; operation_id?: string; prompt_outcome: string; runtime?: TeamRuntimeMetadata }
 export interface TeamRuntimeMetadata { provider?: 'hub' | 'orca'; generation: string; state: string; native_id?: string | null; turn_id?: string | null; updated_at: string }
-export interface TeamLaunchMember { member_id?: string; resume_worktree?: boolean; cli: ExtractionCli; model: string; effort?: string; prompt: string }
+export interface TeamLaunchMember { member_id?: string; resume_worktree?: boolean; authorize?: () => Promise<void>; cli: ExtractionCli; model: string; effort?: string; prompt: string }
 export interface TeamOrca {
   readonly provider?: 'hub' | 'orca'
   status?(handle: string): Promise<Partial<TeamRuntimeMetadata> | undefined>

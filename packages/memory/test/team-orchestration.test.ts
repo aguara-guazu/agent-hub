@@ -467,7 +467,8 @@ class HubBackend extends Orca {
   interrupt=vi.fn(async(_handle:string)=>{})
   bind=vi.fn(async(_memberId:string,_sessionId:string)=>{})
   status=vi.fn(async(handle:string)=>this.runtimes.get(handle))
-  override launch=vi.fn(async(workspace:TeamWorkspace,member:{prompt:string})=>{
+  override launch=vi.fn(async(workspace:TeamWorkspace,member:{prompt:string;authorize?:()=>Promise<void>})=>{
+    await member.authorize?.()
     this.prompts.set(workspace.id,member.prompt)
     const handle=`hub-${randomUUID()}`,runtime={generation:randomUUID(),state:'idle',updated_at:new Date().toISOString(),native_id:null,turn_id:null}
     this.runtimes.set(handle,runtime)
@@ -484,14 +485,14 @@ async function hubSession(name:string,path=dir) {
   const named=await chat.call('chat_set_nick',{session_key:key,nickname:`Agente ${name}`},agent)
   return {agent,key,...registered,session:named.session}
 }
-async function hubTeam(enabled=()=>true) {
+async function hubTeam(enabled=()=>true,usage?:any) {
   const master=await hubSession('hub-master'),backend=new HubBackend()
   backend.spaces.set(dir,{id:`hub:${Buffer.from(dir).toString('base64url')}`,path:dir,repo_id:'repo',head})
   backend.spaces.set(backend.spaces.get(dir)!.id,backend.spaces.get(dir)!)
   // Workspace resolution accepts the channel path and returns the canonical Hub identifier.
   const workspace=backend.workspace
   backend.workspace=vi.fn(async(id:string)=>id===dir?backend.spaces.get(dir)!:workspace(id))
-  const teams=new TeamOrchestration(chat,new Catalog(),backend,undefined,enabled)
+  const teams=new TeamOrchestration(chat,new Catalog(),backend,usage,enabled)
   const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Flota Hub',base_revision:head,members:members(1)},master.agent)
   const launched=await teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Confirmo el plan editable de flota'},master.agent)
   return {master,backend,teams,plan,launched,slot:launched.members[0]}
@@ -644,4 +645,36 @@ it('stop conserva unknown cuando el backend no confirma terminar el proceso',asy
   const result=await teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
     expected_generation:slot.runtime.generation,action:'stop'},master.agent)
   expect(result.members[0].runtime.state).toBe('unknown')
+})
+
+
+it('autoriza nuevamente justo antes del spawn tras el preflight interno del backend',async()=>{
+  let enabled=true,accepted=false
+  const {master,backend,teams,plan,slot}=await hubTeam(()=>enabled)
+  backend.launch.mockImplementationOnce(async(_workspace,member)=>{
+    // Models the backend awaiting CLI/Git checks while the root collaboration gate changes.
+    enabled=false
+    await member.authorize?.()
+    accepted=true
+    throw new Error('No debe llegar al spawn')
+  })
+  await expect(teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
+    expected_generation:slot.runtime.generation,action:'clear'},master.agent)).rejects.toThrow('deshabilitada')
+  expect(accepted).toBe(false)
+})
+
+
+it('revalida cuota si se agota durante los chequeos internos antes del spawn',async()=>{
+  let exhausted=false,accepted=false
+  const usage={forCli:vi.fn(async()=>({status:exhausted?'exhausted':'available',pools:[]}))}
+  const {master,backend,teams,plan,slot}=await hubTeam(()=>true,usage)
+  backend.launch.mockImplementationOnce(async(_workspace,member)=>{
+    exhausted=true
+    await member.authorize?.()
+    accepted=true
+    throw new Error('No debe llegar al spawn')
+  })
+  await expect(teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
+    expected_generation:slot.runtime.generation,action:'clear'},master.agent)).rejects.toThrow('cuota')
+  expect(accepted).toBe(false)
 })
