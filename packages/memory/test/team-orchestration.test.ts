@@ -455,7 +455,14 @@ it('OFF oculta cuotas persistidas y evita lecturas y bloqueos indirectos por tea
 class HubBackend extends Orca {
   readonly provider='hub' as const
   runtimes=new Map<string,{generation:string;state:string;updated_at:string;native_id:string|null;turn_id:string|null}>()
-  stop=vi.fn(async(handle:string)=>{const runtime=this.runtimes.get(handle);if(runtime)this.runtimes.set(handle,{...runtime,state:'stopped',updated_at:new Date().toISOString()})})
+  stop=vi.fn(async(handle:string)=>{
+    const runtime=this.runtimes.get(handle)
+    if(runtime) {
+      const stopped={...runtime,state:'stopped',updated_at:new Date().toISOString(),provider:'hub'}
+      this.runtimes.set(handle,stopped)
+      await db.query('UPDATE chat_team_members SET runtime=$2 WHERE launch_handle=$1',[handle,JSON.stringify(stopped)])
+    }
+  })
   send=vi.fn(async(_handle:string,_text:string)=>{})
   interrupt=vi.fn(async(_handle:string)=>{})
   bind=vi.fn(async(_memberId:string,_sessionId:string)=>{})
@@ -464,6 +471,8 @@ class HubBackend extends Orca {
     this.prompts.set(workspace.id,member.prompt)
     const handle=`hub-${randomUUID()}`,runtime={generation:randomUUID(),state:'idle',updated_at:new Date().toISOString(),native_id:null,turn_id:null}
     this.runtimes.set(handle,runtime)
+    const memberId=(member as {member_id?:string}).member_id
+    if(memberId)await db.query('UPDATE chat_team_members SET runtime=$2 WHERE id=$1',[memberId,JSON.stringify({...runtime,provider:'hub'})])
     return {handle,kind:'hub',prompt_outcome:'accepted',runtime}
   })
 }
@@ -512,7 +521,7 @@ it('clear rota generación, identidad e invitación conservando worktree y CLI/m
   expect(next).toMatchObject({workspace_id:slot.workspace_id,workspace_path:slot.workspace_path,role:'QA',task:'Revisar cambio',session_id:null,channel_id:null})
   expect(next.runtime.generation).not.toBe(slot.runtime.generation)
   expect(backend.stop).toHaveBeenCalledWith(slot.launch_handle)
-  expect(backend.launch.mock.calls[1]![1]).toMatchObject({cli:slot.cli,model:slot.model,member_id:slot.id})
+  expect(backend.launch.mock.calls[1]![1]).toMatchObject({cli:slot.cli,model:slot.model,member_id:slot.id,resume_worktree:true})
   expect(backend.prompts.get(slot.workspace_id)).toContain('Validá la solución')
   const nextToken=invitation(backend.prompts.get(slot.workspace_id)!)
   expect(nextToken).not.toBe(oldToken)
@@ -595,4 +604,44 @@ it('revoca acceso del participante a la conversación anterior después de clear
   const joined=await teams.call('team_join',{session_key:next.key,invitation:invitation(backend.prompts.get(slot.workspace_id)!)},next.agent)
   expect(joined.session.id).toBe(next.session.id)
   expect(backend.bind).toHaveBeenLastCalledWith(slot.id,next.session.id)
+})
+
+
+it('conserva provider Hub al persistir recibos y status para que el backend reconozca su runtime',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  const stored=async()=>(await db.query('SELECT runtime FROM chat_team_members WHERE id=$1',[slot.id]))[0]!.runtime
+  expect(await stored()).toMatchObject({provider:'hub',generation:slot.runtime.generation})
+  backend.status.mockImplementation(async()=>{
+    const persisted=await stored()
+    return persisted.provider==='hub'?persisted:undefined
+  })
+  const status=await teams.call('team_status',{session_key:master.key,plan_id:plan.id},master.agent)
+  expect(status.members[0].runtime).toMatchObject({provider:'hub',state:'idle'})
+  expect(await stored()).toMatchObject({provider:'hub',generation:slot.runtime.generation})
+  await teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
+    expected_generation:slot.runtime.generation,action:'stop'},master.agent)
+  expect(await stored()).toMatchObject({provider:'hub',state:'stopped'})
+})
+
+
+it('status no pisa un evento nativo posterior dentro de la misma generación',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  const later={...slot.runtime,state:'busy',turn_id:'native-later-turn',updated_at:new Date().toISOString()}
+  backend.status.mockImplementation(async()=>{
+    await db.query('UPDATE chat_team_members SET runtime=$2 WHERE id=$1',[slot.id,JSON.stringify(later)])
+    return {...slot.runtime,state:'idle'}
+  })
+  await teams.call('team_status',{session_key:master.key,plan_id:plan.id},master.agent)
+  const stored=(await db.query('SELECT runtime FROM chat_team_members WHERE id=$1',[slot.id]))[0]!.runtime
+  expect(stored).toMatchObject({state:'busy',turn_id:'native-later-turn',generation:slot.runtime.generation})
+})
+
+it('stop conserva unknown cuando el backend no confirma terminar el proceso',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  backend.stop.mockImplementationOnce(async()=>{
+    await db.query('UPDATE chat_team_members SET runtime=$2 WHERE id=$1',[slot.id,JSON.stringify({...slot.runtime,state:'unknown'})])
+  })
+  const result=await teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
+    expected_generation:slot.runtime.generation,action:'stop'},master.agent)
+  expect(result.members[0].runtime.state).toBe('unknown')
 })

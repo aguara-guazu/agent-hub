@@ -399,15 +399,19 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
 
   private runtime(value:Partial<TeamRuntimeMetadata>|null|undefined,generation?:string):TeamRuntimeMetadata {
     const safe=(text:unknown)=>typeof text==='string' && text.length<=512 && !/[\x00-\x1f\x7f]/.test(text)
-    return {generation:generation ?? (typeof value?.generation==='string'?value.generation:randomUUID()),
+    return {...(this.orca.provider==='hub'?{provider:'hub' as const}:{}),generation:generation ?? (typeof value?.generation==='string'?value.generation:randomUUID()),
       state:safe(value?.state)?value!.state!:'unknown',native_id:safe(value?.native_id)?value!.native_id!:null,
       turn_id:safe(value?.turn_id)?value!.turn_id!:null,updated_at:typeof value?.updated_at==='string' && Number.isFinite(Date.parse(value.updated_at))?value.updated_at:new Date().toISOString()}
   }
 
   private async setRuntime(memberId:string,value:TeamRuntimeMetadata) {
-    await this.db.query('UPDATE chat_team_members SET runtime=$2,updated_at=now() WHERE id=$1',[memberId,JSON.stringify(this.runtime(value))])
+    // Hub protocol events own runtime metadata. Seed only adapters that did not persist a receipt;
+    // never replace a later native event with the earlier launch snapshot.
+    await this.db.query(`UPDATE chat_team_members SET runtime=$2,updated_at=now() WHERE id=$1${this.orca.provider==='hub'?' AND runtime IS NULL':''}`,
+      [memberId,JSON.stringify(this.runtime(value))])
   }
   private async updateRuntime(memberId:string,patch:Partial<TeamRuntimeMetadata>) {
+    if(this.orca.provider==='hub')return // Only the backend can confirm stop, failure or native activity.
     const item=(await this.db.query('SELECT runtime FROM chat_team_members WHERE id=$1',[memberId]))[0]
     if(item?.runtime)await this.setRuntime(memberId,{...item.runtime,...patch,updated_at:new Date().toISOString()})
   }
@@ -451,17 +455,18 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
         }
         const token=randomBytes(32).toString('base64url'),expires=new Date(Date.now()+30*60_000).toISOString()
         await this.db.query(`UPDATE chat_team_members SET state='launch_intent',session_id=NULL,channel_id=NULL,
-          invitation_used_at=NULL,invitation_hash=$2,invitation_expires_at=$3,launch_handle=NULL,error=NULL,runtime=$4,updated_at=now() WHERE id=$1`,
-          [item.id,invitationHash(token),expires,item.runtime?JSON.stringify({...item.runtime,state:'starting',updated_at:new Date().toISOString()}):null])
+          invitation_used_at=NULL,invitation_hash=$2,invitation_expires_at=$3,launch_handle=NULL,error=NULL,updated_at=now() WHERE id=$1`,
+          [item.id,invitationHash(token),expires])
         // Revalidate authority immediately before the external launch; the per-member lock protects the rotated generation.
         await this.controlAuthority(plan.id,who)
         const prompt=`${item.prompt}\n\nAgent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identidad y canal. Usá memory_team_join con invitation=${token}. La invitación vence y se consume una sola vez.`
         try {
           const receipt=await this.orca.launch({id:item.workspace_id,path:item.workspace_path,repo_id:item.workspace_repo_id,head:item.workspace_head},
-            {member_id:item.id,cli:item.cli,model:item.model,...(item.effort?{effort:item.effort}:{}),prompt})
+            {member_id:item.id,resume_worktree:true,cli:item.cli,model:item.model,...(item.effort?{effort:item.effort}:{}),prompt})
           await this.db.query(`UPDATE chat_team_members SET state=CASE WHEN state='joined' THEN state ELSE 'accepted' END,
-            launch_handle=$2,launch_kind=$3,operation_id=$4,prompt_outcome=$5,runtime=$6,updated_at=now() WHERE id=$1`,
-            [item.id,receipt.handle,receipt.kind,receipt.operation_id ?? null,receipt.prompt_outcome,JSON.stringify(this.runtime(receipt.runtime ?? {state:'unknown'}))])
+            launch_handle=$2,launch_kind=$3,operation_id=$4,prompt_outcome=$5,updated_at=now() WHERE id=$1`,
+            [item.id,receipt.handle,receipt.kind,receipt.operation_id ?? null,receipt.prompt_outcome])
+          await this.setRuntime(item.id,this.runtime(receipt.runtime ?? {state:'unknown'}))
           try {await this.controlAuthority(plan.id,who)} catch(error) {
             await this.orca.stop?.(receipt.handle)
             await this.updateRuntime(item.id,{state:'stopped'})
@@ -499,17 +504,20 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
     check(plan,'Plan de equipo inexistente',404)
     const allowed=plan.created_by===who.id || (await sql.query("SELECT id FROM chat_team_members WHERE team_id=$1 AND session_id=$2 AND state='joined'",[planId,who.id])).length>0
     check(allowed,'La sesión no pertenece a este equipo',403)
-    if(this.orca.provider==='hub') {
-      const members=await sql.query('SELECT id,launch_handle,runtime FROM chat_team_members WHERE team_id=$1',[planId])
-      for(const item of members)if(item.runtime && item.launch_handle) {
-        let observed:Partial<TeamRuntimeMetadata>|undefined
-        try {observed=await this.orca.status?.(item.launch_handle)} catch { /* unavailable metadata is unknown */ }
-        const runtime=this.runtime(observed?{...item.runtime,...observed}:{...item.runtime,state:'unknown'},item.runtime.generation)
-        await sql.query("UPDATE chat_team_members SET runtime=$2 WHERE id=$1 AND runtime->>'generation'=$3",
-          [item.id,JSON.stringify(runtime),item.runtime.generation])
-      }
+    const result=await this.view(planId,who,sql)
+    if(this.orca.provider==='hub')for(const item of result.members)if(item.runtime && item.launch_handle) {
+      let observed:Partial<TeamRuntimeMetadata>|undefined
+      try {observed=await this.orca.status?.(item.launch_handle)} catch { /* unavailable metadata is unknown */ }
+      // Status is a public snapshot, never a writer racing native events in the same generation.
+      item.runtime=this.publicRuntime(observed?{...item.runtime,...observed}:{...item.runtime,state:'unknown'},observed?.generation ?? item.runtime.generation)
     }
-    return this.view(planId,who,sql)
+    return result
+  }
+
+  private publicRuntime(value:Partial<TeamRuntimeMetadata>,generation?:string) {
+    const runtime=this.runtime(value,generation)
+    return ['busy','running','working','starting'].includes(runtime.state) && Date.now()-Date.parse(runtime.updated_at)>90_000
+      ? {...runtime,state:'unknown',activity_stale:true}:runtime
   }
 
   private async view(planId:string,who:Record<string,any>,sql:Sql=this.db) {
@@ -520,8 +528,7 @@ Agent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identida
     const members=await sql.query(`SELECT id,ordinal,worktree_name,cli,model,effort,role,task,capabilities,state,workspace_id,workspace_path,workspace_repo_id,workspace_head,
       ${this.orca.provider==='hub'?'runtime,':''}launch_handle,launch_kind,operation_id,prompt_outcome,error,invitation_expires_at,invitation_used_at,session_id,channel_id,created_at,updated_at
       FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal,id`,[planId])
-    for(const item of members)if(item.runtime && ['busy','running','working','starting'].includes(item.runtime.state) && Date.now()-Date.parse(item.runtime.updated_at)>90_000)
-      item.runtime={...item.runtime,state:'unknown',activity_stale:true}
+    for(const item of members)if(item.runtime)item.runtime=this.publicRuntime(item.runtime)
     return {id:plan.id,digest:plan.digest,objective:plan.objective,state:plan.state,master_channel_id:plan.master_channel_id,
       root_thread_id:plan.root_thread_id,created_by:plan.created_by,parent:plan.parent,base_revision:plan.base_revision,plan:this.chat.usageEnabled(who.agent_id)?plan.plan:{...plan.plan,usage:[],usage_guidance:'La consulta de cuotas está deshabilitada para este cliente.',usage_redacted:true},
       launch:{started_at:plan.launch_started_at,accepted_at:plan.launched_at,instruction_declared:Boolean(plan.human_instruction)},
