@@ -58,6 +58,14 @@ createInterface({input:process.stdin}).on('line',line=>{
     out({method:'item/agentMessage/delta',params:{threadId:'unrelated',itemId:'foreign',delta:'FOREIGN OUTPUT'}});
     out({method:'item/agentMessage/delta',params:{threadId:'thread-native',turnId:active,itemId:'message',delta:'Hello '}});
     out({method:'item/completed',params:{threadId:'thread-native',turnId:active,item:{id:'message',type:'agentMessage',text:'Hello human'}}});
+    const completeItem=item=>out({method:'item/completed',params:{threadId:'thread-native',turnId:active,item}});
+    const mcp={id:'mcp',type:'mcpToolCall',server:'synthetic-server',tool:'lookup',arguments:{query:'synthetic query'},result:{content:[{type:'text',text:'synthetic MCP result'},{type:'image',data:'PRIVATE BINARY'}],_meta:{auth:'PRIVATE META'},structuredContent:{config:'PRIVATE STRUCTURED'}},appContext:{auth:'PRIVATE CONTEXT'}};
+    out({method:'item/started',params:{threadId:'thread-native',turnId:active,item:{...mcp,result:null}}});
+    completeItem(mcp);completeItem(mcp);
+    completeItem({id:'dynamic',type:'dynamicToolCall',namespace:'synthetic',tool:'calculate',arguments:{value:2},contentItems:[{type:'inputText',text:'synthetic dynamic result'},{type:'inputImage',imageUrl:'PRIVATE IMAGE'}]});
+    completeItem({id:'files',type:'fileChange',changes:[{path:'synthetic.txt',kind:{type:'update'},diff:'+synthetic diff',extra:'PRIVATE FILE META'}]});
+    completeItem({id:'search',type:'webSearch',query:'synthetic search',action:{type:'findInPage',url:'https://example.test',pattern:'synthetic pattern'},results:[{auth:'PRIVATE SEARCH META'}]});
+    completeItem({id:'unknown',type:'futureTool',auth:'PRIVATE UNKNOWN'});
     out({method:'item/started',params:{threadId:'thread-native',turnId:active,item:{id:'command',type:'commandExecution',command:'echo synthetic'}}});
     out({method:'item/commandExecution/outputDelta',params:{threadId:'thread-native',turnId:active,itemId:'command',delta:'synthetic'}});
     out({method:'item/completed',params:{threadId:'thread-native',turnId:active,item:{id:'command',type:'commandExecution',command:'echo synthetic',aggregatedOutput:'synthetic output'}}});
@@ -137,14 +145,24 @@ async function until(predicate: () => boolean) {
 }
 describe('FleetProcessManager', () => {
   it.each(['codex_cli', 'claude_code'] as const)('captures only structured owned %s activity for the human observer', async cli => {
-    const { manager, input, events } = await setup('observer')
+    const { manager, input, events, launches } = await setup('observer')
     await manager.start({ ...input, cli, prompt: 'Task invitation=synthetic-invitation-credential-12345' })
     await until(() => manager.status('one')?.state === 'idle')
+    if (cli === 'claude_code') expect(launches[0]!.args).toContain('--include-partial-messages')
     const activity = manager.activity('one')
     expect(activity.supported).toBe(true)
     expect(activity.items.filter(item => item.kind === 'assistant').map(item => item.text).join('')).toBe('Hello human')
     expect(activity.items.filter(item => item.kind === 'tool').map(item => item.text).join('')).toContain('synthetic output')
-    expect(JSON.stringify(activity)).not.toMatch(/FOREIGN OUTPUT|SECRET STDERR|synthetic-invitation-credential/)
+    expect(JSON.stringify(activity)).not.toMatch(/FOREIGN OUTPUT|SECRET STDERR|synthetic-invitation-credential|PRIVATE (BINARY|META|STRUCTURED|CONTEXT|IMAGE|FILE META|SEARCH META|UNKNOWN)/)
+    if (cli === 'codex_cli') {
+      const tools = activity.items.filter(item => item.kind === 'tool').map(item => item.text).join('\n')
+      expect(tools).toContain('synthetic-server/lookup {"query":"synthetic query"}')
+      expect(tools.match(/synthetic MCP result/g)).toHaveLength(1)
+      expect(tools).toContain('synthetic/calculate {"value":2}')
+      expect(tools).toContain('synthetic dynamic result')
+      expect(tools).toContain('update synthetic.txt\n+synthetic diff')
+      expect(tools).toContain('webSearch synthetic search\nhttps://example.test\nsynthetic pattern')
+    }
     expect(JSON.stringify([events, manager.status('one'), manager.list()])).not.toMatch(/Hello human|synthetic output/)
     await manager.stop('one')
     expect(manager.activity('one').items).toEqual(activity.items)

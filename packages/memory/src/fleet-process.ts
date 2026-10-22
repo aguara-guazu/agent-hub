@@ -220,6 +220,36 @@ export class FleetProcessManager {
       s.activity.stream(key + ':command', 'tool', item.command, true)
       if (final) s.activity.stream(key + ':output', 'tool', item.aggregatedOutput, true)
     }
+    // Explicit native item fields only; never serialize the surrounding RPC or MCP metadata.
+    if (['mcpToolCall', 'dynamicToolCall'].includes(item.type) && typeof item.tool === 'string') {
+      const scope = item.type === 'mcpToolCall' ? item.server : item.namespace
+      s.activity.stream(key + ':call', 'tool', `${typeof scope === 'string' ? scope + '/' : ''}${item.tool} ${JSON.stringify(item.arguments ?? {})}`, true)
+      if (final) {
+        const content = item.type === 'mcpToolCall' ? item.result?.content : item.contentItems
+        const text = Array.isArray(content) ? content.filter((block: Packet) =>
+          block && block.type === (item.type === 'mcpToolCall' ? 'text' : 'inputText') && typeof block.text === 'string')
+          .map((block: Packet) => block.text).join('\n') : ''
+        s.activity.stream(key + ':result', 'tool', text, true)
+      }
+    }
+    if (item.type === 'fileChange' && final && Array.isArray(item.changes)) {
+      const text = item.changes.filter((change: Packet) => change && typeof change.path === 'string' &&
+        ['add', 'delete', 'update'].includes(change.kind?.type) && typeof change.diff === 'string')
+        .map((change: Packet) => `${change.kind.type} ${change.path}\n${change.diff}`).join('\n')
+      s.activity.stream(key + ':files', 'tool', text, true)
+    }
+    if (item.type === 'webSearch' && final) {
+      const action = item.action
+      const parts: string[] = []
+      if (typeof item.query === 'string') parts.push(item.query)
+      if (action?.type === 'search') {
+        if (typeof action.query === 'string') parts.push(action.query)
+        if (Array.isArray(action.queries)) parts.push(...action.queries.filter((query: unknown): query is string => typeof query === 'string'))
+      }
+      if (['openPage', 'findInPage'].includes(action?.type) && typeof action.url === 'string') parts.push(action.url)
+      if (action?.type === 'findInPage' && typeof action.pattern === 'string') parts.push(action.pattern)
+      s.activity.stream(key + ':search', 'tool', `webSearch ${[...new Set(parts)].join('\n')}`, true)
+    }
   }
   private observeClaude(s: Session, packet: Packet) {
     if (packet.type === 'stream_event') {
@@ -337,7 +367,7 @@ export class FleetProcessManager {
     }
     const expectedNative = input.cli === 'claude_code' ? input.resume_id ?? randomUUID() : input.resume_id
     const args = input.cli === 'claude_code'
-      ? ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool=stdio', '--model', input.model,
+      ? ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool=stdio', '--model', input.model,
         ...(input.effort ? ['--effort', input.effort] : []), ...(input.resume_id ? ['--resume', input.resume_id] : ['--session-id', expectedNative!])]
       : ['app-server', '--listen', 'stdio://']
     const env = { ...process.env }
