@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { FleetProcessManager, type FleetEvent, type FleetStart, type FleetProcessOptions } from './fleet-process.js'
 
 const managers: FleetProcessManager[] = []
@@ -263,6 +265,15 @@ describe('FleetProcessManager', () => {
     await manager.close()
     expect((await starting).state).toBe('stopped')
     expect(manager.status('one')?.state).toBe('stopped')
+  })
+  it('refuses to replace a failed process whose exit could not be confirmed', async () => {
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() }) as unknown as ChildProcessWithoutNullStreams
+    let launches = 0
+    const { manager, input } = await setup('normal', { launcher: () => { launches++; return child }, requestTimeoutMs: 5, shutdownTimeoutMs: 5 })
+    expect((await manager.start(input)).state).toBe('failed')
+    await expect(manager.start(input)).rejects.toThrow('fleet_previous_process_unconfirmed')
+    expect(launches).toBe(1)
+    expect((await manager.stop('one')).state).toBe('unknown')
   })
   it('reports spawn failures without claiming work started', async () => {
     const { manager, input, events } = await setup('normal', {

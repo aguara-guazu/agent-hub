@@ -175,6 +175,7 @@ describe('HubTeamRuntime lifecycle', () => {
     rows.get(id)!.session_id = 'joined'
     const parent = await backend.workspace(join(directory, 'repo'))
     await expect(backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE' })).rejects.toThrow('no confirmó')
+    await expect(backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE' })).rejects.toMatchObject({ launch_handle: id })
     expect(rows.get(id)?.runtime?.state).toBe('failed')
     expect(lifecycle.mock.calls.some(call => call[1] === 'StopFailure')).toBe(true)
     expect(JSON.stringify(rows.get(id)?.runtime)).not.toContain('PRIVATE')

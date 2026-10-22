@@ -153,6 +153,7 @@ export class HubTeamRuntime implements TeamOrca {
     check(!this.launching.has(id), 'El miembro ya tiene un lanzamiento en curso.', 409)
     check(member.prompt.length > 0 && member.prompt.length <= 24_000 && !member.prompt.includes('\0'), 'Instrucción inicial inválida.', 400)
     this.launching.add(id)
+    let attempted = false
     try {
       await this.preflight([member])
       const current = await this.unchanged(workspace, member.resume_worktree === true)
@@ -160,6 +161,7 @@ export class HubTeamRuntime implements TeamOrca {
       this.requireEnabled()
       check(member.cli === 'claude_code' || member.cli === 'codex_cli', 'CLI no soportada por la flota del Hub.', 409)
       this.nextGenerations.set(id, randomUUID())
+      attempted = true
       const result = await this.manager.start({ id, cli: member.cli, cwd: current.path, model: member.model, prompt: member.prompt,
         ...(member.effort ? { effort: member.effort } : {}) })
       await this.verifyLaunchEnabled(id)
@@ -170,6 +172,10 @@ export class HubTeamRuntime implements TeamOrca {
       check(runtime, 'El Hub no confirmó los metadatos del agente.', 503)
       await this.verifyLaunchEnabled(id)
       return { handle: id, kind: 'hub_process', prompt_outcome: 'input-accepted', runtime }
+    } catch (error) {
+      if (!attempted) throw error
+      const failure = error instanceof MemoryError ? error : new MemoryError(503, 'El Hub no confirmó el proceso del agente. Inspeccioná su estado antes de reintentar.')
+      throw Object.assign(failure, { launch_handle: id })
     } finally { this.launching.delete(id); this.nextGenerations.delete(id) }
   }
   private async verifyLaunchEnabled(id: string): Promise<void> {

@@ -176,6 +176,7 @@ export class FleetProcessManager {
       if (!['stopped', 'failed'].includes(old.status.state)) throw new Error('fleet_already_running')
       await this.terminate(old)
       await old.eventQueue
+      if (!old.exited) throw new Error('fleet_previous_process_unconfirmed')
       if (this.closing) throw new Error('fleet_manager_closed')
     }
     const expectedNative = input.cli === 'claude_code' ? input.resume_id ?? randomUUID() : input.resume_id
