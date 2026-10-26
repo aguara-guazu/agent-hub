@@ -45,6 +45,8 @@ it('runs an approved isolated fleet through join, completion, private notice, wa
     return {agent,key,...registered}
   }
   const master=await session('Master',repo)
+  const opened=await chat.call('chat_create_channel',{session_key:master.key,name:'Fleet test'},master.agent)
+  master.channel=opened.channel;master.session=opened.session
   const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Prueba aislada',base_revision:base,
     members:[{worktree_name:'worker',cli:'codex_cli',model:'fixture',role:'implementador',task:'Prueba',prompt:'Usá Hub',rationale:'Fixture sin inferencia'}]},master.agent)
   expect(launcher).not.toHaveBeenCalled()
@@ -62,7 +64,7 @@ it('runs an approved isolated fleet through join, completion, private notice, wa
   expect((await db.query('SELECT state FROM chat_sessions WHERE id=$1',[child.session.id]))[0].state).toBe('idle')
   await chat.processTurnAlerts(Date.now()+1000,0)
   expect((await db.query('SELECT recipient_id FROM chat_status_notices'))[0]?.recipient_id).toBe(master.session.id)
-  expect(await db.query('SELECT id FROM chat_threads')).toHaveLength(1)
+  expect(await db.query('SELECT id FROM chat_threads')).toHaveLength(2)
   await chat.call('chat_send',{session_key:master.key,thread_id:plan.root_thread_id,text:'Reportá tu estatus',mentions:[child.session.id],request_id:randomUUID()},master.agent)
   const queue=vi.fn()
   dispatcher=new LocalChatRuntime(chat,queue,()=>true,async()=>undefined,()=>enabled,{wake:(id,text)=>backend.wake(id,text),connected:async()=>true})
@@ -88,7 +90,7 @@ it('runs an approved isolated fleet through join, completion, private notice, wa
   expect(JSON.stringify(await db.query('SELECT runtime FROM chat_team_members'))).not.toContain('staging-unique-answer-abc')
   expect(JSON.stringify(await db.query('SELECT payload FROM chat_team_events'))).not.toContain('staging-unique-answer-abc')
   await expect(teams.call('team_answer',{session_key:master.key,plan_id:plan.id,member_id:member.id,expected_generation:generation,question_id:pending.id,answers:{env:{answers:['dev']}}},master.agent)).rejects.toThrow()
-  expect(await db.query('SELECT id FROM chat_threads')).toHaveLength(1)
+  expect(await db.query('SELECT id FROM chat_threads')).toHaveLength(2)
   await exec('git',['-C',member.workspace_path,'-c','user.name=Test','-c','user.email=test@example.test','commit','--allow-empty','-qm','worker change'])
   const cleared=await teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:member.id,expected_generation:generation,action:'clear'},master.agent)
   expect(cleared.members[0].runtime.generation).not.toBe(generation)

@@ -1,3 +1,4 @@
+import { existingChannel } from './helpers/chat-channel.js'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import Fastify from 'fastify'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -14,12 +15,14 @@ beforeEach(async()=>{
   dir=await mkdtemp(join(tmpdir(),'hub-usage-integration-'));enabled=true
   service=new MemoryService(dir,'http://127.0.0.1/callback');service.usageEnabled=()=>enabled
   app=Fastify();registerUsageRoutes(app,service,{directory:dir,baseUrl:'http://127.0.0.1',authorize:async()=>({id:'owner'}),
+    authorizeUsageAgent:async(_request,id)=>{if(!id.startsWith('client-'))throw Object.assign(new Error('forbidden'),{statusCode:403});return {cli_kind:'codex_cli'}},
     authorizeChatAgent:async(_request,id)=>{if(!id.startsWith('client-'))throw Object.assign(new Error('forbidden'),{statusCode:403});return {cli_kind:'codex_cli'}},usageAgentEnabled:()=>enabled})
 })
 afterEach(async()=>{await app.close();await service.close();await rm(dir,{recursive:true,force:true})})
 async function session(name:string,agentId=`client-${name}`,workspace?:string) {
   const {operations}=await service.get(),key=randomUUID(),agent={...nativeSession(agentId,'codex_cli',name,dir),orca_workspace_id:workspace ?? `${randomUUID()}::${dir}`}
   const joined=await operations.chat.lifecycle(agent,{session_key:key,native_id:name,event:'SessionStart',at:new Date().toISOString()})
+  await existingChannel(operations.chat,joined,agent.orca_workspace_id)
   await operations.chat.call('chat_set_nick',{session_key:key,nickname:`Usage ${name}`},agent)
   return {agent,key,...joined,payload:{agent_id:agentId,native_id:name,session_key:key}}
 }
@@ -132,4 +135,21 @@ it('conserva un único aviso mientras alguno de los equipos asociados del master
   await db.query("UPDATE chat_team_plans SET state='cancelled' WHERE created_by=$1",[master.session.id])
   expect(await operations.usageNotices.pending(master.session.id)).toEqual([])
   expect(await operations.usageNotices.claim(master.session.id)).toEqual([])
+})
+
+it('captura del cliente instalado funciona sin sesiones y rechaza fuente o cliente ajenos',async()=>{
+  const sampled=new Date().toISOString(),agent_id='client-installed',account_ref='a'.repeat(64)
+  const bind=await app.inject({method:'POST',url:'/api/memory/usage/installed',payload:{agent_id,action:'bind',provider:'openai',account_ref,profile_ref:'d'.repeat(64),sample_started_at:sampled}})
+  expect(bind.statusCode).toBe(200)
+  const binding=bind.json().binding
+  const observation={cli:'codex_cli',provider:'openai',pool_id:'codex',account_ref,model_scope:'all',observed_at:sampled,expires_at:new Date(Date.now()+60000).toISOString(),source:{kind:'native',adapter:'codex-app-server'},windows:[{id:'primary',unit:'percent',used:23,limit:100}],complete:true}
+  const report=(patch:Record<string,unknown>={})=>app.inject({method:'POST',url:'/api/memory/usage/installed',payload:{agent_id,action:'observe',binding,observation,...patch}})
+  expect((await report()).json()).toMatchObject({accepted:true,snapshot:{status:'available'}})
+  expect((await report({agent_id:'client-other'})).statusCode).toBe(403)
+  expect((await report({agent_id:'foreign'})).statusCode).toBe(403)
+  expect((await report({observation:{...observation,source:{kind:'native',adapter:'claude-control'}}})).statusCode).toBe(400)
+  const {operations,db}=await service.get()
+  expect((await db.query('SELECT count(*) AS n FROM chat_sessions'))[0].n).toBe(0)
+  expect((await operations.call('usage_status',{cli:'codex_cli'})).clis[0]).toMatchObject({status:'available',pools:[{observation:{windows:[{used:23}]}}]})
+  enabled=false;expect((await report()).statusCode).toBe(403)
 })

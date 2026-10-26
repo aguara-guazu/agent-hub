@@ -501,4 +501,28 @@ CREATE TABLE usage_quota_transitions (
 );
 `, String.raw`
 ALTER TABLE chat_team_members ADD COLUMN runtime JSON;
+`, String.raw`
+ALTER TABLE chat_channels ADD COLUMN deleted_at TIMESTAMP;
+ALTER TABLE chat_channels ADD COLUMN deleted_by TEXT;
+ALTER TABLE chat_channels ADD COLUMN deletion_reason TEXT;
+ALTER TABLE chat_team_plans ADD COLUMN approval_source TEXT;
+ALTER TABLE chat_team_plans ADD COLUMN approved_by_user_id TEXT;
+`, String.raw`
+ALTER TABLE chat_team_members ADD COLUMN work_thread_id TEXT REFERENCES chat_threads(id);
+-- Existing teams keep their conversation. Add dedicated task threads without inventing reports.
+INSERT INTO chat_threads(id,channel_id,title,created_by,team_root_thread_id,state)
+ SELECT m.id,p.master_channel_id,substr(m.worktree_name,1,200),p.created_by,p.root_thread_id,
+ CASE WHEN p.state IN ('cancelled','completed') THEN 'resolved' ELSE 'open' END
+ FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id;
+UPDATE chat_team_members SET work_thread_id=id;
+CREATE INDEX chat_team_members_workspace_path ON chat_team_members(workspace_path);
+`, String.raw`
+ALTER TABLE chat_deliveries ADD COLUMN response_required INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chat_deliveries ADD COLUMN response_message_id TEXT REFERENCES chat_messages(id);
+ALTER TABLE chat_deliveries ADD COLUMN response_alerted_at TIMESTAMP;
+CREATE INDEX chat_deliveries_responses ON chat_deliveries(response_required,response_message_id,cancelled_at);
+`, String.raw`
+-- Execution workspaces no longer determine channel identity. Keep existing scopes/history.
+DROP INDEX chat_channels_orca;
+CREATE INDEX chat_channels_orca ON chat_channels(orca_workspace_id);
 `]

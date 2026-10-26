@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync, statSync, renameSync, u
 import { dirname, join, resolve } from 'node:path'
 import { ChatProtocol } from './chat-protocol.js'
 import type { NativeChatClient } from './local-chat-client.js'
-import { codexAccountId, codexQuotas, kiroQuotas, kiroRateLimit, kiroUsageAdvertised, opaqueQuotaAccount, unknownQuota } from './usage-quota-adapters.js'
+import { codexAccountId, codexQuotas, kiroQuotas, kiroRateLimit, opaqueQuotaAccount } from './usage-quota-adapters.js'
 
 /** Cross-process lease: four agents sharing one profile do not run four account probes. */
 export async function withQuotaLease(root:string,profile:string,collect:()=>Promise<void>,now=Date.now()):Promise<boolean> {
@@ -40,10 +40,10 @@ export async function withQuotaLease(root:string,profile:string,collect:()=>Prom
   }
 }
 
-export async function collectProtocolQuota(protocol:ChatProtocol,cli:string,broker:NativeChatClient,profileRef?:string,signal?:AbortSignal):Promise<void> {
+export async function collectProtocolQuota(protocol:ChatProtocol,cli:string,broker:Pick<NativeChatClient,'usageEnabled'|'bindUsage'|'reportUsage'>,profileRef?:string,signal?:AbortSignal):Promise<void> {
   signal?.throwIfAborted()
   if(!broker.usageEnabled())return
-  const sampleStartedAt=new Date().toISOString(),init=await protocol.initialize(5000,signal)
+  const sampleStartedAt=new Date().toISOString();await protocol.initialize(15000,signal)
   signal?.throwIfAborted()
   if(cli==='codex_cli') {
     const before=codexAccountId(await protocol.request('account/read',{refreshToken:false},5000,signal))
@@ -64,9 +64,8 @@ export async function collectProtocolQuota(protocol:ChatProtocol,cli:string,brok
     for(const observation of observations){signal?.throwIfAborted();await broker.reportUsage(binding,observation,signal)}
   } else if(cli==='kiro') {
     const binding=await broker.bindUsage('kiro',undefined,sampleStartedAt,profileRef,signal)
-    const observations=kiroUsageAdvertised(init)
-      ? kiroQuotas(await protocol.request('_kiro/account/getUsage',{},5000,signal))
-      : [unknownQuota('kiro','kiro-acp','native_usage_not_advertised')]
+    // Kiro 3 supports the read method but omits it from extensionMethods. Probe once per lease.
+    const observations=kiroQuotas(await protocol.request('_kiro/account/getUsage',{},10000,signal))
     for(const observation of observations){signal?.throwIfAborted();await broker.reportUsage(binding,observation,signal)}
   }
 }

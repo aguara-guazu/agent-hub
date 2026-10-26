@@ -8,7 +8,7 @@ import { childEnv } from '@agenthub/gateway/platform'
 import { check, MemoryError } from './contracts.js'
 import { validCliModel, type ExtractionCli } from './cli-extraction.js'
 
-export interface TeamWorkspace { id: string; path: string; repo_id: string; head: string }
+export interface TeamWorkspace { id: string; path: string; repo_id: string; head: string; kind?: 'git' | 'virtual'; source_path?: string }
 export interface TeamLaunchReceipt { handle: string; kind: string; operation_id?: string; prompt_outcome: string; runtime?: TeamRuntimeMetadata }
 export interface TeamQuestion { id: string; header: string; question: string; isOther?: boolean; isSecret?: boolean; options?: Array<{label:string;description:string}> | null }
 export interface TeamPendingQuestion { id: string; questions: TeamQuestion[] }
@@ -27,7 +27,8 @@ export interface TeamOrca {
   close?(): Promise<unknown>
   preflight?(members: Array<{ cli: ExtractionCli; model: string; effort?: string }>): Promise<void>
   workspace(id: string): Promise<TeamWorkspace>
-  create(parent: TeamWorkspace, name: string): Promise<TeamWorkspace>
+  baseRevision?(parent: TeamWorkspace, revision: string): Promise<string>
+  create(parent: TeamWorkspace, name: string, baseRevision?: string): Promise<TeamWorkspace>
   launch(workspace: TeamWorkspace, member: TeamLaunchMember): Promise<TeamLaunchReceipt>
 }
 

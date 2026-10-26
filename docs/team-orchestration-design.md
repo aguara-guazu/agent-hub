@@ -1,11 +1,11 @@
 # Equipos mixtos de Agent Hub
 
-Estado: contrato de implementación, 2026-10-20. Responsable: Faro Austral.
+Estado: contrato actualizado, 2026-10-22. Responsable: Faro Austral.
 
 El líder consulta la disponibilidad real, propone una composición concreta y la
 persona decide. Cada miembro tiene CLI, modelo exacto, esfuerzo admitido, rol,
 tarea y un worktree hijo aislado. El líder conserva su identidad y coordina
-desde el canal original. No se trasladan sesiones ni se suplanta al líder.
+desde el canal original. No se trasladan sesiones. El dueño puede designar otro coordinador desde la UI; los planes previos quedan pausados y se revocan sus vínculos.
 
 ## Contratos
 
@@ -13,7 +13,7 @@ desde el canal original. No se trasladan sesiones ni se suplanta al líder.
   descripciones con procedencia, esfuerzos y límites conocidos. Disponibilidad
   no prueba cuota ni autorización para inferencia. No resuelve "último" por
   alias ambiguos ni inventa benchmarks o precios.
-- `memory_team_prepare`: sólo líder activo en Orca. Persiste propuesta inmutable
+- `memory_team_prepare`: `task_key` etiqueta el trabajo y conserva el canal existente. Exige un canal activo creado explícitamente con `memory_chat_create_channel` tras preguntar a la persona y obtener autorización, tanto con Git como sin Git; preparar no activa canales ni concede liderazgo. Exige coordinador activo; runtime del Hub con espacios Git o virtuales. Persiste propuesta inmutable
   y digest: objetivo, padre, revisión base y miembros con CLI, modelo, esfuerzo,
   rol y tarea. Devuelve el plan completo para mostrar a la persona.
 - `memory_team_launch`: exige ID y digest del plan exacto y referencia textual
@@ -33,8 +33,8 @@ desde el canal original. No se trasladan sesiones ni se suplanta al líder.
 Se persiste la intención antes de cada efecto externo. Repetir launch devuelve
 el estado guardado; un lanzamiento incierto requiere reconciliación y nunca
 origina un segundo agente automáticamente. No se ejecutan shells arbitrarias,
-no se relajan permisos de las CLI y no se cierran terminales ni eliminan
-worktrees como rollback.
+el plan declara los permisos completos de los trabajadores del Hub. No se eliminan
+espacios como rollback.
 
 ## Decisiones de revisión
 
@@ -43,11 +43,10 @@ líder. El backend identifica al líder y vincula la ejecución al plan exacto,
 pero no certifica que una persona escribió la referencia de autorización. Un
 líder que incumpla sus instrucciones puede declarar falsamente esa autorización;
 no se presenta este mecanismo como una barrera contra un agente comprometido.
-Agregar un consentimiento autenticado en UI sería un modo diferente, fuera de
-este alcance. Las políticas del cliente siguen aplicando.
+La UI también permite aprobar el digest exacto mediante una ruta autenticada del dueño. Las políticas del cliente siguen aplicando.
 
 Las invitaciones tienen hash en reposo, vencimiento, consumo atómico y alcance
-limitado a un miembro, CLI y worktree devuelto por Orca. Se entregan en el prompt
+limitado a un miembro, CLI y espacio devuelto por el runtime. Se entregan en el prompt
 inicial privado del agente, visible para la persona y su CLI; no son claves de
 sesión. No se publican en status, documentación ni mensajes del equipo.
 
@@ -114,3 +113,8 @@ reinicio entre intención y recibo, fallos parciales, invitación en carpeta
 incorrecta, coordinación entre miembros autorizados y rechazo de terceros.
 El ejemplo de cuatro Kiro y un Haiku es un caso de aceptación, no una orden de
 lanzar cinco sesiones durante el desarrollo.
+
+La preparación, el registro previo sin contexto y los espacios virtuales se describen en [Colaboración local](local-agent-collaboration.md#preparación-y-recuperación-de-equipos).
+
+
+La incorporación entrega el registro de autorización con procedencia (`owner_ui`, `coordinator_declaration` o `legacy_record`), encargo aprobado y pares del equipo. Los operadores pueden recibir subtareas de sus pares dentro de ese alcance; las dudas técnicas se resuelven con el TL y los bloqueos se reportan con su causa concreta. `clear` retira la sesión anterior y sus avisos después de confirmar la detención. La eliminación recuperable de canales cancela sus planes y reporta cualquier detención incierta; ver la papelera en la guía de colaboración local.

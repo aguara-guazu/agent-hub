@@ -240,11 +240,16 @@ describe('memoria HTTP y gateway MCP', () => {
     const bind=(auth:string)=>app.fastify.inject({method:'POST',url:'/api/memory/usage/native',headers:{authorization:`Bearer ${auth}`},payload})
     expect((await bind(token)).statusCode).toBe(401)
     expect((await bind(daemon)).statusCode).toBe(200)
+    const installed=(auth:string,id=agent.id)=>app.fastify.inject({method:'POST',url:'/api/memory/usage/installed',headers:{authorization:`Bearer ${auth}`},payload:{agent_id:id,action:'bind',provider:'openai',profile_ref:'c'.repeat(64),sample_started_at:new Date().toISOString()}})
+    expect((await installed(token)).statusCode).toBe(401)
+    expect((await installed(daemon)).statusCode).toBe(200)
+    expect((await installed(daemon,'foreign')).statusCode).toBe(403)
     const server=computeSnapshot(app.store,agent.id).servers.find(s=>s.tools.some(t=>t.name==='usage_status'))!
     const tool=app.store.toolsOfServer(server.id).find(t=>t.name==='usage_status')!
     const disabled=await app.fastify.inject({method:'PUT',url:'/api/policy/rules',headers:{authorization:`Bearer ${token}`},payload:{scope:'user',resource_type:'mcp_tool',resource_id:tool.id,state:'off'}})
     expect(disabled.statusCode).toBe(204)
     expect((await bind(daemon)).statusCode).toBe(403)
+    expect((await installed(daemon)).statusCode).toBe(403)
     expect((await app.fastify.inject({method:'POST',url:'/api/memory/chat/native',headers,payload:{...lifecycle,event:'Heartbeat'}})).statusCode).toBe(200)
   })
   it('el puente nativo exige daemon de la máquina y respeta el apagado del chat', async () => {
@@ -262,24 +267,45 @@ describe('memoria HTTP y gateway MCP', () => {
     expect((await invoke(daemon,{...payload,agent_id:foreign.id})).statusCode).toBe(403)
     const registered=await invoke(daemon);expect(registered.statusCode).toBe(200)
     expect((await invoke(daemon)).json().session.id).toBe(registered.json().session.id)
-    expect(registered.json().channel.orca_workspace_id).toBeNull() // Never inherit the Hub process's own Orca context.
+    expect(registered.json()).toMatchObject({registration_required:true,session:{needs_nickname:true}})
+    expect(registered.json()).not.toHaveProperty('channel');expect(registered.json()).not.toHaveProperty('team')
     const workspace='folder:12345678-1234-1234-1234-123456789abc'
     const scoped=await invoke(daemon,{...payload,native_id:'space-a',session_key:'b'.repeat(64),orca_workspace_id:workspace})
     expect(scoped.statusCode).toBe(200)
     const scoped2=await invoke(daemon,{...payload,native_id:'space-b',session_key:'c'.repeat(64),orca_workspace_id:'folder:22345678-1234-1234-1234-123456789abc'})
     expect(scoped2.statusCode).toBe(200)
-    expect(scoped.json().channel.path).toBe(scoped2.json().channel.path)
-    expect(scoped.json().channel.id).not.toBe(scoped2.json().channel.id)
-    expect(scoped.json().channel.id).not.toBe(registered.json().channel.id)
+    expect(scoped.json()).not.toHaveProperty('channel');expect(scoped2.json()).not.toHaveProperty('channel')
     const userCall=(operation:string,input:any)=>app.fastify.inject({method:'POST',url:'/api/memory/call',headers:{authorization:`Bearer ${token}`},payload:{operation,input}})
+    // Transport connections remain invisible until each agent explicitly creates its channel.
+    expect((await userCall('chat_channels',{})).json().items).toEqual([])
+    const base=await app.fastify.listen({host:'127.0.0.1',port:0})
+    const direct=new Client({name:'explicit-channels-test',version:'1'})
+    try {
+      await direct.connect(new StreamableHTTPClientTransport(new URL(`${base}/api/memory/mcp`),{
+        requestInit:{headers:{authorization:readFileSync(join(directory,'memory/secrets/memory-mcp'),'utf8')}},
+      }))
+      for(const [response,key,nick] of [[registered,'a','Git'],[scoped,'b','Orca A'],[scoped2,'c','Orca B']] as const) {
+        const _meta={'agenthub/agent':{agent_id:agent.id,cli_kind:'codex_cli',client:'test',session_id:response.json().session.id,cwd:directory}}
+        expect((await direct.callTool({name:'chat_set_nick',arguments:{session_key:key.repeat(64),nickname:nick},_meta})).isError).not.toBe(true)
+        expect((await direct.callTool({name:'chat_create_channel',arguments:{session_key:key.repeat(64),name:nick},_meta})).isError).not.toBe(true)
+      }
+    } finally {await direct.close()}
+    const channels=(await userCall('chat_channels',{})).json().items
+    const participants=(await userCall('chat_agents',{include_pending:true})).json().items
+    const channelOf=(response:any)=>channels.find((c:any)=>c.id===participants.find((p:any)=>p.id===response.json().session.id).channel_id)
+    const registeredChannel=channelOf(registered),scopedChannel=channelOf(scoped),scoped2Channel=channelOf(scoped2)
+    expect(registeredChannel.orca_workspace_id).toBeNull()
+    expect(scopedChannel.path).toBe(scoped2Channel.path)
+    expect(scopedChannel.id).not.toBe(scoped2Channel.id)
+    expect(scopedChannel.id).not.toBe(registeredChannel.id)
     const project=await userCall('create_entity',{kind:'project',title:'Prueba de expulsión',data:{folders:[directory]}})
     await userCall('chat_channels',{}) // Refresh folder-to-project association.
-    const kick={project_id:project.json().id,channel_id:registered.json().channel.id,participant_id:registered.json().session.id,reason:'Retiro manual de prueba'}
+    const kick={project_id:project.json().id,channel_id:registeredChannel.id,participant_id:registered.json().session.id,reason:'Retiro manual de prueba'}
     const remove=(auth?:string,body=kick)=>app.fastify.inject({method:'POST',url:'/api/memory/chat/kick',headers:auth?{authorization:`Bearer ${auth}`}:{},payload:body})
     expect((await remove()).statusCode).toBe(401)
     expect((await remove(daemon)).statusCode).toBe(401)
     expect((await userCall('chat_kick',{channel_id:kick.channel_id,participant_id:kick.participant_id,reason:kick.reason})).statusCode).toBe(403)
-    expect((await remove(token,{...kick,channel_id:scoped.json().channel.id})).statusCode).toBe(404)
+    expect((await remove(token,{...kick,channel_id:scopedChannel.id})).statusCode).toBe(404)
     const removed=await remove(token);expect(removed.statusCode).toBe(200)
     expect(removed.json().session).toMatchObject({state:'removed',removed_by:`user:${owner.id}`})
     expect((await invoke(daemon)).statusCode).toBe(410)

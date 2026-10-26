@@ -1,3 +1,4 @@
+import { existingChannel } from './helpers/chat-channel.js'
 import { afterEach,beforeEach,expect,it,vi } from 'vitest'
 import { mkdtemp,mkdir,rm,realpath } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -42,6 +43,7 @@ afterEach(async()=>{await db.close();await rm(dir,{recursive:true,force:true})})
 async function session(name:string,path=dir,workspace=`${randomUUID()}::${path}`,cli='kiro') {
   await mkdir(path,{recursive:true});const agent=author(name,path,workspace,cli),key=randomUUID()
   const registered=await chat.lifecycle(agent,{session_key:key,native_id:name,event:'SessionStart',at:new Date().toISOString()})
+  await existingChannel(chat,registered,workspace)
   const named=await chat.call('chat_set_nick',{session_key:key,nickname:`Agente ${name}`},agent)
   return {agent,key,workspace,...registered,session:named.session}
 }
@@ -66,8 +68,8 @@ it('enruta cierres silenciosos al master offline en privado sin crear hilos y re
   await event('BeforeAgent',t,'one');await event('Stop',t+10,'one')
   await chat.processTurnAlerts(t+2000,0)
   const first=(await db.query('SELECT * FROM chat_status_notices WHERE session_id=$1',[child.session.id]))[0]
-  expect(first).toMatchObject({recipient_id:master.session.id,work_thread_id:plan.root_thread_id})
-  expect(await db.query('SELECT * FROM chat_threads')).toHaveLength(1)
+  expect(first).toMatchObject({recipient_id:master.session.id,work_thread_id:slot.work_thread_id})
+  expect(await db.query('SELECT * FROM chat_threads')).toHaveLength(2)
   await chat.lifecycle(master.agent,{session_key:master.key,native_id:'master',event:'SessionStart',at:new Date().toISOString()})
   const inbox=await chat.call('chat_inbox',{session_key:master.key},master.agent)
   expect(inbox.items.find((item:any)=>item.id===first.id)).toMatchObject({kind:'status_notice',author_source:'hub',thread_id:null})
@@ -175,6 +177,7 @@ it('consume invitación one-shot sólo desde workspace/CLI asignados y conserva 
   const joined=await teams.call('team_join',{session_key:child.key,invitation:token},child.agent)
   expect(joined).toMatchObject({team_id:prepared.id,member_id:assigned.id,root_thread_id:prepared.root_thread_id,master_session_id:master.session.id,session:{id:child.session.id,channel_id:child.channel.id}})
   expect(joined.guidance).toContain('master coordina desde root_thread_id')
+  expect(joined.authorization).toMatchObject({source:'coordinator_declaration',instruction:'Orden explícita',digest:prepared.digest,approved_by_user_id:null})
   const context=await chat.call('chat_inbox',{session_key:child.key},child.agent)
   expect(context.team).toMatchObject({scope:'channel',leader_id:child.session.id,linked_team:{team_id:prepared.id,master_leader_id:master.session.id,root_thread_id:prepared.root_thread_id}})
   expect(context.team.guidance).toBeUndefined()
@@ -293,6 +296,7 @@ it('mantiene el catálogo útil y declara disponibilidad Orca por sesión sin la
   expect(await teams.call('team_catalog',{session_key:master.key},master.agent)).toMatchObject({launch_context:{orca_workspace_id:master.workspace,available:false}})
   const path=join(dir,'plain');await mkdir(path);const plain={agent_id:'plain',session_id:`native:${'plain'.padEnd(64,'0')}`,cli_kind:'kiro',client:'kiro',cwd:path},key=randomUUID()
   await chat.lifecycle(plain,{session_key:key,native_id:'plain',event:'SessionStart',at:new Date().toISOString()})
+  await chat.call('chat_set_nick',{session_key:key,nickname:'Plain'},plain)
   expect(await teams.call('team_catalog',{session_key:key},plain)).toMatchObject({launch_context:{orca_workspace_id:null,available:false}})
   expect(orca.create).not.toHaveBeenCalled();expect(orca.launch).not.toHaveBeenCalled()
 })
@@ -503,6 +507,8 @@ async function hubTeam(enabled=()=>true,usage?:any) {
   const workspace=backend.workspace
   backend.workspace=vi.fn(async(id:string)=>id===dir?backend.spaces.get(dir)!:workspace(id))
   const teams=new TeamOrchestration(chat,new Catalog(),backend,usage,enabled)
+  const opened=await chat.call('chat_create_channel',{session_key:master.key,task_key:'hub-test'},master.agent)
+  master.channel=opened.channel;master.session=opened.session
   const plan=await teams.call('team_prepare',{session_key:master.key,objective:'Flota Hub',base_revision:head,members:members(1)},master.agent)
   const launched=await teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Confirmo el plan editable de flota'},master.agent)
   return {master,backend,teams,plan,launched,slot:launched.members[0]}
@@ -533,12 +539,13 @@ it('clear rota generación, identidad e invitación conservando worktree y CLI/m
   expect(next.runtime.generation).not.toBe(slot.runtime.generation)
   expect(backend.stop).toHaveBeenCalledWith(slot.launch_handle)
   expect(backend.launch.mock.calls[1]![1]).toMatchObject({cli:slot.cli,model:slot.model,member_id:slot.id,resume_worktree:true})
-  expect(backend.prompts.get(slot.workspace_id)).toContain('Validá la solución')
+  expect(backend.prompts.get(slot.workspace_id)).not.toContain('Validá la solución')
+  expect((await db.query('SELECT prompt FROM chat_team_members WHERE id=$1',[slot.id]))[0].prompt).toBe('Validá la solución')
   const nextToken=invitation(backend.prompts.get(slot.workspace_id)!)
   expect(nextToken).not.toBe(oldToken)
   expect(JSON.stringify(cleared)).not.toContain(nextToken)
   await expect(teams.call('team_control',{...control,action:'send',text:'viejo'},master.agent)).rejects.toThrow('generación')
-  await expect(teams.call('team_join',{session_key:child.key,invitation:oldToken},child.agent)).rejects.toThrow('Invitación')
+  await expect(teams.call('team_join',{session_key:child.key,invitation:oldToken},child.agent)).rejects.toThrow('cerrada')
 })
 
 it('serializa clear concurrentes y rechaza la segunda generación vencida',async()=>{
@@ -610,10 +617,12 @@ it('revoca acceso del participante a la conversación anterior después de clear
   await teams.call('team_join',{session_key:child.key,invitation:invitation(backend.prompts.get(slot.workspace_id)!)},child.agent)
   await teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
     expected_generation:slot.runtime.generation,action:'clear'},master.agent)
-  await expect(teams.call('team_status',{session_key:child.key,plan_id:plan.id},child.agent)).rejects.toThrow('pertenece')
+  await expect(teams.call('team_status',{session_key:child.key,plan_id:plan.id},child.agent)).rejects.toThrow('cerrada')
   const next=await hubSession('new-worker',slot.workspace_path)
   const joined=await teams.call('team_join',{session_key:next.key,invitation:invitation(backend.prompts.get(slot.workspace_id)!)},next.agent)
   expect(joined.session.id).toBe(next.session.id)
+  expect((await db.query('SELECT closed_at FROM chat_sessions WHERE id=$1',[child.session.id]))[0].closed_at).toBeTruthy()
+  expect((await chat.call('chat_join',{session_key:next.key},next.agent)).team.leader_id).toBe(next.session.id)
   expect(backend.bind).toHaveBeenLastCalledWith(slot.id,next.session.id)
 })
 
@@ -738,7 +747,7 @@ it('rechaza respuestas de otra generación, pregunta, sesión o estructura y est
   await expect(call({answers:{other:{answers:['A']}}})).rejects.toThrow('exactamente')
   await expect(call({method:'turn/start'})).rejects.toThrow()
   const child=await hubSession('answer-worker',team.slot.workspace_path)
-  await expect(team.teams.call('team_answer',{...pending.input,session_key:child.key},child.agent)).rejects.toThrow('pertenece')
+  await expect(team.teams.call('team_answer',{...pending.input,session_key:child.key},child.agent)).rejects.toThrow('líder activo')
   team.backend.status.mockResolvedValueOnce({...pending.runtime,state:'unknown'})
   await expect(call({})).rejects.toThrow('desconocido')
   expect(team.backend.answer).not.toHaveBeenCalled()
@@ -755,10 +764,15 @@ it('revalida autoridad tras consultar la pregunta y antes de enviar la respuesta
 it('el bootstrap de workers exige join primero y enruta dudas al master por Hub',async()=>{
   const team=await hubTeam()
   const prompt=team.backend.prompts.get(team.slot.workspace_id)!
-  expect(prompt).toContain('Primero usá memory_team_join')
-  expect(prompt).toContain(`root_thread_id=${team.plan.root_thread_id}`)
-  expect(prompt).toContain(`master_session_id=${team.master.session.id}`)
-  expect(prompt).toContain('No abras preguntas directas a la persona')
+  expect(prompt).toContain('memory_chat_set_nick')
+  expect(prompt).not.toContain(team.plan.root_thread_id)
+  expect(prompt).not.toContain(team.master.session.id)
+  const worker=await hubSession('enrolled-worker',team.slot.workspace_path)
+  const joined=await team.teams.call('team_join',{session_key:worker.key,invitation:invitation(prompt)},worker.agent)
+  expect(joined.root_thread_id).toBe(team.plan.root_thread_id)
+  expect(joined.master_session_id).toBe(team.master.session.id)
+  expect(joined.guidance).toContain('No abras preguntas directas')
+  expect(joined.prompt).toBeTruthy()
 })
 
 

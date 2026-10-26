@@ -77,5 +77,5 @@ export class NativeChatClient {
   }
 }
 export class ChatConnectionError extends Error {
-  constructor(readonly status:number) { super(status===409 ? 'La ubicación de colaboración no está disponible, el canal virtual fue cerrado o la ruta Git no es un worktree válido.' : `El Hub rechazó la conexión de colaboración (${status}).`) }
+  constructor(readonly status:number) { super(status===409 ? 'La ubicación de colaboración no está disponible o el canal fue cerrado o eliminado.' : `El Hub rechazó la conexión de colaboración (${status}).`) }
 }

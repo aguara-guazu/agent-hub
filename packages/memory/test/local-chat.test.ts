@@ -1,6 +1,7 @@
+import { existingChannel } from './helpers/chat-channel.js'
 import { migrations } from '../src/migrations.js'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { mkdtemp, rm, mkdir, symlink } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, symlink, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -28,6 +29,9 @@ afterEach(async()=> { await db.close(); await rm(dir,{recursive:true,force:true}
 async function register(name:string, event='Stop', path=dir) {
   const a=author(name,path), k=randomUUID()
   const r=await ops.chat.lifecycle(a,{session_key:k,native_id:name,event,at:new Date().toISOString()})
+  const folder=await chatFolder(path);r.channel.path=folder.root
+  await db.query('UPDATE chat_channels SET path=$2 WHERE id=$1',[r.channel.id,folder.root])
+  await existingChannel(ops.chat,r,folder.root)
   const named=await ops.call('chat_set_nick',{session_key:k,nickname:`Cometa ${name}`},'mcp',a)
   return {a,k,...r,session:named.session}
 }
@@ -192,7 +196,7 @@ it('filtra cerrados, expulsados y pendientes antes de contar y paginar el roster
     total:1,items:[expect.objectContaining({id:member.session.id})],
   })
   expect(await ops.call('chat_agents',{channel_id:member.channel.id,include_closed:true})).toMatchObject({total:2})
-  expect(await ops.call('chat_agents',{channel_id:member.channel.id,include_pending:true})).toMatchObject({total:2})
+  expect(await ops.call('chat_agents',{channel_id:member.channel.id,include_pending:true})).toMatchObject({total:1})
   expect(await ops.call('chat_agents',{channel_id:member.channel.id,include_removed:true,limit:40})).toMatchObject({total:43})
   expect((await ops.call('chat_agents',{channel_id:member.channel.id,include_removed:true,limit:40,offset:40})).items).toHaveLength(3)
 })
@@ -336,13 +340,14 @@ it('exige un nick elegido por la propia sesión y conserva la identidad al redef
   const r=await ops.chat.lifecycle(a,{session_key:k,native_id:'new',event:'SessionStart',at:new Date().toISOString()})
   expect(r.session).toMatchObject({nickname:null,needs_nickname:true,label:'Sin nick todavía'})
   expect((await ops.call('chat_agents',{})).total).toBe(0)
-  expect((await ops.call('chat_inbox',{session_key:k},'mcp',a)).team.leader_id).toBeNull()
+  await expect(ops.call('chat_inbox',{session_key:k},'mcp',a)).rejects.toMatchObject({statusCode:409})
   expect((await ops.call('chat_join',{session_key:k},'mcp',a)).session.needs_nickname).toBe(true)
   await expect(ops.call('chat_send',{session_key:k,channel_id:r.channel.id,title:'Hola',text:'Mensaje',request_id:'first'},'mcp',a)).rejects.toMatchObject({statusCode:409})
   await expect(ops.call('chat_work_update',{session_key:k,thread_id:randomUUID(),work_id:'claim',event:'started',summary:'Claim',request_id:'claim',expected_version:0},'mcp',a)).rejects.toThrow('nick')
   const named=await ops.call('chat_set_nick',{session_key:k,nickname:'  Bruma   Azul  '},'mcp',a)
   expect(named.session).toMatchObject({id:r.session.id,label:'Bruma Azul',nickname:'Bruma Azul',needs_nickname:false})
-  const message=await ops.call('chat_send',{session_key:k,channel_id:r.channel.id,title:'Hola',text:'Mensaje',request_id:'first'},'mcp',a)
+  const opened=await ops.call('chat_create_channel',{session_key:k,name:'Hola'},'mcp',a)
+  const message=await ops.call('chat_send',{session_key:k,channel_id:opened.channel.id,title:'Hola',text:'Mensaje',request_id:'first'},'mcp',a)
   await ops.call('chat_set_nick',{session_key:k,nickname:'Ñandú 🌿'},'mcp',a)
   expect((await ops.call('chat_read',{thread_id:message.thread_id})).items[0]).toMatchObject({author_id:r.session.id,author_label:'Ñandú 🌿'})
   await expect(ops.call('chat_set_nick',{session_key:k,nickname:'Intruso'},'mcp',{...a,agent_id:'other'})).rejects.toMatchObject({statusCode:409})
@@ -380,102 +385,39 @@ it('migra identidades anteriores sin inventar nicks ni perder conversaciones',as
   expect((await ops.call('chat_read',{thread_id:m.thread_id})).items[0].author_label).toBe('Lumbre')
 })
 
-it('activa y cierra canales virtuales sólo de forma explícita, sin robar liderazgo ni migrar sesiones',async()=> {
-  const plain=await mkdtemp(join(tmpdir(),'hub-chat-plain-')),bare=await mkdtemp(join(tmpdir(),'hub-chat-bare-'))
+it('crea canales independientes, conserva identidad y cierra sólo el canal pedido',async()=> {
+  const first=author('first'),second=author('second'),ka=randomUUID(),kb=randomUUID()
+  const a=await ops.chat.lifecycle(first,{session_key:ka,native_id:'first',event:'SessionStart',at:new Date().toISOString()})
+  const b=await ops.chat.lifecycle(second,{session_key:kb,native_id:'second',event:'SessionStart',at:new Date().toISOString()})
+  expect(a.channel.id).not.toBe(b.channel.id)
+  expect(a.channel.activated_at).toBeNull()
+  expect((await ops.call('chat_channels',{})).total).toBe(0)
+  await ops.call('chat_set_nick',{session_key:ka,nickname:'Brisa'},'mcp',first)
+  await ops.call('chat_set_nick',{session_key:kb,nickname:'Faro'},'mcp',second)
+  await expect(ops.call('chat_send',{session_key:ka,channel_id:a.channel.id,title:'Sin canal',text:'No',request_id:'pending'},'mcp',first)).rejects.toThrow('no tiene un canal activo')
+  const [one,two]=await Promise.all([
+    ops.call('chat_create_channel',{session_key:ka,task_key:'TASK',name:'Primero'},'mcp',first),
+    ops.call('chat_create_channel',{session_key:kb,task_key:'TASK',name:'Segundo'},'mcp',second),
+  ])
+  expect(one.channel.id).not.toBe(two.channel.id)
+  expect(one.session).toMatchObject({id:a.session.id,role:'leader'})
+  expect(two.session).toMatchObject({id:b.session.id,role:'leader'})
+  expect((await ops.call('chat_channels',{})).total).toBe(2)
+  expect((await ops.call('chat_create_channel',{session_key:ka,task_key:'TASK'},'mcp',first)).channel.id).toBe(one.channel.id)
+  const message=await ops.call('chat_send',{session_key:ka,channel_id:one.channel.id,title:'Trabajo',text:'Historia',request_id:'message'},'mcp',first)
+  await ops.call('chat_close_channel',{session_key:ka},'mcp',first)
+  expect((await ops.call('chat_channels',{channel_id:one.channel.id})).items[0].read_only).toBe(true)
+  expect((await ops.call('chat_channels',{channel_id:two.channel.id})).items[0].read_only).toBe(false)
+  await expect(ops.call('chat_join',{session_key:ka},'mcp',first)).rejects.toThrow('cerrado')
+  expect((await ops.call('chat_read',{thread_id:message.thread_id})).items[0].text).toBe('Historia')
+  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
+  expect(backup.schema_version).toBe(22)
+  const restored=new MemoryDatabase(join(dir,'restored','memory.sqlite'));await restored.migrate()
   try {
-    const alias=join(dir,'plain-alias');await symlink(plain,alias)
-    const first=author('plain-a',plain),second=author('plain-b',alias),ka=randomUUID(),kb=randomUUID()
-    const a=await ops.chat.lifecycle(first,{session_key:ka,native_id:'plain-a',event:'SessionStart',at:new Date().toISOString()})
-    const b=await ops.chat.lifecycle(second,{session_key:kb,native_id:'plain-b',event:'SessionStart',at:new Date().toISOString()})
-    expect(a.channel).toMatchObject({id:b.channel.id,kind:'virtual',project_id:null,activated_at:null,closed_at:null})
-    expect(a.team.leader_id).toBeNull()
-    expect((await ops.call('chat_channels',{})).total).toBe(0)
-    expect((await ops.call('chat_agents',{unassigned:true})).total).toBe(0)
-    await ops.call('chat_join',{session_key:ka},'mcp',first)
-    const prior=Date.now()
-    await ops.chat.lifecycle(first,{session_key:ka,native_id:'plain-a',event:'UserPromptSubmit',at:new Date(prior+1).toISOString()})
-    await ops.chat.lifecycle(first,{session_key:ka,native_id:'plain-a',event:'Stop',at:new Date(prior+2).toISOString()})
-    await ops.chat.lifecycle(second,{session_key:kb,native_id:'plain-b',event:'BeforeAgent',at:new Date(prior+3).toISOString()})
-    await ops.chat.lifecycle(second,{session_key:kb,native_id:'plain-b',event:'AfterAgent',at:new Date(prior+4).toISOString()})
-    expect((await db.query('SELECT team_seen FROM chat_sessions WHERE channel_id=$1',[a.channel.id])).every(row=>!row.team_seen)).toBe(true)
-    expect((await ops.chat.team(a.channel.id)).leader_id).toBeNull()
-    const namedA=await ops.call('chat_set_nick',{session_key:ka,nickname:'Brisa'},'mcp',first)
-    const namedB=await ops.call('chat_set_nick',{session_key:kb,nickname:'Faro'},'mcp',second)
-    await expect(ops.call('chat_send',{session_key:kb,channel_id:b.channel.id,title:'Silencioso',text:'No',request_id:'pending'},'mcp',second)).rejects.toThrow('no pidió crear')
-
-    const active=await ops.call('chat_create_channel',{session_key:kb,name:'Sala efímera'},'mcp',second)
-    expect(active.channel).toMatchObject({id:b.channel.id,name:'Sala efímera',kind:'virtual',project_id:null,leader_id:namedB.session.id,closed_at:null})
-    expect(active.channel.activated_at).toBeTruthy()
-    expect(active.session.role).toBe('leader')
-    expect((await ops.call('chat_channels',{})).items[0]).toMatchObject({id:b.channel.id,read_only:false})
-    expect((await ops.call('chat_channels',{unassigned:true,limit:1}))).toMatchObject({total:1,items:[expect.objectContaining({id:b.channel.id})]})
-    expect((await ops.call('chat_agents',{unassigned:true,limit:1}))).toMatchObject({total:2,items:[expect.any(Object)]})
-    await expect(ops.call('chat_create_channel',{session_key:ka},'mcp',first)).rejects.toThrow('primer creador')
-    const runtime=new LocalChatRuntime(ops.chat)
-    expect(await runtime.wait(namedA.session.id)).toMatchObject({bootstrap:true})
-    const message=await ops.call('chat_send',{session_key:kb,channel_id:b.channel.id,title:'Trabajo',text:'Listo',mentions:[namedA.session.id],request_id:'active'},'mcp',second)
-    expect((await ops.call('chat_threads',{unassigned:true,limit:1}))).toMatchObject({total:1,items:[expect.objectContaining({id:message.thread_id})]})
-    await expect(ops.call('chat_close_channel',{session_key:ka},'mcp',first)).rejects.toThrow('líder')
-    const closed=await ops.call('chat_close_channel',{session_key:kb},'mcp',second)
-    expect(closed.channel.closed_at).toBeTruthy()
-    expect(closed.team.leader_offline).toBe(true)
-    expect((await db.query('SELECT state,closed_at,lease_until FROM chat_sessions WHERE channel_id=$1',[b.channel.id])).every(row=>row.state==='offline' && row.closed_at && row.lease_until===null)).toBe(true)
-    expect((await ops.call('chat_agents',{channel_id:b.channel.id,active_only:true})).total).toBe(0)
-    expect((await db.query('SELECT cancelled_at,error FROM chat_deliveries WHERE message_id=$1',[message.id]))[0]).toMatchObject({cancelled_at:expect.any(String),error:'Canal virtual cerrado'})
-    expect((await ops.call('chat_channels',{channel_id:b.channel.id})).items[0]).toMatchObject({read_only:true})
-    expect(await runtime.wait(namedA.session.id)).toMatchObject({closed:true,messages:[]})
-    await runtime.close()
-    await expect(ops.call('chat_send',{session_key:kb,thread_id:message.thread_id,text:'Después',request_id:'closed'},'mcp',second)).rejects.toMatchObject({statusCode:403})
-    await expect(ops.call('chat_join',{session_key:kb},'mcp',second)).rejects.toThrow('cerrado')
-    expect((await ops.call('chat_read',{thread_id:message.thread_id})).items[0].text).toBe('Listo')
-
-    const third=author('plain-c',plain),fourth=author('plain-d',alias),kc=randomUUID(),kd=randomUUID()
-    const c=await ops.chat.lifecycle(third,{session_key:kc,native_id:'plain-c',event:'SessionStart',at:new Date().toISOString()})
-    const d=await ops.chat.lifecycle(fourth,{session_key:kd,native_id:'plain-d',event:'SessionStart',at:new Date().toISOString()})
-    expect(c.channel.id).not.toBe(b.channel.id)
-    expect(d.channel.id).toBe(c.channel.id)
-    expect(c.channel.activated_at).toBeNull()
-    await ops.call('chat_set_nick',{session_key:kc,nickname:'Nube'},'mcp',third)
-    await ops.call('chat_set_nick',{session_key:kd,nickname:'Sol'},'mcp',fourth)
-    const race=await Promise.allSettled([
-      ops.call('chat_create_channel',{session_key:kc,name:'Siguiente'},'mcp',third),
-      ops.call('chat_create_channel',{session_key:kd,name:'Competidor'},'mcp',fourth),
-    ])
-    const created=race.filter((result):result is PromiseFulfilledResult<any>=>result.status==='fulfilled')
-    expect(created).toHaveLength(1)
-    expect(race.filter(result=>result.status==='rejected')).toHaveLength(1)
-    const future=created[0]!.value
-    expect(future.channel).toMatchObject({leader_id:future.session.id,kind:'virtual',closed_at:null})
-    expect((await ops.call('chat_channels',{})).total).toBe(2)
-    const oldMemberships=await db.query('SELECT id,channel_id FROM chat_sessions WHERE id IN ($1,$2) ORDER BY id',[namedA.session.id,namedB.session.id])
-    expect(oldMemberships.every(row=>row.channel_id===b.channel.id)).toBe(true)
-
-    const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-    expect(backup.schema_version).toBe(22)
-    expect(backup.tables.chat_channels.find((channel:any)=>channel.id===future.channel.id)).toMatchObject({closed_at:null,virtual_path:a.channel.path})
-    const restorePath=join(plain,'restore'),restored=new MemoryDatabase(join(restorePath,'memory.sqlite'));await restored.migrate()
-    try {
-      const restoredStore=new MemoryStore(restored,restorePath)
-      await restoreMemory(restoredStore,backup)
-      const restoredChannels=await restored.query("SELECT * FROM chat_channels WHERE kind='virtual' ORDER BY created_at")
-      expect(restoredChannels).toHaveLength(2)
-      expect(restoredChannels[0]).toMatchObject({id:b.channel.id,closed_at:expect.any(String),virtual_path:null})
-      expect(restoredChannels[1]).toMatchObject({id:future.channel.id,closed_at:expect.any(String),activated_at:expect.any(String),virtual_path:null})
-      expect((await restored.query('SELECT text FROM chat_messages WHERE id=$1',[message.id]))[0].text).toBe('Listo')
-      const restoredOps=new MemoryOperations(restoredStore,new MemoryAI(async()=>defaultAI,new Vault(restorePath)))
-      const fresh=author('restored',plain),freshKey=randomUUID()
-      const pending=await restoredOps.chat.lifecycle(fresh,{session_key:freshKey,native_id:'restored',event:'SessionStart',at:new Date().toISOString()})
-      expect(pending.channel).toMatchObject({kind:'virtual',activated_at:null,closed_at:null})
-      expect(restoredChannels.some(channel=>channel.id===pending.channel.id)).toBe(false)
-      await restoredOps.call('chat_set_nick',{session_key:freshKey,nickname:'Renacido'},'mcp',fresh)
-      const recreated=await restoredOps.call('chat_create_channel',{session_key:freshKey},'mcp',fresh)
-      expect(recreated.channel).toMatchObject({id:pending.channel.id,leader_id:pending.session.id,closed_at:null})
-    } finally {await restored.close()}
-
-    await expect(ops.chat.register({...third,cwd:join(plain,'missing')},randomUUID())).rejects.toMatchObject({statusCode:409})
-    execFileSync('git',['init','--bare','-q',bare])
-    await expect(ops.chat.register(author('bare',bare),randomUUID())).rejects.toMatchObject({statusCode:409})
-  } finally { await rm(plain,{recursive:true,force:true});await rm(bare,{recursive:true,force:true}) }
+    await restoreMemory(new MemoryStore(restored,join(dir,'restored')),backup)
+    expect((await restored.query('SELECT text FROM chat_messages WHERE id=$1',[message.id]))[0].text).toBe('Historia')
+    expect(await restored.query('PRAGMA foreign_key_check')).toEqual([])
+  } finally {await restored.close()}
 })
 it('separa worktrees del mismo repositorio, agrupa subcarpetas y conserva canal al cambiar branch',async()=> {
   const a=await register('main'),path=worktree('feature'),b=await register('feature','Stop',path)
@@ -487,22 +429,22 @@ it('separa worktrees del mismo repositorio, agrupa subcarpetas y conserva canal 
   await expect(send(a,b)).rejects.toThrow('mención')
   execFileSync('git',['-C',path,'switch','--detach','-q'])
   const d=await register('detached','Stop',path)
-  expect(d.channel.id).toBe(b.channel.id);expect(d.channel.branch).toBeNull()
+  expect(d.channel.id).toBe(b.channel.id);expect(d.channel.branch).toBe(b.channel.branch)
   expect((await ops.call('chat_channels',{})).total).toBe(2)
 })
-it('conserva el historial de un worktree eliminado y rechaza nuevas escrituras allí',async()=> {
+it('conserva el historial y permite chat después de eliminar el worktree',async()=> {
   const path=worktree('temporary'),a=await register('a','Stop',path),b=await register('b','Stop',path),m=await send(a,b)
   git('worktree','remove',path)
-  expect((await ops.call('chat_channels',{})).items[0]).toMatchObject({id:a.channel.id,read_only:true})
+  expect((await ops.call('chat_channels',{})).items[0]).toMatchObject({id:a.channel.id,read_only:false})
   expect((await ops.call('chat_read',{thread_id:m.thread_id})).items[0].text).toBe('Revisá suma')
-  await expect(send(a,b,'Otro',m.thread_id)).rejects.toMatchObject({statusCode:409})
-  await expect(ops.call('chat_resolve',{session_key:a.k,thread_id:m.thread_id,state:'resolved'},'mcp',a.a)).rejects.toMatchObject({statusCode:409})
+  expect((await send(a,b,'Otro',m.thread_id)).thread_id).toBe(m.thread_id)
+  await ops.call('chat_resolve',{session_key:a.k,thread_id:m.thread_id,state:'resolved'},'mcp',a.a)
 })
-it('las carpetas de canales antiguos quedan históricas aunque ahora estén dentro de un worktree',async()=> {
+it('el canal existente sigue disponible cuando cambia su carpeta',async()=> {
   const a=await register('a'),b=await register('b'),m=await send(a,b),sub=join(dir,'legacy')
   await mkdir(sub);await db.query('UPDATE chat_channels SET path=$2 WHERE id=$1',[a.channel.id,sub])
-  expect((await ops.call('chat_channels',{})).items[0].read_only).toBe(true)
-  await expect(send(a,b)).rejects.toMatchObject({statusCode:409})
+  expect((await ops.call('chat_channels',{})).items[0].read_only).toBe(false)
+  await send(a,b)
   expect((await ops.call('chat_read',{thread_id:m.thread_id})).items).toHaveLength(1)
 })
 
@@ -539,8 +481,10 @@ it('separa espacios de Orca sobre una carpeta sin Git y conserva el canal con ga
     const c=await registerSpace('c',one,join(plain,'src'))
     expect(a.channel.path).toBe(b.channel.path)
     expect(a.channel.id).not.toBe(b.channel.id)
-    expect(c.channel.id).toBe(a.channel.id)
-    const m=await send(a,c)
+    expect(c.channel.id).not.toBe(a.channel.id)
+    const opened=await ops.call('chat_create_channel',{session_key:a.k,name:'Orca'},'mcp',a.a)
+    a.channel=opened.channel
+    const m=await ops.call('chat_send',{session_key:a.k,channel_id:a.channel.id,title:'Orca',text:'Historia',request_id:'orca-message'},'mcp',a.a)
     await expect(send(a,b)).rejects.toThrow('mención')
     const old=await ops.call('chat_join',{session_key:a.k},'mcp',author('a',plain))
     expect(old.channel.id).toBe(a.channel.id)
@@ -550,8 +494,8 @@ it('separa espacios de Orca sobre una carpeta sin Git y conserva el canal con ga
     expect((await ops.call('chat_read',{thread_id:m.thread_id})).items).toHaveLength(1)
     expect((await ops.call('chat_channels',{})).items.every((x:any)=>x.read_only===false)).toBe(true)
     await rm(plain,{recursive:true,force:true})
-    await expect(send(a,c)).rejects.toMatchObject({statusCode:409})
-    expect((await ops.call('chat_read',{thread_id:m.thread_id})).items).toHaveLength(1)
+    await ops.call('chat_send',{session_key:a.k,thread_id:m.thread_id,text:'Sin carpeta',request_id:'no-folder'},'mcp',a.a)
+    expect((await ops.call('chat_read',{thread_id:m.thread_id})).items).toHaveLength(2)
   } finally {await rm(plain,{recursive:true,force:true})}
 })
 
@@ -564,6 +508,7 @@ it('migra canales por ruta sin cambiar IDs, mensajes ni recibos',async()=> {
   await db.query('ALTER TABLE chat_channels DROP COLUMN path')
   await db.query('ALTER TABLE chat_channels RENAME COLUMN scope_key TO path')
   await db.query('DELETE FROM schema_versions WHERE version=$1',[migrations.findIndex(m=>m.includes('RENAME COLUMN path TO scope_key'))+1])
+  await db.query('DELETE FROM schema_versions WHERE version=$1',[migrations.length])
   await db.migrate()
   expect((await db.query('SELECT * FROM chat_channels'))[0]).toMatchObject({id:a.channel.id,path:a.channel.path,scope_key:`git:${a.channel.path}`,orca_workspace_id:null})
   expect(await db.query('SELECT * FROM chat_deliveries')).toEqual(receipts)
@@ -572,8 +517,45 @@ it('migra canales por ruta sin cambiar IDs, mensajes ni recibos',async()=> {
   await db.query('UPDATE chat_channels SET scope_key=$2,orca_workspace_id=$3,name=$4 WHERE id=$1',[a.channel.id,`orca:${space}`,space,'EGA-333 & EGA-334'])
   expect((await ops.call('chat_join',{session_key:a.k},'mcp',a.a)).channel.name).toBe('EGA-333 & EGA-334')
   const fresh=await ops.chat.register({...author('c'),orca_workspace_id:space},randomUUID())
-  expect(fresh.channel.id).toBe(a.channel.id)
-  expect(fresh.channel.name).toBe('EGA-333 & EGA-334')
+  expect(fresh.channel.id).not.toBe(a.channel.id)
+  expect(fresh.channel.activated_at).toBeNull()
+})
+
+it.each(['folder','worktree','uncached','missing'] as const)('descarta un espacio Orca heredado de otro proyecto (%s)',async kind=>{
+  const other=await mkdtemp(dir+'-other-')
+  try {
+    const workspace=kind==='folder'?`folder:${randomUUID()}`:`${randomUUID()}::${kind==='missing'?join(dir,'missing'):dir}`
+    if(kind!=='uncached' && kind!=='missing')await ops.chat.register({...author('owner'),orca_workspace_id:workspace},randomUUID())
+    const wrong=await ops.chat.register({...author('outside',other),orca_workspace_id:workspace},randomUUID())
+    expect(wrong.channel).toMatchObject({path:await realpath(other),kind:'virtual',orca_workspace_id:null})
+    expect(wrong.channel.path).not.toBe(dir)
+    // A valid owner remains in its original channel; the stale ID was not repointed.
+    if(kind==='folder' || kind==='worktree') {
+      const owner=await ops.chat.register({...author('owner-again'),orca_workspace_id:workspace},randomUUID())
+      expect(owner.channel.path).toBe(await realpath(dir))
+      expect(owner.channel.id).not.toBe(wrong.channel.id)
+    }
+  } finally {await rm(other,{recursive:true,force:true})}
+})
+
+it('un ID Orca ajeno no desplaza el canal Git real, y admite subcarpetas y symlinks válidos',async()=>{
+  const elsewhere=await mkdtemp(join(tmpdir(),'hub-orca-other-'))
+  try {
+    const stale=`${randomUUID()}::${elsewhere}`
+    const ordinary=await register('git-owner')
+    const actual=await ops.chat.register({...author('git-new'),orca_workspace_id:stale},randomUUID())
+    expect(actual.channel.id).not.toBe(ordinary.channel.id)
+    expect(actual.channel.orca_workspace_id).toBeNull()
+    const workspace=`${randomUUID()}::${dir}`
+    const root=await ops.chat.register({...author('space'),orca_workspace_id:workspace},randomUUID())
+    await mkdir(join(dir,'src'))
+    await symlink(dir,join(elsewhere,'alias'),'dir')
+    for(const path of [join(dir,'src'),join(elsewhere,'alias','src')]) {
+      const nested=await ops.chat.register({...author(randomUUID(),path),orca_workspace_id:workspace},randomUUID())
+      expect(nested.channel.id).not.toBe(root.channel.id)
+      expect(nested.channel.orca_workspace_id).toBe(workspace)
+    }
+  } finally {await rm(elsewhere,{recursive:true,force:true})}
 })
 
 
@@ -612,48 +594,25 @@ it('el host Orca no es un transporte: Kiro requiere su conexión nativa',async()
   expect(connected.session.capability).toBe('acp_prompt')
 })
 
-it('registra terminales pasivas sin elegir líder; el primer nick incorpora a sus compañeras',async()=>{
-  const passive=async(name:string,path=dir)=> {
-    const a=author(name,path),key=randomUUID()
-    const r=await ops.chat.lifecycle(a,{session_key:key,native_id:name,event:'SessionStart',at:new Date().toISOString()})
-    return {a,key,...r}
+it.each([undefined,`folder:${randomUUID()}`])('el nick no activa canales ni incorpora otras terminales (%s)',async workspace=>{
+  const passive=async(name:string)=> {
+    const a={...author(name),...(workspace?{orca_workspace_id:workspace}:{})},key=randomUUID()
+    return {a,key,...await ops.chat.lifecycle(a,{session_key:key,native_id:name,event:'SessionStart',at:new Date().toISOString()})}
   }
-  const first=await passive('early'),second=await passive('leader'),_third=await passive('third')
-  const other=await passive('other',worktree('elsewhere'))
-  expect(first.team.leader_id).toBeNull()
+  const first=await passive('early'),second=await passive('leader')
   const queue=vi.fn().mockResolvedValue(undefined),runtime=new LocalChatRuntime(ops.chat,queue)
-  await runtime.tick();expect(queue).not.toHaveBeenCalled()
-  await ops.call('chat_set_nick',{session_key:second.key,nickname:'Faro'},'mcp',second.a)
-  const leader=await ops.chat.lifecycle(second.a,{session_key:second.key,native_id:'leader',event:'UserPromptSubmit',at:new Date().toISOString()})
-  expect(leader.session.role).toBe('leader')
-  await runtime.tick();expect(queue.mock.calls.map(c=>c[0]).sort()).toEqual(['early','third'])
-  await runtime.tick();expect(queue).toHaveBeenCalledTimes(2)
-  await ops.call('chat_set_nick',{session_key:first.key,nickname:'Bruma'},'mcp',first.a)
-  const joined=await ops.call('chat_join',{session_key:first.key},'mcp',first.a)
-  expect(joined.team.leader_id).toBe(second.session.id);expect(joined.session.role).toBe('member')
-  expect(joined.team.guidance).toContain('sin pedir que la persona repita')
-  await db.query("UPDATE chat_sessions SET bootstrap_sent_at='2000-01-01T00:00:00.000Z'")
-  await runtime.tick();expect(queue).toHaveBeenCalledTimes(3);expect(queue).toHaveBeenLastCalledWith('third',expect.any(String))
-  expect((await ops.chat.team(other.channel.id)).leader_id).toBeNull()
-  await ops.chat.lifecycle(second.a,{session_key:second.key,native_id:'leader',event:'SessionEnd',at:new Date().toISOString()})
-  await ops.call('chat_inbox',{session_key:first.key},'mcp',first.a)
-  expect((await ops.chat.team(first.channel.id))).toMatchObject({leader_id:second.session.id,leader_offline:true})
-  await runtime.close()
-})
-
-it('la incorporación por conexión nativa funciona también con metadatos de Orca y no consume menciones',async()=>{
-  const workspace=`folder:${randomUUID()}`,a={...author('leader'),orca_workspace_id:workspace}
-  const leader=await ops.chat.register(a,randomUUID())
-  await ops.call('chat_set_nick',{session_key:leader.session_key,nickname:'Faro'},'mcp',a)
-  const b={...author('newcomer'),cli_kind:'kiro',orca_workspace_id:workspace},key=randomUUID()
-  const newcomer=await ops.chat.lifecycle(b,{session_key:key,native_id:'kiro',event:'SessionStart',transport:'acp_prompt',at:new Date().toISOString()})
-  const runtime=new LocalChatRuntime(ops.chat)
-  expect(await runtime.wait(newcomer.session.id)).toMatchObject({bootstrap:true,messages:[]})
-  expect((await ops.chat.team(leader.channel.id)).leader_id).toBe(leader.session.id)
-  const named=await ops.call('chat_set_nick',{session_key:key,nickname:'Luciérnaga'},'mcp',b)
-  expect(named.session.role).toBe('member')
-  expect((await db.query('SELECT team_seen FROM chat_sessions WHERE id=$1',[newcomer.session.id]))[0].team_seen).toBe(true)
-  await runtime.close()
+  try {
+    await ops.call('chat_set_nick',{session_key:second.key,nickname:'Faro'},'mcp',second.a)
+    const named=await ops.chat.lifecycle(second.a,{session_key:second.key,native_id:'leader',event:'UserPromptSubmit',at:new Date().toISOString()})
+    expect(named.team.leader_id).toBeNull()
+    await runtime.tick();expect(queue).not.toHaveBeenCalled()
+    const opened=await ops.call('chat_create_channel',{session_key:second.key,name:'Equipo'},'mcp',second.a)
+    expect(opened.team.leader_id).toBe(second.session.id)
+    await runtime.tick();expect(queue).not.toHaveBeenCalled()
+    expect((await ops.chat.team(first.channel.id)).leader_id).toBeNull()
+    expect((await db.query('SELECT team_seen FROM chat_sessions WHERE id=$1',[first.session.id]))[0].team_seen).toBe(false)
+    expect((await ops.call('chat_agents',{channel_id:opened.channel.id})).total).toBe(1)
+  } finally {await runtime.close()}
 })
 
 it('sólo el líder reconocido expulsa dentro de su canal; conserva historial y cancela pendientes sin inventar lecturas',async()=>{
@@ -691,7 +650,9 @@ it('la expulsión sobrevive hooks, claves nuevas y reconexiones de la misma conv
  expect((await register('fresh')).session.state).toBe('idle')
 })
 it('también vincula sesiones MCP sin identidad nativa para impedir reingreso sin clave',async()=>{
- const a={...author('fallback'),session_id:randomUUID()},joined=await ops.call('chat_join',{},'mcp',a)
+ const a={...author('fallback'),session_id:randomUUID()},pending=await ops.call('chat_join',{},'mcp',a)
+ await ops.call('chat_set_nick',{session_key:pending.session_key,nickname:'Fallback'},'mcp',a)
+ const joined=await ops.call('chat_join',{session_key:pending.session_key},'mcp',a)
  await ops.chat.kick({channel_id:joined.channel.id,participant_id:joined.session.id,reason:'Retiro manual'},{user_id:'local-owner'})
  await expect(ops.call('chat_join',{},'mcp',a)).rejects.toMatchObject({statusCode:410})
 })
@@ -941,4 +902,53 @@ it('SessionEnd nativo retira la flota sin permitir eventos tardíos ni perder su
   expect((await ops.call('chat_agents',{channel_id:member.channel.id})).total).toBe(0)
   await ops.chat.processTurnAlerts(at+200,100)
   expect((await db.query('SELECT recipient_id,session_id FROM chat_status_notices'))[0]).toEqual({recipient_id:leader.session.id,session_id:member.session.id})
+})
+
+it('un pedido conserva destinatarios y requiere respuesta vinculada, sin ACK ni cierre prematuros',async()=>{
+ const a=await register('requester'),b=await register('operator'),c=await register('observer')
+ const request=await ops.call('chat_send',{session_key:a.k,channel_id:a.channel.id,title:'Validación',text:'Devolvé evidencia',mentions:[b.session.id,c.session.id],response_required:true,request_id:'request'},'mcp',a.a)
+ await ops.call('chat_inbox',{session_key:b.k},'mcp',b.a)
+ await expect(ops.call('chat_ack',{session_key:b.k,message_id:request.id},'mcp',b.a)).rejects.toMatchObject({statusCode:409})
+ await expect(ops.call('chat_resolve',{session_key:a.k,thread_id:request.thread_id,state:'resolved'},'mcp',a.a)).rejects.toMatchObject({statusCode:409})
+ const replyInput={session_key:b.k,thread_id:request.thread_id,reply_to:request.id,text:'Evidencia comprobada',request_id:'response'}
+ const reply=await ops.call('chat_send',replyInput,'mcp',b.a)
+ expect((await ops.call('chat_inbox',{session_key:a.k},'mcp',a.a)).items.some((m:any)=>m.id===reply.id)).toBe(true)
+ const receipts=await db.query('SELECT * FROM chat_deliveries WHERE message_id=$1 ORDER BY recipient_id',[request.id])
+ expect(receipts.find(r=>r.recipient_id===b.session.id)).toMatchObject({response_message_id:reply.id,handled_at:expect.any(String)})
+ expect(receipts.find(r=>r.recipient_id===c.session.id)).toMatchObject({response_message_id:null,handled_at:null})
+ expect((await ops.call('chat_send',replyInput,'mcp',b.a)).id).toBe(reply.id)
+ expect((await ops.call('chat_threads',{channel_id:a.channel.id},'mcp',a.a)).items[0]).toMatchObject({pending_responses:1,awaiting_labels:c.session.label})
+})
+it('un pedido sin responder genera un solo aviso privado y la respuesta lo cancela',async()=>{
+ const a=await register('requester'),b=await register('operator')
+ const request=await ops.call('chat_send',{session_key:a.k,channel_id:a.channel.id,title:'Browser',text:'Necesito el resultado',mentions:[b.session.id],response_required:true,request_id:'request'},'mcp',a.a)
+ await ops.call('chat_inbox',{session_key:b.k},'mcp',b.a)
+ const later=Date.now()+360000
+ await ops.chat.processResponseAlerts(later)
+ await ops.chat.processResponseAlerts(later+1000)
+ const notices=await db.query("SELECT * FROM chat_status_notices WHERE cause='response_due'")
+ expect(notices).toHaveLength(1)
+ expect(notices[0]).toMatchObject({recipient_id:a.session.id,work_thread_id:request.thread_id})
+ expect((await ops.call('chat_inbox',{session_key:a.k},'mcp',a.a)).items.some((m:any)=>m.id===notices[0].id)).toBe(true)
+ await ops.call('chat_send',{session_key:b.k,thread_id:request.thread_id,reply_to:request.id,text:'Estoy bloqueado: falta sesión de prueba.',request_id:'blocked'},'mcp',b.a)
+ expect((await db.query('SELECT cancelled_at FROM chat_status_notices WHERE id=$1',[notices[0].id]))[0].cancelled_at).toBeTruthy()
+ await ops.call('chat_resolve',{session_key:a.k,thread_id:request.thread_id,state:'resolved'},'mcp',a.a)
+ expect(await db.query('SELECT * FROM chat_threads')).toHaveLength(1)
+})
+it('rechaza pedidos sin destinatario sin dejar un hilo vacío',async()=>{
+ const a=await register('requester')
+ await expect(ops.call('chat_send',{session_key:a.k,channel_id:a.channel.id,title:'Sin destinatario',text:'Responder',response_required:true,request_id:'invalid'},'mcp',a.a)).rejects.toMatchObject({statusCode:400})
+ expect(await db.query('SELECT * FROM chat_threads')).toHaveLength(0)
+})
+
+it('el listener no pide registro de una conexión pasiva sin nick',async()=>{
+  const a=author('passive-listener'),key=randomUUID()
+  const registered=await ops.chat.lifecycle(a,{session_key:key,native_id:'passive-listener',event:'SessionStart',at:new Date().toISOString()})
+  const runtime=new LocalChatRuntime(ops.chat),controller=new AbortController()
+  const waiting=runtime.wait(registered.session.id,controller.signal)
+  const timer=setTimeout(()=>controller.abort(),50)
+  try {
+    expect(await waiting).not.toHaveProperty('bootstrap')
+    expect((await db.query('SELECT bootstrap_attempts FROM chat_sessions WHERE id=$1',[registered.session.id]))[0].bootstrap_attempts).toBe(0)
+  } finally {clearTimeout(timer);await runtime.close()}
 })

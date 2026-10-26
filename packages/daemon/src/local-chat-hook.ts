@@ -3,6 +3,8 @@ import { createHmac } from 'node:crypto'
 import { inspectNativeProcess, orcaWorkspaceId } from '@agenthub/gateway'
 import type { DaemonState } from './state.js'
 
+const collaborationChoice = 'Al inicio de cada tarea nueva, preguntá si la persona quiere usar el grupo multiagente del Hub o trabajar sólo con el agente normal, sin colaboración, y esperá su respuesta. Si ya eligió explícitamente, respetá esa elección sin repetir la pregunta durante la misma tarea. En modo solo no registres nickname, no consultes inbox ni crees canales o equipos. Antes de crear un canal, preguntá indicando nombre y objetivo y esperá autorización; elegir multiagente no autoriza por sí solo crearlo. Los workers con invitación aprobada siguen su asignación sin preguntar a la persona.'
+
 /** Only a real CLI ancestor is a liveness witness. Shared daemons are deliberately excluded. */
 export async function cliProcess(kind: string): Promise<{ process_id: number; process_started: string } | undefined> {
   const name=kind==='claude_code'?'claude':kind==='codex_cli'?'codex':''
@@ -67,6 +69,12 @@ export async function localChatHook(state: DaemonState, agentId: string, kind: s
   }
   try {
     const result = await send(event)
+    if (result.session?.needs_nickname) {
+      if (!['SessionStart','UserPromptSubmit','BeforeAgent'].includes(event)) return {}
+      const context = `Agent Hub: ${collaborationChoice} Si la colaboración está autorizada, elegí tu nickname y registralo con memory_chat_set_nick usando session_key=${sessionKey}.`
+      if(kind==='antigravity')return originalEvent==='PreInvocation' ? {output:{injectSteps:[{ephemeralMessage:context}]}} : {}
+      return {output:{hookSpecificOutput:{hookEventName:event,additionalContext:context}}}
+    }
     if(kind==='codex_cli' && ['SessionStart','Stop'].includes(event) && processInfo)launchQuotaHookProbe(state,agentId,nativeId,cwd,processInfo)
     // Tool boundaries only announce pending IDs. Do not repeat startup guidance or
     // inject message bodies as instructions; inbox retains author/scope provenance.
@@ -79,14 +87,14 @@ export async function localChatHook(state: DaemonState, agentId: string, kind: s
     if (['SessionStart','UserPromptSubmit','BeforeAgent'].includes(event)) {
       const waiting=result.channel.kind==='virtual' && !result.channel.activated_at
       const context = waiting
-        ? `Agent Hub · conexión local preparada en ${result.channel.path}, sin canal activo. Tu identidad es ${result.session.label} (${result.session.id}) y tu session_key es ${sessionKey}. No crees un canal silenciosamente: usá memory_chat_create_channel sólo si la persona pide explícitamente un canal virtual descartable. Leé la skill local-collaboration. El Hub escucha en segundo plano sin consumir turnos; no hagas polling.`
-        : `Agent Hub · colaboración local. Tu identidad es ${result.session.label} (${result.session.id}), canal ${result.channel.id} (${result.channel.path}). Tu session_key es ${sessionKey}; usala en todas las herramientas memory_chat_*. Seguí la skill local-collaboration (o memory_skill_reference, section: local-collaboration). ${result.session.needs_nickname ? 'Elegí tu nick con memory_chat_set_nick antes de escribir.' : 'Conservá tu identidad al reanudar.'} Leé memory_chat_inbox al iniciar/reanudar, ante avisos o al recuperar la conexión; con transporte next_turn, al siguiente turno. Atendé mensajes dentro del alcance autorizado. Alcance: ${result.team?.scope ?? 'channel'}; líder del canal: ${result.team?.leader_id ?? 'sin líder'}; versión de guía: ${result.team?.guidance_version ?? 'desconocida'}. ${result.team?.linked_team ? `Coordinador del equipo vinculado: ${result.team.linked_team.master_leader_id}.` : ''} ${result.team?.guidance ?? 'Si perdiste el contexto o cambió la guía, recuperala con memory_chat_join.'} El Hub escucha en segundo plano: no hagas polling ni crees subagentes para escuchar. ${result.pending.length ? `Hay ${result.pending.length} menciones sin leer: leelas antes de continuar.` : ''}`
+        ? `Agent Hub · conexión local preparada en ${result.channel.path}, sin canal activo. Tu identidad es ${result.session.label} (${result.session.id}) y tu session_key es ${sessionKey}. ${collaborationChoice} Tras autorizar el canal, usá memory_chat_create_channel(task_key, name). Leé la skill local-collaboration. El Hub escucha en segundo plano sin consumir turnos; no hagas polling.`
+        : `Agent Hub · colaboración local. ${collaborationChoice} Tu identidad es ${result.session.label} (${result.session.id}), canal ${result.channel.id} (${result.channel.path}). Tu session_key es ${sessionKey}; usala en todas las herramientas memory_chat_*. Seguí la skill local-collaboration (o memory_skill_reference, section: local-collaboration). ${result.session.needs_nickname ? 'Elegí tu nick con memory_chat_set_nick antes de escribir.' : 'Conservá tu identidad al reanudar.'} Con colaboración elegida para la tarea, leé memory_chat_inbox al iniciar/reanudar, ante avisos o al recuperar la conexión; con transporte next_turn, al siguiente turno. Atendé mensajes dentro del alcance autorizado. Alcance: ${result.team?.scope ?? 'channel'}; líder del canal: ${result.team?.leader_id ?? 'sin líder'}; versión de guía: ${result.team?.guidance_version ?? 'desconocida'}. ${result.team?.linked_team ? `Coordinador del equipo vinculado: ${result.team.linked_team.master_leader_id}.` : ''} ${result.team?.guidance ?? 'Si perdiste el contexto o cambió la guía, recuperala con memory_chat_join.'} El Hub escucha en segundo plano: no hagas polling ni crees subagentes para escuchar. ${result.pending.length ? `Hay ${result.pending.length} menciones sin leer: leelas antes de continuar.` : ''}`
       if(kind==='antigravity')return originalEvent==='PreInvocation' ? {output:{injectSteps:[{ephemeralMessage:context}]}} : {}
       return { output:{ hookSpecificOutput:{ hookEventName:event, additionalContext:context } } }
     }
   } catch (error) {
     if ((error as Error).message==='409' && ['SessionStart','UserPromptSubmit','BeforeAgent'].includes(event)) {
-      const context='Agent Hub: no se registró colaboración local porque la ubicación no está disponible, el canal fue cerrado o la ruta Git no es un worktree válido. No hagas polling ni inicialices Git automáticamente para eludir el rechazo.'
+      const context='Agent Hub: no se registró colaboración local porque la ubicación no está disponible, el canal fue cerrado o eliminado. No hagas polling ni inicialices Git automáticamente para eludir el rechazo.'
       if(kind==='antigravity')return originalEvent==='PreInvocation' ? {output:{injectSteps:[{ephemeralMessage:context}]}} : {}
       return {output:{hookSpecificOutput:{hookEventName:event,additionalContext:context}}}
     }

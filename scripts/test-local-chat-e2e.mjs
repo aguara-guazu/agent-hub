@@ -56,8 +56,9 @@ try {
     const call=async(name,args)=> {
       const result=await client.callTool({name:`memory_${name}`,arguments:args});assert.ok(!result.isError,JSON.stringify(result));return JSON.parse(result.content[0].text)
     }
-    const who=await call('chat_join',{path:folder})
-    await call('chat_set_nick',{session_key:who.session_key,nickname})
+    const enrollment=await call('chat_join',{path:folder});assert.equal(enrollment.channel,undefined)
+    await call('chat_set_nick',{session_key:enrollment.session_key,nickname})
+    const who=await call('chat_join',{session_key:enrollment.session_key})
     return {call,who,client}
   }
   const a=await joinClient('claude_code'),b=await joinClient('codex_cli')

@@ -1,7 +1,7 @@
 import { isCollaborationTool } from './collaboration.js'
 import { orcaWorkspaceSchema } from './agents.js'
 import { registerUsageRoutes } from './usage-routes.js'
-import { chatKickInput } from './local-chat.js'
+import { chatKickInput, chatCoordinatorInput, chatDeleteChannelInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
 import { LocalWatchdog } from './local-watchdog.js'
 import { nativeSession } from '@agenthub/gateway'
@@ -42,6 +42,7 @@ export interface MemoryRouteOptions {
   collaborationEnabled?(): boolean
   chatAgentEnabled?(agentId: string): boolean
   usageAgentEnabled?(agentId: string): boolean
+  authorizeUsageAgent?(request: FastifyRequest, agentId: string): Promise<{ cli_kind: string }>
   authorizeChatAgent?(request: FastifyRequest, agentId: string): Promise<{ cli_kind: string }>
   worker?: boolean
   jiraMcp?: import('./tasks.js').JiraTaskReader
@@ -79,10 +80,10 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     requireCollaboration()
     const result = await bridge.chat.lifecycle({...nativeSession(input.agent_id,client.cli_kind,input.native_id,input.cwd),orca_workspace_id:input.orca_workspace_id},input)
     reply.header('Cache-Control','no-store')
-    if (input.event !== 'Watch' || (client.cli_kind !== 'claude_code' && !input.transport)) return result
+    if (input.event !== 'Watch' || (client.cli_kind !== 'claude_code' && !input.transport)) return bridge.chat.enrollmentView(result)
     const controller = new AbortController(), abort = () => controller.abort()
     reply.raw.once('close',abort)
-    try { return { ...result, ...await bridge.wait(result.session.id,controller.signal,input.watch_started) } }
+    try { return { ...bridge.chat.enrollmentView(result), ...await bridge.wait(result.session.id,controller.signal,input.watch_started) } }
     finally { reply.raw.off('close',abort) }
   })
   app.post('/api/memory/chat/kick', {bodyLimit:4096}, async request=>{
@@ -93,6 +94,52 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const { operations } = await service.get()
     requireCollaboration()
     return operations.chat.kick({...kick,...(project_id?{project_id}:{})},{user_id:user.id})
+  })
+  app.post('/api/memory/chat/coordinator', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    requireCollaboration()
+    const input=parse(chatCoordinatorInput,request.body)
+    const {operations}=await service.get()
+    requireCollaboration()
+    const result=await operations.chat.designateCoordinator(input,user.id)
+    return {...result,...await operations.teams?.stopTransferredPlans(result.affected_plans)}
+  })
+  app.post('/api/memory/chat/channels/delete', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    requireCollaboration()
+    const input=parse(chatDeleteChannelInput,request.body),{operations}=await service.get()
+    const result=await operations.chat.deleteChannel(input,{user_id:user.id})
+    return {...result,...await operations.teams?.stopTransferredPlans(result.affected_plans)}
+  })
+  app.post('/api/memory/chat/channels/restore', {bodyLimit:4096,preHandler:auth}, async request=>{
+    requireCollaboration()
+    const {channel_id}=parse(z.object({channel_id:id}).strict(),request.body),{operations}=await service.get()
+    return operations.chat.restoreChannel(channel_id)
+  })
+  app.get('/api/memory/teams/preferences', {preHandler:auth}, async()=>{
+    const {operations}=await service.get()
+    return {preferred_backend:await operations.teams?.preference() ?? 'hub'}
+  })
+  app.put('/api/memory/teams/preferences', {preHandler:auth}, async request=>{
+    const input=parse(z.object({preferred_backend:z.enum(['hub','native'])}).strict(),request.body)
+    const {operations}=await service.get()
+    check(operations.teams,'La flota no está disponible.',503)
+    return operations.teams.setPreference(input.preferred_backend)
+  })
+  app.get('/api/memory/teams/:planId', {preHandler:auth}, async request=>{
+    const {planId}=parse(z.object({planId:id}),request.params)
+    const {operations}=await service.get()
+    check(operations.teams,'La flota no está disponible.',503)
+    return operations.teams.humanPlan(planId)
+  })
+  app.post('/api/memory/teams/:planId/approve', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    requireCollaboration()
+    const {planId}=parse(z.object({planId:id}),request.params)
+    const {digest}=parse(z.object({digest:z.string().regex(/^[a-f0-9]{64}$/)}).strict(),request.body)
+    const {operations}=await service.get()
+    check(operations.teams,'La flota no está disponible.',503)
+    return operations.teams.approveByHuman(planId,digest,user.id)
   })
   app.addHook('onListen', async () => { void runtime().catch(() => {}) })
   sharingRoutes(app, service, options.authorize)

@@ -1,13 +1,13 @@
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { execFile, spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
-import { mkdir, realpath } from 'node:fs/promises'
+import { randomUUID, createHash } from 'node:crypto'
+import { mkdir, realpath, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { check, MemoryError } from './contracts.js'
 import { validCliModel, type ExtractionCli } from './cli-extraction.js'
-import type { LocalChat } from './local-chat.js'
+import { virtualFolder, type LocalChat } from './local-chat.js'
 import type { TeamOrca, TeamWorkspace, TeamLaunchReceipt, TeamLaunchMember } from './team-orca.js'
 import { FleetProcessManager, type FleetEvent, type FleetProcessOptions, type FleetStatus, type FleetPendingQuestion, type FleetQuestionAnswers } from './fleet-process.js'
 
@@ -107,6 +107,12 @@ export class HubTeamRuntime implements TeamOrca {
   async workspace(id: string): Promise<TeamWorkspace> {
     check(safeId(id), 'Identificador de worktree del Hub inválido.', 400)
     let path = id
+    if (id.startsWith('hub-virtual:')) {
+      const token=id.slice('hub-virtual:'.length)
+      path=Buffer.from(token,'base64url').toString('utf8')
+      check(encode(path)===token && isAbsolute(path),'Identificador virtual inválido.',400)
+      return this.virtualWorkspace(path)
+    }
     if (id.startsWith('hub:')) {
       const token = id.slice(4)
       check(/^[A-Za-z0-9_-]+$/.test(token), 'Identificador de worktree del Hub inválido.', 400)
@@ -116,14 +122,32 @@ export class HubTeamRuntime implements TeamOrca {
     check(isAbsolute(path) && safeId(path), 'El Hub necesita una ruta absoluta de un worktree Git local.', 409)
     const resolved = await realpath(path).catch(() => null)
     check(resolved, 'El worktree Git no está disponible en esta computadora.', 409)
-    check(await this.run('git', ['-C', resolved, 'rev-parse', '--is-inside-work-tree']) === 'true', 'La flota necesita un worktree Git disponible.', 409)
+    let inside:string
+    try { inside=await this.run('git', ['-C', resolved, 'rev-parse', '--is-inside-work-tree']) }
+    catch {
+      // Only a verified ordinary folder can become virtual. Missing Git, permissions,
+      // bare repositories and invalid worktrees must retain their actual failure.
+      await virtualFolder(resolved)
+      check(!id.startsWith('hub:'),'El worktree Git dejó de estar disponible.',409)
+      return this.virtualWorkspace(resolved)
+    }
+    check(inside === 'true', 'La ruta Git no es un worktree disponible.', 409)
     const root = await realpath(await this.run('git', ['-C', resolved, 'rev-parse', '--show-toplevel'])).catch(() => null)
-    const head = await this.run('git', ['-C', resolved, 'rev-parse', '--verify', 'HEAD'])
+    const head = await this.run('git', ['-C', resolved, 'rev-parse', '--verify', 'HEAD']).catch(()=>{throw new MemoryError(409,'Git no confirmó HEAD. El repositorio necesita una revisión válida y accesible; no se reemplaza por un espacio virtual.')})
     const common = await realpath(await this.run('git', ['-C', resolved, 'rev-parse', '--path-format=absolute', '--git-common-dir'])).catch(() => null)
     check(root && common && revision(head), 'Git no confirmó el worktree y su revisión.', 409)
     const canonical = `hub:${encode(root)}`
     check(!id.startsWith('hub:') || id === canonical, 'El identificador del Hub no corresponde al worktree real.', 409)
     return { id: canonical, path: root, repo_id: `hub-repo:${encode(common)}`, head }
+  }
+  private async virtualWorkspace(path:string):Promise<TeamWorkspace> {
+    const root=await virtualFolder(path)
+    const manifest=join(this.directory,'virtual-workspaces',`${createHash('sha256').update(root).digest('hex')}.json`)
+    const saved=await readFile(manifest,'utf8').then(text=>JSON.parse(text) as TeamWorkspace).catch(error=>{
+      if(error.code==='ENOENT')return null
+      throw error
+    })
+    return saved ?? {id:`hub-virtual:${encode(root)}`,path:root,repo_id:`virtual:${encode(root)}`,head:'virtual',kind:'virtual',source_path:root}
   }
   private async unchanged(workspace: TeamWorkspace, resumeWorktree = false) {
     const current = await this.workspace(workspace.id)
@@ -131,20 +155,41 @@ export class HubTeamRuntime implements TeamOrca {
       'El worktree cambió desde la propuesta. Prepará un nuevo plan antes de crear recursos.', 409)
     return current
   }
-  async create(parent: TeamWorkspace, name: string): Promise<TeamWorkspace> {
+  async baseRevision(parent: TeamWorkspace, base: string): Promise<string> {
+    if(parent.kind==='virtual') {
+      check(base==='virtual','Un espacio virtual sólo admite la base virtual.',409)
+      return base
+    }
+    check(revision(base),'La base debe ser el hash completo de un commit del repositorio.',400)
+    const resolved=await this.run('git',['-C',parent.path,'rev-parse','--verify',`${base}^{commit}`])
+      .catch(()=>{throw new MemoryError(409,'La revisión base no es un commit disponible en el repositorio. Actualizá las referencias y prepará el plan con el hash elegido; no lo sustituyas por HEAD.')})
+    check(resolved.toLowerCase()===base.toLowerCase(),'La base no identifica un commit exacto.',409)
+    return resolved
+  }
+  async create(parent: TeamWorkspace, name: string, baseRevision=parent.head): Promise<TeamWorkspace> {
     this.requireEnabled()
     check(/^[a-z0-9][a-z0-9-]{0,79}$/.test(name), 'Nombre de worktree inválido.', 400)
     const current = await this.unchanged(parent)
+    const base=await this.baseRevision(current,baseRevision)
     this.requireEnabled()
+    if(current.kind==='virtual') {
+      const path=join(this.directory,'fleet-workspaces',randomUUID())
+      await mkdir(path,{recursive:true})
+      const root=await realpath(path)
+      const child:TeamWorkspace={id:`hub-virtual:${encode(root)}`,path:root,repo_id:current.repo_id,head:'virtual',kind:'virtual',source_path:current.source_path ?? current.path}
+      await mkdir(join(this.directory,'virtual-workspaces'),{recursive:true})
+      await writeFile(join(this.directory,'virtual-workspaces',`${createHash('sha256').update(root).digest('hex')}.json`),JSON.stringify(child),{flag:'wx',mode:0o600})
+      return child
+    }
     const worktrees = join(this.directory, 'fleet-worktrees')
     await mkdir(worktrees, { recursive: true })
     const root = await realpath(worktrees)
-    const unique = `${randomUUID()}-${name}`
+    const unique = randomUUID()
     const path = join(root, unique)
     this.requireEnabled()
-    await this.run('git', ['-C', current.path, 'worktree', 'add', '-b', `hub/${unique}`, path, current.head])
+    await this.run('git', ['-C', current.path, 'worktree', 'add', '-b', `hub/${unique}`, path, base])
     const child = await this.workspace(path)
-    check(child.path === path && child.repo_id === current.repo_id && child.head === current.head && child.id !== current.id,
+    check(child.path === path && child.repo_id === current.repo_id && child.head === base && child.id !== current.id,
       'Git no confirmó el worktree hijo esperado. Conservá los recursos e inspeccioná el resultado.', 502)
     return child
   }

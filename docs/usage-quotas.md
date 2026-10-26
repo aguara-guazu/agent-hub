@@ -7,9 +7,12 @@ Agent Hub conserva observaciones nativas de las cuotas de las CLI para que un l�
 | CLI | Fuente | Alcance y limitación |
 | --- | --- | --- |
 | Codex CLI | App-server: `account/read` y `account/rateLimits/read` | Ventanas nativas, duración y reinicio cuando existen. Identidad de cuenta verificada mediante routing ID opaco. El pool `codex` tiene alcance global; pools sin correspondencia documentada a modelos conservan alcance desconocido. |
-| Claude Code | JSON de statusline: `rate_limits` | Ventanas de cinco horas, siete días y límite de gasto opcional. Los campos pueden faltar hasta una respuesta de API. Cuenta sin verificar: lectura limitada al perfil. |
-| Kiro | Capacidades ACP y eventos nativos | Se detecta `_kiro/account/getUsage` sólo si la CLI lo anuncia. La versión comprobada 2.32.0 no lo anuncia y no hay un esquema estable validado: el saldo mensual permanece desconocido. Un evento de rate limit indica espera temporal, no agotamiento mensual. |
-| Antigravity y otras CLI | Sin adaptador de cuota validado | Estado desconocido. No se extrae el saldo de texto de la TUI ni se inventan porcentajes o reinicios. |
+| Claude Code | Control nativo `get_usage` y JSON de statusline como complemento | Ventanas de cinco horas y siete días, más ventanas específicas cuando existen. `get_usage` es experimental: se valida su respuesta y una versión incompatible queda desconocida. Cuenta sin verificar: lectura limitada al perfil. |
+| Kiro | ACP `_kiro/account/getUsage` | Consulta de créditos aun si la CLI omite el método en capabilities. Valida used/limit y reinicio; bonus y sobreconsumo quedan con alcance incierto. Un rate limit temporal no equivale a agotamiento mensual. |
+| Gemini CLI | Code Assist `retrieveUserQuota` | OAuth del cliente, porcentajes por modelo y tipo de token; preserva 100% restante aunque falte remainingAmount. Requiere cuenta Google y proyecto Code Assist. |
+| Antigravity | JSON nativo de statusline | Porcentajes y reinicios por bucket. Instala un observador sólo si la barra no está personalizada; no consume inferencia. Abrir `/usage` refresca el dato. No asume que un bucket sea un modelo exacto. |
+| OpenCode Go | GET `/zen/go/v1/usage` | Lee ventanas de cinco horas, semana y mes con la autenticación Go de OpenCode. No aplica ese saldo a proveedores externos. Sin conexión Go informa el acceso faltante. |
+| Claude Desktop y proveedores externos de OpenCode | Sin adaptador de cuota validado | Estado desconocido. No se les atribuye el saldo de otra CLI ni se inventan porcentajes o reinicios. |
 
 Fuentes de los protocolos: [Codex app-server](https://learn.chatgpt.com/docs/app-server), [Claude Code statusline](https://code.claude.com/docs/en/statusline). La cobertura depende de la versión y autenticación de cada CLI; estos datos no prueban que un modelo concreto esté habilitado por la suscripción.
 
@@ -37,12 +40,18 @@ La consulta de estado no fuerza refrescos de proveedores. Los recolectores tiene
 
 ## Claude Code y configuración existente
 
-El Hub provisiona su statusline sólo si el campo está libre o ya era gestionado por el Hub. Una statusline personalizada se conserva y se informa el conflicto; no se reemplaza silenciosamente. La telemetría usa la identidad existente de los hooks y no crea sesiones ni cambia busy/idle. Redibujar el mismo contenido no renueva el vencimiento de la cuota: se necesita nueva evidencia nativa.
+El daemon consulta el perfil predeterminado de Claude Code, Codex, Kiro, Gemini y OpenCode Go aun sin agentes registrados ni equipos lanzados. Las consultas comparten una exclusión por perfil y un intervalo mínimo de dos minutos; fallos aplican backoff. Claude recibe sólo solicitudes de control `initialize` y `get_usage(skip_behaviors: true)`, con hooks y MCP deshabilitados, sin prompt ni persistencia de sesión. `skip_behaviors` impide el recorrido de transcripciones. La interfaz muestra las ventanas específicas sin inventar su correspondencia con IDs de modelo.
+
+El Hub provisiona su statusline sólo si el campo está libre o ya era gestionado por el Hub. Una statusline personalizada, incluida la de Orca, se conserva: la lectura nativa ya no depende de reemplazarla. La telemetría no crea sesiones de colaboración ni cambia busy/idle. Redibujar el mismo contenido no renueva el vencimiento de la cuota: se necesita nueva evidencia nativa.
 
 Deshabilitar `usage_status` para un cliente detiene su colección y avisos, y evita que las herramientas de equipo le revelen o apliquen cuotas. Los planes ya guardados muestran su cuota oculta mientras esté deshabilitado; el documento y digest originales se conservan. El chat puede seguir funcionando.
 
 ## Contrato y validación
 
-`packages/shared/src/usage-quota.ts` define observaciones, ventanas, bindings, alcance de modelos y transiciones. `UsageQuotas` persiste el estado; el endpoint nativo autenticado `/api/memory/usage/native` valida CLI, agente, sesión, perfil y versión del binding. No existe una herramienta MCP para inventar observaciones. La transición y los avisos se guardan en la misma transacción antes de despertar al líder.
+`packages/shared/src/usage-quota.ts` define observaciones, ventanas, bindings, alcance de modelos y transiciones. `UsageQuotas` persiste el estado; el endpoint nativo autenticado `/api/memory/usage/native` valida CLI, agente, sesión, perfil y versión del binding. La ruta `/api/memory/usage/installed` autentica daemon, máquina, cliente y política de cuotas sin exigir una conversación. No existe una herramienta MCP para inventar observaciones. La transición y los avisos se guardan en la misma transacción antes de despertar al líder.
 
 Las regresiones cubren ventanas simultáneas, frescura, cambios de cuenta, perfiles sin lectura, alcance de modelos, filtros correlacionados, backup, OFF, deduplicación de avisos, límites durante el lanzamiento, statusline, cancelación y propiedad de leases. Los fixtures validan contratos sin consumir inferencia. Las CLI sin fuente comprobada siguen explícitamente desconocidas.
+
+La consulta experimental de Claude se verificó con CLI 2.1.308 y el contrato publicado en [SDK 0.3.301](https://unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.301/sdk.d.ts). Una incompatibilidad no habilita scraping de terminales ni consultas con inferencia.
+
+Las consultas HTTP usan destinos fijos y rechazan redirecciones. Las credenciales permanecen dentro del colector, no se envían al Hub ni al modelo. Gemini refresca OAuth en memoria con los metadatos públicos de su CLI instalada, sin ejecutar su flujo de login ni sobrescribir sus credenciales. Si esos metadatos no están disponibles, sólo usa un token vigente; si venció, informa cuota desconocida hasta que la CLI lo renueve. Las pruebas sin cuenta validan el contrato; no equivalen a una lectura real del proveedor. Claude Desktop sigue requiriendo una conexión de cuenta propia: no se atribuye automáticamente la de Claude Code.

@@ -280,6 +280,14 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       jiraMcp: createJiraTaskReader(store, owner.id, jiraPool, oauthStore),
       usageAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='usage_status')),
       chatAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='chat_join') && s.tools.some(t=>t.name==='chat_inbox')),
+      authorizeUsageAgent: async (request, agentId) => {
+        const principal=currentDaemon(request),agent=store.agent(agentId)
+        if(!agent || principal.user.id!==owner.id || agent.machine_id!==principal.machine.id || (principal.agent && principal.agent.id!==agentId))
+          throw new HttpError(403,'El cliente no pertenece a este daemon local')
+        if(!computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='usage_status')))
+          throw new HttpError(403,'La consulta de cuotas está deshabilitada para este cliente')
+        return {cli_kind:agent.cli_kind}
+      },
       authorizeChatAgent: async (request, agentId) => {
         const principal = currentDaemon(request), agent = store.agent(agentId)
         if (!agent || principal.user.id !== owner.id || agent.machine_id !== principal.machine.id || (principal.agent && principal.agent.id !== agentId))

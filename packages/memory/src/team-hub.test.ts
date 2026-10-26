@@ -108,19 +108,28 @@ describe('HubTeamRuntime worktrees and native preflight', () => {
       expect(child.head).toBe(parent.head)
       expect(child.path).toContain('/fleet-worktrees/')
       expect(child.id).not.toBe(parent.id)
-      expect((await exec('git', ['-C', child.path, 'branch', '--show-current'], { env: { PATH: process.env.PATH } })).stdout.trim()).toMatch(/^hub\/[0-9a-f-]{36}-review$/)
+      expect((await exec('git', ['-C', child.path, 'branch', '--show-current'], { env: { PATH: process.env.PATH } })).stdout.trim()).toMatch(/^hub\/[0-9a-f-]{36}$/)
       expect(run.mock.calls.every(call => !Object.keys(call[2].env).some(key => key.startsWith('GIT_')))).toBe(true)
     } finally { if (previous === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = previous }
   })
-  it('rejects missing/bare/non Git roots and noncanonical Hub selectors', async () => {
+  it('supports ordinary folders but rejects missing/bare roots and noncanonical Hub selectors', async () => {
     const { backend } = setup()
-    await expect(backend.workspace(directory)).rejects.toThrow('operación local')
+    expect(await backend.workspace(directory)).toMatchObject({kind:'virtual',head:'virtual'})
+    await expect(backend.workspace(join(directory,'missing'))).rejects.toThrow('no está disponible')
     await expect(backend.workspace('relative')).rejects.toThrow('ruta absoluta')
     await expect(backend.workspace('hub:%%%')).rejects.toThrow('inválido')
     const nested = join(directory, 'repo', 'nested'); await mkdir(nested)
     await expect(backend.workspace(`hub:${Buffer.from(nested).toString('base64url')}`)).rejects.toThrow('worktree real')
     await exec('git', ['init', '--bare', join(directory, 'bare')])
-    await expect(backend.workspace(join(directory, 'bare'))).rejects.toThrow('worktree Git')
+    await expect(backend.workspace(join(directory, 'bare'))).rejects.toThrow('worktree disponible')
+  })
+  it('does not replace a broken Git marker or an empty repository with a virtual space',async()=>{
+    const {backend}=setup()
+    const broken=join(directory,'broken');await mkdir(broken)
+    await writeFile(join(broken,'.git'),'gitdir: /nonexistent/hub-fixture-git')
+    await expect(backend.workspace(broken)).rejects.toThrow('Git inválido')
+    const empty=join(directory,'empty');await exec('git',['init',empty])
+    await expect(backend.workspace(empty)).rejects.toThrow('HEAD')
   })
   it('does not create a child when the approved revision has changed', async () => {
     const { backend, run } = setup()

@@ -1,3 +1,4 @@
+import { collectInstalledQuota } from './usage-quota-installed.js'
 import { planUsageStatusline } from './adapters/usage-statusline.js'
 /**
  * Orquestación del daemon: lo que los comandos del CLI necesitan.
@@ -535,6 +536,7 @@ export class DaemonApp {
     applied.written.push(...usageResult.written);applied.removed.push(...usageResult.removed)
     applied.drift.push(...usageResult.drift);applied.skipped.push(...usageResult.skipped)
     Object.assign(applied.backups,usageResult.backups)
+    void collectInstalledQuota(this.state,agent.id,this.home).catch(()=>{})
     if (!this.deliveryRuns.has(agent.id)) {
       const delivery = buildHeadlessGateway({ agentInstanceId: agent.id, snapshotPath: this.state.snapshotPath(agent.id), oauthDir: join(this.config.stateDir, 'oauth'), detectContainers: false })
       const running = delivery.gateway.flushMemory().catch(() => undefined).finally(async () => {

@@ -7,7 +7,7 @@ import { LocalChat } from './local-chat.js'
 import { teamBootstrap } from './local-chat-team.js'
 
 const exec = promisify(execFile)
-export const chatWakeText = (ids: string[]) => `Agent Hub: tenés menciones o avisos privados pendientes (${ids.join(', ')}). Leé memory_chat_inbox con tu session_key antes de continuar y verificá team.leader_id. Para menciones respondé en su hilo; para avisos privados de estado pedile al agente que se reporte en el Hub, usando work_thread_id si está disponible. Nunca leas la terminal, salida, logs ni transcripción de otro agente. Usá memory_chat_ack con el id recibido sólo cuando hayas atendido el pedido. No hagas polling ni envíes respuestas automáticas sin contenido.`
+export const chatWakeText = (ids: string[]) => `Agent Hub: tenés menciones o avisos privados pendientes (${ids.join(', ')}). Leé memory_chat_inbox con tu session_key antes de continuar y verificá team.leader_id. Para pedidos respondé en su hilo con reply_to; para avisos response_due revisá tu pedido pendiente en work_thread_id; para los demás avisos de estado verificá si falta reporte y pedilo en el hilo existente. Nunca leas la terminal, salida, logs ni transcripción de otro agente. Usá memory_chat_ack con el id recibido sólo cuando hayas atendido el pedido. No hagas polling ni envíes respuestas automáticas sin contenido.`
 
 /** Only the local Hub owns the dispatcher. No inference process is created to listen. */
 export class LocalChatRuntime {
@@ -64,11 +64,12 @@ export class LocalChatRuntime {
       }
     }
     await this.chat.processTurnAlerts()
+    await this.chat.processResponseAlerts()
     // Native queue addresses the exact conversation and verifies it at delivery time.
     // A managed app-server may not expose a per-TUI PID to hooks; its idle lease is
     // advisory presence, not a reason to silently suppress durable notifications.
     const sessions = await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
-      WHERE s.capability IN ('codex_queue','hub_fleet') AND s.native_id IS NOT NULL AND (s.state='idle' OR (s.state='busy' AND s.cli_kind='codex_cli')) AND s.closed_at IS NULL AND c.closed_at IS NULL
+      WHERE s.nickname IS NOT NULL AND s.capability IN ('codex_queue','hub_fleet') AND s.native_id IS NOT NULL AND (s.state='idle' OR (s.state='busy' AND s.cli_kind='codex_cli')) AND s.closed_at IS NULL AND c.closed_at IS NULL
       AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL)
       AND (EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.notified_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)
         OR EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.handled_at IS NULL AND n.cancelled_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5) OR EXISTS(SELECT 1 FROM usage_quota_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5))`)
@@ -100,7 +101,7 @@ export class LocalChatRuntime {
       if(!this.enabled(s.agent_id))continue
       if(!await this.claimBootstrap(s.id))continue
       if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) continue
-      try {await this.dispatch(s,teamBootstrap)}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
+      try {await this.dispatch(s,s.nickname?teamBootstrap:'Agent Hub: elegí tu nickname y registralo con memory_chat_set_nick.')}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
     }
   }
   private async dispatch(session:Record<string,any>,text:string) {
@@ -157,6 +158,11 @@ export class LocalChatRuntime {
           const s = (await this.chat.db.query('SELECT s.*,c.leader_id,c.orca_workspace_id,c.closed_at AS channel_closed_at,c.kind AS channel_kind,c.activated_at FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.id=$1',[sid]))[0]
           if (!this.collaborationEnabled() || !s || s.capability==='hub_fleet' || s.closed_at || s.channel_closed_at || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
           if (s.state === 'idle') {
+            if (!s.nickname && (s.channel_kind!=='virtual' || s.activated_at)) {
+              if(await this.claimBootstrap(sid)) return {messages:[],bootstrap:true,context:'Agent Hub: elegí tu nickname y registralo con memory_chat_set_nick.'}
+              await change
+              continue
+            }
             if(s.leader_id && await this.claimBootstrap(sid)) {
               if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
               return {messages:[],bootstrap:true,context:teamBootstrap}

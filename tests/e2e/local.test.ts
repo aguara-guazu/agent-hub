@@ -56,6 +56,7 @@ async function exitOf(child: ChildProcess): Promise<{ code: number | null; outpu
 }
 
 describe('hub local TypeScript completo', () => {
+  // Repeated disk synchronization across five clients and native hooks can exceed 30s.
   it('crea sesión Electron, auto-enrola el daemon y sirve el gateway stdio', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agenthub-e2e-'))
     roots.push(root)
@@ -221,5 +222,5 @@ describe('hub local TypeScript completo', () => {
     await client.close()
 
     core.kill('SIGTERM')
-  }, 30_000)
+  }, 90_000)
 })

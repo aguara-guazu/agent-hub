@@ -1,3 +1,4 @@
+import { existingChannel } from './helpers/chat-channel.js'
 import { afterEach,beforeEach,expect,it,vi } from 'vitest'
 import { mkdtemp,rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -19,7 +20,7 @@ const git=(...args:string[])=>execFileSync('git',['-C',directory,...args],{encod
 const agent=(name:string):AgentContext=>({agent_id:`turn-alert-${name}`,session_id:`native:${name.padEnd(64,'0')}`,cli_kind:'codex_cli',client:'Codex',cwd:directory})
 beforeEach(async()=>{directory=await mkdtemp(join(tmpdir(),'hub-turn-alert-'));git('init','-q','-b','main');git('-c','user.name=t','-c','user.email=t@invalid','-c','commit.gpgSign=false','commit','--allow-empty','-qm','seed');db=new MemoryDatabase(join(directory,'memory.sqlite'));await db.migrate();store=new MemoryStore(db,directory);ops=new MemoryOperations(store,new MemoryAI(async()=>defaultAI,new Vault(directory)))})
 afterEach(async()=>{vi.useRealTimers();await db.close();await rm(directory,{recursive:true,force:true})})
-async function register(name:string) { const a=agent(name),key=randomUUID();const r=await ops.chat.lifecycle(a,{session_key:key,native_id:name,event:'SessionStart',at:new Date().toISOString()});const named=await ops.call('chat_set_nick',{session_key:key,nickname:`Turn ${name}`},'mcp',a);return {a,key,...r,session:named.session} }
+async function register(name:string) { const a=agent(name),key=randomUUID();const r=await ops.chat.lifecycle(a,{session_key:key,native_id:name,event:'SessionStart',at:new Date().toISOString()});await existingChannel(ops.chat,r,directory);const named=await ops.call('chat_set_nick',{session_key:key,nickname:`Turn ${name}`},'mcp',a);return {a,key,...r,session:named.session} }
 async function event(who:Awaited<ReturnType<typeof register>>,name:string,at:number,turn_id?:string) { return ops.chat.lifecycle(who.a,{session_key:who.key,native_id:who.session.id,event:name,at:new Date(at).toISOString(),...(turn_id?{turn_id}:{})}) }
 async function alerts(who:Awaited<ReturnType<typeof register>>) { return db.query('SELECT * FROM chat_status_notices WHERE session_id=$1 ORDER BY created_at',[who.session.id]) }
 
@@ -169,7 +170,8 @@ it('migra los hilos automáticos antiguos sin ocultar conversaciones con respues
     await legacy.transaction(async()=>{
       await legacy.query('PRAGMA defer_foreign_keys=ON')
     for(const table of ['chat_channels','chat_sessions'])for(const row of await db.query(`SELECT * FROM ${table}`)) {
-      const keys=Object.keys(row);await legacy.query(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map((_,i)=>`$${i+1}`).join(',')})`,keys.map(k=>row[k]))
+      const columns=new Set((await legacy.query(`PRAGMA table_info(${table})`)).map(column=>column.name))
+      const keys=Object.keys(row).filter(key=>columns.has(key));await legacy.query(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map((_,i)=>`$${i+1}`).join(',')})`,keys.map(k=>row[k]))
     }
     })
     const hub=`hub:${leader.channel.id}`

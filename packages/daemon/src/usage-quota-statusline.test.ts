@@ -1,5 +1,4 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { createHmac } from 'node:crypto'
 import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,7 +6,7 @@ import { DaemonState } from './state.js'
 import { reportClaudeStatusline } from './usage-quota-statusline.js'
 const paths:string[]=[]
 afterEach(()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllEnvs();for(const path of paths.splice(0))rmSync(path,{recursive:true,force:true})})
-it.each([false,true])('statusline conserva busy y usa sólo identidad existente compatible con gateway (TUI=%s)',async(tui)=>{
+it.each([false,true])('statusline conserva busy y no requiere incorporación ni cambia el estado (TUI=%s)',async(tui)=>{
  const root=mkdtempSync(join(tmpdir(),'quota-statusline-runtime-'));paths.push(root)
  const state=new DaemonState(root),token='isolated-test-token',agent='test-agent',native=tui?'tui:existing':'native-existing'
  state.saveCredentials({controlPlaneUrl:'http://localhost:23456',machineId:'test',userEmail:'',token})
@@ -18,9 +17,9 @@ it.each([false,true])('statusline conserva busy y usa sólo identidad existente 
  vi.spyOn(globalThis,'fetch').mockImplementation(async(input,init)=>{
    const url=String(input),payload=JSON.parse(String(init?.body));payloads.push(payload)
    if(url.endsWith('/chat/native'))busy=false
-   expect(url).toBe('http://localhost:23456/api/memory/usage/native')
-   expect(payload.native_id).toBe(native)
-   expect(payload.session_key).toBe(createHmac('sha256',token).update(JSON.stringify([agent,native])).digest('hex'))
+   expect(url).toBe('http://localhost:23456/api/memory/usage/installed')
+   expect(payload.native_id).toBeUndefined()
+   expect(payload.session_key).toBeUndefined()
    return new Response(JSON.stringify(payload.action==='bind'?{binding:{binding_id:agent+':profile:'+payload.profile_ref,binding_version:1,cli:'claude_code',provider:'anthropic'}}:{accepted:true}),{status:200})
  })
  const reset=Math.floor(Date.now()/1000)+3600
@@ -37,7 +36,7 @@ it('statusline no registra identidad ausente si el Hub rechaza bind',async()=>{
  await reportClaudeStatusline(root,'agent',{session_id:'missing',cwd:root})
  await reportClaudeStatusline(root,'agent',{session_id:'missing',cwd:root})
  expect(fetch).toHaveBeenCalledOnce()
- expect(String(fetch.mock.calls[0]?.[0])).toContain('/usage/native')
+ expect(String(fetch.mock.calls[0]?.[0])).toContain('/usage/installed')
 })
 
 it('redraws no renuevan frescura; cambios de cuota o cursor API sí generan una muestra',async()=>{
@@ -100,4 +99,19 @@ it('deadline absoluto aborta HTTP de cuota y no empieza el siguiente bucket',asy
  const pending=collectProtocolQuota(protocol as unknown as import('./chat-protocol.js').ChatProtocol,'codex_cli',client,'profile',controller.signal)
  await started;controller.abort(new Error('absolute deadline'))
  await expect(pending).rejects.toThrow('absolute deadline');expect(reports).toBe(1)
+})
+
+it('Antigravity publica cuota antes de crear conversación y descarta identidad y transcripción',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'quota-agy-'));paths.push(root)
+ const state=new DaemonState(root)
+ state.saveCredentials({controlPlaneUrl:'http://localhost:23456',machineId:'test',userEmail:'',token:'token'})
+ state.saveSnapshot({agent_instance_id:'agy',cli_kind:'antigravity',servers:[{tools:[{name:'usage_status'}]}]})
+ const payloads:any[]=[]
+ vi.spyOn(globalThis,'fetch').mockImplementation(async(_url,init)=>{
+   const input=JSON.parse(String(init?.body));payloads.push(input)
+   return new Response(JSON.stringify(input.action==='bind'?{binding:{binding_id:'test',binding_version:1,cli:'antigravity',provider:'google-antigravity'}}:{}))
+ })
+ expect(await reportClaudeStatusline(root,'agy',{cwd:root,session_id:'',conversation_id:'',email:'PRIVATE',transcript_path:'PRIVATE',quota:{'gemini-weekly':{remaining_fraction:1,reset_time:new Date(Date.now()+3600000).toISOString()}}})).toBe('')
+ expect(payloads.find(p=>p.action==='observe')?.observation).toMatchObject({cli:'antigravity',pool_id:'gemini-weekly',windows:[{used:0,remaining:100}]})
+ expect(JSON.stringify(payloads)).not.toContain('PRIVATE')
 })

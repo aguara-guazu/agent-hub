@@ -162,7 +162,11 @@ export class MemoryOperations {
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
     if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
       check(this.collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
-    if (operation.startsWith('chat_')) return this.chat.call(operation, raw, agent)
+    if (operation.startsWith('chat_')) {
+      const result=await this.chat.call(operation,raw,agent)
+      if(operation==='chat_delete_channel')return {...result,...await this.teams?.stopTransferredPlans(result.affected_plans)}
+      return result
+    }
     if (operation.startsWith('team_')) {
       check(this.teams, 'La orquestación de equipos no está disponible en este servicio.', 503)
       return this.teams.call(operation, raw, agent)
@@ -182,7 +186,7 @@ export class MemoryOperations {
         if(who)check(!who.closed_at && !who.removed_at,'La sesión de colaboración está cerrada',403)
         const clis=await Promise.all((input.cli ? [input.cli] : CLI_KINDS).map(async (cli:string)=>({cli,...await this.usage.forCli(cli,input.model)})))
         return {generated_at:new Date().toISOString(),clis,notices:who ? await this.usageNotices.pending(who.id,true) : [],
-          guidance:'Las cuotas compartidas no se multiplican por agente. Los datos desconocidos o vencidos no prueban disponibilidad. Conservar progreso y acordar cambios de composición dentro de la autorización vigente.'}
+          guidance:'Las cuotas compartidas no se multiplican por agente. Si existen ventanas con porcentajes, informá esos valores y sus reinicios aunque el estado agregado sea unknown; distinguí alcance específico sin verificar de ausencia de lectura. Los datos desconocidos o vencidos no prueban disponibilidad. Conservar progreso y acordar cambios de composición dentro de la autorización vigente.'}
       }
       case 'suggest_projects': return suggestProjects(store, this.ai, input)
       case 'draft_profile': return draftProfile(store, this.ai, input, signal)

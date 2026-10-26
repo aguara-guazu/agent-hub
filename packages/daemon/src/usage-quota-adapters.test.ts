@@ -61,11 +61,11 @@ it('probe Codex real de protocolo sólo inicializa/lee metadatos y descarta camb
  if(changes)expect(b.bindUsage).toHaveBeenLastCalledWith('openai',opaqueQuotaAccount('openai','changed'),expect.any(String),'profile-ref',undefined)
  }
 })
-it('no llama getUsage cuando Kiro no anuncia la extensión',async()=>{
- const code=`const r=require('node:readline').createInterface({input:process.stdin});r.on('line',line=>{const p=JSON.parse(line);console.log(JSON.stringify(p.method==='initialize'?{id:p.id,result:{agentCapabilities:{}}}:{id:p.id,error:{code:-1,message:'Unexpected call'}}))});`
+it('consulta getUsage aunque Kiro omita la extensión en capabilities',async()=>{
+ const code=`const r=require('node:readline').createInterface({input:process.stdin});r.on('line',line=>{const p=JSON.parse(line);console.log(JSON.stringify(p.method==='initialize'?{id:p.id,result:{agentCapabilities:{}}}:{id:p.id,result:{success:true,data:{overagesEnabled:false,bonusCredits:[],addOnCredits:[],usageBreakdowns:[{resourceType:'CREDIT',hasLimit:true,used:2,limit:10}]}}}))});`
  const protocol=new ChatProtocol('acp',process.execPath,['-e',code],process.cwd(),()=>{},async()=>({}));processes.push(protocol)
  const b=broker();await collectProtocolQuota(protocol,'kiro',b as unknown as NativeChatClient)
- expect(b.reportUsage.mock.calls[0]).toEqual([expect.anything(),expect.objectContaining({reason:'native_usage_not_advertised'}),undefined])
+ expect(b.reportUsage.mock.calls[0]).toEqual([expect.anything(),expect.objectContaining({complete:true,windows:[expect.objectContaining({used:2,limit:10})]}),undefined])
 })
 
 it('Codex respeta el bloqueo nativo aunque el porcentaje de ventana parezca libre',()=>{
@@ -147,4 +147,15 @@ it('una lectura Codex vacía activa backoff sin publicar un pool provisional',as
  const b=broker()
  await expect(collectProtocolQuota(protocol,'codex_cli',b as unknown as NativeChatClient,'profile')).rejects.toThrow('native_usage_unavailable')
  expect(b.reportUsage).not.toHaveBeenCalled()
+})
+it('Claude control conserva porcentajes y reinicios sin confundir cuota general con un modelo',async()=>{
+ const {claudeControlQuotas}=await import('./usage-quota-adapters.js')
+ const future=new Date(now+3600000).toISOString()
+ const samples=claudeControlQuotas({rate_limits_available:true,subscription_type:'team',behaviors:{private:'SECRET'},rate_limits:{five_hour:{utilization:18,resets_at:future},seven_day:{utilization:24,resets_at:future},model_scoped:[{display_name:'Fable',utilization:21,resets_at:future}],limits:[{kind:'weekly_scoped',percent:21,resets_at:future,scope:{model:{display_name:'Fable'}}}]}},now)
+ expect(samples).toHaveLength(2)
+ expect(samples[0]).toMatchObject({source:{adapter:'claude-control'},model_scope:'all',complete:true,windows:[{used:18},{used:24}]})
+ expect(samples[1]).toMatchObject({pool_id:'model-fable',model_scope:'unknown',windows:[{used:21}]})
+ expect(JSON.stringify(samples)).not.toContain('SECRET')
+ expect(claudeControlQuotas({rate_limits_available:false},now)[0]).toMatchObject({status:'unknown',reason:'subscription_limits_unavailable',windows:[]})
+ expect(claudeControlQuotas({rate_limits_available:true,rate_limits:{five_hour:{utilization:'18',resets_at:future}}},now)[0]).toMatchObject({complete:false})
 })

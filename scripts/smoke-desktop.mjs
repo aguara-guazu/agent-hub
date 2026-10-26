@@ -64,7 +64,7 @@ try {
     await page.getByRole('heading', { name: 'Antigravity', exact: true, level: 2 }).waitFor()
     const quotas = page.getByRole('region', { name: 'Cuotas de uso', exact: true })
     await quotas.getByRole('heading', { name: 'Antigravity', exact: true, level: 3 }).waitFor()
-    await quotas.getByText('Cuota desconocida', { exact: true }).waitFor()
+    await quotas.getByText('Sin consulta compatible', { exact: true }).waitFor()
     console.log(`Desktop smoke ${attempt + 1}: global shortcut, renderer, session, memory and Antigravity integration ready; ${process.platform}/${process.arch}`)
     await app.close(); app = undefined
   }

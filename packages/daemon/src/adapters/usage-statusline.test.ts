@@ -22,7 +22,7 @@ it('instala sólo cuando falta, conserva otras claves y reconoce lo ya gestionad
 it('no modifica statusline personal o editada después del plan',()=>{
  const path=join(home,'.claude/settings.json'),personal='{"statusLine":{"type":"command","command":"echo personal"},"other":1}'
  writeFileSync(path,personal);const [changes,drift]=planUsageStatusline(snapshot,endpoint,home)
- expect(changes).toEqual([]);expect(drift[0]?.reason).toContain('personal conservada');expect(readFileSync(path,'utf8')).toBe(personal)
+ expect(changes).toEqual([]);expect(drift).toEqual([]);expect(readFileSync(path,'utf8')).toBe(personal)
  writeFileSync(path,'{}');const [plan]=planUsageStatusline(snapshot,endpoint,home);writeFileSync(path,personal)
  expect(applyChanges(plan).drift).toHaveLength(1);expect(readFileSync(path,'utf8')).toBe(personal)
 })

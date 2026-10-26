@@ -54,8 +54,9 @@ try{
  for(const a of app.store.agentsOfMachine(enrollment.machine.id)){agents[a.cli_kind]=a;state.saveSnapshot(await request(`policy/snapshot/${a.id}`,undefined,enrollment.token,'GET'))}
  const sender=new Client({name:'transport-test-sender',version:'1'});await sender.connect(new StdioClientTransport({...endpoint(agents.codex_cli),cwd:workspace,stderr:'ignore'}));cleanups.push(()=>sender.close())
  const call=async(name,args)=>{const result=await sender.callTool({name:`memory_${name}`,arguments:args});assert.ok(!result.isError,JSON.stringify(result));return JSON.parse(result.content[0].text)}
- const who=await call('chat_join',{path:workspace})
- await call('chat_set_nick',{session_key:who.session_key,nickname:'Mensajero'})
+ const senderEnrollment=await call('chat_join',{path:workspace});assert.equal(senderEnrollment.channel,undefined)
+ await call('chat_set_nick',{session_key:senderEnrollment.session_key,nickname:'Mensajero'})
+ const who=await call('chat_join',{session_key:senderEnrollment.session_key})
  const send=recipient=>call('chat_send',{session_key:who.session_key,channel_id:who.channel.id,title:'Native delivery',text:'Leé esta nota y respondé en este hilo con TRANSPORT_OK. No menciones a nadie. Después marcá este mensaje atendido.',mentions:[recipient],request_id:randomUUID()})
  const log=(name,text)=>{void appendFile(join(directory,`${name}.log`),text)}
 

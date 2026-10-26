@@ -62,7 +62,7 @@ Podés organizar o corregir recuerdos a partir de evidencia: actualizar mediante
 
 ## Colaboración local
 
-Si las herramientas memory_chat_* no están disponibles, la colaboración local está desactivada: continuá con la memoria sin registrarte, recuperar referencias ni coordinar agentes. Cuando están disponibles, para identidad, mensajes y autoridad local, seguí **local-collaboration** al iniciar o reanudar y al recibir avisos. Esa skill es la fuente canónica del protocolo; si no está disponible, recuperala con \`memory_skill_reference\` (\`section: "local-collaboration"\`).
+Si las herramientas memory_chat_* no están disponibles, la colaboración local está desactivada: continuá con la memoria sin registrarte, recuperar referencias ni coordinar agentes. Cuando están disponibles, seguí **local-collaboration** al inicio de cada tarea: el agente principal pregunta si la persona quiere el grupo multiagente del Hub o trabajar solo, salvo que el pedido ya lo elija explícitamente. En modo solo no te registres ni uses colaboración. Antes de crear un canal, preguntá indicando nombre y objetivo y esperá autorización. Esa skill es la fuente canónica del protocolo; si no está disponible, recuperala con \`memory_skill_reference\` (\`section: "local-collaboration"\`).
 
 ## Al empezar a trabajar: el proyecto de la carpeta
 

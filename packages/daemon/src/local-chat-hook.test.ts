@@ -56,8 +56,10 @@ it('mantiene una conexión pasiva en carpeta común sin afirmar que ya existe un
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({session:{label:'Sin nick',id:'native:one'},channel:{id:'pending',path:'/ordinary',kind:'virtual',activated_at:null},team:{leader_id:null},pending:[]})}))
   const result=await localChatHook(state,'agent','codex_cli',{session_id:'session',cwd:'/ordinary',hook_event_name:'SessionStart'})
   expect(JSON.stringify(result.output)).toContain('sin canal activo')
+  expect(JSON.stringify(result.output)).toContain('grupo multiagente del Hub o trabajar sólo con el agente normal')
+  expect(JSON.stringify(result.output)).toContain('En modo solo no registres nickname')
   expect(JSON.stringify(result.output)).toContain('memory_chat_create_channel')
-  expect(JSON.stringify(result.output)).toContain('sólo si la persona pide explícitamente')
+  expect(JSON.stringify(result.output)).toContain('Antes de crear un canal, preguntá')
 })
 
 it('un rechazo definitivo informa el motivo sin bloquear la CLI ni mantener listeners',async()=> {
@@ -125,4 +127,15 @@ it.each(['PreToolUse','BeforeTool','PostToolUse','PostToolUseFailure'])('no inye
   const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({pending:[]})}))
   expect(await localChatHook(state,'agent','claude_code',{session_id:'session',cwd:'/worktree',hook_event_name:event})).toEqual({})
+})
+
+it('injects only enrollment before naming even when a legacy response contains channel and peer names',async()=>{
+  const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({session:{id:'native:one',needs_nickname:true},channel:{id:'secret-channel',name:'SECRET CHANNEL',path:'/secret/path'},team:{leader_nickname:'SECRET PEER'},pending:[{message_id:'secret-message'}]})}))
+  const result=await localChatHook(state,'agent','gemini_cli',{session_id:'session',cwd:'/worktree',hook_event_name:'SessionStart'})
+  const context=JSON.stringify(result.output)
+  expect(context).toContain('memory_chat_set_nick')
+  expect(context).not.toContain('SECRET');expect(context).not.toContain('/secret');expect(context).not.toContain('secret-message')
+  const boundary=await localChatHook(state,'agent','gemini_cli',{session_id:'session',cwd:'/worktree',hook_event_name:'PreToolUse'})
+  expect(boundary).toEqual({})
 })

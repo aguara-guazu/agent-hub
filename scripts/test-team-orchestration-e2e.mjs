@@ -102,10 +102,13 @@ try {
   const endpoint=endpoints[kind],mcp=new Client({name:`team-smoke-${nick}`,version:'1'})
   await mcp.connect(new StdioClientTransport({command:endpoint.command,args:endpoint.args,cwd:path,stderr:'ignore',env:{...process.env,ORCA_WORKTREE_ID:space}}));clients.push(mcp)
   const call=async(name,args={})=>{const result=await mcp.callTool({name:`memory_${name}`,arguments:args});assert.ok(!result.isError,JSON.stringify(result));return JSON.parse(result.content[0].text)}
-  const who=await call('chat_join',{path});await call('chat_set_nick',{session_key:who.session_key,nickname:nick})
+  const enrollment=await call('chat_join',{path});assert.equal(enrollment.channel,undefined)
+  await call('chat_set_nick',{session_key:enrollment.session_key,nickname:nick})
+  const who=await call('chat_join',{session_key:enrollment.session_key})
   return {mcp,call,who}
  }
  const master=await client('codex_cli',workspace,workspaceId,'Master smoke'),key=master.who.session_key
+ master.who=await master.call('chat_create_channel',{session_key:key,task_key:'team-smoke',name:'Equipo smoke'})
  const tools=await master.mcp.listTools();assert.ok(tools.tools.some(t=>t.name==='memory_team_launch'))
  const catalog=await master.call('team_catalog',{session_key:key})
  assert.ok(catalog.launch_context.available)

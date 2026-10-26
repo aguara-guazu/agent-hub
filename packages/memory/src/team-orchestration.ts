@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { realpath } from 'node:fs/promises'
 import { z } from 'zod'
-import { check, parse } from './contracts.js'
+import { check, parse, MemoryError } from './contracts.js'
 import type { AgentContext } from './agents.js'
 import type { LocalChat } from './local-chat.js'
 import { hash } from './store.js'
@@ -18,7 +18,7 @@ export type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata, T
 
 const session = { session_key: z.string().min(32).max(200).optional() }
 const identifier = z.string().uuid()
-const revision = z.string().regex(/^[a-f0-9]{40,64}$/i)
+const revision = z.union([z.string().regex(/^[a-f0-9]{40,64}$/i),z.literal('virtual')])
 const cli = z.enum(['kiro','claude_code','codex_cli'])
 const member = z.object({
   worktree_name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/),
@@ -30,7 +30,7 @@ const member = z.object({
   task: z.string().trim().min(1).max(2000),
   prompt: z.string().trim().min(1).max(16000),
 }).strict()
-const prepareInput = z.object({ ...session, objective:z.string().trim().min(1).max(2000), base_revision:revision,
+const prepareInput = z.object({ ...session, objective:z.string().trim().min(1).max(2000), task_key:z.string().trim().min(1).max(200).optional(), base_revision:revision.optional(), repository_path:z.string().min(1).max(4000).optional(),
   members:z.array(member).min(1).max(20) }).strict().refine(value=>new Set(value.members.map(item=>item.worktree_name)).size===value.members.length,
     'Cada miembro necesita un nombre de worktree distinto')
 const launchInput = z.object({ ...session, plan_id:identifier, digest:z.string().length(64).regex(/^[a-f0-9]+$/),
@@ -58,8 +58,8 @@ const controlInput = z.object({ ...session, plan_id:identifier, member_id:identi
 })
 
 export const teamDefinitions = {
-  team_catalog: ['Consultar el catálogo real de CLI, modelos, esfuerzos y capacidades de lanzamiento. Un modelo listado no prueba cuota ni acceso.', z.object(session).strict()],
-  team_prepare: ['Preparar como líder activo un plan inmutable de equipo Hub o Orca. Antes de lanzar, proponer un plan editable con mezcla de CLI según cuotas frescas confirmadas e idoneidad de los modelos; unknown no significa disponible. Pedir a la persona que elija y confirme el plan exacto. No crea worktrees ni agentes y devuelve el digest exacto para la elección de la persona.', prepareInput],
+  team_catalog: ['Comprobar preparación del equipo antes de investigar el ticket: identidad coordinadora, espacio Git o virtual, CLI y modelos. Devuelve readiness con bloqueos y acciones, y preferred_backend. repository_path permite elegir otro repositorio sin cambiar de sesión. Un modelo listado no prueba cuota ni acceso.', z.object({...session,repository_path:z.string().min(1).max(4000).optional()}).strict()],
+  team_prepare: ['Preparar un plan inmutable. task_key etiqueta la tarea y conserva el canal y su coordinador. Requiere un canal activo creado con chat_create_channel(task_key,name) tras preguntar a la persona y obtener su autorización; preparar nunca crea ni activa canales. repository_path selecciona el repositorio de los trabajadores; base_revision admite el hash completo de cualquier commit local del repositorio, aunque difiera de HEAD; omitido usa HEAD o virtual. Proponer el plan editable y confirmar el plan exacto antes de lanzar. No crea procesos ni worktrees.', prepareInput],
   team_launch: ['Lanzar el plan exacto elegido por la persona. Requiere plan_id, digest sin cambios y referencia textual a la instrucción humana declarada por el líder; conserva permisos nativos y nunca degrada modelo o esfuerzo.', launchInput],
   team_answer: ['Responder como líder vigente una pregunta nativa pendiente de un worker Hub del plan activo. Requiere generación y question_id actuales; answers mapea los IDs de preguntas a {answers:[texto]}. Resolver con el contexto disponible o consultar a la persona y después responder al worker. Las respuestas no se guardan en eventos ni se envían a otro proceso.',answerInput],
   team_control: ['Controlar un miembro Hub del plan aprobado: start, stop, interrupt, send, clear o edit de role/task/prompt. Requiere la generación actual. clear inicia una conversación nueva conservando worktree; cambiar CLI/modelo exige preparar y confirmar otro plan. Devuelve sólo metadatos, nunca terminal, logs ni transcripciones.', controlInput],
@@ -86,13 +86,14 @@ export class TeamOrchestration {
     const definition=teamDefinitions[operation as keyof typeof teamDefinitions]
     check(definition,'Operación de equipo inexistente',404)
     const input=parse(definition[1] as z.ZodType,raw ?? {}) as any
-    const who=await this.chat.identity(agent,input.session_key)
+    check(agent,'Sólo los agentes pueden participar en equipos',403)
+    const who=await this.chat.requireNickname(agent,input.session_key)
     check(!who.closed_at,'La sesión de colaboración está cerrada',403)
     if(!teamReadOperations.includes(operation)) {
       check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
       check(who.nickname?.trim(),'Elegí tu propio nick con chat_set_nick antes de participar.',409)
     }
-    if(operation==='team_catalog')return this.catalogView(who)
+    if(operation==='team_catalog')return this.catalogView(who,input.repository_path)
     if(operation==='team_prepare')return this.prepare(input,who)
     if(operation==='team_launch')return this.launch(input,who)
     if(operation==='team_status')return this.status(input.plan_id,who)
@@ -103,18 +104,37 @@ export class TeamOrchestration {
     throw new Error('unreachable')
   }
 
-  private async catalogView(who:Record<string,any>) {
+  private async catalogView(who:Record<string,any>,repositoryPath?:string) {
     const value=await this.catalog.catalog(),channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[who.channel_id]))[0]
-    let launch_context:{orca_workspace_id:string|null;available:boolean;reason?:string}={orca_workspace_id:channel?.orca_workspace_id ?? null,available:false,
-      reason:this.orca.provider==='hub'?'Esta sesión no pertenece a un canal Git activo.':'Esta sesión no pertenece a un worktree Orca activo.'}
-    if(channel && this.parentId(channel) && !channel.closed_at) {
-      try {
-        const workspace=await this.orca.workspace(this.parentId(channel))
-        launch_context=(this.orca.provider==='hub'?workspace.path===await realpath(channel.path):workspace.id===channel.orca_workspace_id) ? {orca_workspace_id:workspace.id,available:true}
-          : {orca_workspace_id:channel.orca_workspace_id,available:false,reason:'El backend devolvió otro worktree.'}
-      } catch {launch_context={orca_workspace_id:channel.orca_workspace_id,available:false,reason:'El backend no confirmó este worktree; el catálogo sigue disponible.'}}
+    const blockers:Array<{code:string;message:string;next_action:string}>=[]
+    const leader=channel?.leader_id ? (await this.db.query('SELECT closed_at,lease_until FROM chat_sessions WHERE id=$1',[channel.leader_id]))[0] : null
+    const leaderOffline=!!leader && (Boolean(leader.closed_at) || !(Date.parse(leader.lease_until)>Date.now()))
+    const canActivate=channel?.kind==='virtual' && !channel.activated_at && !channel.closed_at
+    if(channel?.leader_id!==who.id && !canActivate)blockers.push({code:'coordinator_required',
+      message:leaderOffline?'El coordinador reconocido está desconectado; esta sesión es miembro.':'Esta sesión no es la coordinadora reconocida.',next_action:'La persona puede designar esta sesión desde Colaboración → Agentes → Designar coordinador.'})
+    if(canActivate)blockers.push({code:'channel_required',message:'La sesión no tiene un canal activo.',next_action:'Preguntá a la persona si autoriza crear un canal y, tras su confirmación, usá memory_chat_create_channel(task_key, name).'})
+    let workspace:TeamWorkspace|undefined
+    try {
+      check(channel && !channel.closed_at,'El canal está cerrado.',409)
+      workspace=await this.orca.workspace(repositoryPath ?? this.parentId(channel))
+      check(repositoryPath || (this.orca.provider==='hub'?workspace.path===await realpath(channel.path):workspace.id===channel.orca_workspace_id),'El backend devolvió otro espacio de trabajo.',409)
+    } catch(error) {
+      blockers.push({code:'workspace_unavailable',message:error instanceof MemoryError ? error.message:'No se pudo consultar el espacio de trabajo.',
+        next_action:'Verificá la ruta o indicá repository_path. Una carpeta local sin Git admite un espacio virtual.'})
     }
-    const context={...launch_context,provider:this.orca.provider ?? 'orca',workspace_id:launch_context.available?launch_context.orca_workspace_id:null,...(this.orca.provider==='hub'?{orca_workspace_id:null}:{})}
+    const taskChannelAvailable=Boolean(channel && !channel.closed_at)
+    if(taskChannelAvailable) {
+      const blocker=blockers.find(item=>item.code==='coordinator_required')
+      if(blocker)blocker.next_action='Para un equipo nuevo, pedí autorización a la persona y creá su canal con memory_chat_create_channel(task_key, name). Para continuar en el canal existente, la persona puede designar coordinador desde la UI.'
+    }
+    const launch_context={provider:this.orca.provider ?? 'orca',orca_workspace_id:this.orca.provider==='hub'?null:workspace?.id ?? channel?.orca_workspace_id ?? null,
+      workspace_id:workspace?.id ?? null,workspace:workspace ?? null,available:!!workspace && blockers.length===0,
+      reason:blockers.map(item=>item.message).join(' ') || undefined}
+    const preference=await this.preference()
+    const context={...launch_context,readiness:{ready:launch_context.available,blockers,activation_required:canActivate,
+      task_channel_available:taskChannelAvailable,
+      ...(taskChannelAvailable?{next_action:'Preguntá a la persona antes de crear un canal con memory_chat_create_channel(session_key, task_key, name). La carpeta o el worktree no definen el canal.'}:{}),
+      coordinator_id:channel?.leader_id ?? null,coordinator_offline:leaderOffline},preferred_backend:preference}
     if(!value || typeof value!=='object' || Array.isArray(value))return {catalog:value,launch_context:context}
     const catalog=value as Record<string,any>
     const clis=await Promise.all((Array.isArray(catalog.clis)?catalog.clis:[]).map(async(entry:Record<string,any>)=>{
@@ -125,13 +145,55 @@ export class TeamOrchestration {
       try {
         await this.orca.preflight?.([{cli:entry.id as ExtractionCli,model:model.id}])
         return entry
-      } catch {return {...entry,launchable:false,launch_reason:'El adaptador no confirmó los requisitos de lanzamiento de esta CLI en la plataforma actual.'}}
+      } catch(error) {return {...entry,launchable:false,launch_reason:error instanceof MemoryError ? error.message:'El adaptador no confirmó los requisitos de lanzamiento de esta CLI en la plataforma actual.'}}
     }))
     const models=await Promise.all((Array.isArray(catalog.models)?catalog.models:[]).map(async(model:Record<string,any>)=>({
       ...model,usage:await this.quota(model.cli,model.id,who)})))
+    if(context.available && !clis.some(entry=>entry.launchable)) {
+      blockers.push({code:'launcher_unavailable',message:'Ninguna CLI confirmó los requisitos de lanzamiento.',next_action:'Revisá launch_reason de las CLI y su instalación.'})
+      context.available=false;context.readiness.ready=false
+      context.reason=blockers.map(item=>item.message).join(' ')
+    }
     return {...catalog,clis,models,launch_context:context}
   }
 
+  async humanPlan(planId:string) {
+    const plan=(await this.db.query('SELECT * FROM chat_team_plans WHERE id=$1',[planId]))[0]
+    check(plan,'Plan inexistente.',404)
+    const who=(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[plan.created_by]))[0]
+    check(who,'La sesión coordinadora no existe.',409)
+    return this.view(planId,who)
+  }
+  async approveByHuman(planId:string,digest:string,userId:string) {
+    const plan=(await this.db.query('SELECT * FROM chat_team_plans WHERE id=$1',[planId]))[0]
+    check(plan,'Plan inexistente.',404)
+    const who=(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[plan.created_by]))[0]
+    check(who && !who.closed_at && !who.removed_at,'La sesión coordinadora no está disponible.',409)
+    return this.launch({plan_id:planId,digest,human_instruction:`Plan ${planId} con digest ${digest} aprobado desde la UI por ${userId}`},who,userId)
+  }
+  async stopTransferredPlans(planIds:string[]) {
+    const uncertain:string[]=[]
+    if(this.orca.provider==='hub')for(const planId of planIds) {
+      const members=await this.db.query('SELECT id,launch_handle FROM chat_team_members WHERE team_id=$1',[planId])
+      for(const member of members)if(member.launch_handle)await this.serial(member.id,async()=>{
+        try {
+          const receipt=await this.orca.stop?.(member.launch_handle)
+          check(receipt && typeof receipt==='object' && ['stopped','failed'].includes(String((receipt as {state?:string}).state)),'Detención no confirmada.',409)
+          await this.updateRuntime(member.id,{state:'stopped'})
+        }
+        catch {uncertain.push(member.id);await this.updateRuntime(member.id,{state:'unknown'})}
+      })
+    }
+    return {uncertain_members:uncertain}
+  }
+  async preference():Promise<'hub'|'native'> {
+    const row=(await this.db.query("SELECT value FROM settings WHERE key='team_backend'"))[0]
+    return row?.value==='native'?'native':'hub'
+  }
+  async setPreference(value:'hub'|'native') {
+    await this.db.query("INSERT INTO settings(key,value) VALUES('team_backend',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[JSON.stringify(value)])
+    return {preferred_backend:value}
+  }
   private quota(cli:string,model:string,who:Record<string,any>) {
     if(!this.chat.usageEnabled(who.agent_id))return Promise.resolve({status:'unknown' as const,reason:'disabled',pools:[]})
     return this.usage?.forCli(cli,model) ?? Promise.resolve({status:'unknown' as const,reason:'no_observation',pools:[]})
@@ -173,10 +235,13 @@ export class TeamOrchestration {
 
   private async prepare(input:z.infer<typeof prepareInput>,who:Record<string,any>) {
     const channel=await this.master(who)
-    const parent=await this.orca.workspace(this.parentId(channel))
+    check(!input.repository_path || this.orca.provider==='hub','Elegir repositorio requiere el runtime Hub.',409)
+    const parent=await this.orca.workspace(input.repository_path ?? this.parentId(channel))
     await this.master(who)
-    check((this.orca.provider==='hub'?parent.path===await realpath(channel.path):parent.id===channel.orca_workspace_id) && parent.head===input.base_revision,
-      'El worktree master o su revisión no coinciden con la propuesta',409)
+    check(input.repository_path || (this.orca.provider==='hub'?parent.path===await realpath(channel.path):parent.id===channel.orca_workspace_id),
+      'El espacio o su revisión no coinciden con la propuesta; consultá team_catalog.',409)
+    const baseRevision=await this.resolveBase(parent,input.base_revision ?? parent.head)
+    if(parent.kind==='virtual')await this.db.query("UPDATE chat_channels SET kind='virtual',activated_at=COALESCE(activated_at,now()) WHERE id=$1",[channel.id])
     await this.master(who)
     const catalog=await this.catalog.catalog()
     await this.master(who)
@@ -184,25 +249,35 @@ export class TeamOrchestration {
     await this.preflight(input.members,who)
     const planId=randomUUID(),members=input.members.map((item,index)=>({id:randomUUID(),ordinal:index,...item,capabilities:validations[index]}))
     const usage=await Promise.all(input.members.map(async item=>({worktree_name:item.worktree_name,cli:item.cli,model:item.model,...await this.quota(item.cli,item.model,who)})))
-    const document={schema_version:1,id:planId,objective:input.objective,master_channel_id:channel.id,created_by:who.id,
-      parent,base_revision:input.base_revision,catalog,members,usage,
+    const document={schema_version:1,id:planId,objective:input.objective,...(input.task_key?{task_key:input.task_key}:{}),master_channel_id:channel.id,created_by:who.id,
+      parent,base_revision:baseRevision,catalog,members,usage,
       permissions:this.orca.provider==='hub'?'full_access':'native',
       planning_guidance:'Proponer una mezcla de CLI cuando haya cuotas frescas disponibles y modelos adecuados. Explicar la idoneidad de cada modelo, presentar el plan editable y esperar elección y confirmación humana. Unknown no confirma disponibilidad.',
       usage_guidance:'Observación de cuotas, no reserva ni garantía de terminar. Unknown o datos vencidos requieren planificar con incertidumbre; varios agentes comparten saldo.'}
     const digest=hash(document)
     return this.db.transaction(async sql=>{
       const root=(await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by) VALUES($1,$2,$3,$4) RETURNING *',
-        [randomUUID(),channel.id,`Equipo: ${input.objective.slice(0,180)}`,who.id]))[0]!
+        [randomUUID(),channel.id,`Equipo: ${channel.scope_key?.startsWith('task:') ? channel.name : input.task_key ?? input.objective.slice(0,80)}`,who.id]))[0]!
       await sql.query(`INSERT INTO chat_team_plans(id,master_channel_id,root_thread_id,created_by,objective,parent,base_revision,plan,digest,state)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'prepared')`,[planId,channel.id,root.id,who.id,input.objective,JSON.stringify(parent),input.base_revision,JSON.stringify(document),digest])
-      for(const item of members)await sql.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,effort,role,task,prompt,capabilities,state)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared')`,[item.id,planId,item.ordinal,item.worktree_name,item.cli,item.model,item.effort ?? null,item.role,item.task,item.prompt,JSON.stringify(item.capabilities ?? null)])
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'prepared')`,[planId,channel.id,root.id,who.id,input.objective,JSON.stringify(parent),baseRevision,JSON.stringify(document),digest])
+      for(const item of members) {
+        await sql.query(`INSERT INTO chat_threads(id,channel_id,title,created_by,team_root_thread_id) VALUES($1,$2,$3,$4,$5)`,
+          [item.id,channel.id,item.worktree_name,who.id,root.id])
+        await sql.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,effort,role,task,prompt,capabilities,state,work_thread_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared',$1)`,[item.id,planId,item.ordinal,item.worktree_name,item.cli,item.model,item.effort ?? null,item.role,item.task,item.prompt,JSON.stringify(item.capabilities ?? null)])
+      }
       await this.event(sql,planId,null,'prepared',who.id,channel.id,root.id,{digest})
       return this.view(planId,who,sql)
     })
   }
 
-  private async launch(input:z.infer<typeof launchInput>,who:Record<string,any>) {
+  private async resolveBase(parent:TeamWorkspace,base:string) {
+    if(this.orca.baseRevision)return this.orca.baseRevision(parent,base)
+    check(base===parent.head,'Este backend sólo admite el HEAD del padre; elegí el runtime Hub para usar otro commit como base.',409)
+    return base
+  }
+
+  private async launch(input:z.infer<typeof launchInput>,who:Record<string,any>,ownerId?:string) {
     await this.master(who)
     const plan=(await this.db.query('SELECT * FROM chat_team_plans WHERE id=$1',[input.plan_id]))[0]
     check(plan && plan.created_by===who.id && plan.master_channel_id===who.channel_id,'El plan no pertenece a este líder',403)
@@ -215,11 +290,12 @@ export class TeamOrchestration {
     await this.master(who)
     const current=await this.orca.workspace(parent.id)
     await this.master(who)
-    check(current.id===parent.id && current.repo_id===parent.repo_id && current.path===parent.path && current.head===plan.base_revision,
+    check(current.id===parent.id && current.repo_id===parent.repo_id && current.path===parent.path && current.head===parent.head,
       'El worktree master cambió desde la propuesta; prepará y elegí un plan nuevo',409)
+    await this.resolveBase(current,plan.base_revision)
     const claimed=await this.db.transaction(async sql=>{
-      const rows=await sql.query(`UPDATE chat_team_plans SET state='launching',human_instruction=$3,launched_by=$2,launch_started_at=now(),updated_at=now()
-        WHERE id=$1 AND state='prepared' RETURNING id`,[plan.id,who.id,input.human_instruction])
+      const rows=await sql.query(`UPDATE chat_team_plans SET state='launching',human_instruction=$3,launched_by=$2,launch_started_at=now(),updated_at=now(),approval_source=$4,approved_by_user_id=$5
+        WHERE id=$1 AND state='prepared' RETURNING id`,[plan.id,who.id,input.human_instruction,ownerId?'owner_ui':'coordinator_declaration',ownerId ?? null])
       if(rows.length)await this.event(sql,plan.id,null,'launching',who.id,who.channel_id,plan.root_thread_id,{digest:plan.digest})
       return rows.length>0
     })
@@ -262,7 +338,8 @@ export class TeamOrchestration {
     if(!await this.launchActive(plan,who))return false
     let workspace:TeamWorkspace
     try {
-      workspace=await this.orca.create(parent,member.worktree_name)
+      workspace=plan.base_revision===parent.head ? await this.orca.create(parent,member.worktree_name)
+        : await this.orca.create(parent,member.worktree_name,plan.base_revision)
       check(workspace.repo_id===parent.repo_id && workspace.head===plan.base_revision && workspace.id!==parent.id,
         'El backend devolvió un worktree hijo distinto del plan',502)
     } catch(error) {await this.unknown(plan,member,'workspace',who,error);return true}
@@ -276,7 +353,7 @@ export class TeamOrchestration {
       AND EXISTS(SELECT 1 FROM chat_team_plans t WHERE t.id=team_id AND t.state='launching') RETURNING id`,[member.id])
     if(!launching.length)return false
     if(!await this.launchActive(plan,who))return false
-    const prompt=this.workerPrompt(plan,member,token)
+    const prompt=this.workerPrompt(token)
     let receipt:TeamLaunchReceipt
     try {receipt=await this.orca.launch(workspace,{member_id:member.id,authorize:async()=>{
       await this.checkQuota([member],who)
@@ -394,10 +471,16 @@ export class TeamOrchestration {
         const used=await sql.query(`UPDATE chat_team_members SET state='joined',invitation_used_at=now(),invitation_hash=NULL,session_id=$2,channel_id=$3,updated_at=now()
           WHERE id=$1 AND invitation_used_at IS NULL AND invitation_hash=$4 RETURNING *`,[member.id,who.id,who.channel_id,digest])
         check(used.length,'La invitación ya fue consumida',409)
+        // The approved invitation also authorizes this worker's virtual conversation.
+        await sql.query("UPDATE chat_channels SET activated_at=COALESCE(activated_at,now()),leader_id=COALESCE(leader_id,$2) WHERE id=$1 AND kind='virtual' AND closed_at IS NULL",[who.channel_id,who.id])
         await this.event(sql,member.team_id,member.id,'joined',who.id,who.channel_id,member.root_thread_id,{})
-        return {team_id:member.team_id,member_id:member.id,root_thread_id:member.root_thread_id,master_channel_id:member.master_channel_id,
+        const plan=(await sql.query('SELECT * FROM chat_team_plans WHERE id=$1',[member.team_id]))[0]!
+        const peers=await sql.query('SELECT id,session_id,role,task,cli,model,state,work_thread_id FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal,id',[member.team_id])
+        return {team_id:member.team_id,member_id:member.id,root_thread_id:member.root_thread_id,work_thread_id:member.work_thread_id,master_channel_id:member.master_channel_id,
           master_session_id:member.created_by,session:{id:who.id,channel_id:who.channel_id},state:'joined',
-          guidance:'El master coordina desde root_thread_id. El líder de tu canal hijo conserva su rol local y no reemplaza al master.'}
+          task:member.task,role:member.role,prompt:member.prompt,peers,
+          authorization:{...this.authorization(plan),assignment:plan.plan.members.find((entry:{id:string})=>entry.id===member.id)},source_workspace:plan.parent,
+          guidance:'El master coordina desde root_thread_id como TL y resuelve decisiones técnicas dentro del alcance aprobado. La autorización adjunta indica su procedencia; no autoriza acciones ajenas al plan ni levanta restricciones de la CLI. No exijas una segunda aprobación directa de la persona para la misma acción ya autorizada. Si falta alcance o hay un bloqueo real, reportá la acción, la regla o error concreto y lo que falta al master. No abras preguntas directas a la persona; consultá al master por el Hub mencionando master_session_id. Los pares pueden pedirte subtareas dentro de tu rol por el hilo del equipo: respondé al solicitante y escalá al TL sólo conflictos o decisiones fuera de alcance. Usá work_thread_id para tu trabajo y tus reportes, mencionando master_session_id; root_thread_id es para coordinación general. Los pares pueden responder en tu hilo y vos en el suyo. Registrá trabajo y reportá al incorporarte; si tu tarea depende de una PR u otro resultado, registrá waiting con esa dependencia. No confundas idle con trabajo terminado.'}
       })
       check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
       await this.orca.bind?.(member.id,who.id)
@@ -405,9 +488,13 @@ export class TeamOrchestration {
     })
   }
 
-  private workerPrompt(plan:Record<string,any>,member:Record<string,any>,token:string) {
-    return `${member.prompt}\n\nAgent Hub: incorporación autorizada al equipo ${plan.id}. Conservá tu identidad y canal. Primero usá memory_team_join con invitation=${token}; la invitación vence y se consume una sola vez.
-Consultá dudas al líder master por el Hub en root_thread_id=${plan.root_thread_id}, mencionando a master_session_id=${plan.created_by}. Incluí contexto mínimo, opciones y recomendación, y esperá su respuesta antes de avanzar en lo que depende de ella. No abras preguntas directas a la persona con AskUserQuestion/request_user_input; preferí el hilo del Hub. Si la CLI emite una pregunta nativa, el Hub la deriva al master para que la resuelva o consulte a la persona y te devuelva la respuesta.`
+  private workerPrompt(token:string) {
+    return `Agent Hub: elegí tu nickname y registralo con memory_chat_join y memory_chat_set_nick, conservando la identidad/session_key recibida. Después usá memory_team_join con invitation=${token}. Esa herramienta entrega tu tarea y el contexto del equipo. La invitación vence y se consume una sola vez.`
+  }
+  private authorization(plan:Record<string,any>) {
+    return {plan_id:plan.id,digest:plan.digest,source:plan.approval_source ?? (plan.human_instruction?'legacy_record':null),
+      instruction:plan.human_instruction ?? null,coordinator_id:plan.created_by,approved_by_user_id:plan.approved_by_user_id ?? null,
+      permissions:plan.plan.permissions,scope:plan.objective}
   }
 
   private serial<T>(memberId:string,operation:()=>Promise<T>):Promise<T> {
@@ -507,12 +594,19 @@ Consultá dudas al líder master por el Hub en root_thread_id=${plan.root_thread
           item=await load()
         }
         const token=randomBytes(32).toString('base64url'),expires=new Date(Date.now()+30*60_000).toISOString()
-        await this.db.query(`UPDATE chat_team_members SET state='launch_intent',session_id=NULL,channel_id=NULL,
-          invitation_used_at=NULL,invitation_hash=$2,invitation_expires_at=$3,launch_handle=NULL,error=NULL,updated_at=now() WHERE id=$1`,
-          [item.id,invitationHash(token),expires])
+        await this.db.transaction(async sql=>{
+          if(item.session_id) {
+            await sql.query("UPDATE chat_sessions SET state='offline',closed_at=COALESCE(closed_at,now()),lease_until=NULL WHERE id=$1",[item.session_id])
+            await sql.query('UPDATE chat_channels SET leader_id=NULL WHERE id=$1 AND leader_id=$2',[item.channel_id,item.session_id])
+            await sql.query("UPDATE chat_deliveries SET cancelled_at=now(),error='Conversación del worker reemplazada' WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL",[item.session_id])
+          }
+          await sql.query(`UPDATE chat_team_members SET state='launch_intent',session_id=NULL,channel_id=NULL,
+            invitation_used_at=NULL,invitation_hash=$2,invitation_expires_at=$3,launch_handle=NULL,error=NULL,updated_at=now() WHERE id=$1`,
+            [item.id,invitationHash(token),expires])
+        })
         // Revalidate authority immediately before the external launch; the per-member lock protects the rotated generation.
         await this.controlAuthority(plan.id,who)
-        const prompt=this.workerPrompt(plan,item,token)
+        const prompt=this.workerPrompt(token)
         try {
           const receipt=await this.orca.launch({id:item.workspace_id,path:item.workspace_path,repo_id:item.workspace_repo_id,head:item.workspace_head},
             {member_id:item.id,resume_worktree:true,authorize:async()=>{
@@ -583,13 +677,26 @@ Consultá dudas al líder master por el Hub en root_thread_id=${plan.root_thread
     check(plan.created_by===who.id || (await sql.query("SELECT id FROM chat_team_members WHERE team_id=$1 AND session_id=$2 AND state='joined'",[planId,who.id])).length>0,
       'La sesión no pertenece a este equipo',403)
     const members=await sql.query(`SELECT id,ordinal,worktree_name,cli,model,effort,role,task,capabilities,state,workspace_id,workspace_path,workspace_repo_id,workspace_head,
-      ${this.orca.provider==='hub'?'runtime,':''}launch_handle,launch_kind,operation_id,prompt_outcome,error,invitation_expires_at,invitation_used_at,session_id,channel_id,created_at,updated_at
+      ${this.orca.provider==='hub'?'runtime,':''}launch_handle,launch_kind,operation_id,prompt_outcome,error,invitation_expires_at,invitation_used_at,session_id,channel_id,work_thread_id,created_at,updated_at
       FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal,id`,[planId])
-    for(const item of members)if(item.runtime)item.runtime=this.publicRuntime(item.runtime)
+    for(const item of members) {
+      if(item.runtime)item.runtime=this.publicRuntime(item.runtime)
+      const session=item.session_id?(await sql.query('SELECT nickname FROM chat_sessions WHERE id=$1',[item.session_id]))[0]:null
+      item.nickname=session?.nickname ?? null
+      item.work=(await sql.query(`SELECT status,waiting_for,summary,updated_at,report_message_id FROM chat_work_state
+        WHERE session_id=$1 AND thread_id IN (SELECT id FROM chat_threads WHERE id=$2 OR team_root_thread_id=$2)
+        ORDER BY updated_at DESC LIMIT 1`,[item.session_id,plan.root_thread_id]))[0] ?? null
+      item.last_report=(await sql.query(`SELECT m.id,m.thread_id,substr(m.text,1,600) AS text,m.created_at FROM chat_messages m
+        JOIN chat_threads t ON t.id=m.thread_id WHERE m.author_id=$1 AND (t.id=$2 OR t.team_root_thread_id=$2)
+        ORDER BY m.seq DESC LIMIT 1`,[item.session_id,plan.root_thread_id]))[0] ?? null
+    }
     return {id:plan.id,digest:plan.digest,objective:plan.objective,state:plan.state,master_channel_id:plan.master_channel_id,
       root_thread_id:plan.root_thread_id,created_by:plan.created_by,parent:plan.parent,base_revision:plan.base_revision,plan:this.chat.usageEnabled(who.agent_id)?plan.plan:{...plan.plan,usage:[],usage_guidance:'La consulta de cuotas está deshabilitada para este cliente.',usage_redacted:true},
       launch:{started_at:plan.launch_started_at,accepted_at:plan.launched_at,instruction_declared:Boolean(plan.human_instruction)},
-      close:{at:plan.closed_at,reason:plan.close_reason},members}
+      authorization:this.authorization(plan),
+      close:{at:plan.closed_at,reason:plan.close_reason},members,
+      progress:{prepared:true,workspaces_created:members.filter(m=>m.workspace_id).length,processes_accepted:members.filter(m=>m.launch_handle && m.prompt_outcome).length,joined:members.filter(m=>m.session_id).length,total:members.length},
+      approval_url:plan.state==='prepared'?`/memory/collaboration?plan=${plan.id}`:null}
   }
 
   private async event(sql:Sql,teamId:string,memberId:string|null,type:string,
