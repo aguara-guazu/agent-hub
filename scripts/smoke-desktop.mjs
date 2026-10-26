@@ -7,7 +7,23 @@ import { dirname, join, resolve } from 'node:path'
 import { URL, fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { exec } from 'node:child_process'
+import { setTimeout as delay } from 'node:timers/promises'
 import assert from 'node:assert/strict'
+
+// A synchronized snapshot can precede the next catalog update and its hook/skill writes.
+async function managedFile(path, ready) {
+  const deadline = Date.now() + 30_000
+  do {
+    try {
+      const text = await readFile(path, 'utf8')
+      if (ready(text)) return text
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+    await delay(100)
+  } while (Date.now() < deadline)
+  throw new Error(`Managed client file did not become ready: ${path}`)
+}
 
 // Run against the installed/unpacked executable, with a fresh profile and no model downloads or external accounts.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -47,9 +63,12 @@ try {
       const { clients } = await response.json()
       return clients.length === 1 && clients[0].cli_kind === 'antigravity' && clients[0].synchronized
     }, undefined, { timeout: 30_000 })
-    const mcp = JSON.parse(await readFile(join(directory, 'home/.gemini/config/mcp_config.json'), 'utf8'))
+    const mcp = JSON.parse(await managedFile(join(directory, 'home/.gemini/config/mcp_config.json'), text => Boolean(JSON.parse(text).mcpServers?.hub?.command)))
     assert.ok(mcp.mcpServers.hub.command, 'Packaged gateway command must be configured')
-    const hooks = JSON.parse(await readFile(join(directory, 'home/.gemini/config/hooks.json'), 'utf8'))['agenthub-memory']
+    const hooks = JSON.parse(await managedFile(join(directory, 'home/.gemini/config/hooks.json'), text => {
+      const entry = JSON.parse(text)['agenthub-memory']
+      return Boolean(entry?.PreToolUse?.[0]?.hooks?.[0]?.command && entry?.Stop?.[0]?.command)
+    }))['agenthub-memory']
     const hookOutput = await new Promise((resolve, reject) => {
       const child = exec(hooks.PreToolUse[0].hooks[0].command, { env, windowsHide: true, timeout: 15_000 },
         (error, stdout) => error ? reject(error) : resolve(stdout))
@@ -58,7 +77,7 @@ try {
     })
     assert.deepEqual(JSON.parse(hookOutput), { decision: 'allow' }, 'Native hook must run from the installed executable')
     for (const variant of ['config', 'antigravity-cli']) {
-      assert.match(await readFile(join(directory, 'home/.gemini', variant, 'skills/memory/SKILL.md'), 'utf8'), /name:/)
+      assert.match(await managedFile(join(directory, 'home/.gemini', variant, 'skills/memory/SKILL.md'), text => /name:/.test(text)), /name:/)
     }
     await page.evaluate(() => { window.location.hash = '/clients' })
     await page.getByRole('heading', { name: 'Antigravity', exact: true, level: 2 }).waitFor()
