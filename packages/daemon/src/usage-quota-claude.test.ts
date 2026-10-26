@@ -1,10 +1,12 @@
 import { afterEach, expect, it } from 'vitest'
-import { mkdtempSync,writeFileSync,rmSync,readFileSync } from 'node:fs'
+import { mkdtempSync,writeFileSync,readFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { readClaudeUsage } from './usage-quota-claude.js'
 const paths:string[]=[]
-afterEach(()=>{for(const p of paths.splice(0))rmSync(p,{recursive:true,force:true})})
+// Cancellation requests termination before the OS releases the child's working directory.
+afterEach(async()=>{for(const p of paths.splice(0))await rm(p,{recursive:true,force:true,maxRetries:10,retryDelay:100})})
 it('consulta control nativo sin prompts, hooks, MCP ni lectura de transcripciones',async()=>{
  const root=mkdtempSync(join(tmpdir(),'claude-quota-'));paths.push(root)
  const script=join(root,'fixture.cjs'),capture=join(root,'calls.jsonl')
