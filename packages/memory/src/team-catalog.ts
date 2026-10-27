@@ -20,7 +20,7 @@ export type TeamLaunchRoute = 'hub_fleet' | 'unsupported'
 const launchRoutes: Record<ExtractionCli, TeamLaunchRoute> = {
   claude_code: 'hub_fleet',
   codex_cli: 'hub_fleet',
-  kiro: 'unsupported',
+  kiro: 'hub_fleet',
 }
 
 const unsupportedClis: ReadonlyArray<{ id: UnsupportedTeamCli; label: string }> = [

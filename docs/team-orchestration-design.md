@@ -105,6 +105,19 @@ mediante `terminal send`. `input-accepted` confirma aceptación de entrada, no
 inferencia ni incorporación. Una falla posterior a crear la terminal conserva
 su handle para inspección.
 
+En la flota del Hub (`HubTeamRuntime`), Kiro corre en segundo plano con
+`kiro-cli acp --model <m> [--effort <e>] --trust-all-tools`, sin terminal.
+El cliente ACP anuncia `fs` y `terminal` deshabilitados, abre `session/new`
+sin servidores MCP adicionales (rige la configuración propia de Kiro, que
+incluye el Hub) y envía la tarea con `session/prompt`. Esa RPC queda abierta
+durante todo el turno: sólo su `stopReason` marca al trabajador idle
+(`refusal` lo marca fallido). La interrupción usa `session/cancel`. Un
+`session/request_permission` residual se responde `cancelled` (nunca se
+concede); otra solicitud del agente que no sea una extensión `_*` falla el
+proceso. La actividad visible sólo toma texto del agente, título y entrada de
+cada herramienta y bloques de texto de sus resultados. Kiro no admite agregar
+entrada a un turno en curso.
+
 ## Verificación
 
 Cubrir catálogo parcial/no instalado, esfuerzo no admitido, líder ajeno,

@@ -89,16 +89,18 @@ export class HubTeamRuntime implements TeamOrca {
     this.requireEnabled()
     const checked = new Map<string, string>()
     for (const member of members) {
-      check(member.cli === 'claude_code' || member.cli === 'codex_cli', 'La flota del Hub admite Claude Code y Codex CLI; Kiro todavía no está soportado.', 409)
+      check(member.cli === 'claude_code' || member.cli === 'codex_cli' || member.cli === 'kiro', 'La flota del Hub admite Claude Code, Codex CLI y Kiro.', 409)
       check(validCliModel(member.model), 'Elegí un nombre de modelo válido.', 400)
       check(!member.effort || /^[a-z][a-z0-9_-]{0,39}$/.test(member.effort), 'Esfuerzo inválido.', 400)
       let help = checked.get(member.cli)
       if (!help) {
-        help = await this.run(member.cli === 'claude_code' ? 'claude' : 'codex', member.cli === 'claude_code' ? ['--help'] : ['app-server', '--help'])
+        help = await this.run(member.cli === 'claude_code' ? 'claude' : member.cli === 'kiro' ? 'kiro-cli' : 'codex',
+          member.cli === 'claude_code' ? ['--help'] : member.cli === 'kiro' ? ['acp', '--help'] : ['app-server', '--help'])
         checked.set(member.cli, help)
       }
       const required = member.cli === 'claude_code'
         ? ['--print', '--input-format', '--output-format', '--verbose', '--dangerously-skip-permissions', '--model', '--session-id', '--resume', ...(member.effort ? ['--effort'] : [])]
+        : member.cli === 'kiro' ? ['--model', '--trust-all-tools', ...(member.effort ? ['--effort'] : [])]
         : ['--listen', 'stdio']
       check(required.every(flag => help.includes(flag)), 'La CLI instalada no confirma el protocolo nativo requerido por la flota del Hub. Actualizá la CLI antes de lanzar.', 409)
       this.requireEnabled()
@@ -206,7 +208,7 @@ export class HubTeamRuntime implements TeamOrca {
       const current = await this.unchanged(workspace, member.resume_worktree === true)
       await member.authorize?.()
       this.requireEnabled()
-      check(member.cli === 'claude_code' || member.cli === 'codex_cli', 'CLI no soportada por la flota del Hub.', 409)
+      check(member.cli === 'claude_code' || member.cli === 'codex_cli' || member.cli === 'kiro', 'CLI no soportada por la flota del Hub.', 409)
       this.nextGenerations.set(id, randomUUID())
       attempted = true
       const result = await this.manager.start({ id, cli: member.cli, cwd: current.path, model: member.model, prompt: member.prompt,

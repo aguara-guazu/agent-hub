@@ -14,13 +14,13 @@ function runtime(overrides: Partial<Record<ExtractionCli, CliStatus>> = {}) {
 }
 
 describe('TeamCatalog', () => {
-  it('separa instalación, catálogo, selección y lanzamiento, con unsupported explícitos', async () => {
+  it('separa instalación, catálogo, selección y lanzamiento, con Kiro en la flota y unsupported explícitos', async () => {
     const result = await new TeamCatalog(runtime()).catalog()
 
     expect(result.clis.slice(0, 3)).toEqual([
       { id: 'claude_code', label: 'Claude Code', installed: true, catalogable: true, model_selectable: true, launchable: true, launch_route: 'hub_fleet', checked_at: checkedAt, source: 'native' },
       { id: 'codex_cli', label: 'Codex', installed: true, catalogable: true, model_selectable: true, launchable: true, launch_route: 'hub_fleet', checked_at: checkedAt, source: 'native' },
-      { id: 'kiro', label: 'Kiro CLI', installed: false, catalogable: true, model_selectable: false, launchable: false, launch_route: 'unsupported', checked_at: checkedAt, source: 'native', detail: 'Kiro no detectado.' },
+      { id: 'kiro', label: 'Kiro CLI', installed: false, catalogable: true, model_selectable: false, launchable: false, launch_route: 'hub_fleet', checked_at: checkedAt, source: 'native', detail: 'Kiro no detectado.' },
     ])
     expect(result.clis.slice(3).map(cli => ({ id: cli.id, installed: cli.installed, catalogable: cli.catalogable, model_selectable: cli.model_selectable, launchable: cli.launchable, launch_route: cli.launch_route, source: cli.source }))).toEqual([
       { id: 'gemini_cli', installed: null, catalogable: false, model_selectable: false, launchable: false, launch_route: 'unsupported', source: 'unsupported' },
@@ -91,12 +91,12 @@ describe('TeamCatalog', () => {
     expect(validatedFallback).toMatchObject({
       cli: 'kiro', model: 'gpt-5.6-sol', effort: 'high',
       capabilities: {
-        cli: { launch_route: 'unsupported', launchable: false, source: 'native' },
+        cli: { launch_route: 'hub_fleet', launchable: true, source: 'native' },
         model: { access: 'unverified', reasoning_efforts_source: 'fallback', role_hints: [{ role: 'implementation', source: 'heuristic' }] },
       },
     })
     const kiro = (await fallback.catalog()).clis.find(cli => cli.id === 'kiro')
-    expect(kiro).toMatchObject({ installed: true, catalogable: true, model_selectable: true, launchable: false, launch_route: 'unsupported' })
+    expect(kiro).toMatchObject({ installed: true, catalogable: true, model_selectable: true, launchable: true, launch_route: 'hub_fleet' })
     expect(validatedFallback.capabilities.model.warnings).toEqual([expect.stringContaining('compatibilidad declarada por el adaptador')])
 
     const unknown = new TeamCatalog(runtime({ kiro: { installed: true, checked_at: checkedAt, source: 'native', models: [{ id: 'unknown', name: 'Unknown', reasoning_efforts: [], reasoning_efforts_source: 'fallback' }] } }))

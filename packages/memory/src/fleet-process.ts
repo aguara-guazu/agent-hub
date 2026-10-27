@@ -6,7 +6,7 @@ import { FleetActivityBuffer, unavailableActivity, type FleetActivity } from './
 export type FleetState = 'starting' | 'busy' | 'idle' | 'stopped' | 'failed' | 'unknown' | 'waiting_input'
 export interface FleetStart {
   id: string
-  cli: 'claude_code' | 'codex_cli'
+  cli: 'claude_code' | 'codex_cli' | 'kiro'
   cwd: string
   model: string
   effort?: string
@@ -57,6 +57,7 @@ type Session = {
   status: FleetStatus
   activity: FleetActivityBuffer
   claudeMessageId?: string
+  acpSegment: number
   child: ChildProcessWithoutNullStreams
   closed: Promise<void>
   exited: boolean
@@ -112,13 +113,14 @@ export class FleetProcessManager {
     if (!this.live(s) || !s.child.stdin.writable) throw new Error('fleet_process_unavailable')
     s.child.stdin.write(JSON.stringify(packet) + '\n')
   }
-  private request(s: Session, method: string, params: Packet): Promise<Packet> {
+  /** timeoutMs=0 waits for the native reply; an ACP prompt only answers when its turn ends. */
+  private request(s: Session, method: string, params: Packet, timeoutMs = this.options.requestTimeoutMs ?? 30_000): Promise<Packet> {
     const id = ++s.seq
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         s.pending.delete(id)
         reject(new Error('fleet_protocol_timeout'))
-      }, this.options.requestTimeoutMs ?? 30_000)
+      }, timeoutMs || 2_147_483_647)
       s.pending.set(id, { resolve, reject, timer })
       try { this.write(s, { jsonrpc: '2.0', id, method, params }) }
       catch (error) { clearTimeout(timer); s.pending.delete(id); reject(error) }
@@ -171,6 +173,7 @@ export class FleetProcessManager {
       }
       return
     }
+    if (s.status.cli === 'kiro') { this.receiveAcp(s, packet); return }
     if (packet.id !== undefined && !packet.method) {
       const pending = s.pending.get(packet.id)
       if (!pending) return
@@ -206,6 +209,47 @@ export class FleetProcessManager {
       else this.fail(s, turn.status === 'failed' ? 'fleet_turn_failed' : 'fleet_invalid_turn_status')
     }
     if (packet.method === 'error' && params.willRetry === false) this.fail(s, 'fleet_turn_failed')
+  }
+
+  private receiveAcp(s: Session, packet: Packet) {
+    if (packet.id !== undefined && !packet.method) {
+      const pending = s.pending.get(packet.id)
+      if (!pending) return
+      clearTimeout(pending.timer); s.pending.delete(packet.id)
+      if (packet.error) pending.reject(new Error('fleet_rpc_error'))
+      else pending.resolve(packet.result ?? {})
+      return
+    }
+    if (packet.id !== undefined && packet.method) {
+      // Members start with --trust-all-tools; a remaining permission prompt is outside the plan and is never granted.
+      if (packet.method === 'session/request_permission') {
+        this.write(s, { jsonrpc: '2.0', id: packet.id, result: { outcome: { outcome: 'cancelled' } } })
+        return
+      }
+      this.write(s, { jsonrpc: '2.0', id: packet.id, error: { code: -32601, message: 'Unsupported fleet client request' } })
+      // ACP reserves "_" methods for optional extensions; anything else was not advertised by this client.
+      if (typeof packet.method !== 'string' || !packet.method.startsWith('_')) this.fail(s, 'fleet_unexpected_server_request')
+      return
+    }
+    if (packet.method !== 'session/update' || !s.status.native_id || packet.params?.sessionId !== s.status.native_id) return
+    this.observeAcp(s, packet.params.update)
+  }
+  private observeAcp(s: Session, update: Packet | undefined) {
+    const turn = s.status.turn_id
+    if (!turn || !update) return
+    if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+      s.activity.stream(`kiro:${turn}:text:${s.acpSegment}`, 'assistant', update.content.text)
+    }
+    if (update.sessionUpdate === 'tool_call' && typeof update.toolCallId === 'string') {
+      s.acpSegment++
+      s.activity.stream(`kiro:${turn}:call:${update.toolCallId}`, 'tool', `${typeof update.title === 'string' ? update.title : 'tool'} ${JSON.stringify(update.rawInput ?? {})}`, true)
+    }
+    if (update.sessionUpdate === 'tool_call_update' && typeof update.toolCallId === 'string' && ['completed', 'failed'].includes(update.status) && Array.isArray(update.content)) {
+      // Explicit text blocks only; diffs and terminals are summarized by their own tool call.
+      const text = update.content.filter((block: Packet) => block?.type === 'content' && block.content?.type === 'text' && typeof block.content.text === 'string')
+        .map((block: Packet) => block.content.text).join('\n')
+      s.activity.stream(`kiro:${turn}:result:${update.toolCallId}`, 'tool', text, true)
+    }
   }
 
   private observeCodex(s: Session, packet: Packet) {
@@ -356,7 +400,7 @@ export class FleetProcessManager {
   }
   private async startSession(input: FleetStart): Promise<FleetStatus> {
     if (this.closing) throw new Error('fleet_manager_closed')
-    if (!input.id || !input.model || !isAbsolute(input.cwd) || !['claude_code', 'codex_cli'].includes(input.cli)) throw new Error('fleet_invalid_start')
+    if (!input.id || !input.model || !isAbsolute(input.cwd) || !['claude_code', 'codex_cli', 'kiro'].includes(input.cli)) throw new Error('fleet_invalid_start')
     const old = this.sessions.get(input.id)
     if (old) {
       if (!['stopped', 'failed'].includes(old.status.state)) throw new Error('fleet_already_running')
@@ -369,14 +413,15 @@ export class FleetProcessManager {
     const args = input.cli === 'claude_code'
       ? ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool=stdio', '--model', input.model,
         ...(input.effort ? ['--effort', input.effort] : []), ...(input.resume_id ? ['--resume', input.resume_id] : ['--session-id', expectedNative!])]
+      : input.cli === 'kiro' ? ['acp', '--model', input.model, ...(input.effort ? ['--effort', input.effort] : []), '--trust-all-tools']
       : ['app-server', '--listen', 'stdio://']
     const env = { ...process.env }
     for (const key of Object.keys(env)) if (/^(AGENTHUB_|ORCA_|ELECTRON_RUN_AS_NODE$|CLAUDECODE$|CLAUDE_CODE_ENTRYPOINT$|CODEX_THREAD_ID$)/i.test(key)) delete env[key]
     const launcher = this.options.launcher ?? ((command, argv, options) => spawn(command, argv, { ...options, stdio: 'pipe' }))
-    const child = launcher(input.cli === 'claude_code' ? 'claude' : 'codex', args, { cwd: input.cwd, env, detached: process.platform !== 'win32', windowsHide: true })
+    const child = launcher(input.cli === 'claude_code' ? 'claude' : input.cli === 'kiro' ? 'kiro-cli' : 'codex', args, { cwd: input.cwd, env, detached: process.platform !== 'win32', windowsHide: true })
     const status: FleetStatus = { id: input.id, cli: input.cli, cwd: input.cwd, model: input.model, state: 'starting', ...(input.effort ? { effort: input.effort } : {}) }
     let closed!: () => void
-    const s: Session = { status, activity: new FleetActivityBuffer(input.prompt), child, closed: new Promise(resolve => { closed = resolve }), exited: false, stopping: false, seq: 0,
+    const s: Session = { status, activity: new FleetActivityBuffer(input.prompt), acpSegment: 0, child, closed: new Promise(resolve => { closed = resolve }), exited: false, stopping: false, seq: 0,
       pending: new Map(), questions: new Map(), expectedNative, ready: undefined, submitting: false, completedTurns: new Set(), eventQueue: Promise.resolve(), cleanup: undefined }
     this.sessions.set(input.id, s)
     this.publish(s, 'starting')
@@ -422,6 +467,17 @@ export class FleetProcessManager {
         if (typeof result.thread?.id !== 'string' || !result.thread.id || (input.resume_id && result.thread.id !== input.resume_id)) throw new Error('fleet_session_mismatch')
         s.status.native_id = result.thread.id
         await this.submit(s, input.prompt)
+      } else if (input.cli === 'kiro') {
+        const init = await this.request(s, 'initialize', { protocolVersion: 1,
+          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'agent-hub-fleet', version: '1' } })
+        if (input.resume_id && !init.agentCapabilities?.loadSession) throw new Error('fleet_resume_unsupported')
+        // The CLI's own MCP configuration (including the Hub) applies; the fleet adds no servers.
+        const result = await this.request(s, input.resume_id ? 'session/load' : 'session/new',
+          { cwd: input.cwd, mcpServers: [], ...(input.resume_id ? { sessionId: input.resume_id } : {}) }, 60_000)
+        const session = input.resume_id ?? result.sessionId
+        if (typeof session !== 'string' || !session) throw new Error('fleet_session_mismatch')
+        s.status.native_id = session
+        this.submitAcp(s, input.prompt)
       } else {
         let timer: ReturnType<typeof setTimeout> | undefined
         const ready = new Promise<void>((resolve, reject) => {
@@ -461,6 +517,23 @@ export class FleetProcessManager {
       }
     } finally { s.submitting = false }
   }
+  /** The prompt RPC stays open for the whole turn; only its reply can mark the worker idle. */
+  private submitAcp(s: Session, text: string) {
+    const turn = randomUUID()
+    s.status.turn_id = turn
+    s.acpSegment = 0
+    s.activity.add('user', text)
+    const reply = this.request(s, 'session/prompt', { sessionId: s.status.native_id, prompt: [{ type: 'text', text }] }, 0)
+    this.publish(s, 'busy')
+    reply.then(result => {
+      if (!this.live(s) || s.status.turn_id !== turn) return
+      delete s.status.turn_id
+      if (['end_turn', 'cancelled', 'max_tokens', 'max_turn_requests'].includes(result.stopReason)) this.publish(s, 'idle')
+      else this.fail(s, 'fleet_turn_failed')
+    }, error => {
+      if (s.status.turn_id === turn) this.fail(s, error instanceof Error && /^fleet_[a-z_]+$/.test(error.message) ? error.message : 'fleet_turn_failed')
+    })
+  }
   supportsMidTurn(id: string): boolean {
     const s = this.sessions.get(id)
     return !!s && this.live(s) && s.status.cli === 'codex_cli'
@@ -493,6 +566,7 @@ export class FleetProcessManager {
     if (!s || !this.live(s) || s.status.state !== 'idle' || s.submitting) throw new Error('fleet_not_idle')
     try {
       if (s.status.cli === 'codex_cli') await this.submit(s, text)
+      else if (s.status.cli === 'kiro') this.submitAcp(s, text)
       else { this.writeClaude(s, text); this.publish(s, 'busy') }
     } catch { this.fail(s, 'fleet_send_failed') }
     await s.eventQueue
@@ -507,7 +581,8 @@ export class FleetProcessManager {
       if (s.status.cli === 'codex_cli') {
         if (!s.status.turn_id) throw new Error('fleet_missing_turn_id')
         await this.request(s, 'turn/interrupt', { threadId: s.status.native_id, turnId: s.status.turn_id })
-      } else this.write(s, { type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } })
+      } else if (s.status.cli === 'kiro') this.write(s, { jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: s.status.native_id } })
+      else this.write(s, { type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } })
       // Only a result/completed notification can mark the worker idle.
     } catch { this.fail(s, 'fleet_interrupt_failed') }
     await s.eventQueue
