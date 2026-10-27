@@ -11,7 +11,7 @@ import { HubTeamRuntime, type HubTeamOptions, type HubTeamStatus } from './team-
 const exec = promisify(execFile)
 let directory: string
 const backends: HubTeamRuntime[] = []
-const help = '--print --input-format --output-format --verbose --dangerously-skip-permissions --model --session-id --resume --effort --listen stdio'
+const help = '--print --input-format --output-format --verbose --dangerously-skip-permissions --model --session-id --resume --effort --listen stdio --trust-all-tools'
 const fixture = String.raw`
 const {createInterface}=require('node:readline');
 const [kind,mode,serialized]=process.argv.slice(2),args=JSON.parse(serialized);
@@ -138,11 +138,12 @@ describe('HubTeamRuntime worktrees and native preflight', () => {
     await expect(backend.create(parent, 'worker')).rejects.toThrow('cambió')
     expect(run.mock.calls.some(call => call[1].includes('add'))).toBe(false)
   })
-  it('checks installed native flags and rejects unsupported Kiro and invalid choices before spawning', async () => {
+  it('checks installed native flags, including Kiro ACP, and rejects invalid choices before spawning', async () => {
     const { backend, launched, run } = setup()
-    await backend.preflight([{ cli: 'claude_code', model: 'opus', effort: 'high' }, { cli: 'codex_cli', model: 'exact-model' }])
-    expect(run.mock.calls.map(call => call.slice(0, 2))).toEqual([['claude', ['--help']], ['codex', ['app-server', '--help']]])
-    await expect(backend.preflight([{ cli: 'kiro', model: 'kiro-model' }])).rejects.toThrow('Kiro')
+    await backend.preflight([{ cli: 'claude_code', model: 'opus', effort: 'high' }, { cli: 'codex_cli', model: 'exact-model' }, { cli: 'kiro', model: 'kiro-model', effort: 'high' }])
+    expect(run.mock.calls.map(call => call.slice(0, 2))).toEqual([['claude', ['--help']], ['codex', ['app-server', '--help']], ['kiro-cli', ['acp', '--help']]])
+    const noAcp = setup('normal', { run: async () => ({ stdout: '--help --model' }) })
+    await expect(noAcp.backend.preflight([{ cli: 'kiro', model: 'kiro-model' }])).rejects.toThrow('protocolo nativo')
     await expect(backend.preflight([{ cli: 'codex_cli', model: '-config' }])).rejects.toThrow('modelo válido')
     expect(launched).not.toHaveBeenCalled()
     const old = setup('normal', { run: async () => ({ stdout: '--help --model' }) })
