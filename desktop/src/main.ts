@@ -15,6 +15,7 @@ import { windowOptions, isAllowedNavigation } from './window.js'
 import { buildTrayTemplate, TRAY_TOOLTIP, type TrayAction } from './tray.js'
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus, type OpenFileResult } from './ipc.js'
+import { NavigationRelay } from './navigation.js'
 import { AutoUpdater, type UpdateStatus } from './updater.js'
 import { SilentUpdates, hiddenUpdateLaunch, updateRelaunchArgs } from './silent-updates.js'
 import { defaultClientDeps, isClientRunning, restartClient, supportsClientRestart } from './clients.js'
@@ -187,6 +188,8 @@ function notify(title: string, body: string): void {
     // Sin centro de notificaciones no pasa nada: el menú de la barra muestra lo mismo.
   }
 }
+
+const navigation = new NavigationRelay(route => mainWindow?.webContents.send(IPC.navigate, route))
 
 const silentUpdates = new SilentUpdates({
   check: () => updater.check(),
@@ -462,6 +465,8 @@ function createWindow(token: string, hidden: boolean): void {
   win.on('session-end', () => { void quit() })
   win.on('show', refreshTray)
   win.on('hide', refreshTray)
+  // Una recarga (reinicio del core) vacía el renderer: las rutas pedidas hasta que vuelva a declararse listo quedan pendientes.
+  win.webContents.on('did-start-loading', () => navigation.detach())
   win.webContents.on('will-navigate', (event, url) => {
     if (!isAllowedNavigation(win.webContents.getURL(), url)) {
       event.preventDefault()
@@ -502,6 +507,7 @@ function registerIpc(): void {
       restartingClient = false
     }
   })
+  ipcMain.handle(IPC.attachNavigation, () => navigation.attach())
   ipcMain.handle(IPC.getAutostart, safeAutostart)
   ipcMain.handle(IPC.setAutostart, (_event, enabled: boolean) => {
     autostart.setEnabled(Boolean(enabled))

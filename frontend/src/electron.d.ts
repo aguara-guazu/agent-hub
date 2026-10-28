@@ -39,6 +39,8 @@ export interface AgentHubBridge {
   restartClient(cliKind: string): Promise<ClientRestartResult>
   /** Abre un PDF guardado con la aplicación asociada del sistema; `ok: false` cuando no hay ninguna. Ausente en versiones anteriores del escritorio. */
   openStoredPdf?(versionId: string): Promise<{ ok: boolean; detail: string }>
+  /** Pedidos de navegación del proceso principal (clic en una notificación). Ausente en versiones anteriores del escritorio. */
+  onNavigate?(listener: (route: string) => void): () => void
 }
 
 declare global {

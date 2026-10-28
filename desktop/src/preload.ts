@@ -24,6 +24,42 @@ const bridge: AgentHubBridge = {
   syncNow: () => ipcRenderer.invoke(IPC.syncNow) as Promise<void>,
   restartClient: (cliKind: string) => ipcRenderer.invoke(IPC.restartClient, cliKind) as Promise<ClientRestartResult>,
   openStoredPdf: (versionId: string) => ipcRenderer.invoke(IPC.openStoredPdf, versionId) as Promise<OpenFileResult>,
+  onNavigate: (listener: (route: string) => void) => {
+    navigationListeners.add(listener)
+    const handler = (_event: unknown, route: unknown): void => { if (typeof route === 'string') listener(route) }
+    ipcRenderer.on(IPC.navigate, handler)
+    attachNavigation()
+    deliverPendingRoute()
+    return () => {
+      navigationListeners.delete(listener)
+      ipcRenderer.removeListener(IPC.navigate, handler)
+    }
+  },
+}
+
+/**
+ * La ruta pendiente se pide una sola vez por carga de página y se entrega al primer
+ * listener vivo: React puede montar, desmontar y volver a montar el efecto que se suscribe.
+ */
+const navigationListeners = new Set<(route: string) => void>()
+let navigationAttached = false
+let undeliveredRoute: string | null = null
+
+function attachNavigation(): void {
+  if (navigationAttached) return
+  navigationAttached = true
+  void (ipcRenderer.invoke(IPC.attachNavigation) as Promise<string | null>).then(route => {
+    undeliveredRoute = route
+    deliverPendingRoute()
+  })
+}
+
+function deliverPendingRoute(): void {
+  const listener = [...navigationListeners][0]
+  if (!listener || !undeliveredRoute) return
+  const route = undeliveredRoute
+  undeliveredRoute = null
+  listener(route)
 }
 
 contextBridge.exposeInMainWorld('agentHub', bridge)

@@ -10,6 +10,7 @@ import { NavigationControls } from './NavigationControls'
 import { GlobalSearch } from './GlobalSearch'
 import { memoryCall } from '../lib/memory'
 import { api } from '../lib/api'
+import { useDesktopNavigation } from '../lib/desktop'
 import { version } from '../../package.json'
 
 /** `sections` lists the path prefixes that keep the entry highlighted besides `to` itself. */
@@ -49,6 +50,7 @@ function RestartNotices({ clients }: { clients: LocalClient[] }) {
 export function Layout() {
   const [searchOpen, setSearchOpen] = useState(false)
   const closeSearch = useCallback(() => setSearchOpen(false), [])
+  useDesktopNavigation()
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if (event.isComposing || event.altKey || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return

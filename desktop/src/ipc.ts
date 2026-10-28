@@ -24,6 +24,10 @@ export const IPC = {
   restartClient: 'agenthub:restart-client',
   /** invoke: renderer -> main, abre un PDF guardado en la memoria con la aplicación del sistema. */
   openStoredPdf: 'agenthub:open-stored-pdf',
+  /** send: main -> renderer, pide navegar a una ruta de la lista blanca de `navigation.ts`. */
+  navigate: 'agenthub:navigate',
+  /** invoke: renderer -> main, declara que escucha `navigate` y recibe la ruta que quedó pendiente (o `null`). */
+  attachNavigation: 'agenthub:navigation-attach',
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -57,6 +61,8 @@ export interface AgentHubBridge {
   syncNow(): Promise<void>
   restartClient(cliKind: string): Promise<ClientRestartResult>
   openStoredPdf(versionId: string): Promise<OpenFileResult>
+  /** Escucha pedidos de navegación del proceso principal; entrega primero la ruta pendiente, si la hay. */
+  onNavigate(listener: (route: string) => void): () => void
 }
 
 /** Lista blanca de canales que el preload puede usar en cada dirección. */
@@ -69,6 +75,7 @@ export const INVOKE_CHANNELS: readonly IpcChannel[] = [
   IPC.syncNow,
   IPC.restartClient,
   IPC.openStoredPdf,
+  IPC.attachNavigation,
 ]
 
-export const RECEIVE_CHANNELS: readonly IpcChannel[] = [IPC.coreStateChanged]
+export const RECEIVE_CHANNELS: readonly IpcChannel[] = [IPC.coreStateChanged, IPC.navigate]
