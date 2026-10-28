@@ -49,13 +49,15 @@ export class LocalWatchdog {
         FROM chat_work_state w JOIN chat_sessions s ON s.id=w.session_id
         JOIN chat_threads t ON t.id=w.thread_id JOIN chat_channels c ON c.id=t.channel_id
         JOIN chat_channels own ON own.id=s.channel_id
-        LEFT JOIN chat_team_plans p ON p.root_thread_id=t.id
+        LEFT JOIN chat_team_plans p ON p.root_thread_id=COALESCE(t.team_root_thread_id,t.id)
         LEFT JOIN chat_sessions recipient ON recipient.id=c.leader_id
         LEFT JOIN chat_deliveries d ON d.message_id=w.report_message_id AND d.recipient_id=c.leader_id
         LEFT JOIN chat_watchdog_observations o ON o.session_id=w.session_id AND o.work_id=w.work_id
         WHERE s.removed_at IS NULL AND c.closed_at IS NULL AND own.closed_at IS NULL AND t.state='open'
         AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND (own.kind<>'virtual' OR own.activated_at IS NOT NULL)
-        AND ((p.id IS NULL AND s.channel_id=t.channel_id) OR (p.state IN ('launching','launched','partial','uncertain','active')
+        -- A thread linked to a team never falls back to the local case: without a live plan it stays unobserved.
+        AND ((p.id IS NULL AND t.team_root_thread_id IS NULL AND s.channel_id=t.channel_id) OR (p.state IN ('launching','launched','partial','uncertain','active')
+          AND p.master_channel_id=t.channel_id
           AND p.created_by=c.leader_id AND EXISTS(SELECT 1 FROM chat_sessions leader WHERE leader.id=p.created_by AND leader.removed_at IS NULL AND leader.closed_at IS NULL)
           AND ((s.id=p.created_by AND s.channel_id=p.master_channel_id) OR EXISTS(SELECT 1 FROM chat_team_members member
             WHERE member.team_id=p.id AND member.session_id=s.id AND member.channel_id=s.channel_id AND member.state='joined'))))
