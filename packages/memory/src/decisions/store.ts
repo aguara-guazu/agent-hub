@@ -6,7 +6,7 @@ import { codeHmac, deriveCode, formatCode, sameHmac } from './codes.js'
 import { MAX_FOLLOW_UP_CHARS } from './verifier.js'
 import {
   DecisionError, canonicalJson, sha256,
-  type ApprovedItem, type ConsumeResult, type FollowUp, type DecisionItemKind, type DecisionRequestInput, type Exclusion, type ExclusionSink, type Integration,
+  type ApprovedItem, type ConsumeResult, type FollowUp, type OutboxState, type DecisionItemKind, type DecisionRequestInput, type Exclusion, type ExclusionSink, type Integration,
   type IntentState, type ItemState, type ParsedReply, type PublicDecisionRequest, type PublicItemState, type PublicStateSink, type RequestState,
 } from './contract.js'
 
@@ -120,7 +120,6 @@ interface RequestRow {
 interface ItemRow { request_id: string; item_id: string; ordinal: number; kind: DecisionItemKind; project_id: string; summary: string; exact_effect: string; effect_digest: string; operation_key: string; state: ItemState }
 type BindingState = 'reserved' | 'active' | 'quarantined' | 'closed'
 interface BindingRow { id: string; request_id: string; owner_id: string; integration: Integration; account: string; conversation: string | null; team: string | null; remote_user: string | null; provenance: string; delivery_ref: string | null; state: BindingState }
-type OutboxState = 'reserved' | 'sending' | 'sent' | 'uncertain' | 'failed'
 interface OutboxRow { delivery_id: string; request_id: string; binding_id: string; integration: Integration; account: string; correlation: string; native_id: string | null; native_thread: string | null; state: OutboxState }
 export interface IntentRow { intent_id: string; request_id: string; item_id: string; kind: DecisionItemKind; effect: string; effect_digest: string; operation_key: string; generation: number; state: IntentState; remote_ref: string | null; result_digest: string | null; error_code: string | null }
 
@@ -467,7 +466,10 @@ export class DecisionStore {
     })
   }
 
-  /** Salida de `uncertain` con evidencia explícita de una consulta al proveedor: el mensaje existe (recibo nativo) o se comprobó que no existe. */
+  /**
+   * Salida de `uncertain` con evidencia explícita de un adaptador confiable: el mensaje existe (recibo nativo) o hay prueba CONCLUYENTE de que no se envió.
+   * Una búsqueda sin resultados, un 404 o la ausencia de un marcador no es esa prueba: en esos casos la entrega sigue `uncertain`.
+   */
   async reconcileDelivery(deliveryId: string, evidence: { found: true; native: NativeReceipt } | { found: false }): Promise<void> {
     if (evidence.found) { await this.finishSent(deliveryId, evidence.native, ['uncertain']); return }
     this.tx(() => {

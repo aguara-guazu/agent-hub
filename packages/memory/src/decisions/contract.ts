@@ -7,7 +7,7 @@ export const decisionItemKinds: readonly DecisionItemKind[] = ['jira_worklog', '
 export type RequestState = 'open' | 'locked' | 'expired' | 'revoked' | 'superseded' | 'closed'
 export type ItemState = 'pending' | 'approved' | 'rejected' | 'expired' | 'revoked' | 'superseded' | 'blocked_uncertain'
 export type BindingState = 'reserved' | 'active' | 'quarantined' | 'closed'
-export type OutboxState = 'reserved' | 'sent' | 'uncertain' | 'failed'
+export type OutboxState = 'reserved' | 'sending' | 'sent' | 'uncertain' | 'failed'
 export type IntentState = 'pending' | 'prepared' | 'dispatching' | 'succeeded' | 'rejected_before_dispatch' | 'uncertain'
 
 /** Recibo de una acción externa. `uncertain` nunca se reintenta solo. */
