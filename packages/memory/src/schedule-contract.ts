@@ -136,7 +136,7 @@ export interface PublicStateSink {
 /** Direction A to B: the decision module consults it before preparing, consuming, redispatching or reproposing, and denies anything but 'live'. */
 export interface ArtifactAuthorityReader {
   /** 'unavailable' on every artifact after a restore, even without a reference; 'unknown' when no artifact matches. */
-  artifactAuthority(input: { run_id?: string; decision_request_ref?: string }): Promise<'live' | 'unavailable' | 'unknown'>
+  artifactAuthority(input: { run_id: string; decision_request_ref?: string }): Promise<'live' | 'unavailable' | 'unknown'>
 }
 export interface ScheduleEffects { deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests }
 

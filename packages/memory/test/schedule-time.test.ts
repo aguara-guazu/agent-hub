@@ -61,6 +61,17 @@ describe('ocurrencia perdida', () => {
     const rule = { type: 'interval' as const, minutes: 60 }
     expect(iso(lastOccurrenceUpTo(rule, at('2026-10-29T10:00:00Z'), at('2026-10-29T13:30:00Z'), BA))).toBe('2026-10-29T13:00:00.000Z')
   })
+  it('daily resuelve a la última ocurrencia aunque la ausencia supere cientos de días', () => {
+    const rule = { type: 'daily' as const, time: '08:00' }
+    expect(iso(lastOccurrenceUpTo(rule, at('2024-01-01T11:00:00Z'), at('2026-10-28T15:00:00Z'), BA))).toBe('2026-10-28T11:00:00.000Z')
+    const weekdays = { type: 'daily' as const, time: '08:00', weekdays: [2] }
+    expect(iso(lastOccurrenceUpTo(weekdays, at('2024-01-02T11:00:00Z'), at('2026-10-28T15:00:00Z'), BA))).toBe('2026-10-27T11:00:00.000Z')
+  })
+  it('daily no devuelve una ocurrencia anterior a la primera pendiente', () => {
+    const rule = { type: 'daily' as const, time: '08:00' }
+    expect(lastOccurrenceUpTo(rule, at('2026-10-29T11:00:00Z'), at('2026-10-29T10:00:00Z'), BA)).toBeNull()
+    expect(lastOccurrenceUpTo(rule, at('2026-10-29T11:00:00Z'), at('2026-10-29T10:59:00Z'), BA)).toBeNull()
+  })
   it('devuelve null cuando no se perdió nada', () => {
     const rule = { type: 'daily' as const, time: '08:00' }
     expect(lastOccurrenceUpTo(rule, at('2026-10-30T11:00:00Z'), at('2026-10-29T15:00:00Z'), BA)).toBeNull()

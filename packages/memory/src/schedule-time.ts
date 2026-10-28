@@ -83,7 +83,7 @@ export function nextOccurrence(recurrence: Recurrence, after: number, zone: stri
   return null
 }
 
-/** Latest occurrence at or before `now` that is not earlier than `from`, walking forward from `from`; null when none was missed. */
+/** Latest occurrence at or before `now` that is not earlier than `from`; null when none was missed. Never walks the whole gap: daily looks back from the local day of `now`. */
 export function lastOccurrenceUpTo(recurrence: Recurrence, from: number, now: number, zone: string): number | null {
   if (recurrence.type === 'once') {
     const at = Date.parse(recurrence.at)
@@ -94,13 +94,16 @@ export function lastOccurrenceUpTo(recurrence: Recurrence, from: number, now: nu
     const step = recurrence.minutes * MINUTE
     return from + Math.floor((now - from) / step) * step
   }
-  let current: number | null = from, last: number | null = null
-  // A year of daily occurrences bounds the walk; a longer absence still resolves to the most recent one.
-  for (let guard = 0; guard < 400 && current !== null && current <= now; guard++) {
-    last = current
-    current = nextOccurrence(recurrence, current, zone)
+  const [hour, minute] = recurrence.time.split(':').map(Number) as [number, number], today = wallTime(now, zone)
+  // At most one week back finds the latest enabled weekday, however long the machine was off.
+  for (let back = 0; back < 8; back++) {
+    const date = addDays(today, -back)
+    if (recurrence.weekdays && !recurrence.weekdays.includes(isoWeekday(date))) continue
+    const instant = localInstant(date.year, date.month, date.day, hour, minute, zone)
+    if (instant > now) continue
+    return instant >= from ? instant : null
   }
-  return last
+  return null
 }
 
 export interface GraceInput { policy: GracePolicy; minutes: number; until?: string | null }
