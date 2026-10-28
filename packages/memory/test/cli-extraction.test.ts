@@ -208,3 +208,30 @@ it.each(extractionClis)('no reemplaza la configuración si falla la prueba de %s
     expect(get).not.toHaveBeenCalled()
   } finally { await service.close() }
 })
+
+it('la síntesis programada informa el proceso anfitrión y el de la CLI y conserva los argumentos sin herramientas ni MCP', async () => {
+  const launch = setup()
+  const reports: Array<Record<string, unknown>> = []
+  const result = await runtime.synthesize('claude_code', 'fixture', 'Resumí.', { text: 'dato' }, schema, { onSpawn: info => reports.push(info) })
+  expect(result.value).toBeTruthy()
+  const call = launch.mock.calls.findLast(c => c[1].includes('--model'))!
+  expect(call[1].slice(2)).toEqual(['-p', '--output-format', 'json', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '', '--safe-mode', '--no-session-persistence', '--model', 'fixture'])
+  expect(call[2].stdio).toHaveLength(4)
+  expect(call[2].env.AGENTHUB_CONTROL_FD).toBe('3')
+  await vi.waitFor(() => { expect(Object.assign({}, ...reports)).toMatchObject({ host_pid: expect.any(Number), cli_pid: expect.any(Number) }) })
+  const merged = Object.assign({}, ...reports) as { host_pid: number; cli_pid: number }
+  expect(merged.cli_pid).not.toBe(merged.host_pid)
+})
+
+it('una extracción común no abre canal de control ni pasa su variable al proceso', async () => {
+  const launch = setup()
+  await runtime.extract('claude_code', 'fixture', '', { text: 'dato' }, schema)
+  const call = launch.mock.calls.findLast(c => c[1].includes('--model'))!
+  expect(call[2].stdio).toHaveLength(3)
+  expect(call[2].env.AGENTHUB_CONTROL_FD).toBeUndefined()
+})
+
+it('distingue el límite de uso de un fallo transitorio con un código cerrado', async () => {
+  setup()
+  await expect(runtime.extract('codex_cli', 'rate-limit', '', {}, schema)).rejects.toMatchObject({ statusCode: 503, transient: true, code: 'quota_exhausted' })
+})

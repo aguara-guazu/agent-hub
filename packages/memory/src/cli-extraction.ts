@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { childEnv, killTree } from '@agenthub/gateway/platform'
+import { inspectNativeProcess } from '@agenthub/gateway'
 import { Ajv2020 } from 'ajv/dist/2020.js'
 import { check, MemoryError } from './contracts.js'
 import { effortLevels, kiroEfforts } from './reasoning.js'
@@ -62,8 +63,11 @@ function failure(provider: ExtractionCli, output: string): MemoryError {
   // CLI errors can contain credentials or evidence. Classify them without returning their raw text.
   if (/git-bash|CLAUDE_CODE_GIT_BASH_PATH/i.test(output))
     return new MemoryError(409, `${label} necesita Git para Windows (Git Bash). Instálelo o defina la variable CLAUDE_CODE_GIT_BASH_PATH con la ruta de bash.exe.`)
-  if (/rate.?limit|hit.{0,30}limit|usage limit|quota.{0,30}(?:exceed|exhaust)|too many requests|overload|temporar|\b429\b|\b50[0234]\b|ECONNRESET|timed? ?out/i.test(output))
-    return new MemoryError(503, `${label} alcanzó un límite de uso o no respondió. Se reintentará automáticamente.`, true)
+  // A usage limit defers scheduled work until its window resets; overload, 5xx and network errors only retry.
+  if (/rate.?limit|hit.{0,30}limit|usage limit|quota.{0,30}(?:exceed|exhaust)|too many requests|\b429\b/i.test(output))
+    return new MemoryError(503, `${label} alcanzó un límite de uso o no respondió. Se reintentará automáticamente.`, true, 'quota_exhausted')
+  if (/overload|temporar|\b50[0234]\b|ECONNRESET|timed? ?out/i.test(output))
+    return new MemoryError(503, `${label} alcanzó un límite de uso o no respondió. Se reintentará automáticamente.`, true, 'transient')
   if (/log.?in|sign.?in|auth|credential|api.?key|\b40[123]\b|unauthorized|forbidden/i.test(output))
     return new MemoryError(409, `${label} requiere acceso a la cuenta. Revisá su inicio de sesión y la autenticación admitida en modo no interactivo.`)
   if (/model|not found|not support|unknown (?:option|argument)|unexpected argument/i.test(output))
@@ -78,6 +82,32 @@ const codexConfig = ['-c', 'approval_policy="never"', '-c', 'web_search="disable
   '-c', 'features.shell_tool=false', '-c', 'features.unified_exec=false', '-c', 'features.apps=false',
   '-c', 'features.plugins=false', '-c', 'features.hooks=false', '-c', 'features.multi_agent=false',
   '-c', 'features.memories=false', '-c', 'features.skill_search=false', '-c', 'features.skip_host_skill_discovery=true']
+
+export interface SpawnIdentity { host_pid?: number; host_started?: string | null; cli_pid?: number; cli_started?: string | null }
+export type SpawnReport = (identity: SpawnIdentity) => void
+/** Reports the host and, once cli-host announces it on the control pipe, the CLI it started, each with its birth time (a recycled pid never matches it). */
+function reportSpawn(child: ChildProcess, report: SpawnReport) {
+  if (child.pid) {
+    const host = child.pid
+    void inspectNativeProcess(host).then(live => report({ host_pid: host, host_started: live?.started ?? null })).catch(() => report({ host_pid: host, host_started: null }))
+  }
+  const control = child.stdio[3]
+  if (!control || !('setEncoding' in control)) return
+  let buffered = ''
+  control.setEncoding('utf8')
+  control.on('data', (chunk: string) => {
+    buffered += chunk
+    let newline: number
+    while ((newline = buffered.indexOf('\n')) >= 0) {
+      const line = buffered.slice(0, newline); buffered = buffered.slice(newline + 1)
+      let pid: unknown
+      try { pid = (JSON.parse(line) as { cli_pid?: unknown }).cli_pid } catch { continue }
+      if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid < 1) continue
+      void inspectNativeProcess(pid).then(live => report({ cli_pid: pid, cli_started: live?.started ?? null })).catch(() => report({ cli_pid: pid, cli_started: null }))
+    }
+  })
+  control.on('error', () => undefined)
+}
 
 /** Windows can refuse to delete a folder for a moment after the CLI that used it exits. */
 const removal = { recursive: true, force: true, maxRetries: 10, retryDelay: 100 } as const
@@ -122,7 +152,7 @@ export class CliExtractionRuntime {
   }
 
   private async run(provider: ExtractionCli, args: string[], cwd: string, input: string | undefined, signal?: AbortSignal,
-    onEvent?: (event: any, send: (value: unknown) => void, done: () => void) => void, timeoutMs = this.options.requestMs ?? 180_000): Promise<string> {
+    onEvent?: (event: any, send: (value: unknown) => void, done: () => void) => void, timeoutMs = this.options.requestMs ?? 180_000, onSpawn?: SpawnReport): Promise<string> {
     signal?.throwIfAborted()
     if (this.closing && !args.includes('--delete-session')) throw new DOMException('El runtime se está cerrando.', 'AbortError')
     const executable = (this.options.executable ?? findExtractionCli)(provider)
@@ -132,14 +162,15 @@ export class CliExtractionRuntime {
     const combined = AbortSignal.any([lifetime.signal, AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
     // cli-host runs on process.execPath and needs ELECTRON_RUN_AS_NODE; it drops the variable again for native CLIs.
     // Only the Kiro child receives this secret, never argv, stdin, output or other CLIs.
-    const env = childEnv({ ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1', KIRO_API_KEY: provider === 'kiro' ? this.kiroApiKey() : undefined },
+    const env = childEnv({ ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1', ...(onSpawn ? { AGENTHUB_CONTROL_FD: '3' } : {}), KIRO_API_KEY: provider === 'kiro' ? this.kiroApiKey() : undefined },
       // Session markers from a parent assistant are not authentication and must not attach a new run to it.
       Object.fromEntries(['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE'].map(key => [key, undefined])),
       provider === 'claude_code' && args.includes('--effort') ? { CLAUDE_CODE_EFFORT_LEVEL: undefined } : undefined)
     try {
       return await new Promise<string>((resolve, reject) => {
         const child = (this.options.launch ?? spawn)(process.execPath, [fileURLToPath(new URL('./cli-host.js', import.meta.url)), executable!, ...args],
-          { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+          { cwd, env, windowsHide: true, stdio: onSpawn ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'] })
+        if (onSpawn) reportSpawn(child, onSpawn)
         let stdout = '', stderr = '', pending = '', settled = false, discoveryDone = false, problem: unknown
         let force: ReturnType<typeof setTimeout> | undefined, treeKilled = false
         const stop = () => {
@@ -151,7 +182,7 @@ export class CliExtractionRuntime {
           force.unref()
         }
         const abort = () => { problem = signal?.aborted ? signal.reason : lifetime.signal.aborted ? lifetime.signal.reason
-          : new MemoryError(503, `${cliLabels[provider]} no respondió a tiempo. Se puede reintentar.`, true); stop() }
+          : new MemoryError(503, `${cliLabels[provider]} no respondió a tiempo. Se puede reintentar.`, true, 'transient'); stop() }
         const finish = (code: number | null) => {
           if (settled) return
           settled = true
@@ -269,7 +300,12 @@ export class CliExtractionRuntime {
     return request
   }
 
-  async extract(provider: ExtractionCli, model: string, system: string, content: unknown, schema: Record<string, unknown>, signal?: AbortSignal, effort = '') {
+  /** Extraction for a scheduled run: the same tool-less process, with its process identity reported to `onSpawn` so a restart can terminate it. */
+  synthesize(provider: ExtractionCli, model: string, system: string, content: unknown, schema: Record<string, unknown>, options: { signal?: AbortSignal; effort?: string; onSpawn?: SpawnReport } = {}) {
+    return this.extract(provider, model, system, content, schema, options.signal, options.effort ?? '', options.onSpawn)
+  }
+
+  async extract(provider: ExtractionCli, model: string, system: string, content: unknown, schema: Record<string, unknown>, signal?: AbortSignal, effort = '', onSpawn?: SpawnReport) {
     check(validCliModel(model), 'Elegí un nombre de modelo válido.', 400)
     signal?.throwIfAborted()
     // Kiro documents API-key authentication as a requirement of headless mode.
@@ -306,7 +342,7 @@ export class CliExtractionRuntime {
       try {
         const output = await this.run(provider, args, cwd, prompt, signal, provider === 'kiro' ? event => {
           if (typeof event.data?.sessionId === 'string' && /^[\w-]{1,100}$/.test(event.data.sessionId)) sessionId = event.data.sessionId
-        } : undefined)
+        } : undefined, undefined, onSpawn)
         let text: string | undefined, actualModel = model, inputTokens = 0, outputTokens = 0
         if (provider === 'claude_code') {
           let data: any

@@ -1,5 +1,6 @@
 /** The control pipe ties the CLI process tree to the worker, even if the worker crashes. */
 import { spawn } from 'node:child_process'
+import { writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createInterface } from 'node:readline'
 import { childEnv, killTree } from '@agenthub/gateway/platform'
@@ -7,11 +8,15 @@ import { childEnv, killTree } from '@agenthub/gateway/platform'
 const windows = process.platform === 'win32'
 const executable = process.argv[2]!
 const isScript = /\.(?:m?js|cjs)$/.test(executable)
+// The parent asks for the CLI's pid on an extra pipe only when it must record the process (scheduled synthesis); it reads the birth time itself.
+const controlFd = Number(process.env.AGENTHUB_CONTROL_FD)
+delete process.env.AGENTHUB_CONTROL_FD
 // Scripts run on process.execPath and need ELECTRON_RUN_AS_NODE; a native CLI would pass it on to any Electron app it opens.
 const child = spawn(isScript ? process.execPath : executable,
   isScript ? process.argv.slice(2) : process.argv.slice(3), {
     stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: !windows, env: isScript ? process.env : childEnv(),
   })
+if (Number.isInteger(controlFd) && controlFd > 2 && child.pid) try { writeSync(controlFd, JSON.stringify({ cli_pid: child.pid }) + '\n') } catch { /* the parent does not listen */ }
 // Windows locks a process's current directory: the run folder stays removable while this host (or a taskkill it starts) lives.
 if (windows) try { process.chdir(tmpdir()) } catch { /* keep the inherited cwd */ }
 child.stdout!.pipe(process.stdout)
