@@ -166,6 +166,18 @@ describe('DecisionStore: bordes de la revisión de seguridad', () => {
     expect(store.markDispatching(intentB, claimB.generation)).toBe('expired')
     expect(store.intent(intentB)).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'expired' })
   })
+  it('B2: con la solicitud abierta, aprobar 1 de 2 y revocar impide reclamar y despachar', async () => {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-1', 2)
+    const { binding_id } = await activate(request_id)
+    const intent = approveAll(store, request_id, binding_id, 'a', [1]).approved![0]!.intent_id
+    expect(store.publicRequest(request_id).state).toBe('open')
+    const claim = store.claimIntent(intent, 0) as { generation: number }
+    store.revokeRequest(request_id)
+    expect(store.markDispatching(intent, claim.generation)).toBe('stale')
+    expect(store.claimIntent(intent, claim.generation)).toEqual({ rejected: 'state_rejected_before_dispatch' })
+    expect(store.intent(intent)).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'revoked' })
+  })
   it('B2: una solicitud totalmente aprobada (closed) también se puede revocar antes del dispatch', async () => {
     const { store, prepare, activate } = setup()
     const { request_id } = prepare('run-1', 1)
