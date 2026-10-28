@@ -52,7 +52,7 @@ export interface ScheduleSnapshot {
 }
 
 export interface RunContext {
-  run_id: string; schedule_id: string; generation: number; scheduled_for: string; scope: ScheduleScope; project_id: string | null; template: ScheduleTemplate; template_version: number
+  run_id: string; schedule_id: string; generation: number; scheduled_for: string; scope: ScheduleScope; project_id: string | null; template: ScheduleTemplate; template_version: number; title: string
   params: Record<string, unknown>; instructions: string; covered_since: string | null; trigger: RunTrigger
   /** Set when the run waited for quota or for the machine to wake; lets a template label the delivery. */
   deferred_until: string | null
@@ -153,4 +153,6 @@ export interface ScheduleView {
   timezone: string; next_run_at: string | null; next_run_local: string | null; delivery: DeliveryTarget[]; delivery_unavailable: DeliveryTarget[]
   state: ScheduleState; paused_by: Actor | null; revision: number; created_by: { kind: Actor; agent_id: string | null; label: string }; admission_note: string
   last_run?: { id: string; state: RunState; scheduled_for: string; trigger: RunTrigger; skip_reason?: string; deferred_reason?: string }
+  /** Present while a run waits for quota or for the machine to wake. */
+  deferred?: { reason: string; resets_at: string | null; next_attempt_at: string | null }
 }

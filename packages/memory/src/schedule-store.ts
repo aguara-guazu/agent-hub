@@ -26,6 +26,11 @@ export interface RunRow {
 export type NewSchedule = Omit<ScheduleRow, 'revision' | 'paused_by' | 'cancelled_at' | 'cancelled_by' | 'cancel_reason' | 'created_at' | 'updated_at' | 'state'> & { state?: ScheduleState }
 
 export const targetKey = (parts: unknown) => createHash('sha256').update(json(parts)).digest('hex')
+/** Canonical copy of the mutable columns, frozen into schedule_runs.definition when an occurrence is created. */
+export function snapshotOf(row: ScheduleRow): RunRow['definition'] {
+  return { template: row.template, template_version: row.template_version, kind: row.kind, title: row.title, instructions: row.instructions, params: row.params, recurrence: row.recurrence,
+    delivery: row.delivery, misfire: row.misfire, grace_minutes: row.grace_minutes, grace_policy: row.grace_policy, grace_until: row.grace_until, expires_at: row.expires_at, scope: row.scope, project_id: row.project_id }
+}
 
 /** SQL repository of the scheduler. Methods join the caller's transaction when there is one (see MemoryDatabase.transaction). */
 export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
@@ -123,6 +128,7 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
     return rows[0]?.id ?? null
   }
   async run(id: string): Promise<RunRow | undefined> { return (await this.db.query<RunRow>('SELECT * FROM schedule_runs WHERE id=$1', [id]))[0] }
+  async lastRunOf(scheduleId: string): Promise<RunRow | undefined> { return (await this.db.query<RunRow>('SELECT * FROM schedule_runs WHERE schedule_id=$1 ORDER BY scheduled_for DESC LIMIT 1', [scheduleId]))[0] }
   async liveRunOf(scheduleId: string): Promise<RunRow | undefined> {
     return (await this.db.query<RunRow>(`SELECT * FROM schedule_runs WHERE schedule_id=$1 AND state IN ('pending','running','deferred','interrupted') ORDER BY scheduled_for LIMIT 1`, [scheduleId]))[0]
   }
