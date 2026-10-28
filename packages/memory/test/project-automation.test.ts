@@ -35,7 +35,10 @@ describe('activation and proposal inputs', () => {
     const base = { project_id: projectId, delegation: document(), human_instruction: 'Activa el proyecto Acme', request_id: 'r1' }
     expect(activateInput.safeParse(base).success).toBe(true)
     expect(activateInput.safeParse({ ...base, human_instruction: '   ' }).success).toBe(false)
-    expect(activateInput.safeParse({ ...base, enabled: true }).success).toBe(false)
+    expect(activateInput.parse(base).enabled).toBe(true)
+    expect(activateInput.safeParse({ ...base, delegation: undefined }).success).toBe(false)
+    expect(activateInput.safeParse({ ...base, enabled: false, delegation: undefined }).success).toBe(true)
+    expect(activateInput.safeParse({ ...base, unknown: true }).success).toBe(false)
     expect(activateInput.safeParse({ ...base, channel: { name: 'Acme', objective: 'Coordinar el seguimiento' } }).success).toBe(true)
   })
 

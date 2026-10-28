@@ -40,12 +40,13 @@ export type StoredDelegation = Omit<DelegationDocument, 'repository_ids'> & { re
 
 export const activateInput = z.object({
   project_id: id,
-  delegation: delegationDocument,
+  enabled: z.boolean().default(true),
+  delegation: delegationDocument.optional(),
   human_instruction: z.string().trim().min(1).max(2000),
   channel: z.object({ name: z.string().trim().min(1).max(200), objective: z.string().trim().min(1).max(2000) }).strict().optional(),
   request_id: z.string().min(1).max(200),
   session_key: z.string().min(32).max(200).optional(),
-}).strict()
+}).strict().refine(value => !value.enabled || value.delegation, { message: 'Activar un proyecto requiere el documento de delegación.', path: ['delegation'] })
 export const pushProposeInput = z.object({
   project_id: id,
   repo_path: z.string().min(1).max(4000),
