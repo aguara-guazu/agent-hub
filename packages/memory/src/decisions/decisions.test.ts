@@ -619,17 +619,35 @@ describe('seguimiento por ítem aprobado', () => {
     const result = approveWith(store, request_id, binding_id, 'm1', { kind: 'approve', code, items: [1, 3], follow_ups: [
       { ordinal: 1, text: 'revisa A' }, { ordinal: 2, text: 'ítem no aprobado' }, { ordinal: 3, text: 'revisa C' }, { ordinal: 9, text: 'no existe' }] })
     expect(result).toMatchObject({ outcome: 'approved', follow_ups_recorded: 2 })
-    expect(store.getFollowUps(request_id)).toEqual([{ project_id: 'p1', ordinal: 1, text: 'revisa A' }, { project_id: 'p2', ordinal: 3, text: 'revisa C' }])
+    expect(store.getFollowUps(request_id)).toMatchObject([{ project_id: 'p1', ordinal: 1, text: 'revisa A', source: 'gmail', consumed: false }, { project_id: 'p2', ordinal: 3, text: 'revisa C', source: 'gmail', consumed: false }])
   })
-  it('dos seguimientos del mismo proyecto: gana el primero; un código inválido no registra nada', async () => {
+  it('dos seguimientos para ítems del mismo proyecto son ambiguos: no se registra ninguno y se informa; un código inválido tampoco registra', async () => {
     const { store, prepare, activate } = setup()
     const { request_id } = prepare('run-g', 2)
     const { binding_id } = await activate(request_id)
     expect(approveWith(store, request_id, binding_id, 'bad', { kind: 'approve', code: '22222222', items: 'all', follow_ups: [{ ordinal: 1, text: 'x' }] }).outcome).toBe('invalid_code')
     expect(store.getFollowUps(request_id)).toEqual([])
     const code = normalizeCode(store.codeFor(request_id))!
-    approveWith(store, request_id, binding_id, 'ok', { kind: 'approve', code, items: 'all', follow_ups: [{ ordinal: 1, text: 'primero' }, { ordinal: 2, text: 'segundo' }] })
-    expect(store.getFollowUps(request_id)).toEqual([{ project_id: 'p1', ordinal: 1, text: 'primero' }])
+    const result = approveWith(store, request_id, binding_id, 'ok', { kind: 'approve', code, items: 'all', follow_ups: [{ ordinal: 1, text: 'primero' }, { ordinal: 2, text: 'segundo' }] })
+    expect(result).toMatchObject({ outcome: 'approved', follow_ups_ambiguous: 1 })
+    expect(result.follow_ups_recorded).toBeUndefined()
+    expect(store.getFollowUps(request_id)).toEqual([])
+  })
+  it('un seguimiento expone ref estable, origen y vencimiento de la solicitud, y se reclama una sola vez por (solicitud, proyecto)', async () => {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-h', 2)
+    const { binding_id } = await activate(request_id)
+    const code = normalizeCode(store.codeFor(request_id))!
+    approveWith(store, request_id, binding_id, 'm1', { kind: 'approve', code, items: [1], follow_ups: [{ ordinal: 1, text: 'revisa A' }] })
+    const [follow] = store.getFollowUps(request_id)
+    expect(follow).toMatchObject({ project_id: 'p1', ordinal: 1, source: 'gmail', expires_at: store.publicRequest(request_id).expires_at, consumed: false })
+    expect(follow!.ref).toMatch(/^[0-9a-f]{32}$/)
+    expect(store.getFollowUps(request_id)[0]!.ref).toBe(follow!.ref)
+    expect(store.claimFollowUp(request_id, 'p1', 'consumer-a')).toBe('claimed')
+    expect(store.claimFollowUp(request_id, 'p1', 'consumer-a')).toBe('already_claimed_by_same')
+    expect(store.claimFollowUp(request_id, 'p1', 'consumer-b')).toBe('already_claimed_by_other')
+    expect(store.claimFollowUp(request_id, 'p9', 'consumer-a')).toBe('not_found')
+    expect(store.getFollowUps(request_id)[0]).toMatchObject({ consumed: true })
   })
 })
 

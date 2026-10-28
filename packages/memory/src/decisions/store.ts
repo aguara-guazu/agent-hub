@@ -6,7 +6,7 @@ import { codeHmac, deriveCode, formatCode, sameHmac } from './codes.js'
 import { MAX_FOLLOW_UP_CHARS } from './verifier.js'
 import {
   DecisionError, canonicalJson, sha256,
-  type ApprovedItem, type ConsumeResult, type FollowUp, type OutboxState, type DecisionItemKind, type DecisionRequestInput, type Exclusion, type ExclusionSink, type Integration,
+  type ApprovedItem, type ConsumeResult, type FollowUp, type FollowUpClaim, type OutboxState, type DecisionItemKind, type DecisionRequestInput, type Exclusion, type ExclusionSink, type Integration,
   type IntentState, type ItemState, type ParsedReply, type PublicDecisionRequest, type PublicItemState, type PublicStateSink, type RequestState,
 } from './contract.js'
 
@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS follow_ups (
   PRIMARY KEY(request_id, ordinal)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS follow_ups_project ON follow_ups(request_id, project_id);
+CREATE TABLE IF NOT EXISTS follow_up_claims (request_id TEXT NOT NULL, project_id TEXT NOT NULL, consumer_ref TEXT NOT NULL, claimed_at TEXT NOT NULL, PRIMARY KEY(request_id, project_id));
 CREATE TABLE IF NOT EXISTS reply_failures (integration TEXT NOT NULL, account TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS reply_failures_account ON reply_failures(integration, account, at);
 CREATE TABLE IF NOT EXISTS grants (
@@ -291,7 +292,24 @@ export class DecisionStore {
    * una por proyecto. Es texto libre de la persona: no se ejecuta como comando ni se registra en logs.
    */
   getFollowUps(requestId: string): FollowUp[] {
-    return this.all<FollowUp>('SELECT project_id, ordinal, text FROM follow_ups WHERE request_id = ? ORDER BY ordinal', requestId)
+    const expiresAt = this.get<{ expires_at: string }>('SELECT expires_at FROM decision_requests WHERE request_id = ?', requestId)?.expires_at
+    if (!expiresAt) return []
+    return this.all<{ project_id: string; ordinal: number; text: string; integration: Integration; native_message_id: string; claimed: number }>(
+      `SELECT f.project_id, f.ordinal, f.text, f.integration, f.native_message_id, EXISTS(SELECT 1 FROM follow_up_claims c WHERE c.request_id = f.request_id AND c.project_id = f.project_id) AS claimed
+       FROM follow_ups f WHERE f.request_id = ? ORDER BY f.ordinal`, requestId)
+      .map(row => ({ ref: sha256(`${requestId}\u0000${row.ordinal}\u0000${row.native_message_id}`).slice(0, 32), project_id: row.project_id, ordinal: row.ordinal, text: row.text,
+        source: row.integration, expires_at: expiresAt, consumed: row.claimed === 1 }))
+  }
+
+  /** Reclamo idempotente por (solicitud, proyecto): el mismo consumidor puede repetirlo; otro consumidor no obtiene el seguimiento dos veces. */
+  claimFollowUp(requestId: string, projectId: string, consumerRef: string): FollowUpClaim {
+    return this.tx(() => {
+      if (!this.get('SELECT 1 FROM follow_ups WHERE request_id = ? AND project_id = ?', requestId, projectId)) return 'not_found'
+      const prior = this.get<{ consumer_ref: string }>('SELECT consumer_ref FROM follow_up_claims WHERE request_id = ? AND project_id = ?', requestId, projectId)
+      if (prior) return prior.consumer_ref === consumerRef ? 'already_claimed_by_same' : 'already_claimed_by_other'
+      this.run('INSERT INTO follow_up_claims(request_id, project_id, consumer_ref, claimed_at) VALUES (?, ?, ?, ?)', requestId, projectId, consumerRef, this.iso())
+      return 'claimed'
+    })
   }
 
   /** Solicitudes de un run, la más reciente primero. */
@@ -591,14 +609,20 @@ export class DecisionStore {
             intent_id, item.request_id, item.item_id, item.kind, item.exact_effect, item.effect_digest, item.operation_key, at, at)
           approved.push({ item_id: item.item_id, ordinal: item.ordinal, intent_id })
         }
-        let recorded = 0
+        let recorded = 0, ambiguous = 0
+        const byProject = new Map<string, Array<{ item: ItemRow; text: string }>>()
         for (const follow of parsed.follow_ups ?? []) {
           const item = chosen.find(candidate => candidate.ordinal === follow.ordinal)
           if (!item || !approved.some(entry => entry.item_id === item.item_id) || follow.text.length > MAX_FOLLOW_UP_CHARS) continue
-          if (this.run('INSERT OR IGNORE INTO follow_ups(request_id, ordinal, project_id, text, integration, account, native_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            item.request_id, item.ordinal, item.project_id, follow.text, input.integration, input.account, input.native_message_id, this.iso()) === 1) recorded++
+          byProject.set(item.project_id, [...byProject.get(item.project_id) ?? [], { item, text: follow.text }])
         }
-        outcome = { outcome: 'approved', request_id: request.request_id, approved, ...(blocked.length ? { blocked_uncertain: blocked } : {}), ...(recorded ? { follow_ups_recorded: recorded } : {}) }
+        for (const entries of byProject.values()) {
+          if (entries.length > 1) { ambiguous++; continue }
+          const { item, text } = entries[0]!
+          if (this.run('INSERT OR IGNORE INTO follow_ups(request_id, ordinal, project_id, text, integration, account, native_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            item.request_id, item.ordinal, item.project_id, text, input.integration, input.account, input.native_message_id, this.iso()) === 1) recorded++
+        }
+        outcome = { outcome: 'approved', request_id: request.request_id, approved, ...(blocked.length ? { blocked_uncertain: blocked } : {}), ...(recorded ? { follow_ups_recorded: recorded } : {}), ...(ambiguous ? { follow_ups_ambiguous: ambiguous } : {}) }
       }
       if (!this.get('SELECT 1 FROM decision_items WHERE request_id = ? AND state = \'pending\'', request.request_id)) {
         this.run('UPDATE decision_requests SET state = \'closed\', updated_at = ? WHERE request_id = ? AND state = \'open\'', this.iso(), request.request_id)

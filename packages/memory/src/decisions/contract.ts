@@ -50,7 +50,9 @@ export type PublicItemState = 'proposed' | 'approved' | 'rejected' | 'dispatchin
 export interface PublicStateSink { set(entry: { run_id: string; ordinal: number; kind: DecisionItemKind; effect_digest: string; state: PublicItemState }): Promise<void> }
 
 export interface FollowUpText { ordinal: number; text: string }
-export interface FollowUp { project_id: string; ordinal: number; text: string }
+/** `ref` identifica el seguimiento de forma estable (solicitud, ordinal y mensaje de origen); `consumed` pasa a true cuando un consumidor lo reclamó. */
+export interface FollowUp { ref: string; project_id: string; ordinal: number; text: string; source: Integration; expires_at: string; consumed: boolean }
+export type FollowUpClaim = 'claimed' | 'already_claimed_by_same' | 'already_claimed_by_other' | 'not_found'
 export type ParsedReply =
   | { kind: 'approve'; code: string; items: number[] | 'all'; follow_ups?: FollowUpText[] }
   | { kind: 'reject'; code: string | null; items: number[] | 'all' }
@@ -70,6 +72,8 @@ export interface ConsumeResult {
   rejected?: number[]
   revision?: { ordinal: number; value: string }
   follow_ups_recorded?: number
+  /** Proyectos con más de un seguimiento en la misma respuesta: no se registra ninguno, porque no se puede asignar con certeza. */
+  follow_ups_ambiguous?: number
 }
 
 /** JSON con claves ordenadas: misma entrada lógica, mismos bytes. */
