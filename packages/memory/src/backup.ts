@@ -129,6 +129,7 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
     await sql.query(`UPDATE schedule_run_attempts SET host_pid=NULL,host_started=NULL,cli_pid=NULL,cli_started=NULL,boot_id=NULL,
       state=CASE WHEN state IN ('starting','running') THEN 'orphan_unverified' ELSE state END`)
     await sql.query("UPDATE schedule_deliveries SET state='uncertain' WHERE state='sending'")
+    await sql.query("UPDATE schedule_artifacts SET proposed_effects='[]',decision_authority=CASE WHEN decision_request_ref IS NULL THEN NULL ELSE 'unavailable' END")
     await sql.query("UPDATE schedule_item_states SET state=CASE WHEN state='dispatching' THEN 'uncertain' ELSE 'unverifiable' END WHERE state IN ('proposed','approved','dispatching')")
     await sql.query("UPDATE liveness_incidents SET status='resolved',resolved_at=COALESCE(resolved_at,$1),resolution='restored' WHERE status='open'", [backup.exported_at])
     await sql.query("UPDATE progress_checkpoints SET status='closed',closed_at=$1,closed_reason='restored' WHERE closed_at IS NULL", [backup.exported_at])

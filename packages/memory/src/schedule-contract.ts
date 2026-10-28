@@ -119,6 +119,9 @@ export interface DecisionRequests {
 /** Implemented by the schedule store; the decision module calls it after each transition of an item. */
 export interface PublicStateSink {
   set(input: { run_id: string; ordinal: number; kind: string; effect_digest?: string; estimate_id?: string; state: ItemState }): Promise<void>
+  /** 'unavailable' after a restore: redispatch and repropose stay denied until the decision module reconciles the reference and calls verifyAuthority. */
+  authority(decision_request_ref: string): Promise<'verified' | 'unavailable' | 'none'>
+  verifyAuthority(decision_request_ref: string): Promise<void>
 }
 export interface ScheduleEffects { deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests }
 

@@ -561,7 +561,7 @@ CREATE TABLE schedule_runs (
  trigger TEXT NOT NULL CHECK(trigger IN ('clock','misfire','run_now')),
  state TEXT NOT NULL CHECK(state IN ('pending','running','deferred','succeeded','partial','failed','uncertain','skipped','cancelled','interrupted')),
  phase TEXT NOT NULL CHECK(phase IN ('collect','synthesize','persist','deliver','done')),
- generation INTEGER NOT NULL DEFAULT 0, skip_reason TEXT CHECK(skip_reason IN ('overlap','misfire_out_of_grace','automations_off','schedule_cancelled','remote_processing_excluded')),
+ generation INTEGER NOT NULL DEFAULT 0, skip_reason TEXT CHECK(skip_reason IN ('overlap','misfire_out_of_grace','superseded','automations_off','schedule_cancelled','remote_processing_excluded')),
  deferred_reason TEXT CHECK(deferred_reason IN ('quota','automations_off','delivery_unavailable')),
  next_attempt_at TIMESTAMP, quota JSON, artifact_id TEXT,
  continuity TEXT CHECK(continuity IN ('live_destination','fork','exclusive_resume','linked_new','none')), error_code TEXT,
@@ -597,6 +597,10 @@ CREATE TABLE schedule_artifacts (
  id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE REFERENCES schedule_runs(id) ON DELETE CASCADE,
  kind TEXT NOT NULL CHECK(kind IN ('notice','brief','close','status','report')), title TEXT NOT NULL, body_md TEXT NOT NULL,
  items JSON NOT NULL DEFAULT '[]', snapshot_refs JSON NOT NULL DEFAULT '[]', decision_request_ref TEXT,
+ -- Effects validated by the template, kept only between persisting the artifact and storing decision_request_ref so a crash in between can be repaired; never exposed by any read path.
+ proposed_effects JSON NOT NULL DEFAULT '[]',
+ -- A restored reference carries no authority until the decision module reconciles it, whatever the mirror says.
+ decision_authority TEXT CHECK(decision_authority IN ('verified','unavailable')),
  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, read_at TIMESTAMP
 );
 -- Public mirror of each decision item's state; authority stays in the isolated decision store.

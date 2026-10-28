@@ -72,6 +72,12 @@ it('borrar el proyecto elimina schedules, ocurrencias y artefactos y conserva la
   expect((await db.query('SELECT schedule_id FROM schedule_constraints WHERE id=$1', [constraintId]))[0]).toEqual({ schedule_id: null })
 })
 
+it('registra el descarte de una ocurrencia reemplazada por la siguiente', async () => {
+  const id = await schedule(), runId = randomUUID()
+  await db.query("INSERT INTO schedule_runs(id,schedule_id,scheduled_for,schedule_revision,definition,trigger,state,phase,skip_reason) VALUES($1,$2,'2026-10-29T11:00:00.000Z',1,'{}','misfire','skipped','done','superseded')", [runId, id])
+  expect((await db.query('SELECT skip_reason FROM schedule_runs WHERE id=$1', [runId]))[0]).toEqual({ skip_reason: 'superseded' })
+})
+
 it('rechaza una restricción humana duplicada vigente y permite recrearla tras levantarla', async () => {
   const insert = (id: string) => db.query("INSERT INTO schedule_constraints(id,subject,project_id,template,scope,created_by_user) VALUES($1,'project',$2,'daily_close','template_project','owner')", [id, projectId])
   const first = randomUUID()
@@ -88,6 +94,8 @@ it('restaura sin autoridad: pausa schedules, interrumpe runs, anula procesos y c
   await db.query(`INSERT INTO schedule_run_attempts(run_id,generation,phase,profile,boot_id,host_pid,host_started,cli_pid,cli_started,state,deadline_at)
     VALUES($1,1,'synthesize','synthesis','boot',10,'inicio',11,'inicio',$2,'2026-10-29T12:00:00.000Z'),($3,1,'synthesize','synthesis','boot',20,'inicio',21,'inicio','exited','2026-10-29T12:00:00.000Z')`, [running, 'running', uncertain])
   await db.query("INSERT INTO schedule_deliveries(id,run_id,target,state) VALUES($1,$2,'gmail_self','sending'),($3,$4,'slack_self','uncertain')", [randomUUID(), running, randomUUID(), uncertain])
+  await db.query("INSERT INTO schedule_artifacts(id,run_id,kind,title,body_md,decision_request_ref,decision_authority,proposed_effects) VALUES($1,$2,'close','t','b','ref-1','verified','[{\"ordinal\":1}]')", [randomUUID(), uncertain])
+  await db.query("INSERT INTO schedule_artifacts(id,run_id,kind,title,body_md,proposed_effects) VALUES($1,$2,'close','t','b','[{\"ordinal\":1}]')", [randomUUID(), running])
   for (const [ordinal, state] of [[1, 'proposed'], [2, 'approved'], [3, 'dispatching'], [4, 'uncertain'], [5, 'succeeded']] as const)
     await db.query("INSERT INTO schedule_item_states(run_id,ordinal,kind,state) VALUES($1,$2,'jira_worklog',$3)", [uncertain, ordinal, state])
   await db.query("INSERT INTO schedule_constraints(id,subject,project_id,template,scope,created_by_user) VALUES($1,'project',$2,'reminder','template_project','owner')", [randomUUID(), projectId])
@@ -111,6 +119,10 @@ it('restaura sin autoridad: pausa schedules, interrumpe runs, anula procesos y c
     expect(await one('SELECT state,host_pid FROM schedule_run_attempts WHERE run_id=$1', [uncertain])).toEqual({ state: 'exited', host_pid: null })
     expect((await one("SELECT state FROM schedule_deliveries WHERE target='gmail_self'")).state).toBe('uncertain')
     expect((await restored.query('SELECT ordinal,state FROM schedule_item_states ORDER BY ordinal')).map(r => r.state)).toEqual(['unverifiable', 'unverifiable', 'uncertain', 'uncertain', 'succeeded'])
+    expect(await one('SELECT decision_request_ref,decision_authority,proposed_effects FROM schedule_artifacts WHERE run_id=$1', [uncertain]))
+      .toEqual({ decision_request_ref: 'ref-1', decision_authority: 'unavailable', proposed_effects: [] })
+    expect(await one('SELECT decision_request_ref,decision_authority,proposed_effects FROM schedule_artifacts WHERE run_id=$1', [running]))
+      .toEqual({ decision_request_ref: null, decision_authority: null, proposed_effects: [] })
     expect((await restored.query('SELECT 1 FROM schedule_constraints WHERE lifted_at IS NULL')).length).toBe(1)
     expect(await one('SELECT enabled,coordinator_session_id FROM project_automation')).toEqual({ enabled: 0, coordinator_session_id: null })
     expect(await one('SELECT status,resolution FROM liveness_incidents')).toEqual({ status: 'resolved', resolution: 'restored' })
