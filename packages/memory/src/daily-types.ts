@@ -2,13 +2,13 @@ import type { JiraGuard, PublicItem } from './schedule-contract.js'
 
 /** Shapes the brief and the close share with the scheduler core; the item and guard types come from schedule-contract.ts. */
 
-export interface AttentionLine { ref: string; summary: string; at: string; project_id?: string }
+export interface OwnerAttentionLine { ref: string; summary: string; at: string; project_id?: string }
 /** Readers the owner-level templates use; each is injected by the area that owns the data, and a block is omitted when its reader is missing. */
 export interface OwnerAttentionReaders {
-  pending_responses?: () => Promise<AttentionLine[]>
-  liveness_incidents?: () => Promise<AttentionLine[]>
-  uncertain_deliveries?: () => Promise<AttentionLine[]>
-  overdue_close?: () => Promise<AttentionLine[]>
+  pending_responses?: () => Promise<OwnerAttentionLine[]>
+  liveness_incidents?: () => Promise<OwnerAttentionLine[]>
+  uncertain_deliveries?: () => Promise<OwnerAttentionLine[]>
+  overdue_close?: () => Promise<OwnerAttentionLine[]>
   /** Approved items that expired or never reached the executor; uncertain ones are never offered again. */
   carryover_items?: () => Promise<ProposedItem[]>
   /** Pushes the project agents propose for the close; each carries its exact effect. */
