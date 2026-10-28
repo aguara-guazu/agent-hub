@@ -281,8 +281,13 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
     return this.db.query<Row>(`SELECT r.id,r.scheduled_for,r.state,r.phase,r.trigger,s.template FROM schedule_runs r JOIN schedules s ON s.id=r.schedule_id WHERE s.project_id=$1 ORDER BY r.scheduled_for DESC LIMIT $2`, [projectId, limit])
   }
   async uncertainDeliveries(projectId?: string) {
-    return this.db.query<Row>(`SELECT d.id,d.run_id,d.target,d.updated_at FROM schedule_deliveries d JOIN schedule_runs r ON r.id=d.run_id JOIN schedules s ON s.id=r.schedule_id
+    return this.db.query<Row>(`SELECT d.id,d.run_id,d.target,d.updated_at,s.project_id FROM schedule_deliveries d JOIN schedule_runs r ON r.id=d.run_id JOIN schedules s ON s.id=r.schedule_id
       WHERE d.state='uncertain' AND ($1 IS NULL OR s.project_id=$1) ORDER BY d.updated_at DESC`, [projectId ?? null])
+  }
+  /** End-of-day closes lost beyond their grace in the last days; the next brief reports them. */
+  async overdueCloses(sinceDays = 3) {
+    return this.db.query<Row>(`SELECT r.id,r.scheduled_for FROM schedule_runs r JOIN schedules s ON s.id=r.schedule_id
+      WHERE s.template='daily_close' AND r.state='skipped' AND r.skip_reason='misfire_out_of_grace' AND r.scheduled_for>=$1 ORDER BY r.scheduled_for DESC`, [new Date(Date.now() - sinceDays * 86_400_000).toISOString()])
   }
   async unreadDeliveries(projectId?: string) {
     return this.db.query<Row>(`SELECT r.id AS run_id,a.id AS artifact_id,a.kind,a.title,r.scheduled_for FROM schedule_deliveries d JOIN schedule_runs r ON r.id=d.run_id JOIN schedule_artifacts a ON a.run_id=r.id

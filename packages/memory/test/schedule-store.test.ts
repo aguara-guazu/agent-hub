@@ -148,3 +148,12 @@ it('las entregas son únicas por run y destino y las no leídas salen por proyec
   await store.markDeliveriesRead(runId)
   expect(await store.unreadDeliveries(projectId)).toEqual([])
 })
+
+it('los cierres perdidos y las entregas inciertas salen por lectores tipados con su proyecto', async () => {
+  const closing = await store.insertSchedule(base({ template: 'daily_close', scope: 'owner', project_id: null, kind: 'notice' }))
+  const lost = (await store.insertRun({ schedule_id: closing.id, scheduled_for: new Date().toISOString(), schedule_revision: 1, definition: definition(closing.id), trigger: 'misfire', state: 'skipped', skip_reason: 'misfire_out_of_grace' }))!
+  expect((await store.overdueCloses()).map(row => row.id)).toEqual([lost])
+  const schedule = await store.insertSchedule(base()), runId = (await store.insertRun({ schedule_id: schedule.id, scheduled_for: '2026-10-29T11:00:00.000Z', schedule_revision: 1, definition: definition(schedule.id), trigger: 'clock' }))!
+  const delivery = await store.ensureDelivery(runId, 'gmail_self'); await store.setDelivery(delivery.id, { state: 'uncertain' })
+  expect(await store.uncertainDeliveries(projectId)).toMatchObject([{ id: delivery.id, project_id: projectId }])
+})

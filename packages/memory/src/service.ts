@@ -23,7 +23,7 @@ import { ScheduleStore } from './schedule-store.js'
 import { ScheduleAdmin } from './schedule-admin.js'
 import { ScheduleRuntime } from './schedule-runtime.js'
 import { EngineSynthesizer } from './schedule-synthesizer.js'
-import type { ScheduleAutomation } from './schedule-contract.js'
+import type { AttentionReaders, ScheduleAutomation } from './schedule-contract.js'
 import './schedule-templates.js'
 
 export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode', ...extractionClis]), extraction_model: z.string().max(200),
@@ -50,7 +50,7 @@ export class MemoryService {
   readonly google: GoogleAuth
   readonly openCode: OpenCodeRuntime
   readonly cliExtraction: CliExtractionRuntime
-  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime } } | null = null
+  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: AttentionReaders } } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true,
@@ -91,13 +91,18 @@ export class MemoryService {
   /** Clock and admission of schedules; they live only where the orchestration owner runs, never in the worker process. */
   private createSchedules(db: MemoryDatabase, store: MemoryStore, ai: MemoryAI, operations: MemoryOperations) {
     const schedules = new ScheduleStore(db), automation = this.automation
-    const runtime = new ScheduleRuntime({ store: schedules, db, memory: store, automation, usage: operations.usage, signals: operations.chat.events,
+    // Readers of this area; the others (replies awaiting, liveness, push candidates, activated projects) are added by their owners through `attention`.
+    const attention: AttentionReaders = {
+      uncertain_deliveries: async () => (await schedules.uncertainDeliveries()).map(row => ({ ref: String(row.id), summary: `Entrega ${row.target} incierta`, at: String(row.updated_at), ...(row.project_id ? { project_id: String(row.project_id) } : {}) })),
+      overdue_close: async () => (await schedules.overdueCloses()).map(row => ({ ref: String(row.id), summary: 'Cierre del día no ejecutado', at: String(row.scheduled_for) })),
+    }
+    const runtime = new ScheduleRuntime({ store: schedules, db, memory: store, automation, usage: operations.usage, signals: operations.chat.events, deps: () => ({ attention }),
       synthesizer: new EngineSynthesizer({ settings: () => this.aiSettings(), cli: this.cliExtraction, ai }) })
     const unavailable = { available: false, reason: 'not_connected' }
     const admin = new ScheduleAdmin({ store: schedules, db, automationsEnabled: () => automation.enabled(), wake: () => runtime.kick(), stopRun: id => runtime.stopRun(id),
       deliveryAvailability: async () => automation.effects ? await automation.effects.deliveries.available().catch(() => ({ gmail_self: unavailable, slack_self: unavailable })) : { gmail_self: unavailable, slack_self: unavailable } })
     operations.schedules = admin
-    return { store: schedules, admin, runtime }
+    return { store: schedules, admin, runtime, attention }
   }
   /** Applies an automations switch change now instead of at the next tick. */
   async kickSchedules() { (await this.get()).schedules?.runtime.kick() }
