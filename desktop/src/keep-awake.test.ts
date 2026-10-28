@@ -65,6 +65,27 @@ describe('KeepAwake', () => {
     expect(stopped).toEqual([1])
   })
 
+  it('sync no renueva el tope de una razón que sigue vigente', () => {
+    const { keepAwake, timers } = harness()
+    keepAwake.sync(['a'])
+    const [before] = [...timers.keys()]
+    keepAwake.sync(['a'])
+    expect([...timers.keys()]).toEqual([before])
+  })
+
+  it('una razón vencida no se vuelve a tomar mientras el core la siga listando', () => {
+    const { keepAwake, started, timers } = harness()
+    keepAwake.sync(['a'])
+    ;[...timers.values()][0]!.callback()
+    expect(keepAwake.active).toBe(false)
+    keepAwake.sync(['a'])
+    expect(keepAwake.active).toBe(false)
+    expect(started).toEqual([1])
+    keepAwake.sync([])
+    keepAwake.sync(['a'])
+    expect(started).toEqual([1, 2])
+  })
+
   it('dispose suelta el bloqueo', () => {
     const { keepAwake, stopped, timers } = harness()
     keepAwake.hold('run-1')

@@ -24,6 +24,8 @@ export interface KeepAwakeDeps {
 
 export class KeepAwake {
   private readonly reasons = new Map<string, unknown>()
+  /** Razones cuyo tope venció mientras el core aún las lista: `sync` no las vuelve a tomar. */
+  private readonly expired = new Set<string>()
   private blockerId: number | null = null
 
   constructor(private readonly deps: KeepAwakeDeps) {}
@@ -36,7 +38,7 @@ export class KeepAwake {
   hold(reason: string, maxMs: number = this.deps.maxHoldMs): void {
     const previous = this.reasons.get(reason)
     if (previous !== undefined) this.deps.clearTimer(previous)
-    this.reasons.set(reason, this.deps.setTimer(() => this.release(reason), maxMs))
+    this.reasons.set(reason, this.deps.setTimer(() => { this.expired.add(reason); this.release(reason) }, maxMs))
     if (this.blockerId === null) this.blockerId = this.deps.blocker.start('prevent-app-suspension')
   }
 
@@ -51,14 +53,19 @@ export class KeepAwake {
     }
   }
 
-  /** Alinea las razones con la lista vigente del core: libera las que ya no están y renueva las que siguen. */
+  /**
+   * Alinea las razones con la lista vigente del core: libera las que ya no están y toma las nuevas.
+   * Una razón que sigue no renueva su tope, así un run que el core nunca cierra no mantiene la Mac despierta sin límite.
+   */
   sync(current: readonly string[]): void {
     const wanted = new Set(current)
     for (const reason of [...this.reasons.keys()]) if (!wanted.has(reason)) this.release(reason)
-    for (const reason of wanted) this.hold(reason)
+    for (const reason of [...this.expired]) if (!wanted.has(reason)) this.expired.delete(reason)
+    for (const reason of wanted) if (!this.reasons.has(reason) && !this.expired.has(reason)) this.hold(reason)
   }
 
   dispose(): void {
     for (const reason of [...this.reasons.keys()]) this.release(reason)
+    this.expired.clear()
   }
 }

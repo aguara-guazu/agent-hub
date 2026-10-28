@@ -5,7 +5,7 @@ import { createServer } from 'node:net'
 import { release } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, shell, Tray } from 'electron'
 import { buildReport, LogFile, tailLog } from '@agenthub/memory/report'
 
 import { waitForDesktopSession } from './session.js'
@@ -16,6 +16,10 @@ import { buildTrayTemplate, TRAY_TOOLTIP, type TrayAction } from './tray.js'
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus, type OpenFileResult } from './ipc.js'
 import { NavigationRelay } from './navigation.js'
+import { AutostartOffer } from './autostart-offer.js'
+import { ClockWake } from './clock-wake.js'
+import { KeepAwake } from './keep-awake.js'
+import { deliveryNotice, FeedPoller, ScheduleNoticeBatcher, type FeedResponse, type Notice } from './schedule-feed.js'
 import { AutoUpdater, type UpdateStatus } from './updater.js'
 import { SilentUpdates, hiddenUpdateLaunch, updateRelaunchArgs } from './silent-updates.js'
 import { defaultClientDeps, isClientRunning, restartClient, supportsClientRestart } from './clients.js'
@@ -190,6 +194,119 @@ function notify(title: string, body: string): void {
 }
 
 const navigation = new NavigationRelay(route => mainWindow?.webContents.send(IPC.navigate, route))
+
+/** Notificación del sistema cuyo clic abre la ventana en una ruta de la consola (ver `navigation.ts`). */
+function notifyOpening(notice: Notice): void {
+  try {
+    if (!Notification.isSupported()) return
+    const notification = new Notification({ title: notice.title, body: notice.body })
+    notification.on('click', () => openRoute(notice.route))
+    notification.show()
+  } catch {
+    // Sin centro de notificaciones el contenido sigue disponible en la consola.
+  }
+}
+
+function openRoute(route: string): void {
+  if (!navigation.request(route)) return
+  showWindow()
+}
+
+/** Ajustes de `GET /api/automations`; sin respuesta del core rigen los valores por defecto. */
+interface AutomationPrefs { automations_enabled: boolean; notify_schedule_created: boolean; notify_delivery: boolean; keep_awake: boolean }
+const DEFAULT_AUTOMATION_PREFS: AutomationPrefs = { automations_enabled: true, notify_schedule_created: true, notify_delivery: true, keep_awake: true }
+let automationPrefs = DEFAULT_AUTOMATION_PREFS
+/** Cada cuánto el proceso principal consulta el feed del scheduler. */
+const SCHEDULE_FEED_POLL_MS = 10_000
+/** Agrupación de avisos de schedules creados o cambiados por un agente. */
+const SCHEDULE_NOTICE_WINDOW_MS = 60_000
+/** Tope absoluto por run para mantener la Mac despierta; un run que el core no cierra no la retiene más tiempo. */
+const KEEP_AWAKE_MAX_MS = 20 * 60_000
+/** Espera tras resume/unlock-screen: la red suele volver unos segundos después. */
+const CLOCK_WAKE_SETTLE_MS = 3_000
+const autostartOfferedFile = join(stateDir, 'autostart-offered')
+
+/** Pedido autenticado al core local; renueva la sesión una vez si el token venció. */
+async function coreFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const request = (token: string): Promise<Response> => fetch(`${CORE_BASE_URL}${path}`, {
+    ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000),
+  })
+  if (!sessionToken) sessionToken = await waitForSession()
+  let response = await request(sessionToken)
+  if (response.status === 401) {
+    sessionToken = await waitForSession()
+    response = await request(sessionToken)
+  }
+  return response
+}
+
+const keepAwake = new KeepAwake({
+  blocker: powerSaveBlocker,
+  setTimer: (callback, ms) => setTimeout(callback, ms),
+  clearTimer: handle => clearTimeout(handle as NodeJS.Timeout),
+  maxHoldMs: KEEP_AWAKE_MAX_MS,
+})
+const scheduleNotices = new ScheduleNoticeBatcher({
+  setTimer: (callback, ms) => setTimeout(callback, ms),
+  clearTimer: handle => clearTimeout(handle as NodeJS.Timeout),
+  emit: notifyOpening,
+  windowMs: SCHEDULE_NOTICE_WINDOW_MS,
+})
+const autostartOffer = new AutostartOffer({
+  isEnabled: safeAutostart,
+  setEnabled: enabled => autostart.setEnabled(enabled),
+  wasOffered: () => existsSync(autostartOfferedFile),
+  markOffered: () => { try { writeFileSync(autostartOfferedFile, new Date().toISOString()) } catch { /* sin persistir, se vuelve a ofrecer */ } },
+  ask: async () => (await dialog.showMessageBox({
+    type: 'question',
+    message: 'Iniciar Agent Hub al ingresar',
+    detail: 'Las automatizaciones solo corren mientras Agent Hub está abierto. Si lo iniciamos al ingresar, el brief de la mañana no depende de que lo abras tú.',
+    buttons: ['Iniciar al ingresar', 'Ahora no'],
+    defaultId: 0,
+    cancelId: 1,
+  })).response === 0,
+})
+const scheduleFeed = new FeedPoller({
+  fetchFeed: async (after): Promise<FeedResponse> => {
+    const response = await coreFetch(`/api/memory/schedules/feed${after === null ? '' : `?after=${after}`}`)
+    if (!response.ok) throw new Error(`schedules feed: HTTP ${response.status}`)
+    return await response.json() as FeedResponse
+  },
+  onEvents: events => {
+    void autostartOffer.consider(events).catch(error => console.error('[autostart offer]', error))
+    if (automationPrefs.notify_schedule_created) scheduleNotices.add(events)
+    if (automationPrefs.notify_delivery) for (const event of events) { const notice = deliveryNotice(event); if (notice) notifyOpening(notice) }
+  },
+  onActiveRuns: runs => {
+    if (automationPrefs.automations_enabled && automationPrefs.keep_awake) keepAwake.sync(runs.map(run => run.run_id))
+    else keepAwake.dispose()
+  },
+})
+const clockWake = new ClockWake({
+  wake: async () => { await coreFetch('/api/memory/schedules/kick', { method: 'POST' }); await pollSchedules() },
+  setTimer: (callback, ms) => setTimeout(callback, ms),
+  clearTimer: handle => clearTimeout(handle as NodeJS.Timeout),
+  settleMs: CLOCK_WAKE_SETTLE_MS,
+})
+
+async function refreshAutomationPrefs(): Promise<void> {
+  try {
+    const response = await coreFetch('/api/automations')
+    if (response.ok) automationPrefs = { ...DEFAULT_AUTOMATION_PREFS, ...await response.json() as Partial<AutomationPrefs> }
+  } catch {
+    // Con el core caído se conservan los últimos valores conocidos.
+  }
+}
+
+async function pollSchedules(): Promise<void> {
+  if (quitting || coreSupervisor.state !== 'running') return
+  await refreshAutomationPrefs()
+  try {
+    await scheduleFeed.poll()
+  } catch {
+    // El próximo ciclo reintenta con el mismo cursor.
+  }
+}
 
 const silentUpdates = new SilentUpdates({
   check: () => updater.check(),
@@ -613,6 +730,9 @@ async function quit(): Promise<void> {
   if (quitting) return
   quitting = true
   silentUpdates.stop()
+  keepAwake.dispose()
+  clockWake.dispose()
+  scheduleNotices.dispose()
   // Si algo se cuelga al cerrar, la app sale igual: un proceso que no termina obliga a
   // forzar el cierre y dejaba core y daemon huérfanos bloqueando el próximo arranque.
   const deadline = setTimeout(() => {
@@ -681,6 +801,11 @@ else {
     // Finish cleanup before a new download can create a directory it might remove.
     void updater.cleanup().catch(error => console.error('[updater cleanup]', error)).then(() => silentUpdates.start())
     setInterval(() => void pollPendingRestarts(), PENDING_RESTART_POLL_MS).unref()
+    setInterval(() => void pollSchedules(), SCHEDULE_FEED_POLL_MS).unref()
+    void pollSchedules()
+    // `resume` sale de la suspensión; `unlock-screen` sólo existe en macOS y Windows.
+    powerMonitor.on('resume', () => clockWake.trigger())
+    powerMonitor.on('unlock-screen', () => clockWake.trigger())
   }).catch(async (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error(message)

@@ -8,12 +8,13 @@
  */
 
 const ROUTE_PATTERNS: readonly RegExp[] = [
-  /^\/brief\/[A-Za-z0-9_-]{1,80}$/,
-  /^\/schedules$/,
+  /^\/deliveries$/,
+  /^\/deliveries\/[A-Za-z0-9_-]{1,80}$/,
+  /^\/schedules(\?focus=[A-Za-z0-9_-]{1,80})?$/,
   /^\/settings$/,
 ]
 
-/** Devuelve la ruta si está permitida; cualquier otra cosa (incluidas URLs y rutas con consulta o fragmento) da `null`. */
+/** Devuelve la ruta si está permitida; cualquier otra cosa (incluidas URLs, fragmentos y consultas distintas de `focus`) da `null`. */
 export function allowedRoute(input: unknown): string | null {
   if (typeof input !== 'string') return null
   return ROUTE_PATTERNS.some(pattern => pattern.test(input)) ? input : null
