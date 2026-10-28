@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import { extname } from 'node:path'
 import { check, localPath } from './contracts.js'
-import { GMAIL_SCOPE, GOOGLE_SCOPES, type GoogleAuth } from './google-auth.js'
+import { GMAIL_SCOPE, GMAIL_SEND_SCOPE, GOOGLE_SCOPES, type GoogleAuth } from './google-auth.js'
 import type { MemoryStore } from './store.js'
 
 /**
@@ -40,7 +40,7 @@ export const GOOGLE_MCP_APIS: readonly GoogleApi[] = [
   { service: 'drivemcp.googleapis.com', name: 'Google Drive MCP', purpose: 'MCP server remoto de Drive' },
 ]
 
-export const GOOGLE_SETUP_SCOPES: readonly string[] = [...GOOGLE_SCOPES, GMAIL_SCOPE]
+export const GOOGLE_SETUP_SCOPES: readonly string[] = [...GOOGLE_SCOPES, GMAIL_SCOPE, GMAIL_SEND_SCOPE]
 
 export interface GoogleClientFile {
   type: 'installed' | 'web'
@@ -73,14 +73,14 @@ export function readGoogleClientFile(input: string): GoogleClientFile {
 }
 
 /**
- * Returns the oldest Google source, creating it when none exists: Calendar (`primary`), Meet and Gmail on,
+ * Returns the oldest Google source, creating it when none exists: Calendar (`primary`), Meet, Gmail and sending to the own account on,
  * paused until its account is authorized (see activateGoogleSource).
  */
 export async function ensureGoogleSource(store: MemoryStore): Promise<{ id: string; config: Record<string, any> }> {
   const existing = (await store.db.query("SELECT id,config FROM connectors WHERE provider='google' ORDER BY created_at LIMIT 1"))[0]
   if (existing) return existing as { id: string; config: Record<string, any> }
   return (await store.db.query(`INSERT INTO connectors(id,provider,name,config,project_ids,enabled,interval_minutes) VALUES($1,'google','Google',$2,$3,$4,30)
-    RETURNING id,config`, [randomUUID(), JSON.stringify({ calendars: ['primary'] }), [], false]))[0] as { id: string; config: Record<string, any> }
+    RETURNING id,config`, [randomUUID(), JSON.stringify({ calendars: ['primary'], gmail_send_enabled: true }), [], false]))[0] as { id: string; config: Record<string, any> }
 }
 
 /** After a successful authorization the source is turned on and its sync, plus the mailbox listing when Gmail was granted, start at once. */

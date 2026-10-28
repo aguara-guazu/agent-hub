@@ -12,8 +12,16 @@ export const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/directory.readonly',
 ]
 export const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
-/** Gmail is on unless a source turns it off with `gmail_enabled: false`; only then is the restricted scope left out. */
-export const googleScopes = (config: Record<string, unknown>): readonly string[] => config.gmail_enabled !== false ? [...GOOGLE_SCOPES, GMAIL_SCOPE] : GOOGLE_SCOPES
+/** Optional: lets the hub send the brief and the close to the connected account itself. Never requested unless the source sets `gmail_send_enabled: true`. */
+export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
+/**
+ * Gmail is on unless a source turns it off with `gmail_enabled: false`; only then is the restricted scope left out.
+ * Desktop apps cannot request a scope incrementally, so enabling sending re-requests every scope in one consent.
+ */
+export const googleScopes = (config: Record<string, unknown>): readonly string[] => {
+  const base = config.gmail_enabled !== false ? [...GOOGLE_SCOPES, GMAIL_SCOPE] : [...GOOGLE_SCOPES]
+  return config.gmail_send_enabled === true ? [...base, GMAIL_SEND_SCOPE] : base
+}
 export class GoogleAuth {
   private pending = new Map<string, { connector: string; verifier: string; expires: number }>()
   private refreshes = new Map<string, Promise<string>>()

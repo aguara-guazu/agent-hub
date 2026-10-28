@@ -25,7 +25,7 @@ import type { MemoryAI } from './ai.js'
 import { exportMemory, deleteEntity } from './backup.js'
 import { reviewIdentity } from './identity-inference.js'
 import { mergePeople, resolveCanonical } from './people.js'
-import { GMAIL_SCOPE, googleScopes, type GoogleAuth } from './google-auth.js'
+import { GMAIL_SCOPE, GMAIL_SEND_SCOPE, googleScopes, type GoogleAuth } from './google-auth.js'
 import type { Vault } from './config.js'
 import { GOOGLE_SETUP_APIS, GOOGLE_SETUP_SCOPES, ensureGoogleSource, readGoogleClientFile } from './google-setup.js'
 import { listTasks, listTasksInput, saveTask, saveTaskInput, syncTasks, syncTasksInput, taskDetail, taskStats, taskStatsInput } from './tasks.js'
@@ -380,7 +380,11 @@ export class MemoryOperations {
       case 'timeline': return store.list({ project_id: input.project_id, limit: input.limit, offset: input.offset })
       case 'list_connectors': {
         const rows = await db.query('SELECT id,provider,name,config,project_ids,enabled,interval_minutes,last_success_at,last_error,created_at FROM connectors ORDER BY created_at')
-        return rows.map(row => row.provider === 'google' && row.config.gmail_enabled !== false && this.google ? { ...row, gmail_authorized: this.google.granted(row.id, GMAIL_SCOPE) } : row)
+        return rows.map(row => {
+          if (row.provider !== 'google' || !this.google) return row
+          return { ...row, ...(row.config.gmail_enabled !== false ? { gmail_authorized: this.google.granted(row.id, GMAIL_SCOPE) } : {}),
+            ...(row.config.gmail_send_enabled === true ? { gmail_send_authorized: this.google.granted(row.id, GMAIL_SEND_SCOPE) } : {}) }
+        })
       }
       case 'save_connector': {
         // Google covers a fixed 90-day window; an older `since` from previous versions is dropped, and older periods use sync_connector.
@@ -424,7 +428,8 @@ export class MemoryOperations {
         return { client_configured: Boolean(client?.client_id), client_id: client?.client_id ?? null, client_has_secret: Boolean(client?.client_secret),
           redirect_url: google.redirectUrl, apis: GOOGLE_SETUP_APIS, scopes: GOOGLE_SETUP_SCOPES,
           connectors: connectors.map(row => ({ ...row, connected: Boolean(vault.read(row.id)?.refresh_token),
-            ...(row.config.gmail_enabled !== false ? { gmail_authorized: google.granted(row.id, GMAIL_SCOPE) } : {}) })) }
+            ...(row.config.gmail_enabled !== false ? { gmail_authorized: google.granted(row.id, GMAIL_SCOPE) } : {}),
+            ...(row.config.gmail_send_enabled === true ? { gmail_send_authorized: google.granted(row.id, GMAIL_SEND_SCOPE) } : {}) })) }
       }
       case 'import_google_client': {
         const { vault } = this.googleSetup()
@@ -492,11 +497,12 @@ export class MemoryOperations {
   }
 
   private validateConnectorConfig(provider: string, config: Record<string, unknown>) {
-    const keys: Record<string, string[]> = { google: ['calendars', 'calendar_enabled', 'meet_enabled', 'gmail_enabled', 'document_ids', 'folder_ids'], notion: ['page_ids'], slack: ['channel_ids', 'since'], jira: ['site_url', 'jql'] }
+    const keys: Record<string, string[]> = { google: ['calendars', 'calendar_enabled', 'meet_enabled', 'gmail_enabled', 'gmail_send_enabled', 'document_ids', 'folder_ids'], notion: ['page_ids'], slack: ['channel_ids', 'since'], jira: ['site_url', 'jql'] }
     check(Object.keys(config).every(key => keys[provider]?.includes(key)), 'Configuración desconocida. Las credenciales se guardan por separado')
     for (const key of ['calendars', 'document_ids', 'folder_ids', 'page_ids', 'channel_ids']) if (key in config) parse(z.array(z.string().min(1).max(500)).max(100), config[key])
     if (config.since) parse(instant, config.since)
-    for (const key of ['calendar_enabled', 'meet_enabled', 'gmail_enabled']) if (key in config) parse(z.boolean(), config[key])
+    for (const key of ['calendar_enabled', 'meet_enabled', 'gmail_enabled', 'gmail_send_enabled']) if (key in config) parse(z.boolean(), config[key])
+    check(!(config.gmail_send_enabled === true && config.gmail_enabled === false), 'El envío por Gmail requiere mantener activada la lectura de Gmail: las respuestas se leen desde ahí')
     if (provider === 'jira') {
       const url = new URL(String(config.site_url ?? ''))
       check(url.protocol === 'https:' && url.hostname.endsWith('.atlassian.net') && !url.username && !url.password, 'Se requiere un sitio de Jira Cloud')
