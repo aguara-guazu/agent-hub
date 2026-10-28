@@ -13,6 +13,8 @@ const DECLINE = /^(no|hoy no|no gracias|rechazar todo)$/i
 const APPROVE = new RegExp(`^(?:aprobar|aprueba)\\s+${CODE_TOKEN}\\s+(?:${SELECTION}|(todo|todos|ok))$`, 'i')
 const APPROVE_ALL = new RegExp(`^${CODE_TOKEN}\\s+(?:ok|si|sí)$`, 'i')
 const REJECT = new RegExp(`^(?:rechazar|rechaza)\\s+${CODE_TOKEN}\\s+(?:${SELECTION}|(todo|todos))$`, 'i')
+const FOLLOW_UP = /^seguimiento\s+(\d{1,3})\s*:\s*(\S.{0,499})$/i
+export const MAX_FOLLOW_UP_CHARS = 500
 const REVISE = new RegExp(`^${CODE_TOKEN}\\s+(\\d{1,3})\\s*=\\s*(\\d{1,3}(?:[.,]\\d{1,2})?)$`, 'i')
 
 function ordinals(raw: string): number[] | null {
@@ -27,12 +29,29 @@ function ordinals(raw: string): number[] | null {
   return found.size ? [...found].sort((a, b) => a - b) : null
 }
 
-/** Interpreta UNA línea de texto nuevo. Nunca acepta «sí»/«ok» sin código para aprobar. */
+/**
+ * Interpreta el texto nuevo de una respuesta: una línea de comando y, solo al aprobar, líneas opcionales «Seguimiento N: <texto>»
+ * (N = ordinal de un ítem de la misma respuesta, hasta 500 caracteres, una por ordinal). Nunca acepta «sí»/«ok» sin código para aprobar.
+ */
 export function parseReply(text: string): ParsedReply {
   const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
   if (lines.length === 0) return { kind: 'unrecognized', reason: 'empty' }
-  if (lines.length > 1) return { kind: 'unrecognized', reason: 'ambiguous_text' }
-  const line = lines[0]!.replace(/[.!\s]+$/, '').replace(/\s+/g, ' ')
+  const [first, ...rest] = lines
+  const parsed = parseCommand(first!)
+  if (rest.length === 0) return parsed
+  if (parsed.kind !== 'approve') return { kind: 'unrecognized', reason: 'ambiguous_text' }
+  const follow_ups: Array<{ ordinal: number; text: string }> = []
+  for (const line of rest) {
+    const match = FOLLOW_UP.exec(line)
+    const ordinal = match ? Number(match[1]) : 0
+    if (!match || ordinal < 1 || follow_ups.some(item => item.ordinal === ordinal)) return { kind: 'unrecognized', reason: 'ambiguous_text' }
+    follow_ups.push({ ordinal, text: match[2]!.trim() })
+  }
+  return { ...parsed, follow_ups }
+}
+
+function parseCommand(raw: string): ParsedReply {
+  const line = raw.replace(/[.!\s]+$/, '').replace(/\s+/g, ' ')
   if (DECLINE.test(line)) return { kind: 'reject', code: null, items: 'all' }
   const approve = APPROVE.exec(line)
   if (approve) {
@@ -76,8 +95,8 @@ const QUOTE_START = [
 const SIGNATURE = /^(--\s?$|enviado desde|sent from|obtener outlook|get outlook)/i
 
 /**
- * Texto nuevo de una respuesta en texto plano: lo anterior a la primera cita, sin firma.
- * Devuelve null si no se puede separar con certeza (cita sin marca reconocible, varias líneas o primera línea citada).
+ * Texto nuevo de una respuesta en texto plano: lo anterior a la primera cita, sin firma. Admite la línea de comando y líneas «Seguimiento N: …».
+ * Devuelve null si no se puede separar con certeza (cita sin marca reconocible, líneas ajenas al comando o primera línea citada).
  */
 export function extractNewText(raw: string): string | null {
   const lines = raw.split(/\r?\n/)
@@ -85,7 +104,8 @@ export function extractNewText(raw: string): string | null {
   const head = (cut === -1 ? lines : lines.slice(0, cut)).map(line => line.trim())
   const signature = head.findIndex(line => SIGNATURE.test(line))
   const body = (signature === -1 ? head : head.slice(0, signature)).filter(Boolean)
-  return body.length === 1 ? body[0]! : null
+  if (body.length === 0) return null
+  return body.slice(1).every(line => FOLLOW_UP.test(line)) ? body.join('\n') : null
 }
 
 export interface GmailEvidence {

@@ -49,8 +49,10 @@ export interface ExclusionSink { add(entries: Exclusion[]): Promise<void> }
 export type PublicItemState = 'proposed' | 'approved' | 'rejected' | 'dispatching' | 'succeeded' | 'uncertain' | 'expired' | 'superseded' | 'unverifiable'
 export interface PublicStateSink { set(entry: { run_id: string; ordinal: number; kind: DecisionItemKind; effect_digest: string; state: PublicItemState }): Promise<void> }
 
+export interface FollowUpText { ordinal: number; text: string }
+export interface FollowUp { project_id: string; ordinal: number; text: string }
 export type ParsedReply =
-  | { kind: 'approve'; code: string; items: number[] | 'all' }
+  | { kind: 'approve'; code: string; items: number[] | 'all'; follow_ups?: FollowUpText[] }
   | { kind: 'reject'; code: string | null; items: number[] | 'all' }
   | { kind: 'revise'; code: string; ordinal: number; value: string }
   | { kind: 'unrecognized'; reason: 'empty' | 'no_command' | 'missing_code' | 'bad_selection' | 'ambiguous_text' }
@@ -67,6 +69,7 @@ export interface ConsumeResult {
   blocked_uncertain?: number[]
   rejected?: number[]
   revision?: { ordinal: number; value: string }
+  follow_ups_recorded?: number
 }
 
 /** JSON con claves ordenadas: misma entrada lógica, mismos bytes. */

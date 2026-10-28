@@ -531,11 +531,11 @@ describe('DecisionStore', () => {
 })
 
 describe('DecisionService: compuerta de autoridad', () => {
-  async function arrange(authority: () => ArtifactAuthority | Promise<ArtifactAuthority>) {
+  async function arrange(authority: (query?: { run_id: string; decision_request_ref?: string }) => ArtifactAuthority | Promise<ArtifactAuthority>) {
     const { store, prepare, activate } = setup()
     const { request_id } = prepare('run-1', 2)
     const { binding_id } = await activate(request_id)
-    const service = new DecisionService(store, async () => authority())
+    const service = new DecisionService(store, async query => authority(query))
     return { store, service, request_id, binding_id, code: () => normalizeCode(store.codeFor(request_id))! }
   }
   it('con autoridad vigente procesa respuestas y reclama intenciones', async () => {
@@ -578,5 +578,68 @@ describe('DecisionService: compuerta de autoridad', () => {
     expect(store.intent(intent.intent_id)?.state).toBe('uncertain')
     expect(await service.claimForDispatch(intent.intent_id, claimed.generation)).toEqual({ gated: true, reason: 'authority_unavailable' })
     expect(store.intent(intent.intent_id)?.state).toBe('uncertain')
+  })
+})
+
+describe('seguimiento por ítem aprobado', () => {
+  const approveWith = (store: DecisionStore, requestId: string, bindingId: string, id: string, parsed: ParsedReply) => reply(store, bindingId, id, parsed)
+  it('la gramática separa «Seguimiento N: texto» del comando y solo al aprobar', () => {
+    expect(parseReply('aprobar K7P4-M2XN 1,2\nSeguimiento 2: revisa también el test de X')).toEqual({ kind: 'approve', code: 'K7P4M2XN', items: [1, 2], follow_ups: [{ ordinal: 2, text: 'revisa también el test de X' }] })
+    expect(parseReply('K7P4-M2XN ok\nseguimiento 1: a\nSeguimiento 3: b')).toMatchObject({ kind: 'approve', follow_ups: [{ ordinal: 1, text: 'a' }, { ordinal: 3, text: 'b' }] })
+    expect(parseReply('rechazar K7P4-M2XN 1\nSeguimiento 1: x')).toEqual({ kind: 'unrecognized', reason: 'ambiguous_text' })
+    expect(parseReply('hoy no\nSeguimiento 1: x')).toEqual({ kind: 'unrecognized', reason: 'ambiguous_text' })
+    expect(parseReply('aprobar K7P4-M2XN 1\nhaz esto otro')).toEqual({ kind: 'unrecognized', reason: 'ambiguous_text' })
+    expect(parseReply('aprobar K7P4-M2XN 1\nSeguimiento 1: a\nSeguimiento 1: b')).toEqual({ kind: 'unrecognized', reason: 'ambiguous_text' })
+    expect(parseReply(`aprobar K7P4-M2XN 1\nSeguimiento 1: ${'x'.repeat(501)}`)).toEqual({ kind: 'unrecognized', reason: 'ambiguous_text' })
+    expect(parseReply('aprobar K7P4-M2XN 1\nSeguimiento 1:')).toEqual({ kind: 'unrecognized', reason: 'ambiguous_text' })
+  })
+  it('un correo con seguimiento se extrae completo y una cita lo corta', () => {
+    expect(extractNewText('aprobar K7P4-M2XN 1\nSeguimiento 1: mira el test\n\nEl mar, 28 oct 2026, Hub <a@b.c> escribió:\n> Responde: aprobar K7P4-M2XN 1,2')).toBe('aprobar K7P4-M2XN 1\nSeguimiento 1: mira el test')
+    expect(extractNewText('aprobar K7P4-M2XN 1\nuna frase libre')).toBeNull()
+  })
+  it('el seguimiento queda con el proyecto del ítem aprobado, uno por proyecto, y nunca de ítems no aprobados', async () => {
+    const { store, activate } = setup()
+    const { request_id } = store.prepareDecision({ run_id: 'run-f', artifact_id: 'art-f', owner_id: OWNER, project_ids: ['p1', 'p2'], expires_at: later(600), items: [
+      { kind: 'jira_worklog', project_id: 'p1', summary: 'a', exact_effect: effect(1) }, { kind: 'jira_worklog', project_id: 'p1', summary: 'b', exact_effect: effect(2) },
+      { kind: 'jira_worklog', project_id: 'p2', summary: 'c', exact_effect: effect(3) }] })
+    const { binding_id } = await activate(request_id)
+    const code = normalizeCode(store.codeFor(request_id))!
+    const result = approveWith(store, request_id, binding_id, 'm1', { kind: 'approve', code, items: [1, 3], follow_ups: [
+      { ordinal: 1, text: 'revisa A' }, { ordinal: 2, text: 'ítem no aprobado' }, { ordinal: 3, text: 'revisa C' }, { ordinal: 9, text: 'no existe' }] })
+    expect(result).toMatchObject({ outcome: 'approved', follow_ups_recorded: 2 })
+    expect(store.getFollowUps(request_id)).toEqual([{ project_id: 'p1', ordinal: 1, text: 'revisa A' }, { project_id: 'p2', ordinal: 3, text: 'revisa C' }])
+  })
+  it('dos seguimientos del mismo proyecto: gana el primero; un código inválido no registra nada', async () => {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-g', 2)
+    const { binding_id } = await activate(request_id)
+    expect(approveWith(store, request_id, binding_id, 'bad', { kind: 'approve', code: '22222222', items: 'all', follow_ups: [{ ordinal: 1, text: 'x' }] }).outcome).toBe('invalid_code')
+    expect(store.getFollowUps(request_id)).toEqual([])
+    const code = normalizeCode(store.codeFor(request_id))!
+    approveWith(store, request_id, binding_id, 'ok', { kind: 'approve', code, items: 'all', follow_ups: [{ ordinal: 1, text: 'primero' }, { ordinal: 2, text: 'segundo' }] })
+    expect(store.getFollowUps(request_id)).toEqual([{ project_id: 'p1', ordinal: 1, text: 'primero' }])
+  })
+})
+
+describe('DecisionService: prepareDecision y lector por run', () => {
+  it('consulta por run_id con la referencia y no prepara si el artefacto no es vigente (también con ref NULL)', async () => {
+    const seen: Array<{ run_id: string; decision_request_ref?: string }> = []
+    let current: ArtifactAuthority = 'live'
+    const { store, prepare, activate } = setup()
+    const service = new DecisionService(store, async query => { seen.push(query); return current })
+    const input = { run_id: 'run-9', artifact_id: 'art-9', owner_id: OWNER, project_ids: ['p1'], expires_at: later(60), items: [{ kind: 'jira_worklog' as const, project_id: 'p1', summary: 's', exact_effect: effect(1) }] }
+    current = 'unavailable'
+    expect(await service.prepareDecision(input)).toEqual({ gated: true, reason: 'authority_unavailable' })
+    expect(store.requestsOfRun('run-9')).toEqual([])
+    current = 'unknown'
+    expect((await service.prepareDecision(input)).gated).toBe(true)
+    current = 'live'
+    const prepared = await service.prepareDecision(input)
+    expect(prepared).toMatchObject({ gated: false, value: { created: true } })
+    expect(seen[0]).toEqual({ run_id: 'run-9' })
+    const { request_id } = prepare('run-10', 1)
+    await activate(request_id)
+    await service.live(request_id)
+    expect(seen.at(-1)).toEqual({ run_id: 'run-10', decision_request_ref: request_id })
   })
 })

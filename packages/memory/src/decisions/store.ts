@@ -3,9 +3,10 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { codeHmac, deriveCode, formatCode, sameHmac } from './codes.js'
+import { MAX_FOLLOW_UP_CHARS } from './verifier.js'
 import {
   DecisionError, canonicalJson, sha256,
-  type ApprovedItem, type ConsumeResult, type DecisionItemKind, type DecisionRequestInput, type Exclusion, type ExclusionSink, type Integration,
+  type ApprovedItem, type ConsumeResult, type FollowUp, type DecisionItemKind, type DecisionRequestInput, type Exclusion, type ExclusionSink, type Integration,
   type IntentState, type ItemState, type ParsedReply, type PublicDecisionRequest, type PublicItemState, type PublicStateSink, type RequestState,
 } from './contract.js'
 
@@ -81,6 +82,12 @@ CREATE TABLE IF NOT EXISTS inbound (
   request_id TEXT, outcome TEXT NOT NULL, received_at TEXT NOT NULL,
   PRIMARY KEY(integration, account, native_message_id)
 );
+CREATE TABLE IF NOT EXISTS follow_ups (
+  request_id TEXT NOT NULL, ordinal INTEGER NOT NULL, project_id TEXT NOT NULL, text TEXT NOT NULL,
+  integration TEXT NOT NULL, account TEXT NOT NULL, native_message_id TEXT NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY(request_id, ordinal)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS follow_ups_project ON follow_ups(request_id, project_id);
 CREATE TABLE IF NOT EXISTS reply_failures (integration TEXT NOT NULL, account TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS reply_failures_account ON reply_failures(integration, account, at);
 CREATE TABLE IF NOT EXISTS grants (
@@ -280,6 +287,14 @@ export class DecisionStore {
        WHERE i.request_id = ? ORDER BY i.ordinal`, requestId)
   }
 
+  /**
+   * Instrucciones de seguimiento escritas por la persona en la misma respuesta que aprobó el ítem. El proyecto sale del ítem aprobado,
+   * una por proyecto. Es texto libre de la persona: no se ejecuta como comando ni se registra en logs.
+   */
+  getFollowUps(requestId: string): FollowUp[] {
+    return this.all<FollowUp>('SELECT project_id, ordinal, text FROM follow_ups WHERE request_id = ? ORDER BY ordinal', requestId)
+  }
+
   /** Solicitudes de un run, la más reciente primero. */
   requestsOfRun(runId: string): PublicDecisionRequest[] {
     return this.all<RequestRow>('SELECT * FROM decision_requests WHERE run_id = ? ORDER BY revision DESC', runId).map(row => this.publicRequest(row.request_id))
@@ -477,6 +492,11 @@ export class DecisionStore {
     return this.get<{ request_id: string }>('SELECT request_id FROM channel_bindings WHERE id = ?', bindingId)?.request_id
   }
 
+  /** Run al que pertenece una solicitud. */
+  runOfRequest(requestId: string): string | undefined {
+    return this.get<{ run_id: string }>('SELECT run_id FROM decision_requests WHERE request_id = ?', requestId)?.run_id
+  }
+
   /** Solicitud de una intención. */
   requestOfIntent(intentId: string): string | undefined {
     return this.intent(intentId)?.request_id
@@ -569,7 +589,14 @@ export class DecisionStore {
             intent_id, item.request_id, item.item_id, item.kind, item.exact_effect, item.effect_digest, item.operation_key, at, at)
           approved.push({ item_id: item.item_id, ordinal: item.ordinal, intent_id })
         }
-        outcome = { outcome: 'approved', request_id: request.request_id, approved, ...(blocked.length ? { blocked_uncertain: blocked } : {}) }
+        let recorded = 0
+        for (const follow of parsed.follow_ups ?? []) {
+          const item = chosen.find(candidate => candidate.ordinal === follow.ordinal)
+          if (!item || !approved.some(entry => entry.item_id === item.item_id) || follow.text.length > MAX_FOLLOW_UP_CHARS) continue
+          if (this.run('INSERT OR IGNORE INTO follow_ups(request_id, ordinal, project_id, text, integration, account, native_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            item.request_id, item.ordinal, item.project_id, follow.text, input.integration, input.account, input.native_message_id, this.iso()) === 1) recorded++
+        }
+        outcome = { outcome: 'approved', request_id: request.request_id, approved, ...(blocked.length ? { blocked_uncertain: blocked } : {}), ...(recorded ? { follow_ups_recorded: recorded } : {}) }
       }
       if (!this.get('SELECT 1 FROM decision_items WHERE request_id = ? AND state = \'pending\'', request.request_id)) {
         this.run('UPDATE decision_requests SET state = \'closed\', updated_at = ? WHERE request_id = ? AND state = \'open\'', this.iso(), request.request_id)

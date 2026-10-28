@@ -1,9 +1,10 @@
-import type { ConsumeResult, Integration, ParsedReply } from './contract.js'
+import type { ConsumeResult, DecisionRequestInput, Integration, ParsedReply } from './contract.js'
 import type { DecisionStore, IntentRow } from './store.js'
 
 /** Vigencia de la autoridad de un artefacto, tal como la lee el runtime del scheduler (schedule_artifacts.authority). */
 export type ArtifactAuthority = 'live' | 'unavailable' | 'unknown'
-export type ArtifactAuthorityReader = (decisionRequestRef: string) => Promise<ArtifactAuthority>
+/** Se resuelve por run; si viene la referencia, el lector valida que pertenezca a ese artefacto (`unknown` si no). */
+export type ArtifactAuthorityReader = (query: { run_id: string; decision_request_ref?: string }) => Promise<ArtifactAuthority>
 
 export type GatedOutcome<T> = { gated: false; value: T } | { gated: true; reason: 'authority_unavailable' }
 
@@ -19,8 +20,19 @@ export class DecisionService {
 
   /** `live` solo si el lector lo afirma y el almacén conoce la solicitud; cualquier otra cosa deniega. */
   async live(requestId: string): Promise<boolean> {
-    if (this.store.authorityOf(requestId) !== 'verified') return false
-    try { return (await this.authority(requestId)) === 'live' } catch { return false }
+    const run = this.store.runOfRequest(requestId)
+    if (!run || this.store.authorityOf(requestId) !== 'verified') return false
+    return this.runLive({ run_id: run, decision_request_ref: requestId })
+  }
+
+  private async runLive(query: { run_id: string; decision_request_ref?: string }): Promise<boolean> {
+    try { return (await this.authority(query)) === 'live' } catch { return false }
+  }
+
+  /** Prepara la solicitud de un run solo si el artefacto del run tiene autoridad vigente (también en la reparación tras una caída). */
+  async prepareDecision(input: DecisionRequestInput): Promise<GatedOutcome<ReturnType<DecisionStore['prepareDecision']>>> {
+    if (!(await this.runLive({ run_id: input.run_id }))) return { gated: true, reason: 'authority_unavailable' }
+    return { gated: false, value: this.store.prepareDecision(input) }
   }
 
   async processReply(input: { integration: Integration; account: string; native_message_id: string; binding_id: string; parsed: ParsedReply }): Promise<GatedOutcome<ConsumeResult>> {
