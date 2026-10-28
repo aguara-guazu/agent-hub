@@ -16,8 +16,9 @@ import { collaborationEnabled } from '../collaboration.js'
  * el `ORDER BY` del motor, porque de ese orden dependen el `snapshot_hash` y la
  * asignación de `exposed_name`.
  */
-import { snapshotHash, type PolicySnapshot, type ResourceType } from '@agenthub/shared'
+import { isRunProfileCliKind, profileAllowsTool, RUN_PROFILE_DENIAL, snapshotHash, type PolicySnapshot, type ResourceType } from '@agenthub/shared'
 import { buildExposedName } from '../naming.js'
+import { MEMORY_CATALOG_SERVER_SETTING } from '../catalog/reconcile.js'
 import type { Store } from '../store.js'
 import { cmp } from '../store.js'
 import type {
@@ -157,6 +158,8 @@ export function computeSnapshot(
   const servers: PolicySnapshot['servers'] = []
   const denied: DeniedEntry[] = []
   const takenNames = new Set<string>()
+  const profile = isRunProfileCliKind(context.agent.cli_kind) ? context.agent.cli_kind : null
+  const memoryServerId = profile ? store.setting(MEMORY_CATALOG_SERVER_SETTING) : null
 
   for (const server of context.servers) {
     const serverDecision = resolveResource(context, RESOURCE.server, server.id)
@@ -183,6 +186,11 @@ export function computeSnapshot(
         denied.push({ resource_type: RESOURCE.tool, resource_id: tool.id, slug: `${server.slug}/${tool.name}`, ...toolDecision })
         continue
       }
+      // La cota del perfil va después de las reglas: un `on` del dueño no devuelve lo que el perfil no tiene.
+      if (profile && !profileAllowsTool(profile, { memory: server.id === memoryServerId, tool: tool.name })) {
+        denied.push({ resource_type: RESOURCE.tool, resource_id: tool.id, slug: `${server.slug}/${tool.name}`, exposed: false, source: 'run_profile', detail: RUN_PROFILE_DENIAL })
+        continue
+      }
       let exposedName = tool.exposed_name
       if (!exposedName || takenNames.has(exposedName)) {
         exposedName = buildExposedName(server.slug, tool.name, takenNames)
@@ -202,6 +210,7 @@ export function computeSnapshot(
       })
     }
 
+    if (profile && tools.length === 0) continue
     servers.push({
       id: server.id,
       slug: server.slug,
@@ -231,6 +240,10 @@ export function computeSnapshot(
   // gateway. Los campos de origen sólo viajan en las externas, para no mover el hash de
   // las skills del hub que ya existían.
   for (const skill of context.skills) {
+    if (profile) {
+      denied.push({ resource_type: RESOURCE.skill, resource_id: skill.id, slug: skill.slug, exposed: false, source: 'run_profile', detail: RUN_PROFILE_DENIAL })
+      continue
+    }
     const skillDecision = resolveResource(context, RESOURCE.skill, skill.id)
     if (!skillDecision.exposed) {
       denied.push({ resource_type: RESOURCE.skill, resource_id: skill.id, slug: skill.slug, ...skillDecision })

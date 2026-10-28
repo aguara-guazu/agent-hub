@@ -41,7 +41,7 @@ import {
   type CallToolResult,
   type ListToolsResult,
 } from '@modelcontextprotocol/sdk/types.js'
-import { CLI_FILE_SKILLS, renderSkillMd, SKILL_FILENAME, SKILL_TOOL_NAME, type CliKind } from '@agenthub/shared'
+import { CLI_FILE_SKILLS, isRunProfileCliKind, profileAllowsTool, RUN_PROFILE_DENIAL, renderSkillMd, SKILL_FILENAME, SKILL_TOOL_NAME, type CliKind } from '@agenthub/shared'
 
 import type { ExposedSkill, PolicyStore, SnapshotView } from './policy.js'
 import { DECISION_ALLOW, DECISION_DENY, argsDigest, denialMessage, serverOffMessage, unknownToolMessage } from './policy.js'
@@ -307,6 +307,16 @@ export class GatewayServer {
     return meta
   }
 
+  /**
+   * Segunda barrera de los perfiles de run: aunque el snapshot ya venga acotado, tools/list y tools/call vuelven a filtrar
+   * por la capacidad fija del perfil, de modo que una lista cacheada por el CLI no devuelva una herramienta fuera de él.
+   */
+  private profilePermits(view: SnapshotView, tool: { serverSlug: string; toolName: string }): boolean {
+    if (!isRunProfileCliKind(view.cliKind)) return true
+    const spec = view.specFor(tool.serverSlug)
+    return spec !== undefined && profileAllowsTool(view.cliKind, { memory: isMemorySpec(spec), tool: tool.toolName })
+  }
+
   /** El server de memoria vigente para este agente, si expone la herramienta pedida. */
   private memoryFor(view: SnapshotView, toolName: string): UpstreamSpec | undefined {
     const spec = view.upstreams().find(isMemorySpec)
@@ -377,7 +387,7 @@ export class GatewayServer {
     const view = this.store.current
     this.lastListedHashValue = view.snapshotHash
     this.onListed?.(view.snapshotHash)
-    const tools: ListToolsResult['tools'] = view.tools.map((tool) => ({
+    const tools: ListToolsResult['tools'] = view.tools.filter((tool) => this.profilePermits(view, tool)).map((tool) => ({
       name: tool.exposedName,
       ...(tool.title ? { title: tool.title } : {}),
       ...(tool.description ? { description: tool.description } : {}),
@@ -479,6 +489,13 @@ export class GatewayServer {
     const tool = view.tool(name)
     if (tool === undefined) {
       return this.deny(view, name, digest, started)
+    }
+    if (!this.profilePermits(view, tool)) {
+      await this.report({
+        agent_id: this.agentInstanceId, server_slug: tool.serverSlug, tool_name: tool.toolName, exposed_name: name,
+        decision: DECISION_DENY, args_digest: digest, duration_ms: elapsedMs(started), denial_reason: RUN_PROFILE_DENIAL, error: '',
+      })
+      return errorResult(`${RUN_PROFILE_DENIAL}: '${name}'.`)
     }
 
     const spec = view.specFor(tool.serverSlug)

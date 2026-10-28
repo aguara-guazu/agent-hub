@@ -3,7 +3,7 @@
  * consultas que usan el resolver, la matriz, el ledger y los routers. Concentra el
  * parseo de JSON y la conversión de enteros SQLite (0/1) a booleanos en un solo lugar.
  */
-import { newId, nowIso, type SkillSource } from '@agenthub/shared'
+import { newId, nowIso, RUN_PROFILE_CLI_KINDS, type RunProfileKind, type SkillSource } from '@agenthub/shared'
 import type { Database, Row } from './db/database.js'
 import type {
   AccountSkillsReport,
@@ -23,6 +23,8 @@ import type {
   ToolCallLogRow,
   User,
 } from './types.js'
+
+const PROFILE_KINDS_SQL = RUN_PROFILE_CLI_KINDS.map((kind) => `'${kind}'`).join(', ')
 
 function bool(value: unknown): boolean {
   return value === 1 || value === true || value === '1'
@@ -531,15 +533,16 @@ export class Store {
     return row ? toAgent(row) : undefined
   }
 
+  /** Los clientes reales de una máquina. Las identidades de perfil de run son internas y no figuran en listados ni matrices. */
   agentsOfMachine(machineId: string): AgentInstance[] {
     return this.db
-      .all('SELECT * FROM agent_instances WHERE machine_id = ? ORDER BY cli_kind', machineId)
+      .all(`SELECT * FROM agent_instances WHERE machine_id = ? AND cli_kind NOT IN (${PROFILE_KINDS_SQL}) ORDER BY cli_kind`, machineId)
       .map(toAgent)
   }
 
   agentsOfUser(userId: string): { agent: AgentInstance; machine: Machine }[] {
     const rows = this.db.all(
-      `SELECT a.* FROM agent_instances a JOIN machines m ON m.id = a.machine_id WHERE m.user_id = ?`,
+      `SELECT a.* FROM agent_instances a JOIN machines m ON m.id = a.machine_id WHERE m.user_id = ? AND a.cli_kind NOT IN (${PROFILE_KINDS_SQL})`,
       userId,
     )
     return rows.map((row) => ({ agent: toAgent(row), machine: this.machine(str(row.machine_id))! }))
@@ -548,10 +551,16 @@ export class Store {
   agentIdsOfUser(userId: string): string[] {
     return this.db
       .all<{ id: string }>(
-        'SELECT a.id FROM agent_instances a JOIN machines m ON m.id = a.machine_id WHERE m.user_id = ?',
+        `SELECT a.id FROM agent_instances a JOIN machines m ON m.id = a.machine_id WHERE m.user_id = ? AND a.cli_kind NOT IN (${PROFILE_KINDS_SQL})`,
         userId,
       )
       .map((row) => row.id)
+  }
+
+  /** La identidad de política de un perfil de run para ese dueño, si ya se registró. */
+  runProfileAgent(userId: string, kind: RunProfileKind): AgentInstance | undefined {
+    const row = this.db.get('SELECT a.* FROM agent_instances a JOIN machines m ON m.id = a.machine_id WHERE m.user_id = ? AND a.cli_kind = ? ORDER BY a.created_at LIMIT 1', userId, kind)
+    return row ? toAgent(row) : undefined
   }
 
   insertAgent(input: { machine_id: string; cli_kind: string; cli_version: string; config_path: string }): AgentInstance {
