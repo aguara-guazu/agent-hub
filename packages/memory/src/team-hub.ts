@@ -19,8 +19,13 @@ type RunOptions = { cwd?: string; env: NodeJS.ProcessEnv; timeout: number; maxBu
 export interface HubTeamOptions extends FleetProcessOptions {
   /** Read-only CLI capability checks and Git operations; prompts never travel through this runner. */
   run?: (command: string, args: string[], options: RunOptions) => Promise<{ stdout: string }>
-  /** Account behind a CLI and model. undefined = unknown, which never allows restoring another conversation. */
+  /** Account that would run the new conversation now. undefined = unknown. */
   resolveAccount?: (cli: string, model: string) => Promise<string | null | undefined>
+  /**
+   * Account bound to a conversation when its ID was captured: historical evidence about that session, never the
+   * login that is current today. undefined = unknown, and an unknown origin never allows restoring it.
+   */
+  resolveOriginAccount?: (session: Record<string, unknown>) => Promise<string | null | undefined>
 }
 export interface HubTeamStatus extends FleetStatus {
   provider: 'hub'
@@ -36,8 +41,8 @@ export interface HubContinuation {
   origin_session_id: string
   /** Project of the run, owned by the backend (null = verified none). */
   project_id: string | null
-  /** A restricted profile is launched only after verify() proves the effective profile. */
-  profile?: { restricted: boolean; verify: () => Promise<boolean> }
+  /** A restricted profile cannot be applied to a fleet child yet, so asking for one blocks every rung. */
+  profile?: { restricted: boolean }
 }
 export interface HubTeamLaunchReceipt extends TeamLaunchReceipt { runtime: HubTeamStatus; continuity?: ResumePlan }
 type ManagedChat = LocalChat & {
@@ -247,7 +252,7 @@ export class HubTeamRuntime implements TeamOrca {
     const originCwd = typeof row?.native_cwd === 'string' ? row.native_cwd : null
     const [originProject, originAccount, targetAccount, installed] = await Promise.all([
       originCwd ? projectForPath(this.chat.db, originCwd) : Promise.resolve(undefined),
-      row ? this.options.resolveAccount?.(String(row.cli_kind), String(row.model ?? '')) : undefined,
+      row ? this.options.resolveOriginAccount?.(row) : undefined,
       this.options.resolveAccount?.(member.cli, member.model),
       this.installedEvidence(member.cli),
     ])
@@ -261,10 +266,10 @@ export class HubTeamRuntime implements TeamOrca {
       ...(originAccount !== undefined ? { account: originAccount } : {}),
     }
     const observed: OriginObservation = row ? { lease_active: Date.parse(row.lease_until) > now } : {}
-    const profile = member.continuation.profile
-    const verified = !profile?.restricted || await profile.verify().then(Boolean, () => false)
+    // FleetProcessManager always starts children with full permissions; no effective restricted profile exists to verify.
+    const restricted = member.continuation.profile?.restricted === true
     return planResume(origin, {
-      cli: member.cli, surface: 'fleet', cwd, headless: true, profile: { restricted: profile?.restricted === true, verified },
+      cli: member.cli, surface: 'fleet', cwd, headless: true, profile: { restricted, verified: !restricted },
       project_id: member.continuation.project_id, ...(targetAccount !== undefined ? { account: targetAccount } : {}),
     }, installed, observed)
   }

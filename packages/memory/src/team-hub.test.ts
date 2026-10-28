@@ -167,7 +167,7 @@ describe('HubTeamRuntime continuation', () => {
       if (args.includes('generate-json-schema') && out >= 0) await writeFile(join(args[out + 1]!, 'schema.json'), methods)
       return { stdout: help }
     },
-    resolveAccount: async () => 'account-a', ...extra,
+    resolveAccount: async () => 'account-a', resolveOriginAccount: async () => 'account-a', ...extra,
   })
   const origin = (patch: Record<string, unknown> = {}) => ({ id: 'creator', cli_kind: 'codex_cli', surface: 'interactive', native_id: 'thread-source', native_cwd: '',
     model: 'exact-model', resumable: 1, id_captured_by: 'hook', state: 'idle', closed_at: iso(-1000), lease_until: iso(-60_000), event_at: iso(-60_000), removed_at: null, ...patch })
@@ -188,15 +188,16 @@ describe('HubTeamRuntime continuation', () => {
     expect(launched).toHaveBeenCalledTimes(1)
   })
   it('does not fork from documentation alone: without the installed schema it starts a new linked conversation', async () => {
-    const { launch } = await prepare('hold', { resolveAccount: async () => 'account-a' })
+    const { launch } = await prepare('hold', { resolveAccount: async () => 'account-a', resolveOriginAccount: async () => 'account-a' })
     const receipt = await launch(request)
     expect(receipt.continuity).toMatchObject({ rung: 'linked_new' })
     expect(receipt.continuity!.downgrades).toContain('fork_headless_unverified')
     expect(receipt.runtime.native_id).toBe('native')
   })
   it.each([
-    ['an unknown account', withSchema({ resolveAccount: async () => undefined }), {}, 'account_unverified'],
-    ['another account', withSchema({ resolveAccount: async (_cli: string, model: string) => model === 'origin-model' ? 'account-b' : 'account-a' }), { model: 'origin-model' }, 'account_mismatch'],
+    ['an unknown target account', withSchema({ resolveAccount: async () => undefined }), {}, 'account_unverified'],
+    ['an origin without a captured account', withSchema({ resolveOriginAccount: async () => undefined }), {}, 'account_unverified'],
+    ['a login rotated after the ID was captured', withSchema({ resolveOriginAccount: async () => 'account-a', resolveAccount: async () => 'account-b' }), {}, 'account_mismatch'],
     ['a transport identifier', withSchema(), { native_id: 'tui:3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11' }, 'no_authentic_id'],
     ['an ID that was not captured from a hook', withSchema(), { resumable: 0, id_captured_by: null }, 'no_authentic_id'],
     ['another directory', withSchema(), { native_cwd: '/somewhere/else' }, 'cwd_incompatible'],
@@ -213,12 +214,14 @@ describe('HubTeamRuntime continuation', () => {
     await expect(launch(request)).rejects.toMatchObject({ message: expect.stringContaining('sigue conectado'), continuity: { rung: 'live_destination' } })
     expect(launched).not.toHaveBeenCalled()
   })
-  it('launches nothing when a restricted profile cannot be verified', async () => {
+  it('launches nothing when a restricted profile is requested, even if a fork or a new conversation would be possible', async () => {
     const { launch, launched } = await prepare()
-    await expect(launch({ ...request, profile: { restricted: true, verify: async () => false } })).rejects.toMatchObject({ continuity: { rung: 'blocked_unsupported' } })
-    await expect(launch({ ...request, profile: { restricted: true, verify: async () => { throw new Error('boom') } } })).rejects.toMatchObject({ continuity: { rung: 'blocked_unsupported' } })
+    await expect(launch({ ...request, profile: { restricted: true } })).rejects.toMatchObject({ continuity: { rung: 'blocked_unsupported', reason: 'profile_unverifiable' } })
+    const unverifiedFork = await prepare('hold', { resolveAccount: async () => undefined })
+    await expect(unverifiedFork.launch({ ...request, profile: { restricted: true } })).rejects.toMatchObject({ continuity: { rung: 'blocked_unsupported' } })
     expect(launched).not.toHaveBeenCalled()
-    expect((await launch({ ...request, profile: { restricted: true, verify: async () => true } })).continuity!.rung).toBe('fork')
+    expect(unverifiedFork.launched).not.toHaveBeenCalled()
+    expect((await launch({ ...request, profile: { restricted: false } })).continuity!.rung).toBe('fork')
   })
   it('never resumes the original session without an adapter-held exclusion', async () => {
     const surface = resumeSurface('codex_cli', 'fleet')!
