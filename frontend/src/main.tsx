@@ -9,6 +9,7 @@ import './styles/app.css'
 import './styles/hub.css'
 import './styles/memory.css'
 import './styles/search.css'
+import './styles/automations.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {

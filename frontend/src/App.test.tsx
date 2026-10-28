@@ -130,7 +130,7 @@ describe('hub local de escritorio', () => {
     const view = await mount()
     expect(window.location.hash).toBe('#/catalog')
     const links = [...view.container.querySelectorAll('nav a')].map(el => el.getAttribute('href'))
-    expect(links).toEqual(['#/catalog', '#/skills', '#/projects', '#/clients', '#/activity'])
+    expect(links).toEqual(['#/catalog', '#/skills', '#/projects', '#/clients', '#/schedules', '#/activity'])
     expect(view.container.querySelector('nav a[href="#/projects"]')?.textContent).toContain('Memoria')
     expect(view.container.textContent).toContain('Mi Mac')
     expect(view.container.textContent).not.toContain(member.email)

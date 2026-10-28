@@ -1,0 +1,49 @@
+/* Programaciones y Entregas: lo propio de las automatizaciones. Lo compartido vive en tokens.css y hub.css. */
+
+.automations-tabs { display: flex; gap: 4px; margin: 0 0 18px; border-bottom: 1px solid var(--border); }
+.automations-tabs a { padding: 8px 14px; color: var(--text-secondary); font-size: 12px; border-bottom: 2px solid transparent; text-decoration: none; }
+.automations-tabs a.active { color: var(--text-primary); border-bottom-color: var(--accent-text); }
+.automations-callout { margin-bottom: 18px; }
+.automations-name { display: flex; flex-direction: column; gap: 2px; }
+.automations-name span, .automations-name small, .automations-muted { color: var(--text-secondary); font-size: 11px; }
+.automations-muted { color: var(--text-faint); }
+.automations-warning { color: var(--warn-text); font-size: 12px; }
+.automations-focus { outline: 2px solid var(--accent-text); outline-offset: -2px; }
+.automations-unread { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-text); }
+.automations-unread-row td { font-weight: 600; }
+.automations-filter { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-secondary); }
+.automations-form { display: flex; flex-direction: column; gap: 14px; }
+.automations-form label, .automations-form fieldset { display: flex; flex-direction: column; gap: 6px; border: 0; padding: 0; font-size: 12px; }
+.automations-day.selected { background: var(--accent-text); color: var(--surface); }
+.automations-check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; }
+.automations-constraints { margin-top: 28px; }
+.automations-constraints ul { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.automations-constraints li { display: flex; align-items: center; gap: 12px; font-size: 12px; }
+.automations-detail { display: flex; flex-direction: column; gap: 18px; }
+.automations-detail header { display: flex; flex-direction: column; gap: 8px; }
+.automations-items ul { list-style: none; padding: 0; margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
+.automations-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+.automations-item label { display: flex; align-items: center; gap: 8px; flex: 1 1 320px; }
+.automations-item small { flex-basis: 100%; }
+.automations-revise { display: inline-flex; align-items: center; gap: 6px; }
+.automations-revise input { width: 64px; }
+.automations-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.automations-reply { display: inline-flex; align-items: center; gap: 8px; }
+.automations-reply code { padding: 4px 8px; border-radius: 6px; background: var(--surface-3); }
+
+/* Markdown de un artefacto: tipografía sobria, sin heredar estilos de contenido externo. */
+.md { display: flex; flex-direction: column; gap: 10px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.md h2, .md h3, .md h4, .md h5, .md h6 { margin: 12px 0 0; font-size: 14px; }
+.md h2 { font-size: 16px; }
+.md p, .md ul, .md ol, .md blockquote, .md pre { margin: 0; }
+.md ul, .md ol { padding-left: 22px; }
+.md blockquote { padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-secondary); }
+.md pre { padding: 12px; border-radius: 8px; background: var(--surface-3); overflow-x: auto; }
+.md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.md :not(pre) > code { padding: 1px 5px; border-radius: 4px; background: var(--surface-3); }
+.md hr { border: 0; border-top: 1px solid var(--border); width: 100%; }
+.md a { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
+.md-table { overflow-x: auto; }
+.md-table table { border-collapse: collapse; font-size: 12px; }
+.md-table th, .md-table td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
+.md-truncated { color: var(--warn-text); }

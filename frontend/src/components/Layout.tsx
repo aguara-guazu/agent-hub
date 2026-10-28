@@ -10,6 +10,7 @@ import { NavigationControls } from './NavigationControls'
 import { GlobalSearch } from './GlobalSearch'
 import { memoryCall } from '../lib/memory'
 import { api } from '../lib/api'
+import { useRuns } from '../lib/automations'
 import { useDesktopNavigation } from '../lib/desktop'
 import { version } from '../../package.json'
 
@@ -20,6 +21,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
   { to: '/skills', label: 'Skills', icon: 'skills' },
   { to: '/projects', label: 'Memoria', icon: 'hub', sections: ['/projects', '/memory'] },
   { to: '/clients', label: 'Clientes', icon: 'machines' },
+  { to: '/schedules', label: 'Automatizaciones', icon: 'sparkles', sections: ['/schedules', '/deliveries'] },
   { to: '/activity', label: 'Actividad', icon: 'audit' },
 ]
 function describePending(changes: PendingChanges | null): string {
@@ -61,6 +63,7 @@ export function Layout() {
     return () => document.removeEventListener('keydown', listener)
   }, [searchOpen])
   const overview = useOverview()
+  const unreadDeliveries = useRuns({ unread: '1', limit: '1' }).data?.total ?? 0
   const { pathname } = useLocation()
   const cache = useQueryClient()
   const toast = useToast()
@@ -84,7 +87,7 @@ export function Layout() {
   return <div className="hub-shell"><aside className="hub-sidebar">
     <div className="hub-brand"><span className="hub-brand-mark"><Icon name="hub" /></span><div><strong>Agent Hub</strong><small>Tu espacio de herramientas</small></div></div>
     <div className="hub-workspace"><Icon name="machines" /><div><strong>Esta computadora</strong><span>{overview.data?.hostname ?? 'Espacio local'}</span></div><span className="hub-local-dot" /></div>
-    <div className="hub-nav-label">BIBLIOTECA</div><nav aria-label="Secciones" className="hub-nav">{NAV_ENTRIES.map(entry => <NavLink key={entry.to} className={({ isActive }) => `hub-nav-link ${isActive || entry.sections?.some(section => pathname === section || pathname.startsWith(`${section}/`)) ? 'active' : ''}`} to={entry.to}><Icon name={entry.icon} /><span>{entry.label}</span>{entry.to === '/clients' && clients.length > 0 && <small>{clients.length}</small>}</NavLink>)}</nav>
+    <div className="hub-nav-label">BIBLIOTECA</div><nav aria-label="Secciones" className="hub-nav">{NAV_ENTRIES.map(entry => <NavLink key={entry.to} className={({ isActive }) => `hub-nav-link ${isActive || entry.sections?.some(section => pathname === section || pathname.startsWith(`${section}/`)) ? 'active' : ''}`} to={entry.to}><Icon name={entry.icon} /><span>{entry.label}</span>{entry.to === '/clients' && clients.length > 0 && <small>{clients.length}</small>}{entry.to === '/schedules' && unreadDeliveries > 0 && <small aria-label={`${unreadDeliveries} entregas sin leer`}>{unreadDeliveries}</small>}</NavLink>)}</nav>
     <div className="hub-sidebar-bottom"><div className="hub-sync-card"><div><span className={`hub-local-dot ${connected ? '' : 'pending'}`} /><strong>{failing ? 'Servicio detenido' : connected ? 'Todo sincronizado' : pending ? 'Sincronización pendiente' : 'Esperando clientes'}</strong></div><p>{failing ? 'Revisá el servicio en Ajustes.' : connected ? 'Tus clientes comparten el mismo hub.' : pending ? 'Revisá el estado de tus clientes.' : 'Conectá tu primer cliente para empezar.'}</p></div><NavLink className={({ isActive }) => `hub-nav-link ${isActive ? 'active' : ''}`} to="/settings"><Icon name="matrix" /><span>Ajustes</span></NavLink><div className="hub-version"><span>Agent Hub</span><span>Local · v{version}</span></div></div>
   </aside><div className="hub-main"><header className="hub-topbar"><NavigationControls />
     <button className="hub-search-trigger" aria-label="Buscar en toda tu memoria" aria-haspopup="dialog" aria-keyshortcuts="Meta+K Control+K" onClick={() => setSearchOpen(true)}><Icon name="search" /><span>Buscar en tu memoria…</span><kbd>{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'} K</kbd></button>
