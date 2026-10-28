@@ -387,7 +387,7 @@ export class LocalChat {
     return result
   }
   /** Authoritative native protocol from a Hub-owned process; never a caller-supplied tool. */
-  async managedLifecycle(sessionId:string,event:string,at:string,turnId?:string) {
+  async managedLifecycle(sessionId:string,event:string,at:string,turnId?:string,nativeId?:string|null) {
     check(['UserPromptSubmit','Stop','SessionEnd','StopFailure','RequestUserInput'].includes(event) && Number.isFinite(Date.parse(at)), 'Evento de flota inválido',400)
     const changed=await this.db.transaction(async()=>{
       const session=(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[sessionId]))[0]
@@ -404,9 +404,10 @@ export class LocalChat {
       if(event!=='UserPromptSubmit' && turnId && latest && latest.turn_id!==turnId && session.capability==='hub_fleet')return false
       if(event==='UserPromptSubmit' && (await this.db.query('SELECT 1 FROM chat_turns WHERE session_id=$1 AND turn_id=$2 AND terminal_at IS NOT NULL',[sessionId,turnId])).length)return false
       const state=event==='UserPromptSubmit'?'busy':event==='Stop'?'idle':event==='SessionEnd'?'offline':'blocked'
+      // ACP workers (Kiro) have no hooks to report their native id; the fleet runtime is its source.
       await this.db.query(`UPDATE chat_sessions SET capability='hub_fleet',state=$2,event_at=$3,last_seen_at=now(),lease_until=$4,
-        closed_at=CASE WHEN $2='offline' THEN $3 ELSE NULL END,process_id=NULL,process_started=NULL WHERE id=$1`,
-        [sessionId,state,at,new Date(Date.now()+90000).toISOString()])
+        closed_at=CASE WHEN $2='offline' THEN $3 ELSE NULL END,process_id=NULL,process_started=NULL,native_id=COALESCE(native_id,$5) WHERE id=$1`,
+        [sessionId,state,at,new Date(Date.now()+90000).toISOString(),nativeId ?? null])
       if(active)await this.recordTurnEvent(sessionId,event,at,turnId)
       return true
     })

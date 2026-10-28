@@ -24,7 +24,7 @@ export interface HubTeamStatus extends FleetStatus {
 }
 export interface HubTeamLaunchReceipt extends TeamLaunchReceipt { runtime: HubTeamStatus }
 type ManagedChat = LocalChat & {
-  managedLifecycle(sessionId: string, event: string, at: string, turnId?: string): Promise<unknown>
+  managedLifecycle(sessionId: string, event: string, at: string, turnId?: string, nativeId?: string | null): Promise<unknown>
   managedQuestions(senderId: string, questions: FleetPendingQuestion[], generation: string): Promise<unknown>
 }
 const encode = (path: string) => Buffer.from(path, 'utf8').toString('base64url')
@@ -259,7 +259,7 @@ export class HubTeamRuntime implements TeamOrca {
       : runtime.state === 'idle' ? 'Stop'
       : runtime.state === 'stopped' ? 'SessionEnd'
       : runtime.state === 'failed' ? 'StopFailure' : undefined
-    if (event) await (this.chat as ManagedChat).managedLifecycle(sessionId, event, runtime.updated_at, runtime.turn_id)
+    if (event) await (this.chat as ManagedChat).managedLifecycle(sessionId, event, runtime.updated_at, runtime.turn_id, runtime.native_id)
   }
   /** Called after team_join writes session_id, including a join after native completion. */
   async bind(memberId: string, sessionId: string): Promise<void> {

@@ -839,6 +839,19 @@ it('managed notifications use the owned transport and never a native queue or as
   expect((await db.query('SELECT event_at FROM chat_sessions WHERE id=$1',[member.session.id]))[0].event_at).toBe(new Date(at+10).toISOString())
   await runtime.close()
 })
+it('a fleet worker without hooks (Kiro ACP) gets its native id from the runtime and receives mentions',async()=>{
+  const {leader,member,thread}=await managedMember(),at=Date.now()+1000
+  await db.query('UPDATE chat_sessions SET native_id=NULL,team_seen=1 WHERE id=$1',[member.session.id])
+  await ops.chat.managedLifecycle(member.session.id,'UserPromptSubmit',new Date(at).toISOString(),'one','acp-session')
+  await ops.chat.managedLifecycle(member.session.id,'Stop',new Date(at+10).toISOString(),'one','other')
+  expect((await db.query('SELECT native_id FROM chat_sessions WHERE id=$1',[member.session.id]))[0].native_id).toBe('acp-session')
+  await send(leader,member,'Arrancan los backtests',thread.thread_id)
+  const wake=vi.fn(async()=>true)
+  const runtime=new LocalChatRuntime(ops.chat,vi.fn(),()=>true,async()=>undefined,()=>true,{wake,connected:async()=>true})
+  await runtime.tick()
+  expect(wake).toHaveBeenCalledWith(member.session.id,expect.stringContaining('memory_chat_inbox'))
+  await runtime.close()
+})
 it('queues a mention once while Codex is busy without marking it read or changing activity',async()=>{
   const leader=await register('sender'),recipient=await register('busy-codex'),at=new Date(Date.now()+1000).toISOString()
   await ops.chat.lifecycle(recipient.a,{session_key:recipient.k,native_id:'busy-codex',event:'UserPromptSubmit',at,turn_id:'busy'})

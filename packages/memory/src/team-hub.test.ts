@@ -164,7 +164,7 @@ describe('HubTeamRuntime lifecycle', () => {
     row.session_id = 'joined-late'
     const timestamp = row.runtime!.updated_at
     await backend.bind(id, 'joined-late')
-    expect(lifecycle).toHaveBeenLastCalledWith('joined-late', 'Stop', timestamp, row.runtime!.turn_id)
+    expect(lifecycle).toHaveBeenLastCalledWith('joined-late', 'Stop', timestamp, row.runtime!.turn_id, row.runtime!.native_id)
     expect((await backend.status(id))?.updated_at).toBe(timestamp)
     expect(JSON.stringify(row.runtime)).not.toContain('PRIVATE')
     await expect(backend.bind(id, 'wrong-session')).rejects.toThrow('no corresponde')
@@ -181,7 +181,7 @@ describe('HubTeamRuntime lifecycle', () => {
     await backend.send(id, 'PRIVATE follow up')
     expect(lifecycle.mock.calls.at(-1)?.[3]).toBe('turn-2')
     await backend.stop(id)
-    expect(lifecycle).toHaveBeenLastCalledWith('joined', 'SessionEnd', expect.any(String), 'turn-2')
+    expect(lifecycle).toHaveBeenLastCalledWith('joined', 'SessionEnd', expect.any(String), 'turn-2', expect.anything())
   })
   it.each(['codex_cli', 'claude_code'] as const)('publishes native %s questions to the master before join and rebinds idempotently', async cli => {
     const { backend, id, rows, managedQuestions, lifecycle } = setup('question')
@@ -194,7 +194,7 @@ describe('HubTeamRuntime lifecycle', () => {
     expect(lifecycle).not.toHaveBeenCalled()
     rows.get(id)!.session_id = 'joined-late'
     await backend.bind(id, 'joined-late')
-    expect(lifecycle).toHaveBeenLastCalledWith('joined-late', 'RequestUserInput', waiting.updated_at, waiting.turn_id)
+    expect(lifecycle).toHaveBeenLastCalledWith('joined-late', 'RequestUserInput', waiting.updated_at, waiting.turn_id, waiting.native_id)
     expect(managedQuestions).toHaveBeenLastCalledWith(id, [pending], receipt.runtime.generation)
     const after = await backend.answer(id, pending.id, { [pending.questions[0]!.id]: { answers: ['PRIVATE ANSWER'] } })
     expect(after.state).toBe('busy')
