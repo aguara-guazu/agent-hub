@@ -1,5 +1,6 @@
 import { hash } from './store.js'
-import type { PublicItem, DailyDeps, ProposedEffect, ProposedItem } from './daily-types.js'
+import type { PublicItem } from './schedule-contract.js'
+import type { DailyDeps, ProposedEffect, ProposedItem } from './daily-types.js'
 import { clip, dayLabel, endOfLocalDay, localDate, localTime, plural, startOfLocalDay } from './daily-types.js'
 import type { SnapshotCoverage, StatusDeterministic, StatusPending, StatusSynthesis, Freshness, SourceWatermark, StatusSource } from './project-status.js'
 
@@ -61,9 +62,10 @@ async function mirrorAttention(deps: DailyDeps, account: string | null, projectI
   for (const row of rows) {
     const project = titles.get(row.project_id) ?? null
     if (row.status === 'blocked') entries.push({ rank: 'b', project_id: row.project_id, project, text: `${row.key} ${clip(row.title, 120)} está bloqueada (según espejo)`, since: row.updated_at, evidence: row.url ?? row.key })
+    // Due today goes to the agenda; only what is already overdue demands action, so each task appears once.
     if (row.status !== 'blocked' && row.due_at) {
       if (row.due_at === today) dueToday.push({ key: row.key, title: clip(row.title, 120), project })
-      entries.push({ rank: 'f', project_id: row.project_id, project, text: `${row.key} ${clip(row.title, 120)} ${row.due_at === today ? 'vence hoy' : `venció el ${row.due_at.slice(8)}/${row.due_at.slice(5, 7)}`} (según espejo)`, since: null, evidence: row.url ?? row.key })
+      else entries.push({ rank: 'f', project_id: row.project_id, project, text: `${row.key} ${clip(row.title, 120)} venció el ${row.due_at.slice(8)}/${row.due_at.slice(5, 7)} (según espejo)`, since: null, evidence: row.url ?? row.key })
     }
   }
   return { entries, dueToday }
@@ -123,7 +125,7 @@ function freshnessLine(pkg: BriefPackage): string {
   return parts.join(' · ')
 }
 
-function projectBlock(project: BriefProject, generatedAt: string): string {
+export function projectBlock(project: BriefProject, generatedAt: string): string {
   const snap = project.snapshot
   if (!snap) return `### ${project.title}\nSin snapshot de status vigente: todavía no corrió el status de este proyecto.`
   const n = snap.deterministic.numbers

@@ -23,6 +23,7 @@ export * from './hours-estimate.js'
 export * from './daily-types.js'
 export * from './daily-brief.js'
 export * from './daily-close.js'
+export * from './daily-templates.js'
 
 export * from './collaboration.js'
 

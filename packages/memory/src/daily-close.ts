@@ -1,5 +1,6 @@
 import { hash } from './store.js'
-import type { DailyDeps, ProposedEffect, ProposedItem, PublicItem } from './daily-types.js'
+import type { PublicItem } from './schedule-contract.js'
+import type { DailyDeps, ProposedEffect, ProposedItem } from './daily-types.js'
 import { DEFAULT_WORKDAY_HOURS, clip, dayLabel, endOfLocalDay, localTime, plural, startOfLocalDay } from './daily-types.js'
 import { HOURS_SYSTEM, collectHoursInputs, estimateWriter, formatHours, hoursPayload, hoursSynthesisSchema, estimateId, finishEstimates, type HourEstimateDraft, type HoursInputs, type HoursSynthesis } from './hours-estimate.js'
 
@@ -133,6 +134,7 @@ export function renderClose(pkg: ClosePackage, synthesis: HoursSynthesis | null,
       lines.push(`${n}. ${detail}`)
       totalSeconds += draft.estimated_seconds; hourTasks++
     }
+    // Notes are ordered newest first, so notes[0] is the latest evidence of the task.
     for (const draft of drafts) {
       if (!draft.transition) continue
       const task = project.hours!.tasks.find(candidate => candidate.task_id === draft.task_id)!

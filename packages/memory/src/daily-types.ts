@@ -1,18 +1,10 @@
-/**
- * Shapes the brief and the close share with the scheduler core. `PublicItem`, `JiraGuard` and `AttentionReaders` mirror schedule-contract.ts
- * and are replaced by imports from it once that file is on the integration branch.
- */
-export interface PublicItem { ordinal: number; kind: 'jira_worklog' | 'jira_transition' | 'jira_comment' | 'git_push' | 'info'; project_id: string; summary: string; effect_digest?: string }
+import type { JiraGuard, PublicItem } from './schedule-contract.js'
 
-export interface JiraGuard {
-  /** Account the owner connected to Atlassian (atlassianUserInfo); null when it cannot be read. */
-  ownerAccountId(): Promise<string | null>
-  /** Current assignee of an issue as Jira reports it right now. */
-  assigneeOf(key: string): Promise<{ account_id: string | null; verified: boolean }>
-}
+/** Shapes the brief and the close share with the scheduler core; the item and guard types come from schedule-contract.ts. */
 
 export interface AttentionLine { ref: string; summary: string; at: string; project_id?: string }
-export interface AttentionReaders {
+/** Readers the owner-level templates use; each is injected by the area that owns the data, and a block is omitted when its reader is missing. */
+export interface OwnerAttentionReaders {
   pending_responses?: () => Promise<AttentionLine[]>
   liveness_incidents?: () => Promise<AttentionLine[]>
   uncertain_deliveries?: () => Promise<AttentionLine[]>
@@ -42,7 +34,7 @@ export interface DailyDeps {
   /** Projects with a live project_status schedule, from the scheduler's typed reader. */
   statusProjects(): Promise<string[]>
   jira?: JiraGuard
-  attention?: AttentionReaders
+  attention?: OwnerAttentionReaders
   options?: { workday_hours?: number }
 }
 
