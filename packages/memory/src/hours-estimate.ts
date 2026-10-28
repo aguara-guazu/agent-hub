@@ -64,7 +64,7 @@ export async function collectHoursInputs(store: MemoryStore, projectId: string, 
       note_count: row.note_count, first_at: iso(row.first_at), last_at: iso(row.last_at), siblings })
   }
   const corrections = await store.db.query<{ text: string }>(`SELECT e.data->>'text' AS text FROM entities e JOIN links l ON l.from_id=e.id AND l.to_id=$1 AND l.type='project'
-    WHERE e.kind='fact' AND e.data->>'category'='hours_correction' ORDER BY e.created_at DESC LIMIT $2`, [projectId, CORRECTION_LIMIT])
+    WHERE e.kind='fact' AND e.data->>'category'='hour_correction' ORDER BY e.created_at DESC LIMIT $2`, [projectId, CORRECTION_LIMIT])
   return { project: { id: project.id, title: project.title, remote_excluded: project.data.remote_processing === false }, window, tasks, corrections: corrections.map(row => row.text) }
 }
 
@@ -137,7 +137,7 @@ export async function approveEstimate(store: MemoryStore, estimateId: string, ap
       const text = `Corrigió ${row.issue_key} de ${formatHours(row.estimated_seconds)} a ${formatHours(approvedSeconds)}, ${now.toLocaleDateString('es', { day: 'numeric', month: 'numeric' })}`
       const factId = randomUUID()
       await sql.query("INSERT INTO entities(id,kind,title,data) VALUES($1,'fact',$2,$3)", [factId, text.slice(0, 180),
-        JSON.stringify({ text, category: 'hours_correction', review_state: 'accepted', stale: false, occurred_at: now.toISOString(), estimate_id: estimateId })])
+        JSON.stringify({ text, category: 'hour_correction', review_state: 'accepted', stale: false, occurred_at: now.toISOString(), estimate_id: estimateId, run_id: row.run_id })])
       await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'project')", [randomUUID(), factId, row.project_id])
     }
   })
