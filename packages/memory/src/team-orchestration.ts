@@ -18,11 +18,11 @@ export interface TeamCatalog {
 import type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata, TeamPendingQuestion, ActionProfile } from './team-orca.js'
 export type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata, TeamPendingQuestion, ActionProfile } from './team-orca.js'
 
-/** Authenticated follow-up persisted by the decision store: the reply text separated from the approval grammar, with its source and expiry. */
-export interface DerivedFollowUp { text: string; ref: string; source: 'channel_reply' | 'owner_ui'; expires_at: string }
+/** Authenticated follow-up persisted by the decision store: one line of the reply, tied to an approved item's project, with its receipt, source and expiry. */
+export interface DerivedFollowUp { project_id: string; ordinal: number; text: string; ref: string; source: 'channel_reply' | 'owner_ui'; expires_at: string }
 /** Port to the private decision store and the run-profile issuer (area B). Only ids, kinds, digests and public summaries cross it, never approval codes. */
 export interface DerivedPorts {
-  approved(requestId: string): Promise<{ canonical_digest: string; items: Array<ApprovedItem & { state: string }>; follow_up: DerivedFollowUp | null }>
+  approved(requestId: string): Promise<{ canonical_digest: string; items: Array<ApprovedItem & { state: string }>; follow_ups: DerivedFollowUp[] }>
   /** Issues the `action` run identity for one member generation. Absent port or runtime means derived plans cannot launch. */
   actionProfile?(member: { plan_id: string; member_id: string; project_id: string; delegation_version: number }): Promise<ActionProfile>
   automationsEnabled(): boolean
@@ -499,6 +499,15 @@ export class TeamOrchestration {
       AND c.scope_key=$2 AND c.project_id=$3 AND c.leader_id=s.id AND c.closed_at IS NULL`,[sessionId,`automation:${projectId}`,projectId]))[0]
   }
 
+  /** The existing automation channel must still be exactly what the delegation authorized: its name and its delegated workspace. */
+  private async channelMatchesDelegation(sql:Sql,projectId:string,sessionId:string,delegation:StoredDelegation) {
+    const channel=(await sql.query('SELECT c.name,c.path FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.id=$1',[sessionId]))[0]
+    if(!channel || !delegation.channel)return false
+    const base=(this.orca as {directory?:string}).directory
+    const expected=delegation.repositories[0]?.repo_path ?? (base?join(base,'automation-workspaces',projectId):undefined)
+    return channel.name===delegation.channel.name.slice(0,200) && channel.path===expected
+  }
+
   /**
    * Backend-only. Creates once the project's automation channel and the system session that leads it. The channel exists only because the activation
    * recorded its name and objective in the delegation, and it is anchored to the channel the person authorized (project_automation.channel_id).
@@ -514,7 +523,8 @@ export class TeamOrchestration {
       const source=row.channel_id?(await sql.query('SELECT * FROM chat_channels WHERE id=$1 AND closed_at IS NULL',[row.channel_id]))[0]:undefined
       check(source && source.project_id===projectId,'El canal autorizado del proyecto no está disponible.',409)
       if(row.coordinator_session_id) {
-        check(await this.validLeader(sql,projectId,row.coordinator_session_id),'La sesión de automatización del proyecto no coincide con su canal.',409)
+        check(await this.validLeader(sql,projectId,row.coordinator_session_id) && await this.channelMatchesDelegation(sql,projectId,row.coordinator_session_id,delegation),
+          'La sesión de automatización del proyecto no coincide con su canal.',409)
         return String(row.coordinator_session_id)
       }
       const scope=`automation:${projectId}`
@@ -552,9 +562,12 @@ export class TeamOrchestration {
     if(prior)return this.view(prior.id,who)
     const delegation=asObject(automation.document) as StoredDelegation
     const decision=await this.derived.approved(input.request_id)
-    const followUp=decision.follow_up
-    check(followUp && followUp.ref && Date.parse(followUp.expires_at)>Date.now(),'No hay una instrucción de seguimiento autenticada y vigente para esta solicitud.',409)
     const items=decision.items.filter(item=>item.project_id===input.project_id && APPROVED_ITEM_STATES.includes(item.state))
+    const mine=decision.follow_ups.filter(entry=>entry.project_id===input.project_id)
+    check(mine.length<=1,'La respuesta trae más de un seguimiento para el proyecto; no se puede elegir uno con certeza.',409)
+    const followUp=mine[0]
+    // The follow-up must hang from an item of this project that was actually approved in the same reply.
+    check(followUp && followUp.ref && Date.parse(followUp.expires_at)>Date.now() && items.some(item=>item.ordinal===followUp.ordinal),'No hay una instrucción de seguimiento autenticada y vigente para esta solicitud.',409)
     const project=(await this.db.query("SELECT id,title FROM entities WHERE id=$1 AND kind='project'",[input.project_id]))[0]
     check(project,'El proyecto no existe.',404)
     const derived=deriveStandingPlan({project:{id:project.id,name:project.title},delegation:{version:input.delegation_version,digest:automation.digest,document:delegation},

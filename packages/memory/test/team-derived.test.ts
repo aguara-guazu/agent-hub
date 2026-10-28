@@ -14,7 +14,7 @@ import type { AgentContext } from '../src/agents.js'
 
 let dir: string, folder: string, db: MemoryDatabase, chat: LocalChat, backend: HubTeamRuntime, teams: TeamOrchestration
 let collaboration = true, automations = true, projectId: string, sourceChannel: string
-let approvedItems: Array<ApprovedItem & { state: string }>, followUp: DerivedFollowUp | null
+let approvedItems: Array<ApprovedItem & { state: string }>, followUps: DerivedFollowUp[]
 const digest = 'c'.repeat(64)
 const authorizedChannel = { name: 'Seguimiento Ñandú', objective: 'Coordinar el seguimiento aprobado del proyecto' }
 const document: DelegationDocument = { schema_version: 1,
@@ -22,9 +22,9 @@ const document: DelegationDocument = { schema_version: 1,
   item_kinds: ['jira_worklog'], repository_ids: [], limits: { max_concurrent_plans: 1, max_runtime_minutes: 30 } }
 const item = (ordinal: number, over: Partial<ApprovedItem & { state: string }> = {}) => ({ item_id: `item-${ordinal}`, ordinal, kind: 'jira_worklog', project_id: projectId,
   summary: `Horas ${ordinal}`, effect_digest: 'd'.repeat(64), state: 'approved', ...over })
-const reply = (over: Partial<DerivedFollowUp> = {}): DerivedFollowUp => ({ text: 'Revisa la rama feature/x', ref: 'msg-1', source: 'channel_reply', expires_at: new Date(Date.now() + 3_600_000).toISOString(), ...over })
+const reply = (over: Partial<DerivedFollowUp> = {}): DerivedFollowUp => ({ project_id: projectId, ordinal: 1, text: 'Revisa la rama feature/x', ref: 'msg-1', source: 'channel_reply', expires_at: new Date(Date.now() + 3_600_000).toISOString(), ...over })
 const ports: DerivedPorts = {
-  approved: vi.fn(async () => ({ canonical_digest: digest, items: approvedItems, follow_up: followUp })),
+  approved: vi.fn(async () => ({ canonical_digest: digest, items: approvedItems, follow_ups: followUps })),
   actionProfile: vi.fn(async member => ({ kind: 'action' as const, agent_instance_id: 'hub_run_action', principal_handle: `handle-${member.member_id}` })),
   automationsEnabled: () => automations, ownerId: () => 'owner' }
 const input = (over: Record<string, unknown> = {}) => ({ project_id: projectId, delegation_version: 1, request_id: 'req-1', ...over })
@@ -65,8 +65,8 @@ beforeEach(async () => {
   projectId = randomUUID(); sourceChannel = randomUUID()
   await db.query("INSERT INTO entities(id,kind,title) VALUES($1,'project','Proyecto Ñandú')", [projectId])
   await db.query("INSERT INTO chat_channels(id,project_id,path,name,scope_key,kind,activated_at) VALUES($1,$2,$3,'Canal del proyecto',$4,'git',now())", [sourceChannel, projectId, folder, `fixture:${sourceChannel}`])
-  approvedItems = [item(1), item(2)]; followUp = reply()
-  vi.mocked(ports.approved).mockReset().mockImplementation(async () => ({ canonical_digest: digest, items: approvedItems, follow_up: followUp }))
+  approvedItems = [item(1), item(2)]; followUps = [reply()]
+  vi.mocked(ports.approved).mockReset().mockImplementation(async () => ({ canonical_digest: digest, items: approvedItems, follow_ups: followUps }))
   vi.mocked(ports.actionProfile!).mockClear()
 })
 afterEach(async () => { await backend.close(); await db.close(); await rm(dir, { recursive: true, force: true }); vi.restoreAllMocks() })
@@ -104,6 +104,13 @@ it('revalidates an existing system session against its channel instead of trusti
   await db.query('UPDATE chat_channels SET leader_id=NULL WHERE id=(SELECT channel_id FROM chat_sessions WHERE id=$1)', [sessionId])
   expect(await rejection(teams.ensureProjectLeader(projectId))).toMatch(/no coincide con su canal/)
   expect(await rejection(teams.launchDerived(input()))).toMatch(/no coincide con su canal/)
+  await db.query('UPDATE chat_channels SET leader_id=$2 WHERE id=$1', [(await db.query('SELECT channel_id FROM chat_sessions WHERE id=$1', [sessionId]))[0]!.channel_id, sessionId])
+  expect(await teams.ensureProjectLeader(projectId)).toBe(sessionId)
+  await db.query("UPDATE chat_channels SET name='Otro nombre' WHERE id=(SELECT channel_id FROM chat_sessions WHERE id=$1)", [sessionId])
+  expect(await rejection(teams.ensureProjectLeader(projectId))).toMatch(/no coincide con su canal/)
+  await db.query('UPDATE chat_channels SET name=$2 WHERE id=(SELECT channel_id FROM chat_sessions WHERE id=$1)', [sessionId, authorizedChannel.name])
+  await db.query('UPDATE chat_channels SET closed_at=now() WHERE id=$1', [sourceChannel])
+  expect(await rejection(teams.ensureProjectLeader(projectId))).toMatch(/canal autorizado/)
 })
 
 it('launches nothing without the action profile: no spawn, no worktree, no plan', async () => {
@@ -148,19 +155,25 @@ it('launches the roster from the delegation, each member with its own action pro
 
 it('takes the follow-up only from the authenticated receipt and records its real source', async () => {
   await activate()
-  followUp = null
+  followUps = []
   expect(await rejection(teams.launchDerived(input()))).toMatch(/instrucción de seguimiento autenticada/)
-  followUp = reply({ expires_at: new Date(Date.now() - 1000).toISOString() })
+  followUps = [reply({ expires_at: new Date(Date.now() - 1000).toISOString() })]
   expect(await rejection(teams.launchDerived(input()))).toMatch(/instrucción de seguimiento autenticada/)
+  followUps = [reply({ project_id: randomUUID() })]
+  expect(await rejection(teams.launchDerived(input()))).toMatch(/instrucción de seguimiento autenticada/)
+  followUps = [reply({ ordinal: 9 })]
+  expect(await rejection(teams.launchDerived(input()))).toMatch(/instrucción de seguimiento autenticada/)
+  followUps = [reply(), reply({ ref: 'msg-dup', ordinal: 2 })]
+  expect(await rejection(teams.launchDerived(input()))).toMatch(/más de un seguimiento/)
   expect(await plansCount()).toBe(0)
-  followUp = reply({ source: 'owner_ui', ref: 'app-9' })
+  followUps = [reply({ source: 'owner_ui', ref: 'app-9' })]
   const plan = await teams.launchDerived(input())
   expect((await db.query('SELECT approval_source FROM chat_team_plans WHERE id=$1', [plan.id]))[0]!.approval_source).toBe('standing_delegation+owner_ui')
   const prompt = vi.mocked(backend.launch).mock.calls[0]![1].prompt
   expect(prompt).not.toContain('Revisa la rama')
   expect((await db.query('SELECT prompt FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal', [plan.id]))[0]!.prompt).toContain('Revisa la rama feature/x')
   await teams.close({ plan_id: plan.id, digest: plan.digest, reason: 'prueba' }, (await db.query('SELECT * FROM chat_sessions WHERE id=$1', [plan.created_by]))[0]!)
-  followUp = reply({ ref: 'msg-2' })
+  followUps = [reply({ ref: 'msg-2' })]
   const second = await teams.launchDerived(input({ request_id: 'req-2' }))
   expect(second.digest).not.toBe(plan.digest)
 })
@@ -179,7 +192,7 @@ it('claims the concurrency slot atomically: two different requests racing past e
   await activate()
   let release!: () => void
   const barrier = new Promise<void>(resolve => { release = resolve }), arrived: string[] = []
-  vi.mocked(ports.approved).mockImplementation(async requestId => { arrived.push(requestId); if (arrived.length === 2) release(); await barrier; return { canonical_digest: digest, items: approvedItems, follow_up: followUp } })
+  vi.mocked(ports.approved).mockImplementation(async requestId => { arrived.push(requestId); if (arrived.length === 2) release(); await barrier; return { canonical_digest: digest, items: approvedItems, follow_ups: followUps } })
   const outcomes = await Promise.allSettled([teams.launchDerived(input({ request_id: 'req-a' })), teams.launchDerived(input({ request_id: 'req-b' }))])
   expect([...arrived].sort()).toEqual(['req-a', 'req-b'])
   expect(outcomes.map(outcome => outcome.status).sort()).toEqual(['fulfilled', 'rejected'])
@@ -248,7 +261,7 @@ it('closes running derived plans and stops their workers when the delegation is 
 it('derives only from approved items of this project that the delegation allows', async () => {
   await activate()
   approvedItems = [item(1, { state: 'proposed' }), item(2, { state: 'rejected' }), item(3, { project_id: randomUUID() })]
-  expect(await rejection(teams.launchDerived(input()))).toMatch(/al menos un ítem aprobado/)
+  expect(await rejection(teams.launchDerived(input()))).toMatch(/seguimiento autenticada|al menos un ítem aprobado/)
   approvedItems = [item(1, { kind: 'jira_transition' })]
   expect(await rejection(teams.launchDerived(input()))).toMatch(/no habilita/)
   expect(vi.mocked(backend.launch)).not.toHaveBeenCalled()
