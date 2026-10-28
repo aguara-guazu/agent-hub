@@ -472,6 +472,16 @@ export class DecisionStore {
     })
   }
 
+  /** Solicitud a la que responde un binding. */
+  requestOfBinding(bindingId: string): string | undefined {
+    return this.get<{ request_id: string }>('SELECT request_id FROM channel_bindings WHERE id = ?', bindingId)?.request_id
+  }
+
+  /** Solicitud de una intención. */
+  requestOfIntent(intentId: string): string | undefined {
+    return this.intent(intentId)?.request_id
+  }
+
   /** Bindings activos con una solicitud abierta (para que el sondeo de respuestas sepa qué hilos mirar). */
   openBindings(integration: Integration): Array<{ binding_id: string; request_id: string; account: string }> {
     return this.all<{ binding_id: string; request_id: string; account: string }>(

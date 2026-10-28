@@ -4,6 +4,7 @@ import { CODE_ALPHABET, codeHmac, deriveCode, formatCode, normalizeCode } from '
 import { DecisionStore, MAX_FAILED_ATTEMPTS, ACCOUNT_FAILURE_LIMIT } from './store.js'
 import { extractNewText, parseReply, verifyGmailReply, verifySlackReply, type GmailBindingView, type GmailEvidence } from './verifier.js'
 import type { Exclusion, ParsedReply, PublicStateSink } from './contract.js'
+import { DecisionService, type ArtifactAuthority } from './service.js'
 
 const key = randomBytes(32)
 const OWNER = 'owner-1'
@@ -526,5 +527,56 @@ describe('DecisionStore', () => {
     expect(store.isExcluded({ integration: 'gmail', account: 'me@example.com', kind: 'message', native_id: 'in-9' })).toBe(true)
     expect(store.isExcluded({ integration: 'gmail', account: 'me@example.com', kind: 'thread', native_id: `thread-${request_id}` })).toBe(true)
     expect(store.isExcluded({ integration: 'gmail', account: 'me@example.com', kind: 'message', native_id: 'otro' })).toBe(false)
+  })
+})
+
+describe('DecisionService: compuerta de autoridad', () => {
+  async function arrange(authority: () => ArtifactAuthority | Promise<ArtifactAuthority>) {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-1', 2)
+    const { binding_id } = await activate(request_id)
+    const service = new DecisionService(store, async () => authority())
+    return { store, service, request_id, binding_id, code: () => normalizeCode(store.codeFor(request_id))! }
+  }
+  it('con autoridad vigente procesa respuestas y reclama intenciones', async () => {
+    const { service, binding_id, code, store } = await arrange(() => 'live')
+    const result = await service.processReply({ integration: 'gmail', account: 'me@example.com', native_message_id: 'm1', binding_id, parsed: { kind: 'approve', code: code(), items: [1] } })
+    expect(result).toMatchObject({ gated: false, value: { outcome: 'approved' } })
+    const intent = store.pendingIntents()[0]!
+    expect(await service.claimForDispatch(intent.intent_id, 0)).toMatchObject({ gated: false, value: { generation: 1 } })
+    expect(await service.dispatchable()).toHaveLength(0)
+  })
+  it.each(['unavailable', 'unknown'] as ArtifactAuthority[])('con autoridad %s deniega respuestas, despacho y repropuesta sin tocar el almacén', async (state) => {
+    let current: ArtifactAuthority = 'live'
+    const { service, binding_id, code, store, request_id } = await arrange(() => current)
+    expect((await service.processReply({ integration: 'gmail', account: 'me@example.com', native_message_id: 'm1', binding_id, parsed: { kind: 'approve', code: code(), items: [1] } })).gated).toBe(false)
+    const intent = store.pendingIntents()[0]!
+    current = state
+    expect(await service.processReply({ integration: 'gmail', account: 'me@example.com', native_message_id: 'm2', binding_id, parsed: { kind: 'approve', code: code(), items: [2] } })).toEqual({ gated: true, reason: 'authority_unavailable' })
+    expect(await service.claimForDispatch(intent.intent_id, 0)).toEqual({ gated: true, reason: 'authority_unavailable' })
+    expect(await service.canRepropose(request_id)).toBe(false)
+    expect(await service.dispatchable()).toHaveLength(0)
+    expect(store.intent(intent.intent_id)).toMatchObject({ state: 'pending', generation: 0 })
+    expect(store.publicRequest(request_id).items.map(item => item.state)).toEqual(['approved', 'pending'])
+  })
+  it('un lector que falla deniega, y una referencia que el almacén no conoce nunca es vigente', async () => {
+    const { service, binding_id, code, request_id } = await arrange(() => { throw new Error('memoria caída') })
+    expect(await service.canRepropose(request_id)).toBe(false)
+    expect((await service.processReply({ integration: 'gmail', account: 'me@example.com', native_message_id: 'm1', binding_id, parsed: { kind: 'approve', code: code(), items: [1] } })).gated).toBe(true)
+    const live = new DecisionService(setup().store, async () => 'live')
+    expect(await live.canRepropose('desconocida')).toBe(false)
+  })
+  it('un efecto incierto se conserva aunque la autoridad quede no disponible', async () => {
+    let current: ArtifactAuthority = 'live'
+    const { service, binding_id, code, store } = await arrange(() => current)
+    await service.processReply({ integration: 'gmail', account: 'me@example.com', native_message_id: 'm1', binding_id, parsed: { kind: 'approve', code: code(), items: [1] } })
+    const intent = store.pendingIntents()[0]!
+    const claimed = store.claimIntent(intent.intent_id, 0) as { generation: number }
+    store.markDispatching(intent.intent_id, claimed.generation)
+    store.recover()
+    current = 'unavailable'
+    expect(store.intent(intent.intent_id)?.state).toBe('uncertain')
+    expect(await service.claimForDispatch(intent.intent_id, claimed.generation)).toEqual({ gated: true, reason: 'authority_unavailable' })
+    expect(store.intent(intent.intent_id)?.state).toBe('uncertain')
   })
 })
