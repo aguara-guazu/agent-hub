@@ -68,3 +68,19 @@ export function isAllowedNavigation(currentUrl: string, targetUrl: string): bool
     return false
   }
 }
+
+const EXTERNAL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
+
+/**
+ * URL que se puede entregar a `shell.openExternal`: sólo http, https y mailto, sin credenciales embebidas.
+ * El contenido de una entrega viene de Slack, correos y Jira; `javascript:`, `file:` o `data:` nunca llegan al sistema.
+ */
+export function externalUrl(target: string): string | null {
+  try {
+    const url = new URL(target)
+    if (!EXTERNAL_PROTOCOLS.has(url.protocol) || url.username || url.password) return null
+    return url.href
+  } catch {
+    return null
+  }
+}

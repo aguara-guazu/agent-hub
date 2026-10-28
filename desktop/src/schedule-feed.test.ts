@@ -83,7 +83,7 @@ describe('ScheduleNoticeBatcher', () => {
       setTimer: (callback, ms) => { const id = next++; timers.set(id, { callback, ms }); return id },
       clearTimer: handle => { timers.delete(handle as number) },
       emit: notice => emitted.push(notice),
-      windowMs: 60_000,
+      windowMs: 15_000,
     })
     const fire = (): void => { for (const [id, timer] of [...timers]) { timers.delete(id); timer.callback() } }
     return { batcher, emitted, timers, fire }
@@ -92,7 +92,7 @@ describe('ScheduleNoticeBatcher', () => {
   it('un cambio de agente produce un aviso específico con foco en el schedule', () => {
     const { batcher, emitted, timers, fire } = harness()
     batcher.add([event(1, { title: 'Brief · Proyecto X' })])
-    expect([...timers.values()][0]!.ms).toBe(60_000)
+    expect([...timers.values()][0]!.ms).toBe(15_000)
     fire()
     expect(emitted).toEqual([{ title: 'Tu agente programó: Brief · Proyecto X', body: 'Haz clic para verlo o cancelarlo.', route: '/schedules?focus=s1' }])
   })

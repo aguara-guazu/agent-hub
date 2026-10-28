@@ -93,7 +93,7 @@ export interface NoticeBatcherDeps {
   setTimer(callback: () => void, ms: number): unknown
   clearTimer(handle: unknown): void
   emit(notice: Notice): void
-  /** Ventana de agrupación desde el primer cambio; el contrato de producto fija 60 s. */
+  /** Ventana de agrupación desde el primer cambio. */
   windowMs: number
 }
 

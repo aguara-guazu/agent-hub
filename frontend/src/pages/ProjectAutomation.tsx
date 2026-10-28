@@ -4,7 +4,8 @@ import { ConfirmDialog } from '../components/Modal'
 import { DataTable } from '../components/DataTable'
 import { formatDateTime } from '../components/DataTable'
 import { useRuns, useDeliveryChannels, useSchedules, useScheduleActions, CHANNEL_REASONS } from '../lib/automations'
-import { DEFAULT_LIMITS, useAuthorizeGmailSend, useProjectAutomation, useSaveProjectAutomation, useSaveRepositories } from '../lib/project-automation'
+import { GmailAuthorize } from '../components/GmailAuthorize'
+import { DEFAULT_LIMITS, useProjectAutomation, useSaveProjectAutomation, useSaveRepositories } from '../lib/project-automation'
 import type { DelegatedItemKind, DelegationDocument, ProjectAutomationView, RosterEntry } from '../lib/project-automation'
 import { CLI_LABELS } from '../lib/types'
 import { ErrorBox } from '../lib/memory'
@@ -20,19 +21,6 @@ function RosterPicker({ label, value, onChange }: { label: string; value: Roster
     <label>CLI<select value={value.cli} onChange={event => onChange({ ...value, cli: event.target.value })}>{FLEET_CLIS.map(cli => <option key={cli} value={cli}>{CLI_LABELS[cli as keyof typeof CLI_LABELS] ?? cli}</option>)}</select></label>
     <label>Modelo<input value={value.model} placeholder="modelo del catálogo" onChange={event => onChange({ ...value, model: event.target.value })} /></label>
   </fieldset>
-}
-
-/** «Falta autorizar el envío»: atajo que guarda la opción en la fuente y abre la autorización de Google. */
-function GmailAuthorize({ destination }: { destination?: string }) {
-  const { google, authorize } = useAuthorizeGmailSend()
-  const [asking, setAsking] = useState(false)
-  if (!google) return <small className="automations-muted"> Conecta Google en <Link to="/memory/sources">Fuentes y ajustes</Link>.</small>
-  return <>
-    <button type="button" className="btn btn-sm" disabled={authorize.isPending} onClick={() => setAsking(true)}>Autorizar</button>
-    <ConfirmDialog open={asking} title="Autorizar el envío de correos" confirmLabel="Continuar con Google" cancelLabel="Ahora no" busy={authorize.isPending} onClose={() => setAsking(false)}
-      onConfirm={() => authorize.mutate(undefined, { onSettled: () => setAsking(false) })}
-      message={<><p>Google mostrará una pantalla de advertencia porque el cliente OAuth es tuyo y no está verificado.</p><p>Agent Hub solo enviará correos a {destination ?? 'tu propia dirección'}; nunca a terceros.</p><p>Google vuelve a pedir todos los permisos (lectura y envío); es normal.</p></>} />
-  </>
 }
 
 function RepositoryAdder({ projectId }: { projectId: string }) {
@@ -72,7 +60,7 @@ function ActivationForm({ project, view, onDone }: { project: MemoryEntity; view
   }
   return <form className="project-automation-form" onSubmit={event => { event.preventDefault(); submit() }}>
     <section><h3>Horarios</h3><p>Brief a las 08:00 y cierre a las 17:30, de lunes a viernes, en la zona horaria del sistema. Los cambias después en <Link to="/schedules">Automatizaciones</Link>.</p></section>
-    <section><h3>Entrega</h3><p>La app siempre recibe la entrega. Los otros canales se eligen en cada automatización.</p>
+    <section><h3>Entrega</h3><p>La app siempre recibe la entrega. Los otros canales se cambian en cada automatización, desde <Link to="/schedules">Programaciones</Link> (acción «Canales»).</p>
       <ul>{(channels.data?.items ?? []).map(channel => <li key={channel.channel}>{channel.channel === 'app' ? 'App de Agent Hub' : channel.channel === 'gmail' ? `Gmail${channel.destination ? ` a ${channel.destination}` : ''}` : 'Slack, mensaje a ti mismo'}: {channel.available ? 'disponible' : CHANNEL_REASONS[channel.reason ?? ''] ?? 'no disponible'}{channel.channel === 'gmail' && channel.reason === 'scope_missing' && <> <GmailAuthorize destination={channel.destination} /></>}{channel.channel === 'slack' && channel.reason === 'not_connected' && ' · Conecta Slack al Hub para usarlo'}</li>)}</ul></section>
     <section><h3>Acciones que el cierre puede proponer</h3><p>Todas requieren tu aprobación por ítem.</p>
       <label><input type="checkbox" disabled={!hasJira} checked={kinds.includes('jira_worklog')} onChange={() => toggleKind('jira_worklog')} /> Horas en Jira</label>
@@ -106,7 +94,7 @@ function UpcomingRuns({ projectId }: { projectId: string }) {
 function LastClose() {
   const runs = useRuns({ kind: 'close', limit: '1' })
   const last = runs.data?.items[0]
-  return <section className="project-automation-card"><h3>Último cierre</h3>
+  return <section className="project-automation-card"><h3>Último cierre (todos los proyectos)</h3>
     {last ? <p><Link to={`/deliveries/${last.run_id}`}>{last.title}</Link> · {formatDateTime(last.scheduled_for)}{last.decision ? ` · aprobado ${last.decision.approved} de ${last.decision.total}` : ''}</p> : <p className="automations-muted">Todavía no hubo un cierre.</p>}</section>
 }
 

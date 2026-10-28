@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Route, Routes } from 'react-router-dom'
-import { DeliveriesPage, DeliveryDetailPage, SchedulesPage, describeNextRun, describeRecurrence } from './Automations'
+import { DeliveriesPage, DeliveryDetailPage, SchedulesPage, describeNextRun, describeRecurrence, generatedNote } from './Automations'
 import type { RunDetail, RunListItem, ScheduleView } from '../lib/automations'
 import type { User } from '../lib/types'
 import { buttonByText, click, installFetch, jsonResponse, need, q, qa, renderWithProviders, setupDom, setValue, teardownDom, textOf } from '../test-utils'
@@ -39,12 +39,24 @@ describe('formatos', () => {
   })
 })
 
+describe('formato de tiempos de una entrega', () => {
+  it('sólo marca «generado» con retraso real, al encender o a mano', () => {
+    const base = { scheduled_for: '2026-10-28T11:00:00Z', state: 'succeeded' as const }
+    expect(generatedNote({ ...base, trigger: 'clock', started_at: '2026-10-28T11:00:05Z' })).toBe('')
+    expect(generatedNote({ ...base, trigger: 'clock', started_at: '2026-10-28T12:14:00Z' })).toContain('con retraso')
+    expect(generatedNote({ ...base, trigger: 'misfire', started_at: '2026-10-28T12:14:00Z' })).toContain('al encender')
+    expect(generatedNote({ ...base, trigger: 'run_now', started_at: '2026-10-28T11:00:05Z' })).toBe(' · ejecutado manualmente')
+    expect(generatedNote({ ...base, trigger: 'clock', started_at: null, state: 'deferred' })).toContain('diferido')
+  })
+})
+
 describe('Programaciones', () => {
   function mockSchedules(items: ScheduleView[], extra: { constraints?: unknown[]; settings?: object } = {}) {
     return installFetch({ user, handle: call => {
       calls.push(call)
       if (call.path === '/memory/schedules') return jsonResponse({ items, total: items.length, limit: 200, offset: 0 })
       if (call.path === '/memory/schedule-constraints') return jsonResponse({ items: extra.constraints ?? [] })
+      if (call.path === '/memory/schedules/delivery-channels') return jsonResponse({ items: [{ channel: 'app', available: true }, { channel: 'gmail', available: true, destination: 'ana@example.com' }, { channel: 'slack', available: false, reason: 'not_connected' }] })
       if (call.path === '/automations') return jsonResponse({ automations_enabled: true, notify_schedule_created: true, notify_delivery: true, workday_hours: 9, keep_awake: true, ...extra.settings })
       if (call.path.startsWith('/memory/schedules/s1/')) return jsonResponse(schedule())
       return undefined
@@ -61,6 +73,27 @@ describe('Programaciones', () => {
     expect(text).toContain('Dentro de los límites del Hub: solo lectura, entrega solo a ti')
     expect(text).toContain('Las automatizaciones corren solo mientras Agent Hub está abierto')
     expect(qa(container, '.chip').find(chip => chip.textContent?.includes('Gmail'))?.getAttribute('title')).toContain('scope_missing')
+  })
+
+  it('el tipo se rotula con o sin modelo y la última ejecución abre su entrega', async () => {
+    mockSchedules([schedule({ kind: 'notice', last_run: { id: 'r7', state: 'succeeded', scheduled_for: '2026-10-28T11:00:00Z' } })])
+    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
+    expect(textOf(container)).toContain('Sin modelo')
+    expect(textOf(container)).not.toContain('Aviso')
+    expect(qa<HTMLAnchorElement>(container, 'a').some(anchor => anchor.getAttribute('href') === '/deliveries/r7')).toBe(true)
+  })
+
+  it('Canales guarda App fija más los canales elegidos y no deja marcar uno no disponible', async () => {
+    const api = mockSchedules([schedule({ delivery: ['hub_inbox', 'app_window'] })])
+    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
+    await click(buttonByText(container, 'Canales'))
+    const boxes = qa<HTMLInputElement>(document.body, '.automations-form input[type="checkbox"]')
+    expect(boxes[0]!.disabled).toBe(true)
+    expect(boxes[2]!.disabled).toBe(true)
+    expect(textOf(document.body)).toContain('No está conectado')
+    await click(boxes[1])
+    await click(buttonByText(document.body, 'Guardar'))
+    expect(api.lastCall('/memory/schedules/s1/delivery', 'PUT')?.body).toEqual({ expected_revision: 3, delivery: ['hub_inbox', 'app_window', 'gmail_self'] })
   })
 
   it('avisa si las automatizaciones están apagadas y explica el estado vacío', async () => {
@@ -129,8 +162,20 @@ describe('Entregas', () => {
     expect(q(container, '.automations-unread')).not.toBeNull()
   })
 
+  it('el filtro de proyecto se manda al core', async () => {
+    const api = installFetch({ user, handle: call => {
+      if (call.path === '/memory/schedules/runs') return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 })
+      if (call.path === '/memory/call') return jsonResponse({ items: [{ id: 'p1', kind: 'project', title: 'Proyecto X', data: {} }], total: 1, limit: 200, offset: 0 })
+      return undefined
+    } })
+    const { container } = await renderWithProviders(<DeliveriesPage />, { route: '/deliveries' })
+    const select = qa<HTMLSelectElement>(container, 'select')[1]!
+    await setValue(select, 'p1')
+    expect(api.calls.some(call => call.url.includes('project_id=p1'))).toBe(true)
+  })
+
   it('el filtro de tipo se manda al core', async () => {
-    const api = installFetch({ user, handle: call => call.path === '/memory/schedules/runs' ? jsonResponse({ items: [], total: 0, limit: 50, offset: 0 }) : undefined })
+    const api = installFetch({ user, handle: call => call.path === '/memory/schedules/runs' ? jsonResponse({ items: [], total: 0, limit: 50, offset: 0 }) : call.path === '/memory/call' ? jsonResponse({ items: [], total: 0, limit: 200, offset: 0 }) : undefined })
     const { container } = await renderWithProviders(<DeliveriesPage />, { route: '/deliveries' })
     await setValue(need(container, 'select'), 'close')
     expect(api.calls.some(call => call.url.includes('kind=close'))).toBe(true)
@@ -139,7 +184,7 @@ describe('Entregas', () => {
 
 describe('Detalle de una entrega', () => {
   const detail: RunDetail = { ...run({ decision: { state: 'open', expires_at: '2026-10-28T23:59:00Z', approved: 0, total: 2 } }), body_md: '# Cierre\n\n<script>alert(1)</script> [Jira](https://example.atlassian.net/browse/ABC-1) [malo](javascript:alert(1))',
-    items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p', summary: 'ABC-1 worklog 2 h', estimate: { seconds: 7200, basis: 'notas 10:15–12:40', confidence: 'medium' } }, { ordinal: 2, kind: 'jira_transition', project_id: 'p', summary: 'ABC-2 → En revisión' }], phases: [] }
+    items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p', summary: 'ABC-1 worklog 2 h', estimate: { seconds: 5400, basis: 'notas 10:15–12:40', confidence: 'medium', assumptions: ['sin pruebas manuales'], would_change: 'hubo pruebas en staging' } }, { ordinal: 2, kind: 'jira_transition', project_id: 'p', summary: 'ABC-2 → En revisión' }], phases: [] }
   const decision = { request_id: 'q1', revision: 1, state: 'open', expires_at: '2026-10-28T23:59:00Z', digest: 'd'.repeat(64), authority: 'verified', reply_line: 'aprobar K7P4-M2XN 1,2',
     items: [{ ordinal: 1, kind: 'jira_worklog', summary: 'ABC-1 worklog 2 h', state: 'proposed', effect_digest: 'e1' }, { ordinal: 2, kind: 'jira_transition', summary: 'ABC-2 → En revisión', state: 'proposed', effect_digest: 'e2' }] }
 
@@ -162,6 +207,17 @@ describe('Detalle de una entrega', () => {
     expect(qa(container, 'script')).toHaveLength(0)
     expect(qa<HTMLAnchorElement>(container, '.md a').map(anchor => anchor.getAttribute('href'))).toEqual(['https://example.atlassian.net/browse/ABC-1'])
     expect(api.callsTo('/memory/schedules/runs/r1/read', 'PUT')).toHaveLength(1)
+  })
+
+  it('muestra la estimación con sus cuatro partes y decimales en español', async () => {
+    mockDetail()
+    const { container } = await mount()
+    const text = textOf(container)
+    expect(text).toContain('Estimación del agente, no medición: 1,5 h')
+    expect(text).toContain('confianza media')
+    expect(text).toContain('Base: notas 10:15–12:40')
+    expect(text).toContain('Supuestos: sin pruebas manuales')
+    expect(text).toContain('Cambiaría si: hubo pruebas en staging')
   })
 
   it('aprueba los ítems seleccionados con el digest exacto de la solicitud', async () => {

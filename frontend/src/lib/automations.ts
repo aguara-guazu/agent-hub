@@ -78,7 +78,7 @@ export interface PublicItem {
   summary: string
   state?: ItemState
   /** Provisional: partes de la estimación de horas (valor, base, confianza, supuestos). */
-  estimate?: { seconds: number; basis: string; confidence: 'low' | 'medium' | 'high'; assumptions?: string[] } | null
+  estimate?: { seconds: number; basis: string; confidence: 'low' | 'medium' | 'high'; assumptions?: string[]; would_change?: string } | null
   receipt_url?: string | null
   failure_reason?: string | null
 }
@@ -159,6 +159,7 @@ export function useScheduleActions() {
     resume: useMutation(make(({ id, revision }: { id: string; revision: number }) => api.post(`${base(id)}/resume`, { expected_revision: revision }))),
     runNow: useMutation(make(({ id }: { id: string }) => api.post<{ run_id: string }>(`${base(id)}/run_now`, {}))),
     reschedule: useMutation(make(({ id, revision, recurrence }: { id: string; revision: number; recurrence: Recurrence }) => api.put(`${base(id)}/recurrence`, { expected_revision: revision, recurrence }))),
+    delivery: useMutation(make(({ id, revision, delivery }: { id: string; revision: number; delivery: DeliveryTarget[] }) => api.put(`${base(id)}/delivery`, { expected_revision: revision, delivery }))),
     cancel: useMutation(make(({ id, revision, scope }: { id: string; revision: number; scope: 'target' | 'template_project' }) => api.post(`${base(id)}/cancel`, { expected_revision: revision, scope }))),
     lift: useMutation(make(({ constraintId }: { constraintId: string }) => api.post(`/memory/schedule-constraints/${encodeURIComponent(constraintId)}/lift`, {}))),
   }

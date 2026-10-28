@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isAllowedNavigation, secureWebPreferences, windowOptions } from './window.js'
+import { externalUrl, isAllowedNavigation, secureWebPreferences, windowOptions } from './window.js'
 
 describe('opciones seguras de ventana', () => {
   it('fuerza aislamiento, sandbox y sin nodeIntegration', () => {
@@ -24,5 +24,19 @@ describe('opciones seguras de ventana', () => {
     expect(isAllowedNavigation('http://127.0.0.1:8765/', 'http://127.0.0.1:8765/matrix')).toBe(true)
     expect(isAllowedNavigation('http://127.0.0.1:8765/', 'http://evil.example/')).toBe(false)
     expect(isAllowedNavigation('http://127.0.0.1:8765/', 'no-es-una-url')).toBe(false)
+  })
+})
+
+describe('externalUrl', () => {
+  it('permite http, https y mailto', () => {
+    expect(externalUrl('https://example.com/a?b=1')).toBe('https://example.com/a?b=1')
+    expect(externalUrl('http://example.com')).toBe('http://example.com/')
+    expect(externalUrl('mailto:ana@example.com')).toBe('mailto:ana@example.com')
+  })
+
+  it('rechaza javascript, file, data, ssh, rutas relativas, credenciales y basura', () => {
+    for (const target of ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'file:///etc/passwd', 'data:text/html,<b>x</b>', 'ssh://host/repo', 'vscode://file/x', '/relativa', '#ancla', 'https://user:pass@example.com', 'no-es-una-url', '']) {
+      expect(externalUrl(target)).toBeNull()
+    }
   })
 })

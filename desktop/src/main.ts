@@ -11,7 +11,7 @@ import { buildReport, LogFile, tailLog } from '@agenthub/memory/report'
 import { waitForDesktopSession } from './session.js'
 import { CoreSupervisor } from './supervisor.js'
 import { resolvePaths, type PathContext } from './paths.js'
-import { windowOptions, isAllowedNavigation } from './window.js'
+import { windowOptions, isAllowedNavigation, externalUrl } from './window.js'
 import { buildTrayTemplate, TRAY_TOOLTIP, type TrayAction } from './tray.js'
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus, type OpenFileResult } from './ipc.js'
@@ -218,8 +218,8 @@ const DEFAULT_AUTOMATION_PREFS: AutomationPrefs = { automations_enabled: true, n
 let automationPrefs = DEFAULT_AUTOMATION_PREFS
 /** Cada cuánto el proceso principal consulta el feed del scheduler. */
 const SCHEDULE_FEED_POLL_MS = 10_000
-/** Agrupación de avisos de schedules creados o cambiados por un agente. */
-const SCHEDULE_NOTICE_WINDOW_MS = 60_000
+/** Agrupación de avisos de schedules creados o cambiados por un agente: cubre la ráfaga típica (status, brief y cierre) sin demorar el aviso. */
+const SCHEDULE_NOTICE_WINDOW_MS = 15_000
 /** Tope absoluto por run para mantener la Mac despierta; un run que el core no cierra no la retiene más tiempo. */
 const KEEP_AWAKE_MAX_MS = 20 * 60_000
 /** Espera tras resume/unlock-screen: la red suele volver unos segundos después. */
@@ -257,14 +257,19 @@ const autostartOffer = new AutostartOffer({
   setEnabled: enabled => autostart.setEnabled(enabled),
   wasOffered: () => existsSync(autostartOfferedFile),
   markOffered: () => { try { writeFileSync(autostartOfferedFile, new Date().toISOString()) } catch { /* sin persistir, se vuelve a ofrecer */ } },
-  ask: async () => (await dialog.showMessageBox({
-    type: 'question',
-    message: 'Iniciar Agent Hub al ingresar',
-    detail: 'Las automatizaciones solo corren mientras Agent Hub está abierto. Si lo iniciamos al ingresar, el brief de la mañana no depende de que lo abras tú.',
-    buttons: ['Iniciar al ingresar', 'Ahora no'],
-    defaultId: 0,
-    cancelId: 1,
-  })).response === 0,
+  ask: async () => {
+    const options: Electron.MessageBoxOptions = {
+      type: 'question',
+      message: 'Iniciar Agent Hub al ingresar',
+      detail: 'Las automatizaciones solo corren mientras Agent Hub está abierto. Si lo iniciamos al ingresar, el brief de la mañana no depende de que lo abras tú.',
+      buttons: ['Iniciar al ingresar', 'Ahora no'],
+      defaultId: 0,
+      cancelId: 1,
+    }
+    // Con la ventana visible el diálogo cuelga de ella; sin ventana sería modal de toda la app.
+    const parent = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : null
+    return (parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)).response === 0
+  },
 })
 const scheduleFeed = new FeedPoller({
   fetchFeed: async (after): Promise<FeedResponse> => {
@@ -587,11 +592,13 @@ function createWindow(token: string, hidden: boolean): void {
   win.webContents.on('will-navigate', (event, url) => {
     if (!isAllowedNavigation(win.webContents.getURL(), url)) {
       event.preventDefault()
-      void shell.openExternal(url)
+      const external = externalUrl(url)
+      if (external) void shell.openExternal(external)
     }
   })
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    const external = externalUrl(url)
+    if (external) void shell.openExternal(external)
     return { action: 'deny' }
   })
   void win.loadURL(consoleUrl(token))

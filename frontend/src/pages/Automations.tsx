@@ -11,16 +11,19 @@ import { ErrorState } from '../components/ErrorState'
 import { LoadingBlock } from '../components/Spinner'
 import { Markdown } from '../components/Markdown'
 import { Modal, ConfirmDialog } from '../components/Modal'
+import { GmailAuthorize } from '../components/GmailAuthorize'
 import { useToast } from '../components/Toast'
 import { api } from '../lib/api'
-import { automationKeys, useAutomationSettings, useConstraints, useDecision, useDecisionActions, useRun, useRuns, useScheduleActions, useSchedules } from '../lib/automations'
-import type { DeliveryView, ItemState, PublicItem, Recurrence, RunListItem, RunState, ScheduleView } from '../lib/automations'
+import { useMemory } from '../lib/memory'
+import type { MemoryEntity, Page } from '../lib/memory'
+import { automationKeys, CHANNEL_REASONS, useAutomationSettings, useConstraints, useDeliveryChannels, useDecision, useDecisionActions, useRun, useRuns, useScheduleActions, useSchedules } from '../lib/automations'
+import type { DeliveryTarget, DeliveryView, ItemState, PublicItem, Recurrence, RunListItem, RunState, ScheduleView } from '../lib/automations'
 
 const TEMPLATE_LABELS: Record<string, string> = {
   daily_brief: 'Brief', daily_close: 'Cierre', project_status: 'Estado del proyecto', reminder: 'Recordatorio', custom_synthesis: 'Síntesis', team_health: 'Salud del equipo',
 }
-const KIND_LABELS = { notice: 'Aviso', synthesis: 'Síntesis' } as const
-const KIND_HINTS = { notice: 'Aviso: sin modelo, solo datos del Hub.', synthesis: 'Síntesis: modelo sin herramientas sobre datos del Hub.' } as const
+const KIND_LABELS = { notice: 'Sin modelo', synthesis: 'Con modelo' } as const
+const KIND_HINTS = { notice: 'Sin modelo: se arma solo con datos del Hub.', synthesis: 'Con modelo: un modelo sin herramientas resume datos del Hub.' } as const
 const WEEKDAYS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'] as const
 const TARGET_LABELS = { hub_inbox: 'Bandeja del Hub', app_window: 'App', gmail_self: 'Gmail', slack_self: 'Slack' } as const
 const RUN_STATE_LABELS: Record<RunState, string> = {
@@ -61,7 +64,7 @@ export function describeNextRun(iso: string | null, now = Date.now()): string {
 
 function AutomationsHeader({ children }: { children?: ReactNode }) {
   return <>
-    <div className="hub-heading"><div><div className="hub-eyebrow">TUS AGENTES TRABAJAN SOLOS</div><h1>Automatizaciones</h1><p>Lo que tus agentes programaron y lo que ya te entregaron.</p></div><div className="hub-actions">{children}</div></div>
+    <div className="hub-heading"><div><div className="hub-eyebrow">LO QUE TUS AGENTES PROGRAMARON</div><h1>Automatizaciones</h1><p>Lo que tus agentes programaron y lo que ya te entregaron.</p></div><div className="hub-actions">{children}</div></div>
     <nav className="automations-tabs" aria-label="Automatizaciones">
       <NavLink to="/schedules" className={({ isActive }) => isActive ? 'active' : ''}>Programaciones</NavLink>
       <NavLink to="/deliveries" className={({ isActive }) => isActive ? 'active' : ''}>Entregas</NavLink>
@@ -104,6 +107,26 @@ function RescheduleModal({ schedule, onClose }: { schedule: ScheduleView; onClos
   </Modal>
 }
 
+const CHANNEL_TARGETS = [['gmail', 'gmail_self', 'Gmail a mi propia cuenta'], ['slack', 'slack_self', 'Slack, mensaje a mí mismo']] as const
+
+function ChannelsModal({ schedule, onClose }: { schedule: ScheduleView; onClose: () => void }) {
+  const actions = useScheduleActions()
+  const channels = useDeliveryChannels()
+  const [selected, setSelected] = useState<DeliveryTarget[]>(schedule.delivery.filter(target => target === 'gmail_self' || target === 'slack_self'))
+  const toggle = (target: DeliveryTarget): void => setSelected(current => current.includes(target) ? current.filter(item => item !== target) : [...current, target])
+  return <Modal open title={`Canales · ${schedule.title}`} onClose={onClose} busy={actions.delivery.isPending} footer={<>
+    <button className="btn" onClick={onClose} disabled={actions.delivery.isPending}>Cancelar</button>
+    <button className="btn btn-primary" disabled={actions.delivery.isPending} onClick={() => actions.delivery.mutate({ id: schedule.id, revision: schedule.revision, delivery: ['hub_inbox', 'app_window', ...selected] }, { onSuccess: onClose })}>Guardar</button>
+  </>}>
+    <div className="automations-form">
+      <label><input type="checkbox" checked disabled /> App de Agent Hub (siempre)</label>
+      {CHANNEL_TARGETS.map(([channel, target, label]) => { const info = channels.data?.items.find(item => item.channel === channel); const available = info?.available === true
+        return <label key={target}><input type="checkbox" disabled={!available && !selected.includes(target)} checked={selected.includes(target)} onChange={() => toggle(target)} /> {label}{info?.destination ? ` (${info.destination})` : ''}{!available && info && <small className="automations-muted"> {CHANNEL_REASONS[info.reason ?? ''] ?? 'no disponible'}</small>}{channel === 'gmail' && info?.reason === 'scope_missing' && <GmailAuthorize destination={info.destination} />}</label> })}
+      <p className="automations-muted">Nunca se ofrece un canal que va a fallar. Los correos y mensajes van solo a tu propia cuenta.</p>
+    </div>
+  </Modal>
+}
+
 function ScheduleRow({ schedule }: { schedule: ScheduleView }) {
   return <div className="automations-name"><strong>{templateLabel(schedule)}</strong><span>{schedule.title}</span><small>{describeRecurrence(schedule.recurrence)}</small></div>
 }
@@ -112,7 +135,7 @@ function lastRunText(schedule: ScheduleView): ReactNode {
   const run = schedule.last_run
   if (!run) return <span className="automations-muted">Todavía no corrió</span>
   const reason = run.state === 'skipped' && run.skip_reason ? SKIP_REASONS[run.skip_reason] ?? run.skip_reason : run.state === 'deferred' && run.deferred_reason ? DEFERRED_REASONS[run.deferred_reason] ?? run.deferred_reason : ''
-  return <><Badge tone={RUN_STATE_TONES[run.state]}>{RUN_STATE_LABELS[run.state]}</Badge>{reason && <small> {reason}</small>}<br /><Link to={`/deliveries`}>{formatDateTime(run.scheduled_for)}</Link></>
+  return <><Badge tone={RUN_STATE_TONES[run.state]}>{RUN_STATE_LABELS[run.state]}</Badge>{reason && <small> {reason}</small>}<br /><Link to={`/deliveries/${run.id}`}>{formatDateTime(run.scheduled_for)}</Link></>
 }
 
 function nextRunText(schedule: ScheduleView): ReactNode {
@@ -135,6 +158,7 @@ export function SchedulesPage() {
   const [params, setParams] = useSearchParams()
   const focus = params.get('focus')
   const [editing, setEditing] = useState<ScheduleView | null>(null)
+  const [channelsFor, setChannelsFor] = useState<ScheduleView | null>(null)
   const [cancelling, setCancelling] = useState<ScheduleView | null>(null)
   const [noRecreate, setNoRecreate] = useState(false)
   const rows = (schedules.data?.items ?? []).filter(schedule => schedule.state === 'active' || schedule.state === 'paused')
@@ -153,6 +177,7 @@ export function SchedulesPage() {
     { key: 'state', header: 'Estado', render: stateBadge },
     { key: 'actions', header: '', className: 'actions', render: schedule => <div className="actions">
       <button className="btn btn-sm" onClick={() => setEditing(schedule)}>Cambiar horario</button>
+      <button className="btn btn-sm" onClick={() => setChannelsFor(schedule)}>Canales</button>
       {schedule.state === 'paused' ? <button className="btn btn-sm" onClick={() => actions.resume.mutate({ id: schedule.id, revision: schedule.revision })}>Reanudar</button> : <button className="btn btn-sm" onClick={() => actions.pause.mutate({ id: schedule.id, revision: schedule.revision })}>Pausar</button>}
       <button className="btn btn-sm" disabled={schedule.state !== 'active'} onClick={() => actions.runNow.mutate({ id: schedule.id }, { onSuccess: () => toast.success('Ejecución encolada', 'La entrega dirá «ejecutado manualmente».') })}>Ejecutar ahora</button>
       <button className="btn btn-sm btn-danger" onClick={() => { setNoRecreate(false); setCancelling(schedule) }}>Cancelar</button>
@@ -167,6 +192,7 @@ export function SchedulesPage() {
     {(constraints.data?.items.length ?? 0) > 0 && <section className="automations-constraints"><h2>Restricciones</h2><p className="automations-muted">Cancelaste estas automatizaciones: el agente no puede volver a crearlas.</p>
       <ul>{constraints.data!.items.map(item => <li key={item.id}><span>{TEMPLATE_LABELS[item.template] ?? item.template}{item.scope === 'template_project' ? ' · todo el tipo en el proyecto' : ''}</span><small>{formatDateTime(item.created_at)}{item.reason ? ` · ${item.reason}` : ''}</small><button className="btn btn-sm" disabled={actions.lift.isPending} onClick={() => actions.lift.mutate({ constraintId: item.id })}>Levantar restricción</button></li>)}</ul></section>}
     {editing && <RescheduleModal key={editing.id} schedule={editing} onClose={() => setEditing(null)} />}
+    {channelsFor && <ChannelsModal key={channelsFor.id} schedule={channelsFor} onClose={() => setChannelsFor(null)} />}
     <ConfirmDialog open={cancelling !== null} title="Cancelar automatización" destructive confirmLabel="Cancelar automatización" cancelLabel="Volver" busy={actions.cancel.isPending}
       message={<><p>El agente no podrá volver a crear esta automatización. Podrás levantar la restricción desde esta pantalla.</p><label className="automations-check"><input type="checkbox" checked={noRecreate} onChange={event => setNoRecreate(event.target.checked)} /> No volver a programar este tipo de automatización en el proyecto</label></>}
       onClose={() => setCancelling(null)}
@@ -187,11 +213,22 @@ function decisionSummary(run: RunListItem): string {
   return `aprobado ${decision.approved} de ${decision.total}`
 }
 
+/** Encabezado de tiempos: «generado» solo cuando hubo retraso real o un disparo especial. */
+export function generatedNote(run: Pick<RunListItem, 'trigger' | 'scheduled_for' | 'started_at' | 'state'>): string {
+  if (run.trigger === 'run_now') return ' · ejecutado manualmente'
+  if (!run.started_at) return run.state === 'deferred' ? ' · diferido, todavía no generado' : ''
+  const delayMinutes = (Date.parse(run.started_at) - Date.parse(run.scheduled_for)) / 60_000
+  if (run.trigger === 'misfire') return ` · generado ${formatDateTime(run.started_at)} al encender`
+  return delayMinutes > 10 ? ` · generado ${formatDateTime(run.started_at)} (con retraso)` : ''
+}
+
 const ARTIFACT_LABELS = { notice: 'Aviso', brief: 'Brief', close: 'Cierre', status: 'Estado', report: 'Informe' } as const
 
 export function DeliveriesPage() {
   const [kind, setKind] = useState('')
-  const runs = useRuns({ kind: kind || undefined })
+  const [projectId, setProjectId] = useState('')
+  const projects = useMemory<Page<MemoryEntity>>('list_entities', { kind: 'project', limit: 200 })
+  const runs = useRuns({ kind: kind || undefined, project_id: projectId || undefined })
   const columns: Column<RunListItem>[] = [
     { key: 'unread', header: '', render: run => run.read_at ? null : <span className="automations-unread" role="img" aria-label="No leída" /> },
     { key: 'when', header: 'Fecha', render: run => <Link to={`/deliveries/${run.run_id}`}>{formatDateTime(run.started_at ?? run.scheduled_for)}</Link> },
@@ -202,7 +239,7 @@ export function DeliveriesPage() {
     { key: 'state', header: 'Estado', render: run => <Badge tone={RUN_STATE_TONES[run.state]}>{RUN_STATE_LABELS[run.state]}</Badge> },
   ]
   return <>
-    <AutomationsHeader><label className="automations-filter">Tipo<select value={kind} onChange={event => setKind(event.target.value)}><option value="">Todos</option><option value="brief">Brief</option><option value="close">Cierre</option><option value="notice">Aviso</option></select></label></AutomationsHeader>
+    <AutomationsHeader><label className="automations-filter">Tipo<select value={kind} onChange={event => setKind(event.target.value)}><option value="">Todos</option><option value="brief">Brief</option><option value="close">Cierre</option><option value="notice">Aviso</option></select></label><label className="automations-filter">Proyecto<select value={projectId} onChange={event => setProjectId(event.target.value)}><option value="">Todos</option>{(projects.data?.items ?? []).map(project => <option key={project.id} value={project.id}>{project.title}</option>)}</select></label></AutomationsHeader>
     <DataTable columns={columns} rows={runs.data?.items ?? []} rowKey={run => run.run_id} loading={runs.isLoading} error={runs.error} onRetry={() => void runs.refetch()} caption="Entregas" empty="Todavía no hay entregas." rowClassName={run => run.read_at ? undefined : 'automations-unread-row'} />
   </>
 }
@@ -229,7 +266,7 @@ function ItemsBlock({ runId, items, hasDecision }: { runId: string; items: Publi
       return <li key={item.ordinal} className={`automations-item state-${item.state}`}>
         <label><input type="checkbox" disabled={!mutable} checked={mutable && chosen.has(item.ordinal)} onChange={() => toggle(item.ordinal)} /><strong>{item.ordinal}.</strong> {item.summary}</label>
         <Badge tone={item.state === 'succeeded' ? 'on' : item.state === 'uncertain' || item.state === 'unverifiable' ? 'stale' : item.state === 'rejected' || item.state === 'expired' ? 'off' : 'neutral'}>{ITEM_STATE_LABELS[item.state]}</Badge>
-        {estimate && <small className="automations-muted">Estimación del agente: {estimate.seconds / 3600} h · confianza {estimate.confidence === 'high' ? 'alta' : estimate.confidence === 'medium' ? 'media' : 'baja'} · {estimate.basis}</small>}
+        {estimate && <small className="automations-muted">Estimación del agente, no medición: {(estimate.seconds / 3600).toLocaleString('es', { maximumFractionDigits: 1 })} h · confianza {estimate.confidence === 'high' ? 'alta' : estimate.confidence === 'medium' ? 'media' : 'baja'} · Base: {estimate.basis}{estimate.assumptions?.length ? ` · Supuestos: ${estimate.assumptions.join('; ')}` : ''}{estimate.would_change ? ` · Cambiaría si: ${estimate.would_change}` : ''}</small>}
         {mutable && item.kind === 'jira_worklog' && <span className="automations-revise"><input type="number" min={0.5} step={0.5} aria-label={`Horas del ítem ${item.ordinal}`} value={hours[item.ordinal] ?? ''} placeholder="h" onChange={event => setHours(current => ({ ...current, [item.ordinal]: event.target.value }))} />
           <button className="btn btn-sm" disabled={actions.revise.isPending || !(Number(hours[item.ordinal]) >= 0.5)} onClick={() => actions.revise.mutate({ ordinal: item.ordinal, seconds: Math.round(Number(hours[item.ordinal]) * 3600) }, { onSuccess: () => { setSelected(null); setHours({}); toast.info('Corrección registrada', 'Aprueba la propuesta revisada.') } })}>Corregir</button></span>}
       </li> })}</ul>
@@ -258,7 +295,7 @@ export function DeliveryDetailPage() {
   return <>
     <AutomationsHeader><button className="btn btn-sm" onClick={() => navigate('/deliveries')}><Icon name="back" /> Entregas</button></AutomationsHeader>
     <article className="automations-detail">
-      <header><h2>{data.title}</h2><p className="automations-muted">Programado {formatDateTime(data.scheduled_for)}{data.started_at && data.trigger === 'misfire' ? ` · generado ${formatDateTime(data.started_at)} al encender` : data.trigger === 'run_now' ? ' · ejecutado manualmente' : ''}</p>
+      <header><h2>{data.title}</h2><p className="automations-muted">Programado {formatDateTime(data.scheduled_for)}{generatedNote(data)}</p>
         {deliverySummary(data.deliveries)}
         {data.incidents?.map(incident => <p key={incident.observed_at} className="automations-warning">Proceso interrumpido ({incident.cause}): {incident.action}</p>)}
         <Link to={`/schedules?focus=${data.schedule_id}`}>Ver automatización</Link></header>
