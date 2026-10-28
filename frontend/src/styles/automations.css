@@ -47,3 +47,7 @@
 .md-table table { border-collapse: collapse; font-size: 12px; }
 .md-table th, .md-table td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
 .md-truncated { color: var(--warn-text); }
+
+.automation-settings { margin-bottom: 20px; }
+.automation-hours { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; }
+.automation-hours input { width: 72px; }
