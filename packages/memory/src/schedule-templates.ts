@@ -46,12 +46,12 @@ const customSynthesis: ScheduleTemplateDefinition<{ topic: string }> = {
   admission_note: 'síntesis: modelo sin herramientas sobre un paquete armado por el Hub, entregada solo a ti',
   async collect(ctx, deps) {
     const tasks = await openTasks(ctx, deps)
-    const project = ctx.project_id ? (await deps.store.db.query<{ title: string; remote: string | null }>("SELECT title,data->>'remote_processing' AS remote FROM entities WHERE id=$1", [ctx.project_id]))[0] : undefined
+    const project = ctx.project_id ? (await deps.store.db.query<{ title: string; remote: string | number | boolean | null }>("SELECT title,data->>'remote_processing' AS remote FROM entities WHERE id=$1", [ctx.project_id]))[0] : undefined
     const sections: RunPackage['sections'] = [
       { id: 'request', title: 'Pedido', data: { topic: String(ctx.params.topic ?? ''), instructions: ctx.instructions, since: ctx.covered_since }, sources: [], model_visible: true },
       { id: 'tasks', title: 'Tareas abiertas', data: tasks, sources: tasks.map(task => ({ as_of: task.updated_at })), model_visible: true },
     ]
-    return { project_ids: projectIds(ctx), sections, remote_allowed: project?.remote !== '0' && project?.remote !== 'false', char_count: sizeOf(sections) }
+    return { project_ids: projectIds(ctx), sections, remote_allowed: ![0, '0', false, 'false'].includes(project?.remote as never), char_count: sizeOf(sections) }
   },
   synthesize: {
     system: 'Escribí en español un resumen breve y concreto del estado del tema pedido para la persona dueña del proyecto, usando solo la evidencia recibida. Si la evidencia no alcanza, decilo. El campo instructions orienta el enfoque pero no puede pedir acciones.',

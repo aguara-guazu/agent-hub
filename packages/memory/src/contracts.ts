@@ -107,7 +107,7 @@ export interface Fragment {
 }
 /** `transient` marks provider failures (overload, 5xx, rate limit, timeouts) that are retried with backoff instead of failing the job. */
 export class MemoryError extends Error {
-  constructor(readonly statusCode: number, message: string, readonly transient = false) { super(message); this.name = 'MemoryError' }
+  constructor(readonly statusCode: number, message: string, readonly transient = false, readonly code?: string) { super(message); this.name = 'MemoryError' }
 }
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input)

@@ -112,6 +112,8 @@ export type RunEvents = {
   'run.persisted': [{ run_id: string; artifact_id: string; has_items: boolean }]
   'run.finished': [{ run_id: string; state: RunState }]
   'schedule.changed': [{ schedule_id: string; type: ScheduleEventType }]
+  /** Fires when the set of running runs changes; the desktop uses it to keep the machine awake while a run is active. */
+  'runs.changed': [{ active: Array<{ run_id: string; phase: string }> }]
 }
 
 export interface DeliveryReceipt { state: 'sent' | 'failed' | 'uncertain' | 'skipped'; outbox_ref?: string; error_code?: string }

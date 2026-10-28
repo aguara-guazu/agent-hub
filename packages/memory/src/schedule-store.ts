@@ -132,6 +132,21 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   async liveRunOf(scheduleId: string): Promise<RunRow | undefined> {
     return (await this.db.query<RunRow>(`SELECT * FROM schedule_runs WHERE schedule_id=$1 AND state IN ('pending','running','deferred','interrupted') ORDER BY scheduled_for LIMIT 1`, [scheduleId]))[0]
   }
+  /** Takes over a run left in `running` by a previous process: the next generation fences the old one. */
+  async reclaimRunning(id: string, generation: number): Promise<RunRow | undefined> {
+    return (await this.db.query<RunRow>("UPDATE schedule_runs SET generation=generation+1,updated_at=$3 WHERE id=$1 AND generation=$2 AND state='running' RETURNING *", [id, generation, isoNow()]))[0]
+  }
+  async runningRuns() { return this.db.query<RunRow>("SELECT * FROM schedule_runs WHERE state='running' ORDER BY scheduled_for") }
+  async deferredForQuota() { return this.db.query<RunRow>("SELECT * FROM schedule_runs WHERE state='deferred' AND deferred_reason='quota'") }
+  /** Every run that has not started or is waiting; used when automations are switched off. Returns the ids that changed. */
+  async cancelAllLiveRuns(skipReason: string): Promise<string[]> {
+    const now = isoNow()
+    return (await this.db.query<{ id: string }>(`UPDATE schedule_runs SET state='skipped',phase='done',skip_reason=$1,finished_at=$2,updated_at=$2,next_attempt_at=NULL,generation=generation+1
+      WHERE state IN ('pending','deferred','interrupted') RETURNING id`, [skipReason, now])).map(row => row.id)
+  }
+  async failedPhaseCount(runId: string): Promise<number> {
+    return Number((await this.db.query<{ n: number }>("SELECT count(DISTINCT generation) AS n FROM schedule_run_phases WHERE run_id=$1 AND state='failed'", [runId]))[0]!.n)
+  }
   /** Runs ready to advance: pending, interrupted within their window, or deferred whose wake time has come. */
   async runnable(now: string) {
     return this.db.query<RunRow>(`SELECT * FROM schedule_runs WHERE state IN ('pending','interrupted') OR (state='deferred' AND (next_attempt_at IS NULL OR next_attempt_at<=$1)) ORDER BY scheduled_for`, [now])
@@ -287,5 +302,5 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
 
 /** HTTP-level error with a closed code, as returned to agents and the app (409 'schedule_constrained', 'automations_disabled', ...). */
 export class ScheduleError extends MemoryError {
-  constructor(status: number, readonly code: string, message: string) { super(status, message) }
+  constructor(status: number, override readonly code: string, message: string) { super(status, message, false, code) }
 }
