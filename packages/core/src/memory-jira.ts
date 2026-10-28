@@ -5,7 +5,7 @@ import { computeSnapshot } from './policy/resolver.js'
 
 const SEARCH = 'searchJiraIssuesUsingJql'
 const RESOURCES = 'getAccessibleAtlassianResources'
-const fields = ['summary', 'description', 'status', 'issuetype', 'priority', 'assignee', 'updated', 'project']
+const fields = ['summary', 'description', 'status', 'issuetype', 'priority', 'assignee', 'duedate', 'updated', 'project']
 
 function value(result: CallResult): any {
   if (result.is_error) throw new MemoryError(502, 'Jira no pudo completar la consulta. Revisa la conexión de Atlassian en MCP servers y vuelve a intentar.')

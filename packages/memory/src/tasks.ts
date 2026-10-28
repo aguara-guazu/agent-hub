@@ -27,7 +27,7 @@ export const syncTasksInput = z.object({ project_id: id.optional(), issues: z.ar
 export const taskStatsInput = z.object({ project_id: id.optional(), weeks: z.number().int().min(2).max(52).default(12) }).strict()
 
 interface JiraIssue { key: string; summary: string; status: string; category: string | null; issue_type: string | null; priority: string | null
-  assignee: string | null; updated: string | null; description: string | null; url: string | null; site: string | null }
+  assignee: string | null; assignee_account_id: string | null; due_at: string | null; updated: string | null; description: string | null; url: string | null; site: string | null }
 
 const text = (value: unknown, max: number) => typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null
 const nameOf = (value: any) => text(typeof value === 'string' ? value : value?.name ?? value?.displayName, 200)
@@ -48,7 +48,8 @@ export function normalizeJiraIssue(raw: unknown, site?: string): JiraIssue | nul
   const browse = text(row.url, 1000) ?? (issueSite ? `${issueSite}/browse/${encodeURIComponent(key)}` : null)
   const description = fields.description === undefined ? null : text(typeof fields.description === 'string' ? fields.description : richText(fields.description), 8000) ?? ''
   return { key, summary, status, category, issue_type: nameOf(fields.issuetype ?? row.issue_type ?? row.type), priority: nameOf(fields.priority ?? row.priority),
-    assignee: nameOf(fields.assignee ?? row.assignee), updated: updated && !Number.isNaN(Date.parse(updated)) ? new Date(updated).toISOString() : null,
+    assignee: nameOf(fields.assignee ?? row.assignee), assignee_account_id: text(fields.assignee?.accountId ?? row.assignee_account_id, 200),
+    due_at: /^\d{4}-\d{2}-\d{2}/.test(String(fields.duedate ?? row.duedate ?? '')) ? String(fields.duedate ?? row.duedate).slice(0, 10) : null, updated: updated && !Number.isNaN(Date.parse(updated)) ? new Date(updated).toISOString() : null,
     description, site: issueSite, url: browse && /^https:\/\//.test(browse) ? browse : null }
 }
 
@@ -95,8 +96,8 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
       if (!current) {
         const taskId = randomUUID()
         await sql.query(`INSERT INTO tasks(id,project_id,kind,title,description,status,origin,external_key,external_status,external_category,external_url,external_updated_at,
-          issue_type,priority,assignee,created_by,updated_by,closed_at,external_site) VALUES($1,$2,'jira',$3,$4,$5,'jira',$6,$7,$8,$9,ts($10),$11,$12,$13,$14,$14,CASE WHEN $5 IN ('done','dropped') THEN now() END,$15)`,
-        [taskId, owner.id, issue.summary, issue.description ?? '', status, issue.key, issue.status, issue.category, url, issue.updated, issue.issue_type, issue.priority, issue.assignee, actor, site])
+          issue_type,priority,assignee,created_by,updated_by,closed_at,external_site,assignee_account_id,due_at) VALUES($1,$2,'jira',$3,$4,$5,'jira',$6,$7,$8,$9,ts($10),$11,$12,$13,$14,$14,CASE WHEN $5 IN ('done','dropped') THEN now() END,$15,$16,$17)`,
+        [taskId, owner.id, issue.summary, issue.description ?? '', status, issue.key, issue.status, issue.category, url, issue.updated, issue.issue_type, issue.priority, issue.assignee, actor, site, issue.assignee_account_id, issue.due_at])
         await recordEvent(sql, taskId, 'created', actor, null, status, { jira_status: issue.status })
         summary.created++; summary.tasks.push({ id: taskId, key: issue.key, status, project_id: owner.id })
         continue
@@ -104,6 +105,7 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
       // An older snapshot (a delayed mirror or a stale agent copy) never overwrites a newer one.
       if (issue.updated && current.external_updated_at && Date.parse(issue.updated) < Date.parse(current.external_updated_at)) { summary.unchanged++; continue }
       const changed = current.title !== issue.summary || current.external_status !== issue.status || current.assignee !== issue.assignee
+        || current.assignee_account_id !== issue.assignee_account_id || current.due_at !== issue.due_at
         || current.priority !== issue.priority || current.project_id !== owner.id || current.status !== status
         || (issue.description !== null && current.description !== issue.description) || current.issue_type !== issue.issue_type
         || current.external_category !== issue.category || (url !== null && current.external_url !== url) || current.external_site !== site
@@ -113,8 +115,8 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
       }
       await sql.query(`UPDATE tasks SET project_id=$2,title=$3,description=CASE WHEN $4 IS NULL THEN description ELSE $4 END,status=$5,external_status=$6,external_category=$7,
         external_url=COALESCE($8,external_url),external_updated_at=COALESCE(ts($9),external_updated_at),issue_type=$10,priority=$11,assignee=$12,updated_by=$13,updated_at=now(),
-        closed_at=CASE WHEN $5 IN ('done','dropped') THEN COALESCE(closed_at,now()) ELSE NULL END,external_site=$14 WHERE id=$1`,
-      [current.id, owner.id, issue.summary, issue.description, status, issue.status, issue.category, url, issue.updated, issue.issue_type, issue.priority, issue.assignee, actor, site])
+        closed_at=CASE WHEN $5 IN ('done','dropped') THEN COALESCE(closed_at,now()) ELSE NULL END,external_site=$14,assignee_account_id=$15,due_at=$16 WHERE id=$1`,
+      [current.id, owner.id, issue.summary, issue.description, status, issue.status, issue.category, url, issue.updated, issue.issue_type, issue.priority, issue.assignee, actor, site, issue.assignee_account_id, issue.due_at])
       if (current.status !== status || current.external_status !== issue.status) {
         await recordEvent(sql, current.id, 'status', actor, current.status, status, { jira_status_before: current.external_status, jira_status: issue.status })
         summary.status_changed++
@@ -178,7 +180,7 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
     const seen = new Set<string>()
     do {
       const result = await http.json(`${access.origin}/rest/api/3/search/jql`, access.headers, { jql: `project = "${key}" ORDER BY updated DESC`, maxResults: 100,
-        fields: ['summary', 'status', 'issuetype', 'priority', 'assignee', 'updated'], ...(next ? { nextPageToken: next } : {}) })
+        fields: ['summary', 'status', 'issuetype', 'priority', 'assignee', 'duedate', 'updated'], ...(next ? { nextPageToken: next } : {}) })
       for (const issue of result.issues ?? []) { const normalized = normalizeJiraIssue(issue, access.origin); if (normalized) issues.push(normalized) }
       next = result.isLast ? '' : result.nextPageToken ?? ''
       check(!next || !seen.has(next), 'Jira repitió un cursor de búsqueda', 502)
