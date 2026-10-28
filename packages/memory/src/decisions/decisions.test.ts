@@ -16,11 +16,12 @@ function setup(extra: { exclusions?: Exclusion[]; mirror?: Array<Record<string, 
   const sink = { async add(entries: Exclusion[]) { extra.exclusions?.push(...entries) } }
   const publicState: PublicStateSink = { async set(entry) { if (extra.failMirror?.()) throw new Error('down'); extra.mirror?.push(entry) } }
   const store = new DecisionStore(':memory:', { key, now: () => clock, exclusions: sink, publicState })
-  const prepare = (run = 'run-1', count = 3) => store.prepareDecision({ run_id: run, artifact_id: `art-${run}`, owner_id: OWNER, project_ids: ['p1'],
-    expires_at: later(600), items: Array.from({ length: count }, (_, i) => ({ kind: 'jira_worklog' as const, project_id: 'p1', summary: `item ${i + 1}`, exact_effect: effect(i + 1) })) })
+  const prepare = (run = 'run-1', count = 3, base = 0) => store.prepareDecision({ run_id: run, artifact_id: `art-${run}`, owner_id: OWNER, project_ids: ['p1'],
+    expires_at: later(600), items: Array.from({ length: count }, (_, i) => ({ kind: 'jira_worklog' as const, project_id: 'p1', summary: `item ${i + 1}`, exact_effect: effect(base + i + 1) })) })
   const activate = async (requestId: string, integration: 'gmail' | 'slack' = 'gmail') => {
     const reserved = await store.reserveDelivery({ request_id: requestId, integration, account: 'me@example.com', correlation: `<hub-${requestId}@hub>`,
       ...(integration === 'slack' ? { conversation: 'D1' } : {}), provenance: 'test' })
+    expect(store.beginSend(reserved.delivery_id)).toBe(true)
     await store.recordNative(reserved.delivery_id, { native_id: `native-${requestId}`, thread_id: `thread-${requestId}`, delivery_ref: '1700000000.000100' })
     return reserved
   }
@@ -117,6 +118,181 @@ describe('verificación de binding', () => {
   it('Slack: sin identidad fijada no hay aprobación', () => { expect(verifySlackReply(message, { ...slack, userId: null })).toEqual({ ok: false, reason: 'binding_incomplete' }) })
 })
 
+
+describe('DecisionStore: bordes de la revisión de seguridad', () => {
+  const approveAll = (store: DecisionStore, requestId: string, bindingId: string, id: string, items: number[] | 'all' = 'all') =>
+    reply(store, bindingId, id, { kind: 'approve', code: normalizeCode(store.codeFor(requestId))!, items })
+
+  it('B1: no se corrige un ítem aprobado, despachado o incierto', async () => {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-1', 2)
+    const { binding_id } = await activate(request_id)
+    const approved = approveAll(store, request_id, binding_id, 'a', [1]).approved!
+    const claimed = store.claimIntent(approved[0]!.intent_id, 0) as { generation: number }
+    expect(store.markDispatching(approved[0]!.intent_id, claimed.generation)).toBe('ok')
+    store.completeIntent(approved[0]!.intent_id, claimed.generation, { state: 'uncertain', error_code: 'timeout' })
+    expect(store.publicRequest(request_id).state).toBe('open')
+    expect(() => store.reviseRequest(request_id, 1, { ...effect(1), seconds: 5400 })).toThrow(/item_not_revisable/)
+    expect(store.publicRequest(request_id).state).toBe('open')
+    expect(store.reviseRequest(request_id, 2, { ...effect(2), seconds: 5400 }).revision).toBe(2)
+  })
+  it('B1: la identidad semántica de la operación bloquea otro valor para la misma operación', async () => {
+    const { store, activate } = setup()
+    const make = (run: string, seconds: number) => store.prepareDecision({ run_id: run, artifact_id: `art-${run}`, owner_id: OWNER, project_ids: ['p1'], expires_at: later(600),
+      items: [{ kind: 'jira_worklog', project_id: 'p1', summary: 's', exact_effect: { issue: 'ABC-1', seconds }, operation_key: 'worklog:ABC-1:2026-10-28' }] })
+    const a = make('run-a', 1800), b = make('run-b', 3600)
+    const bindingA = (await activate(a.request_id)).binding_id, bindingB = (await activate(b.request_id)).binding_id
+    const first = approveAll(store, a.request_id, bindingA, 'a').approved![0]!
+    const claimed = store.claimIntent(first.intent_id, 0) as { generation: number }
+    store.markDispatching(first.intent_id, claimed.generation)
+    store.completeIntent(first.intent_id, claimed.generation, { state: 'uncertain' })
+    const second = approveAll(store, b.request_id, bindingB, 'b')
+    expect(second.blocked_uncertain).toEqual([1])
+    expect(second.approved).toEqual([])
+  })
+  it('B2: revocar o vencer entre el reclamo y el dispatch impide el dispatch', async () => {
+    const { store, prepare, activate } = setup()
+    const a = prepare('run-a', 1), b = prepare('run-b', 1, 10)
+    const bindingA = (await activate(a.request_id)).binding_id, bindingB = (await activate(b.request_id)).binding_id
+    const intentA = approveAll(store, a.request_id, bindingA, 'a').approved![0]!.intent_id
+    const intentB = approveAll(store, b.request_id, bindingB, 'b').approved![0]!.intent_id
+    const claimA = store.claimIntent(intentA, 0) as { generation: number }
+    store.revokeRequest(a.request_id)
+    expect(store.intent(intentA)).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'revoked' })
+    expect(store.markDispatching(intentA, claimA.generation)).toBe('stale')
+    const claimB = store.claimIntent(intentB, 0) as { generation: number }
+    clock = new Date(clock.getTime() + 11 * 3600_000)
+    expect(store.markDispatching(intentB, claimB.generation)).toBe('expired')
+    expect(store.intent(intentB)).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'expired' })
+  })
+  it('B2: una solicitud totalmente aprobada (closed) también se puede revocar antes del dispatch', async () => {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-1', 1)
+    const { binding_id } = await activate(request_id)
+    const intent = approveAll(store, request_id, binding_id, 'a').approved![0]!.intent_id
+    expect(store.publicRequest(request_id).state).toBe('closed')
+    store.revokeRequest(request_id)
+    expect(store.publicRequest(request_id).state).toBe('revoked')
+    expect(store.claimIntent(intent, 0)).toEqual({ rejected: 'state_rejected_before_dispatch' })
+    expect(store.getApprovedItems(request_id)[0]!.state).toBe('rejected_before_dispatch')
+  })
+  it('B2: el vencimiento rechaza lo aprobado que no despachó', async () => {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-1', 1)
+    const { binding_id } = await activate(request_id)
+    const intent = approveAll(store, request_id, binding_id, 'a').approved![0]!.intent_id
+    clock = new Date(clock.getTime() + 11 * 3600_000)
+    store.expireDue()
+    expect(store.intent(intent)).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'expired' })
+  })
+  it('B3: un envío incierto no pasa a failed ni se vuelve a reservar; solo la reconciliación lo resuelve', async () => {
+    const { store, prepare } = setup()
+    const { request_id } = prepare('run-1', 1)
+    const input = { request_id, integration: 'gmail' as const, account: 'me@example.com', provenance: 'oauth' }
+    const reserved = await store.reserveDelivery({ ...input, correlation: '<h1@hub>' })
+    expect(store.beginSend(reserved.delivery_id)).toBe(true)
+    store.markDeliveryUncertain(reserved.delivery_id)
+    expect(() => store.markDeliveryFailed(reserved.delivery_id)).toThrow(/bad_transition/)
+    await expect(store.reserveDelivery({ ...input, correlation: '<h2@hub>' })).rejects.toThrow(/delivery_already_dispatched/)
+    await expect(store.recordNative(reserved.delivery_id, { native_id: 'x' })).rejects.toMatchObject({ code: 'bad_transition' })
+    await store.reconcileDelivery(reserved.delivery_id, { found: true, native: { native_id: 'gm-9', thread_id: 'th-9' } })
+    expect(store.bindingsOf(request_id)[0]).toMatchObject({ state: 'active', conversation: 'th-9', delivery_state: 'sent' })
+    await expect(store.reconcileDelivery(reserved.delivery_id, { found: false })).rejects.toMatchObject({ code: 'bad_transition' })
+  })
+  it('B3: comprobar que no se envió cierra el binding y permite reservar de nuevo', async () => {
+    const { store, prepare } = setup()
+    const { request_id } = prepare('run-1', 1)
+    const input = { request_id, integration: 'gmail' as const, account: 'me@example.com', provenance: 'oauth' }
+    const reserved = await store.reserveDelivery({ ...input, correlation: '<h1@hub>' })
+    store.beginSend(reserved.delivery_id)
+    store.markDeliveryUncertain(reserved.delivery_id)
+    await store.reconcileDelivery(reserved.delivery_id, { found: false })
+    expect(store.bindingsOf(request_id)[0]).toMatchObject({ state: 'closed', delivery_state: 'failed' })
+    expect((await store.reserveDelivery({ ...input, correlation: '<h2@hub>' })).delivery_id).not.toBe(reserved.delivery_id)
+  })
+  it('B3: los estados terminales no se sobrescriben', async () => {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-1', 1)
+    const { delivery_id } = await activate(request_id)
+    expect(() => store.markDeliveryFailed(delivery_id)).toThrow(/bad_transition/)
+    expect(() => store.markDeliveryUncertain(delivery_id)).toThrow(/bad_transition/)
+    expect(store.beginSend(delivery_id)).toBe(false)
+  })
+  it('B4: reservas concurrentes del mismo destino devuelven la misma entrega', async () => {
+    const { store, prepare } = setup()
+    const { request_id } = prepare('run-1', 1)
+    const input = { request_id, integration: 'gmail' as const, account: 'me@example.com', provenance: 'oauth' }
+    const [first, second] = await Promise.all([store.reserveDelivery({ ...input, correlation: '<c1@hub>' }), store.reserveDelivery({ ...input, correlation: '<c2@hub>' })])
+    expect(second.delivery_id).toBe(first.delivery_id)
+    expect(second.binding_id).toBe(first.binding_id)
+    expect(store.bindingsOf(request_id)).toHaveLength(1)
+  })
+  it('B4: solo un actor reclama el envío y una caída tras beginSend deja la entrega incierta', async () => {
+    const { store, prepare } = setup()
+    const { request_id } = prepare('run-1', 1)
+    const input = { request_id, integration: 'gmail' as const, account: 'me@example.com', provenance: 'oauth' }
+    const reserved = await store.reserveDelivery({ ...input, correlation: '<c1@hub>' })
+    expect(store.beginSend(reserved.delivery_id)).toBe(true)
+    expect(store.beginSend(reserved.delivery_id)).toBe(false)
+    expect((await store.reserveDelivery({ ...input, correlation: '<c3@hub>' })).state).toBe('sending')
+    expect(store.recover()).toMatchObject({ deliveries: 1 })
+    expect(store.bindingsOf(request_id)[0]).toMatchObject({ state: 'quarantined', delivery_state: 'uncertain' })
+    await expect(store.reserveDelivery({ ...input, correlation: '<c4@hub>' })).rejects.toThrow(/delivery_already_dispatched/)
+  })
+  it('B4: reservar y caer antes de beginSend permite retomar la misma reserva sin duplicar', async () => {
+    const { store, prepare } = setup()
+    const { request_id } = prepare('run-1', 1)
+    const input = { request_id, integration: 'gmail' as const, account: 'me@example.com', provenance: 'oauth' }
+    const first = await store.reserveDelivery({ ...input, correlation: '<c1@hub>' })
+    store.recover()
+    expect((await store.reserveDelivery({ ...input, correlation: '<c2@hub>' })).delivery_id).toBe(first.delivery_id)
+  })
+  it('B5: Gmail y Slack tienen entregas y bindings independientes sobre la misma solicitud', async () => {
+    const { store, prepare } = setup()
+    const { request_id } = prepare('run-1', 2)
+    const gmail = await store.reserveDelivery({ request_id, integration: 'gmail', account: 'me@example.com', correlation: '<g@hub>', provenance: 'oauth' })
+    store.beginSend(gmail.delivery_id)
+    await store.recordNative(gmail.delivery_id, { native_id: 'gm-1', thread_id: 'th-1' })
+    const slack = await store.reserveDelivery({ request_id, integration: 'slack', account: 'T1:U1', correlation: 'slack-mark-1', conversation: 'D1', team: 'T1', remote_user: 'U1', provenance: 'oauth-user' })
+    expect(slack.binding_id).not.toBe(gmail.binding_id)
+    store.beginSend(slack.delivery_id)
+    await store.recordNative(slack.delivery_id, { native_id: '1.1', delivery_ref: '1.1' })
+    expect(store.bindingsOf(request_id).map(binding => binding.integration)).toEqual(['gmail', 'slack'])
+    const code = normalizeCode(store.codeFor(request_id))!
+    expect(store.consumeReply({ integration: 'slack', account: 'T1:U1', native_message_id: '2.0', binding_id: slack.binding_id, parsed: { kind: 'approve', code, items: [1] } }).outcome).toBe('approved')
+    expect(store.consumeReply({ integration: 'gmail', account: 'me@example.com', native_message_id: 'g-2', binding_id: gmail.binding_id, parsed: { kind: 'approve', code, items: [1] } }).outcome).toBe('bad_selection')
+    expect(store.consumeReply({ integration: 'gmail', account: 'me@example.com', native_message_id: 'g-3', binding_id: gmail.binding_id, parsed: { kind: 'approve', code, items: [2] } }).outcome).toBe('approved')
+    expect(store.pendingIntents()).toHaveLength(2)
+  })
+  it('una respuesta a una revisión anterior no aprueba la vigente', async () => {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-1', 2)
+    const { binding_id } = await activate(request_id)
+    const code = normalizeCode(store.codeFor(request_id))!
+    store.reviseRequest(request_id, 1, { ...effect(1), seconds: 3600 })
+    expect(reply(store, binding_id, 'old', { kind: 'approve', code, items: 'all' }).outcome).toBe('revoked')
+    expect(store.pendingIntents()).toHaveLength(0)
+  })
+  it('exige el registro de exclusiones y valida el efecto antes de persistirlo', () => {
+    expect(() => new DecisionStore(':memory:', { key } as never)).toThrow(/exclusiones/)
+    const sink = { async add() {} }
+    const store = new DecisionStore(':memory:', { key, exclusions: sink, now: () => clock,
+      validateEffect: (_kind, value) => { if (!(value as { seconds?: number })?.seconds || (value as { seconds: number }).seconds % 1800) throw new Error('segundos inválidos') } })
+    const input = (seconds: number) => ({ run_id: 'r', artifact_id: 'a', owner_id: OWNER, project_ids: [], expires_at: later(60), items: [{ kind: 'jira_worklog' as const, project_id: 'p', summary: 's', exact_effect: { seconds } }] })
+    expect(() => store.prepareDecision(input(1000))).toThrow(/segundos inválidos/)
+    const { request_id } = store.prepareDecision(input(1800))
+    expect(() => store.reviseRequest(request_id, 1, { seconds: 7 })).toThrow(/segundos inválidos/)
+    expect(store.publicRequest(request_id).state).toBe('open')
+  })
+  it('una solicitud ya entregada no se reemplaza al repetir el run con otro contenido', async () => {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-1', 2)
+    await activate(request_id)
+    expect(() => prepare('run-1', 3)).toThrow(/otro contenido/)
+    expect(store.authorityOf(request_id)).toBe('verified')
+  })
+})
+
 describe('DecisionStore', () => {
   it('prepareDecision es idempotente por run y rechaza contenido distinto', () => {
     const { store, prepare } = setup()
@@ -124,8 +300,8 @@ describe('DecisionStore', () => {
     expect(second.request_id).toBe(first.request_id)
     expect(first.created).toBe(true)
     expect(second.created).toBe(false)
-    expect(() => prepare('run-1', 2)).toThrow(/otro contenido/)
-    expect(store.publicRequest(first.request_id).items.map(item => item.state)).toEqual(['pending', 'pending', 'pending'])
+    expect(prepare('run-1', 2).request_id).not.toBe(first.request_id)
+    expect(store.authorityOf(first.request_id)).toBe('authority_unavailable')
   })
   it('el código se reconstruye igual y no queda en claro en el archivo', () => {
     const { store, prepare } = setup()
@@ -141,20 +317,22 @@ describe('DecisionStore', () => {
     const { request_id } = prepare()
     const reserved = await store.reserveDelivery({ request_id, integration: 'gmail', account: 'me@example.com', correlation: '<hub-1@hub>', provenance: 'oauth' })
     expect(exclusions).toEqual([{ integration: 'gmail', account: 'me@example.com', kind: 'rfc_message_id', native_id: '<hub-1@hub>' }])
-    expect(store.bindingOf(request_id)?.state).toBe('reserved')
+    expect(store.bindingsOf(request_id)[0]?.state).toBe('reserved')
     expect(store.isExcluded({ integration: 'gmail', account: 'me@example.com', kind: 'rfc_message_id', native_id: '<hub-1@hub>' })).toBe(true)
     expect((await store.reserveDelivery({ request_id, integration: 'gmail', account: 'me@example.com', correlation: '<otro@hub>', provenance: 'oauth' })).delivery_id).toBe(reserved.delivery_id)
+    expect(store.beginSend(reserved.delivery_id)).toBe(true)
     await store.recordNative(reserved.delivery_id, { native_id: 'gm-1', thread_id: 'th-1' })
-    expect(exclusions.slice(1)).toEqual([{ integration: 'gmail', account: 'me@example.com', kind: 'message', native_id: 'gm-1' }, { integration: 'gmail', account: 'me@example.com', kind: 'thread', native_id: 'th-1' }])
-    expect(store.bindingOf(request_id)).toMatchObject({ state: 'active', conversation: 'th-1' })
+    expect(exclusions.slice(2)).toEqual([{ integration: 'gmail', account: 'me@example.com', kind: 'message', native_id: 'gm-1' }, { integration: 'gmail', account: 'me@example.com', kind: 'thread', native_id: 'th-1' }])
+    expect(store.bindingsOf(request_id)[0]).toMatchObject({ state: 'active', conversation: 'th-1' })
     await expect(store.reserveDelivery({ request_id, integration: 'gmail', account: 'me@example.com', correlation: '<x@hub>', provenance: 'oauth' })).rejects.toThrow(/delivery_already_dispatched/)
   })
   it('un envío incierto deja el binding en cuarentena y no admite respuestas', async () => {
     const { store, prepare } = setup()
     const { request_id } = prepare()
     const reserved = await store.reserveDelivery({ request_id, integration: 'gmail', account: 'me@example.com', correlation: '<hub-1@hub>', provenance: 'oauth' })
+    store.beginSend(reserved.delivery_id)
     store.markDeliveryUncertain(reserved.delivery_id)
-    expect(store.bindingOf(request_id)?.state).toBe('quarantined')
+    expect(store.bindingsOf(request_id)[0]?.state).toBe('quarantined')
     expect(reply(store, reserved.binding_id, 'in-1', { kind: 'approve', code: normalizeCode(store.codeFor(request_id))!, items: 'all' }).outcome).toBe('binding_unavailable')
     await expect(store.reserveDelivery({ request_id, integration: 'gmail', account: 'me@example.com', correlation: '<x@hub>', provenance: 'oauth' })).rejects.toThrow(/delivery_already_dispatched/)
   })
@@ -288,7 +466,7 @@ describe('DecisionStore', () => {
     const first = store.claimIntent(approved[0]!.intent_id, 0) as { generation: number }
     store.markDispatching(approved[0]!.intent_id, first.generation)
     store.claimIntent(approved[1]!.intent_id, 0)
-    expect(store.recover()).toEqual({ uncertain: 1, reopened: 1 })
+    expect(store.recover()).toEqual({ uncertain: 1, reopened: 1, deliveries: 0 })
     expect(store.intent(approved[0]!.intent_id)?.state).toBe('uncertain')
     expect(store.intent(approved[1]!.intent_id)?.state).toBe('pending')
   })
