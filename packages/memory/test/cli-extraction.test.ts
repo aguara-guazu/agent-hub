@@ -235,3 +235,12 @@ it('distingue el límite de uso de un fallo transitorio con un código cerrado',
   setup()
   await expect(runtime.extract('codex_cli', 'rate-limit', '', {}, schema)).rejects.toMatchObject({ statusCode: 503, transient: true, code: 'quota_exhausted' })
 })
+
+it('desactiva los conectores de cuenta de claude.ai solo para Claude Code', async () => {
+  const launch = setup()
+  await runtime.extract('claude_code', 'fixture', '', { text: 'dato' }, schema)
+  expect(launch.mock.calls.findLast(c => c[1].includes('--model'))![2].env.ENABLE_CLAUDEAI_MCP_SERVERS).toBe('false')
+  vi.stubEnv('ENABLE_CLAUDEAI_MCP_SERVERS', '')
+  await runtime.extract('codex_cli', 'fixture', '', { text: 'dato' }, schema)
+  expect(launch.mock.calls.findLast(c => c[1].includes('--model'))![2].env.ENABLE_CLAUDEAI_MCP_SERVERS).not.toBe('false')
+})

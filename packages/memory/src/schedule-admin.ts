@@ -213,8 +213,9 @@ export class ScheduleAdmin {
     if (current.state !== 'active') this.fail(409, 'schedule_paused', 'Reanudá el schedule antes de ejecutarlo.')
     const replay = await this.store.eventByRequest(actor.ref, requestId)
     if (replay?.run_id) return { run_id: replay.run_id, schedule: await this.view(current) }
-    if (await this.store.liveRunOf(id)) this.fail(409, 'run_in_progress', 'Ya hay una ejecución en curso o pendiente.')
     const runId = await this.o.db.transaction(async () => {
+      // Checked inside the insert transaction: two requests with different ids cannot both see no live run.
+      if (await this.store.liveRunOf(id)) this.fail(409, 'run_in_progress', 'Ya hay una ejecución en curso o pendiente.')
       const created = await this.store.insertRun({ schedule_id: id, scheduled_for: new Date(this.now()).toISOString(), schedule_revision: current.revision, definition: snapshotOf(current), trigger: 'run_now' })
       if (!created) this.fail(409, 'run_in_progress', 'Ya hay una ejecución en este instante.')
       await this.store.addEvent({ type: 'run.started', schedule_id: id, run_id: created, actor_kind: actor.kind, actor_ref: actor.ref, request_id: requestId, payload: { trigger: 'run_now' } })

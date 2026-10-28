@@ -126,6 +126,9 @@ export class ScheduleRuntime {
   private async suspend() {
     if (this.automationsWere === false) return
     this.automationsWere = false
+    // Revoke first: an action already preparing must find its request revoked at the dispatch gate.
+    const revoked = await this.o.automation.effects?.decisions.revokeAll?.().catch(() => -1)
+    if (revoked !== undefined) await this.store.addEvent({ type: 'decisions.revoked', actor_kind: 'system', payload: { count: revoked, cause: 'automations_off' } })
     await this.store.cancelAllLiveRuns('automations_off')
     for (const [runId, entry] of this.inFlight) {
       const run = await this.store.run(runId)
@@ -425,7 +428,8 @@ export class ScheduleRuntime {
       await this.store.setAttempt(attempt.run_id as string, attempt.generation as number, { state: action === 'termination_unknown' ? 'termination_unknown' : action === 'unverified_left_running' ? 'orphan_unverified' : action === 'none' ? 'orphan_unverified' : 'orphan_terminated', ended_at: isoAt(this.now()) })
       await this.store.addIncident({ subject_kind: 'schedule_run', subject_id: attempt.run_id as string, generation: attempt.generation as number, schedule_id: run?.schedule_id ?? null, run_id: attempt.run_id as string,
         project_id: run?.definition.project_id ?? null, cause: 'hub_restart', action, pid: (attempt.cli_pid ?? attempt.host_pid) as number | null, process_started: (attempt.cli_started ?? attempt.host_started) as string | null, boot_id: attempt.boot_id as string | null })
-      if (action === 'termination_unknown' || action === 'unverified_left_running') blocked.add(attempt.run_id as string)
+      // Only a tool-less synthesis may be retried without proof about its process; any profile with tools stays blocked.
+      if (action === 'termination_unknown' || action === 'unverified_left_running' || (action === 'none' && attempt.profile !== 'synthesis' && attempt.profile !== 'notice')) blocked.add(attempt.run_id as string)
     }
     for (const run of await this.store.runningRuns()) {
       if (this.inFlight.has(run.id)) continue

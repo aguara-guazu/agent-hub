@@ -123,3 +123,9 @@ it('lista con disponibilidad de entrega, lee el detalle y no expone efectos priv
   expect(detail.schedule.id).toBe(schedule.id)
   expect(JSON.stringify(detail)).not.toContain('effects')
 })
+
+it('dos run_now simultáneos con distinto request_id crean una sola ocurrencia viva', async () => {
+  const { schedule } = await create()
+  const results = await Promise.all([admin.runNow(agent(), schedule.id, 'a'), admin.runNow(agent(), schedule.id, 'b')].map(promise => promise.then(() => 'ok', error => (error as { code?: string }).code)))
+  expect(results.sort()).toEqual(['ok', 'run_in_progress'])
+})

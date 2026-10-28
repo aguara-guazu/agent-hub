@@ -161,6 +161,16 @@ it('apagar las automatizaciones omite lo pendiente y aborta lo que corre, con in
   expect(await runsOf(pending.id)).toEqual([])
 })
 
+it('al apagar el interruptor revoca las solicitudes de decisión antes de cancelar y registra la cantidad', async () => {
+  const calls: string[] = []
+  runtime = build({ automation: { enabled: () => enabled, effects: { deliveries: undefined as never, actions: undefined as never, decisions: { prepareDecision: async () => ({ decision_request_ref: 'r' }), revokeAll: async () => { calls.push('revoke'); return 3 } } } } })
+  const s = await schedule(); enabled = false
+  await runtime.start(); await runtime.idle(); await runtime.tick(); await runtime.idle()
+  expect(calls).toEqual(['revoke'])
+  expect((await store.eventsAfter(0)).find(event => event.type === 'decisions.revoked')?.payload).toMatchObject({ count: 3, cause: 'automations_off' })
+  expect(await runsOf(s.id)).toEqual([])
+})
+
 it('tras un reinicio termina el proceso propio, registra el incidente y deja el run para reintentar', async () => {
   const s = await schedule({ template: 'custom_synthesis', kind: 'synthesis', params: { topic: 'estado' } })
   const runId = (await store.insertRun({ schedule_id: s.id, scheduled_for: '2026-10-28T08:00:00.000Z', schedule_revision: 1, definition: snapshotOf(s), trigger: 'clock', state: 'running' }))!

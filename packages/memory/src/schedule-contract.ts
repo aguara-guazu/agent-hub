@@ -31,7 +31,7 @@ export type IncidentCause = 'hub_restart' | 'deadline_exceeded' | 'automations_o
 export type IncidentAction = 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' | 'none'
 
 export const scheduleEventTypes = ['schedule.created', 'schedule.updated', 'schedule.paused', 'schedule.resumed', 'schedule.cancelled', 'schedule.constrained',
-  'run.started', 'run.deferred', 'run.persisted', 'run.delivered', 'run.finished', 'run.interrupted', 'decision.received', 'action.receipt'] as const
+  'run.started', 'run.deferred', 'decisions.revoked', 'run.persisted', 'run.delivered', 'run.finished', 'run.interrupted', 'decision.received', 'action.receipt'] as const
 export type ScheduleEventType = typeof scheduleEventTypes[number]
 
 /** Closed error codes stored in schedule_runs.error_code and phase receipts; provider or CLI text never reaches them. */
@@ -129,6 +129,8 @@ export interface ActionExecutor {
 }
 /** Idempotent by run_id: a retry after a crash returns the same request reference. */
 export interface DecisionRequests {
+  /** Revokes every request with something awaiting approval or dispatch; called when the automations switch goes off. Returns how many were revoked. */
+  revokeAll?(): Promise<number>
   prepareDecision(input: { run_id: string; artifact_id: string; owner_id: string; project_ids: string[]; items: Array<{ ordinal: number; kind: PublicItem['kind']; project_id: string; summary: string; effect: unknown }>; expires_at: string }): Promise<{ decision_request_ref: string }>
 }
 /** Implemented by the schedule store; the decision module calls it after each transition of an item. */

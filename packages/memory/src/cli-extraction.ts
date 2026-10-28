@@ -162,7 +162,9 @@ export class CliExtractionRuntime {
     const combined = AbortSignal.any([lifetime.signal, AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
     // cli-host runs on process.execPath and needs ELECTRON_RUN_AS_NODE; it drops the variable again for native CLIs.
     // Only the Kiro child receives this secret, never argv, stdin, output or other CLIs.
-    const env = childEnv({ ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1', ...(onSpawn ? { AGENTHUB_CONTROL_FD: '3' } : {}), KIRO_API_KEY: provider === 'kiro' ? this.kiroApiKey() : undefined },
+    const env = childEnv({ ELECTRON_RUN_AS_NODE: '1', NO_COLOR: '1',
+      // Documented switch that keeps claude.ai account connectors out of the process (https://code.claude.com/docs/en/mcp).
+      ...(provider === 'claude_code' ? { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' } : {}), ...(onSpawn ? { AGENTHUB_CONTROL_FD: '3' } : {}), KIRO_API_KEY: provider === 'kiro' ? this.kiroApiKey() : undefined },
       // Session markers from a parent assistant are not authentication and must not attach a new run to it.
       Object.fromEntries(['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE'].map(key => [key, undefined])),
       provider === 'claude_code' && args.includes('--effort') ? { CLAUDE_CODE_EFFORT_LEVEL: undefined } : undefined)
