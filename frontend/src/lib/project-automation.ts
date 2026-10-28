@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from './api'
+import { memoryCall, useMemory } from './memory'
 import { useToast } from '../components/Toast'
 
 /**
@@ -74,4 +75,23 @@ export function useSaveRepositories(projectId: string) {
     onSuccess: async () => { await cache.invalidateQueries({ queryKey: automationKey(projectId) }) },
     onError: error => { toast.error('No se pudo guardar el repositorio', error instanceof ApiError && error.code && AUTOMATION_ERRORS[error.code] ? AUTOMATION_ERRORS[error.code]! : error.message) },
   })
+}
+
+/** Fuente Google existente: guarda `gmail_send_enabled` y abre la autorización completa (lectura y envío) en un solo paso. */
+export function useAuthorizeGmailSend() {
+  const toast = useToast()
+  const cache = useQueryClient()
+  const connectors = useMemory<any[]>('list_connectors', {})
+  const google = connectors.data?.find(connector => connector.provider === 'google')
+  const authorize = useMutation({
+    mutationFn: async () => {
+      if (!google) throw new Error('Todavía no hay una fuente Google conectada')
+      await memoryCall('save_connector', { id: google.id, provider: 'google', name: google.name, config: { ...google.config, gmail_send_enabled: true }, project_ids: google.project_ids, interval_minutes: google.interval_minutes, enabled: google.enabled })
+      const started = await api.post<{ authorization_url: string }>(`/memory/connectors/${google.id}/google/start`)
+      window.open(started.authorization_url, '_blank', 'noopener,noreferrer')
+    },
+    onSuccess: async () => { await Promise.all([cache.invalidateQueries({ queryKey: ['memory'] }), cache.invalidateQueries({ queryKey: ['delivery-channels'] })]) },
+    onError: error => { toast.error('No se pudo iniciar la autorización', error.message) },
+  })
+  return { google, authorize }
 }

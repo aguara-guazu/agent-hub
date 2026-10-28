@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { ProjectAutomation } from './ProjectAutomation'
 import type { ProjectAutomationView } from '../lib/project-automation'
 import type { MemoryEntity } from '../lib/memory'
 import type { User } from '../lib/types'
-import { buttonByText, click, installFetch, jsonResponse, qa, renderWithProviders, setValue, setupDom, teardownDom, textOf } from '../test-utils'
+import { buttonByText, click, flush, installFetch, jsonResponse, qa, renderWithProviders, setValue, setupDom, teardownDom, textOf } from '../test-utils'
 
 const user = { id: 'u1', email: 'a@b.c', full_name: 'Ana', org_role: 'member', is_active: true, squads: [], organization: 'Local' } as User
 const project = (data: Record<string, unknown> = { jira_project_key: 'ABC' }): MemoryEntity => ({ id: 'p1', kind: 'project', title: 'Proyecto X', data, created_at: '', updated_at: '' })
@@ -19,6 +19,8 @@ function mock(view: ProjectAutomationView) {
   return installFetch({ user, handle: call => {
     if (call.path === '/memory/projects/p1/automation') return jsonResponse(call.method === 'PUT' ? view : view)
     if (call.path === '/memory/schedules/delivery-channels') return jsonResponse({ items: [{ channel: 'app', available: true }, { channel: 'gmail', available: false, reason: 'scope_missing', destination: 'ana@example.com' }] })
+    if (call.path === '/memory/call') return jsonResponse((call.body as { operation: string }).operation === 'list_connectors' ? [{ id: 'g1', provider: 'google', name: 'Google trabajo', config: { gmail_enabled: true }, project_ids: [], interval_minutes: 30, enabled: true }] : {})
+    if (call.path === '/memory/connectors/g1/google/start') return jsonResponse({ authorization_url: 'https://accounts.google.com/o/oauth2/auth?x=1' })
     if (call.path === '/memory/schedules') return jsonResponse({ items: [], total: 0, limit: 200, offset: 0 })
     if (call.path === '/memory/schedules/runs') return jsonResponse({ items: [], total: 0, limit: 1, offset: 0 })
     return undefined
@@ -96,3 +98,21 @@ it('una delegación declarada por un agente muestra su frase y se confirma en la
 })
 
 function document_body(): HTMLElement { return globalThis.document.body }
+
+it('Autorizar guarda gmail_send_enabled en la fuente y abre la autorización de Google tras el aviso', async () => {
+  const api = mock(off)
+  const open = vi.fn()
+  vi.stubGlobal('open', open)
+  const { container } = await renderWithProviders(<ProjectAutomation project={project()} />)
+  await click(buttonByText(container, 'Activar para este proyecto'))
+  await flush(3)
+  await click(buttonByText(container, 'Autorizar'))
+  expect(textOf(globalThis.document.body)).toContain('Google mostrará una pantalla de advertencia')
+  expect(textOf(globalThis.document.body)).toContain('Agent Hub solo enviará correos a ana@example.com; nunca a terceros')
+  await click(buttonByText(globalThis.document.body, 'Continuar con Google'))
+  const saved = api.calls.find(call => call.path === '/memory/call' && (call.body as { operation: string }).operation === 'save_connector')?.body as { input: { id: string; config: Record<string, unknown> } }
+  expect(saved.input.id).toBe('g1')
+  expect(saved.input.config).toEqual({ gmail_enabled: true, gmail_send_enabled: true })
+  expect(api.callsTo('/memory/connectors/g1/google/start', 'POST')).toHaveLength(1)
+  expect(open).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/auth?x=1', '_blank', 'noopener,noreferrer')
+})
