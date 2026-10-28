@@ -282,6 +282,18 @@ export const MIGRATIONS: Migration[] = [
       addColumnIfMissing('agent_instances', 'account_skills', "TEXT NOT NULL DEFAULT ''"),
     ],
   },
+  {
+    // Llamadas que no pasan por un gateway (core: sincronización de Jira, ejecutor de efectos): la identidad queda en `principal`
+    // y la correlación con el run, la intención y el recibo en las otras tres columnas. Todas admiten NULL.
+    id: '0006_tool_call_principal',
+    statements: [
+      addColumnIfMissing('tool_call_logs', 'call_id', 'TEXT'),
+      addColumnIfMissing('tool_call_logs', 'principal', 'TEXT'),
+      addColumnIfMissing('tool_call_logs', 'run_id', 'TEXT'),
+      addColumnIfMissing('tool_call_logs', 'intent_id', 'TEXT'),
+      `CREATE INDEX IF NOT EXISTS ix_call_run ON tool_call_logs (run_id, created_at)`,
+    ],
+  },
 ]
 
 const SCHEMA_MIGRATIONS_DDL = `CREATE TABLE IF NOT EXISTS schema_migrations (

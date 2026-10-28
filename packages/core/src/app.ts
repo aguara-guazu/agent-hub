@@ -70,6 +70,7 @@ import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
 import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
 import { createJiraTaskReader } from './memory-jira.js'
+import { createPoolCallAudit } from './effects/call-audit.js'
 
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
 const ORG_ROLES = ['owner', 'admin', 'member']
@@ -275,7 +276,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const memoryDirectory = process.env.AGENTHUB_MEMORY_DIR || join(dirname(settings.databasePath), 'memory')
     const owner = ensureLocalOwner(store)
     const baseUrl = new URL(settings.oauthRedirectUrl).origin
-    const jiraPool = new ConnectionPool(undefined, { oauthStore, detectContainers: false })
+    const jiraPool = new ConnectionPool(undefined, { oauthStore, detectContainers: false, onCall: createPoolCallAudit(store, owner.id) })
     fastify.addHook('onClose', async () => { await jiraPool.close() })
     const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
       collaborationEnabled: () => collaborationEnabled(store),

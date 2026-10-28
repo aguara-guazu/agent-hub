@@ -143,5 +143,9 @@ export function serializeToolCall(log: ToolCallLogRow) {
     denial_reason: log.denial_reason,
     duration_ms: log.duration_ms,
     error: log.error,
+    principal: log.principal,
+    run_id: log.run_id,
+    intent_id: log.intent_id,
+    call_id: log.call_id,
   }
 }

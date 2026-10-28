@@ -23,7 +23,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { canonicalJson, sha256, type Transport as SnapshotTransport } from '@agenthub/shared'
+import { argsDigest, canonicalJson, sha256, type Transport as SnapshotTransport } from '@agenthub/shared'
 import { SecretResolver, defaultResolver } from './secrets.js'
 import { AUTH_NONE, AUTH_OAUTH, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore, isAuthorizationRequired } from './oauth.js'
 import { childEnv, killTree } from './platform.js'
@@ -415,6 +415,27 @@ function isContainerEngineAvailable(): boolean {
   return false
 }
 
+/** Correlación de una llamada del core con el run, la intención y el recibo que la originan. */
+export interface CallTrace {
+  callId?: string
+  runId?: string
+  intentId?: string
+}
+
+/** Lo que el pool reporta por cada llamada a un upstream. `argsDigest` es la huella de los argumentos, nunca los argumentos. */
+export interface PoolCallRecord {
+  agentId: string
+  serverSlug: string
+  toolName: string
+  argsDigest: string
+  durationMs: number
+  isError: boolean
+  error: string
+  trace: CallTrace
+}
+
+const MAX_AUDIT_ERROR = 300
+
 /** Mantiene vivas las conexiones a los upstreams de cada agente. */
 export class ConnectionPool {
   private readonly runtimes: Record<string, Runtime>
@@ -425,10 +446,11 @@ export class ConnectionPool {
   private readonly locks = new Map<string, Promise<void>>()
   private readonly choices = new Map<string, RuntimeChoice>()
   private readonly containerEngine: boolean
+  private readonly onCall: ((record: PoolCallRecord) => void | Promise<void>) | undefined
 
   constructor(
     runtimes?: Record<string, Runtime>,
-    options: { failureCooldownMs?: number; clock?: () => number; detectContainers?: boolean; oauthStore?: OAuthStore } = {},
+    options: { failureCooldownMs?: number; clock?: () => number; detectContainers?: boolean; oauthStore?: OAuthStore; onCall?: (record: PoolCallRecord) => void | Promise<void> } = {},
   ) {
     this.runtimes = runtimes ?? {
       [TRANSPORT_STDIO]: new HostProcessRuntime(),
@@ -437,6 +459,7 @@ export class ConnectionPool {
     this.failureCooldownMs = options.failureCooldownMs ?? DEFAULT_FAILURE_COOLDOWN_MS
     this.clock = options.clock ?? (() => Date.now())
     this.containerEngine = options.detectContainers ? isContainerEngineAvailable() : false
+    this.onCall = options.onCall
   }
 
   private key(agentId: string, slug: string): string {
@@ -589,16 +612,37 @@ export class ConnectionPool {
    * Llama una herramienta del upstream. No reintenta: una herramienta puede tener
    * efectos y un reintento a ciegas la ejecutaria dos veces. Si la llamada rompe la
    * conexion, se descarta para que la siguiente reconecte.
+   *
+   * `onCall` recibe un registro por cada llamada que llega a intentarse (incluidas las que fallan al conectar);
+   * un fallo del observador nunca altera el resultado de la llamada.
    */
-  async callTool(agentId: string, spec: UpstreamSpec, name: string, args: Record<string, unknown>, meta?: Record<string, unknown>): Promise<CallResult> {
-    const connection = await this.get(agentId, spec)
+  async callTool(agentId: string, spec: UpstreamSpec, name: string, args: Record<string, unknown>, meta?: Record<string, unknown>, trace: CallTrace = {}): Promise<CallResult> {
+    const started = this.clock()
+    let isError = false
+    let error = ''
     try {
-      return await connection.callTool(name, args, meta)
+      const connection = await this.get(agentId, spec)
+      try {
+        const result = await connection.callTool(name, args, meta)
+        isError = result.is_error
+        return result
+      } catch (err) {
+        await this.evict(agentId, spec.slug)
+        if (err instanceof UpstreamError) throw err
+        throw new UpstreamCallError(spec.slug, `la herramienta ${name} fallo: ${describe(err)}`)
+      }
     } catch (err) {
-      await this.evict(agentId, spec.slug)
-      if (err instanceof UpstreamError) throw err
-      throw new UpstreamCallError(spec.slug, `la herramienta ${name} fallo: ${describe(err)}`)
+      isError = true
+      error = (err instanceof UpstreamError ? err.reason : describe(err)).slice(0, MAX_AUDIT_ERROR)
+      throw err
+    } finally {
+      await this.report({ agentId, serverSlug: spec.slug, toolName: name, argsDigest: argsDigest(args), durationMs: Math.max(0, this.clock() - started), isError, error, trace })
     }
+  }
+
+  private async report(record: PoolCallRecord): Promise<void> {
+    if (!this.onCall) return
+    try { await this.onCall(record) } catch { /* la auditoría no cambia el resultado de la llamada */ }
   }
 
   /** Cierra lo que el snapshot nuevo ya no trae o redefinio. Devuelve los slugs cerrados. */

@@ -258,6 +258,10 @@ function toToolCall(row: Row): ToolCallLogRow {
     args_digest: str(row.args_digest),
     duration_ms: Number(row.duration_ms ?? 0),
     error: str(row.error),
+    call_id: nullableStr(row.call_id),
+    principal: nullableStr(row.principal),
+    run_id: nullableStr(row.run_id),
+    intent_id: nullableStr(row.intent_id),
     created_at: str(row.created_at),
   }
 }
@@ -957,13 +961,14 @@ export class Store {
     )
   }
 
-  insertToolCall(input: Omit<ToolCallLogRow, 'id' | 'created_at'>): void {
+  insertToolCall(input: Omit<ToolCallLogRow, 'id' | 'created_at' | 'call_id' | 'principal' | 'run_id' | 'intent_id'> & Partial<Pick<ToolCallLogRow, 'call_id' | 'principal' | 'run_id' | 'intent_id'>>): void {
     const at = nowIso()
     this.db.run(
-      `INSERT INTO tool_call_logs (id, organization_id, agent_instance_id, user_id, server_slug, tool_name, exposed_name, decision, denial_reason, args_digest, duration_ms, error, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tool_call_logs (id, organization_id, agent_instance_id, user_id, server_slug, tool_name, exposed_name, decision, denial_reason, args_digest, duration_ms, error, call_id, principal, run_id, intent_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       newId(), input.organization_id, input.agent_instance_id, input.user_id, input.server_slug, input.tool_name,
-      input.exposed_name, input.decision, input.denial_reason, input.args_digest, input.duration_ms, input.error, at, at,
+      input.exposed_name, input.decision, input.denial_reason, input.args_digest, input.duration_ms, input.error,
+      input.call_id ?? null, input.principal ?? null, input.run_id ?? null, input.intent_id ?? null, at, at,
     )
   }
 

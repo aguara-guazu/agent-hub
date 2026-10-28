@@ -190,5 +190,9 @@ export interface ToolCallLogRow {
   args_digest: string
   duration_ms: number
   error: string
+  call_id: string | null
+  principal: string | null
+  run_id: string | null
+  intent_id: string | null
   created_at: string
 }
