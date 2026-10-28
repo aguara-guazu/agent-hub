@@ -66,6 +66,7 @@ const revision = (head: string) => /^[0-9a-f]{40,64}$/i.test(head)
 /** Local Hub-owned worktrees and background children. No terminal, transcript or foreign PID interface. */
 export class HubTeamRuntime implements TeamOrca {
   readonly provider = 'hub' as const
+  readonly supportsProfiles: boolean = false
   private readonly manager: FleetProcessManager
   private readonly generations = new Map<string, string>()
   private readonly nextGenerations = new Map<string, string>()
@@ -289,6 +290,7 @@ export class HubTeamRuntime implements TeamOrca {
     check(safeId(id) && id.length <= 200, 'Identificador de miembro inválido.', 400)
     check(!this.launching.has(id), 'El miembro ya tiene un lanzamiento en curso.', 409)
     check(member.prompt.length > 0 && member.prompt.length <= 24_000 && !member.prompt.includes('\0'), 'Instrucción inicial inválida.', 400)
+    check(!member.profile || this.supportsProfiles, 'action_profile_unavailable: el runtime del Hub no aplica perfiles de ejecución todavía.', 409)
     this.launching.add(id)
     let attempted = false, plan: ResumePlan | undefined
     try {

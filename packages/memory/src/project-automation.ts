@@ -36,7 +36,7 @@ export const repositorySnapshot = z.object({
 }).strict()
 export type RepositorySnapshot = z.infer<typeof repositorySnapshot>
 /** Immutable content of a `project_delegations` row; the digest covers the repositories and branches in force for that version. */
-export type StoredDelegation = Omit<DelegationDocument, 'repository_ids'> & { repositories: RepositorySnapshot[] }
+export type StoredDelegation = Omit<DelegationDocument, 'repository_ids'> & { repositories: RepositorySnapshot[]; channel?: { name: string; objective: string } }
 
 export const activateInput = z.object({
   project_id: id,
@@ -58,7 +58,7 @@ export const pushProposeInput = z.object({
 }).strict()
 
 /** Resolves `repository_ids` against the project's repositories and fixes the version digest. */
-export function snapshotDelegation(projectId: string, version: number, document: DelegationDocument, repositories: RepositorySnapshot[]) {
+export function snapshotDelegation(projectId: string, version: number, document: DelegationDocument, repositories: RepositorySnapshot[], channel?: { name: string; objective: string }) {
   const byId = new Map(repositories.map(repository => [repository.repo_id, repository]))
   const missing = document.repository_ids.filter(repoId => !byId.has(repoId))
   check(!missing.length, 'La delegación referencia repositorios que no pertenecen al proyecto.', 422)
@@ -67,7 +67,7 @@ export function snapshotDelegation(projectId: string, version: number, document:
     for (const repoId of document.repository_ids) check(byId.get(repoId)!.allowed_branches.length > 0, 'Cada repositorio con push necesita ramas permitidas.', 422)
   }
   const { repository_ids, ...rest } = document
-  const stored: StoredDelegation = { ...rest, repositories: repository_ids.map(repoId => byId.get(repoId)!) }
+  const stored: StoredDelegation = { ...rest, repositories: repository_ids.map(repoId => byId.get(repoId)!), ...(channel ? { channel } : {}) }
   return { stored, digest: hash({ project_id: projectId, version, document: stored }) }
 }
 
@@ -77,7 +77,7 @@ export interface DerivedPlanInput {
   delegation: { version: number; digest: string; document: StoredDelegation }
   decision: { request_id: string; canonical_digest: string }
   items: ApprovedItem[]
-  follow_up: string
+  follow_up: { text: string; ref: string; source: 'channel_reply' | 'owner_ui' }
 }
 export interface DerivedMember { worktree_name: string; cli: 'kiro' | 'claude_code' | 'codex_cli'; model: string; effort?: string | undefined; role: string; task: string; prompt: string }
 
@@ -92,7 +92,8 @@ export function deriveStandingPlan(input: DerivedPlanInput) {
     check(item.project_id === project.id, 'Un ítem aprobado pertenece a otro proyecto.', 422)
     check((delegation.document.item_kinds as string[]).includes(item.kind), `La delegación no habilita ítems ${item.kind}.`, 422)
   }
-  const followUp = input.follow_up.trim()
+  const followUp = input.follow_up.text.trim()
+  check(input.follow_up.ref.length > 0, 'El seguimiento no tiene un recibo autenticado.', 422)
   check(followUp.length > 0 && followUp.length <= 2000, 'El plan derivado requiere una instrucción de seguimiento de hasta 2000 caracteres.', 422)
   const slug = project.name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'proyecto'
   const context = [
@@ -120,7 +121,7 @@ export function deriveStandingPlan(input: DerivedPlanInput) {
     delegation: { project_id: project.id, version: delegation.version, digest: delegation.digest },
     decision: { request_id: decision.request_id, canonical_digest: decision.canonical_digest },
     items: items.map(item => ({ item_id: item.item_id, ordinal: item.ordinal, kind: item.kind, effect_digest: item.effect_digest ?? null })),
-    follow_up_digest: hash(followUp), members,
+    profile: 'action', follow_up: { ref: input.follow_up.ref, source: input.follow_up.source, digest: hash(followUp) }, members,
   }
   return { objective: `Seguimiento aprobado de ${project.name} (solicitud ${decision.request_id})`, members, document, digest: hash(document) }
 }

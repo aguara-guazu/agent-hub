@@ -14,9 +14,13 @@ export interface TeamQuestion { id: string; header: string; question: string; is
 export interface TeamPendingQuestion { id: string; questions: TeamQuestion[] }
 export type TeamQuestionAnswers = Record<string,{answers:string[]}>
 export interface TeamRuntimeMetadata { questions?: TeamPendingQuestion[]; provider?: 'hub' | 'orca'; generation: string; state: string; native_id?: string | null; turn_id?: string | null; updated_at: string }
-export interface TeamLaunchMember { member_id?: string; resume_worktree?: boolean; authorize?: () => Promise<void>; cli: ExtractionCli; model: string; effort?: string; prompt: string }
+/** Run identity for members of derived plans; issued by the backend per generation, never taken from a model or a reply. */
+export interface ActionProfile { kind: 'action'; agent_instance_id: string; principal_handle: string }
+export interface TeamLaunchMember { member_id?: string; resume_worktree?: boolean; authorize?: () => Promise<void>; profile?: ActionProfile; cli: ExtractionCli; model: string; effort?: string; prompt: string }
 export interface TeamOrca {
   readonly provider?: 'hub' | 'orca'
+  /** True only when the runtime applies `profile` to the spawned process; a launch carrying a profile is refused otherwise. */
+  readonly supportsProfiles?: boolean
   status?(handle: string): Promise<Partial<TeamRuntimeMetadata> | undefined>
   answer?(handle: string, questionId: string, answers: TeamQuestionAnswers): Promise<unknown>
   send?(handle: string, text: string): Promise<unknown>

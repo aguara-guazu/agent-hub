@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { realpath } from 'node:fs/promises'
+import { mkdir, realpath } from 'node:fs/promises'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { check, parse, MemoryError } from './contracts.js'
 import type { AgentContext } from './agents.js'
@@ -14,12 +15,17 @@ export interface TeamCatalog {
   catalog(): Promise<unknown>
   validate(cli: ExtractionCli, model: string, effort?: string): Promise<unknown>
 }
-import type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata, TeamPendingQuestion } from './team-orca.js'
-export type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata, TeamPendingQuestion } from './team-orca.js'
+import type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata, TeamPendingQuestion, ActionProfile } from './team-orca.js'
+export type { TeamWorkspace, TeamLaunchReceipt, TeamOrca, TeamRuntimeMetadata, TeamPendingQuestion, ActionProfile } from './team-orca.js'
 
-/** Read side of the private decision store (area B); only ids, kinds, digests and public summaries cross this boundary, never approval codes. */
+/** Authenticated follow-up persisted by the decision store: the reply text separated from the approval grammar, with its source and expiry. */
+export interface DerivedFollowUp { text: string; ref: string; source: 'channel_reply' | 'owner_ui'; expires_at: string }
+/** Port to the private decision store and the run-profile issuer (area B). Only ids, kinds, digests and public summaries cross it, never approval codes. */
 export interface DerivedPorts {
-  approved(requestId: string): Promise<{ canonical_digest: string; items: Array<ApprovedItem & { state: string }> }>
+  approved(requestId: string): Promise<{ canonical_digest: string; items: Array<ApprovedItem & { state: string }>; follow_up: DerivedFollowUp | null }>
+  /** Issues the `action` run identity for one member generation. Absent port or runtime means derived plans cannot launch. */
+  actionProfile?(member: { plan_id: string; member_id: string; project_id: string; delegation_version: number }): Promise<ActionProfile>
+  automationsEnabled(): boolean
   ownerId(): string
 }
 const APPROVED_ITEM_STATES = ['approved', 'dispatching', 'succeeded']
@@ -345,6 +351,7 @@ export class TeamOrchestration {
   private async launchMember(plan:Record<string,any>,member:Record<string,any>,parent:TeamWorkspace,who:Record<string,any>):Promise<boolean> {
     if(!await this.launchActive(plan,who))return false
     await this.checkQuota([member],who)
+    if(plan.delegation_project_id)await this.assertDerivedLaunchable(plan)
     const token=randomBytes(32).toString('base64url'),expires=new Date(Date.now()+30*60_000).toISOString()
     const intent=await this.db.query(`UPDATE chat_team_members SET state='workspace_intent',invitation_hash=$2,invitation_expires_at=$3,updated_at=now()
       WHERE id=$1 AND state='prepared' AND EXISTS(SELECT 1 FROM chat_team_plans t WHERE t.id=team_id AND t.state='launching') RETURNING id`,
@@ -371,8 +378,11 @@ export class TeamOrchestration {
     if(!await this.launchActive(plan,who))return false
     const prompt=this.workerPrompt(token)
     let receipt:TeamLaunchReceipt
-    try {receipt=await this.orca.launch(workspace,{member_id:member.id,authorize:async()=>{
+    try {
+      const profile=plan.delegation_project_id?await this.derivedProfile(plan,member):undefined
+      receipt=await this.orca.launch(workspace,{member_id:member.id,...(profile?{profile}:{}),authorize:async()=>{
       await this.checkQuota([member],who)
+      if(plan.delegation_project_id)await this.assertDelegationCurrent(plan.delegation_project_id,plan.delegation_version)
       check(await this.launchActive(plan,who),'El equipo ya no admite este lanzamiento',409)
       const current=(await this.db.query('SELECT state,invitation_hash,runtime FROM chat_team_members WHERE id=$1 AND team_id=$2',[member.id,plan.id]))[0]
       check(current?.state==='launch_intent' && current.invitation_hash===invitationHash(token)
@@ -460,23 +470,64 @@ export class TeamOrchestration {
     return this.recovery
   }
 
-  /** Backend-only. Creates once the project's automation channel and the system session that leads it; the session's key is never stored or returned, so no client can authenticate as it. */
-  async ensureProjectLeader(projectId:string,sourceChannelId:string):Promise<string> {
+  /** Validates the standing delegation behind a derived plan, including the automations switch. Called at insert time and before every spawn. */
+  private async assertDelegationCurrent(projectId:string,version:number,sql:Sql=this.db) {
+    check(this.derived?.automationsEnabled(),'Las automatizaciones están deshabilitadas.',409)
+    const row=(await sql.query(`SELECT a.enabled,a.delegation_version,a.channel_id,a.coordinator_session_id,d.document,d.digest,d.revoked_at
+      FROM project_automation a JOIN project_delegations d ON d.project_id=a.project_id AND d.version=a.delegation_version WHERE a.project_id=$1`,[projectId]))[0]
+    check(row?.enabled && row.delegation_version===version && !row.revoked_at && row.coordinator_session_id,'La delegación del proyecto no está vigente.',409)
+    return row
+  }
+
+  private assertDerivedLaunchable(plan:Record<string,any>) {
+    check(this.orca.supportsProfiles && this.derived?.actionProfile,'action_profile_unavailable: los planes derivados no pueden lanzarse sin el perfil de ejecución action.',409)
+    return this.assertDelegationCurrent(plan.delegation_project_id,plan.delegation_version)
+  }
+
+  private async derivedProfile(plan:Record<string,any>,member:Record<string,any>):Promise<ActionProfile> {
+    await this.assertDerivedLaunchable(plan)
+    const profile=await this.derived!.actionProfile!({plan_id:plan.id,member_id:member.id,project_id:plan.delegation_project_id,delegation_version:plan.delegation_version})
+    check(profile?.kind==='action' && typeof profile.agent_instance_id==='string' && profile.agent_instance_id && typeof profile.principal_handle==='string' && profile.principal_handle,
+      'action_profile_unavailable: el perfil emitido no es válido.',409)
+    return profile
+  }
+
+  /** The system session of a project is valid only while it is exactly the hub_system leader of that project's automation channel. */
+  private async validLeader(sql:Sql,projectId:string,sessionId:string) {
+    return (await sql.query(`SELECT s.id FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
+      WHERE s.id=$1 AND s.agent_id='agenthub-system' AND s.cli_kind='hub' AND s.capability='hub_system' AND s.closed_at IS NULL AND s.removed_at IS NULL
+      AND c.scope_key=$2 AND c.project_id=$3 AND c.leader_id=s.id AND c.closed_at IS NULL`,[sessionId,`automation:${projectId}`,projectId]))[0]
+  }
+
+  /**
+   * Backend-only. Creates once the project's automation channel and the system session that leads it. The channel exists only because the activation
+   * recorded its name and objective in the delegation, and it is anchored to the channel the person authorized (project_automation.channel_id).
+   * The session's key is never stored or returned, so no client can authenticate as it.
+   */
+  async ensureProjectLeader(projectId:string):Promise<string> {
     return this.db.transaction(async sql=>{
-      const current=(await sql.query('SELECT coordinator_session_id FROM project_automation WHERE project_id=$1',[projectId]))[0]
-      check(current,'El proyecto no tiene automatización registrada.',409)
-      if(current.coordinator_session_id) {
-        const live=(await sql.query(`SELECT s.id FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id AND c.leader_id=s.id
-          WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND c.closed_at IS NULL`,[current.coordinator_session_id]))[0]
-        if(live)return String(live.id)
+      const row=(await sql.query(`SELECT a.enabled,a.channel_id,a.coordinator_session_id,d.document,d.revoked_at
+        FROM project_automation a JOIN project_delegations d ON d.project_id=a.project_id AND d.version=a.delegation_version WHERE a.project_id=$1`,[projectId]))[0]
+      check(row?.enabled && !row.revoked_at,'El proyecto no tiene una delegación vigente.',409)
+      const delegation=asObject(row.document) as StoredDelegation
+      check(delegation.channel,'La delegación no autoriza un canal de automatización; sin él no hay coordinador ni planes derivados.',409)
+      const source=row.channel_id?(await sql.query('SELECT * FROM chat_channels WHERE id=$1 AND closed_at IS NULL',[row.channel_id]))[0]:undefined
+      check(source && source.project_id===projectId,'El canal autorizado del proyecto no está disponible.',409)
+      if(row.coordinator_session_id) {
+        check(await this.validLeader(sql,projectId,row.coordinator_session_id),'La sesión de automatización del proyecto no coincide con su canal.',409)
+        return String(row.coordinator_session_id)
       }
-      const source=(await sql.query('SELECT * FROM chat_channels WHERE id=$1 AND closed_at IS NULL',[sourceChannelId]))[0]
-      check(source && source.project_id===projectId,'El canal autorizado no pertenece al proyecto o está cerrado.',409)
-      const scope=`automation:${projectId}`,sessionId=`system:${randomUUID()}`
-      let channel=(await sql.query('SELECT * FROM chat_channels WHERE scope_key=$1',[scope]))[0]
-      channel??=(await sql.query(`INSERT INTO chat_channels(id,project_id,path,name,branch,repository,scope_key,kind,activated_at,orca_workspace_id)
-        VALUES($1,$2,$3,$4,$5,$6,$7,'virtual',now(),$8) RETURNING *`,[randomUUID(),projectId,source.path,`Automatización: ${source.name}`.slice(0,200),source.branch,source.repository,scope,source.orca_workspace_id]))[0]!
-      check(!channel.closed_at,'El canal de automatización del proyecto está cerrado.',409)
+      const scope=`automation:${projectId}`
+      check(!(await sql.query('SELECT 1 FROM chat_channels WHERE scope_key=$1',[scope])).length,'El canal de automatización del proyecto ya existe sin una sesión vinculada.',409)
+      // Workspace comes from the delegation, never from the source channel: the first delegated repository, or a Hub-owned empty folder.
+      const repository=delegation.repositories[0]?.repo_path
+      const base=(this.orca as {directory?:string}).directory
+      check(repository || base,'No hay un espacio de trabajo para el canal de automatización.',503)
+      const path=repository ?? join(base!,'automation-workspaces',projectId)
+      if(!repository)await mkdir(path,{recursive:true})
+      const channel=(await sql.query(`INSERT INTO chat_channels(id,project_id,path,name,scope_key,kind,activated_at)
+        VALUES($1,$2,$3,$4,$5,'virtual',now()) RETURNING *`,[randomUUID(),projectId,path,delegation.channel.name.slice(0,200),scope]))[0]!
+      const sessionId=`system:${randomUUID()}`
       await sql.query(`INSERT INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,capability,event_at)
         VALUES($1,'agenthub-system',$2,'Agent Hub','hub',$3,'offline','hub_system',now())`,[sessionId,hash(randomBytes(32).toString('hex')),channel.id])
       await sql.query('UPDATE chat_channels SET leader_id=$2,updated_at=now() WHERE id=$1',[channel.id,sessionId])
@@ -486,33 +537,33 @@ export class TeamOrchestration {
   }
 
   /**
-   * Backend-only entry for a reply-approved follow-up. Plan, members and digest come from the standing delegation and the approved items;
-   * nothing a reply or a coordinator says can add members, change models or widen the profile.
+   * Backend-only entry for a follow-up approved through the decision store. Plan, members and digest come from the standing delegation, the approved
+   * items and the authenticated follow-up receipt; nothing a reply, a coordinator or the caller says can add members, change models or widen the profile.
    */
-  async launchDerived(input:{project_id:string;delegation_version:number;request_id:string;follow_up:string}) {
+  async launchDerived(input:{project_id:string;delegation_version:number;request_id:string}) {
     check(this.derived,'Los planes derivados no están disponibles en este servicio.',503)
     check(this.orca.provider==='hub','Los planes derivados requieren workers administrados por el Hub.',409)
+    check(this.orca.supportsProfiles && this.derived.actionProfile,'action_profile_unavailable: los planes derivados no pueden lanzarse sin el perfil de ejecución action.',409)
     check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
-    const automation=(await this.db.query(`SELECT a.enabled,a.delegation_version,a.coordinator_session_id,d.document,d.digest,d.revoked_at
-      FROM project_automation a JOIN project_delegations d ON d.project_id=a.project_id AND d.version=a.delegation_version WHERE a.project_id=$1`,[input.project_id]))[0]
-    check(automation?.enabled && automation.delegation_version===input.delegation_version && !automation.revoked_at && automation.coordinator_session_id,
-      'La delegación del proyecto no está vigente.',409)
+    const automation=await this.assertDelegationCurrent(input.project_id,input.delegation_version)
     const who=(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[automation.coordinator_session_id]))[0]
-    check(who && !who.closed_at && !who.removed_at,'La sesión de automatización del proyecto no está disponible.',409)
+    check(who && await this.validLeader(this.db,input.project_id,who.id),'La sesión de automatización del proyecto no coincide con su canal.',409)
     const prior=(await this.db.query('SELECT id FROM chat_team_plans WHERE delegation_project_id=$1 AND decision_request_id=$2',[input.project_id,input.request_id]))[0]
     if(prior)return this.view(prior.id,who)
     const delegation=asObject(automation.document) as StoredDelegation
-    const active=(await this.db.query(`SELECT count(*) AS count FROM chat_team_plans WHERE delegation_project_id=$1 AND state NOT IN ('paused','cancelled','completed')`,[input.project_id]))[0]
-    check(Number(active?.count ?? 0)<delegation.limits.max_concurrent_plans,'La delegación alcanzó su tope de planes simultáneos.',409)
     const decision=await this.derived.approved(input.request_id)
+    const followUp=decision.follow_up
+    check(followUp && followUp.ref && Date.parse(followUp.expires_at)>Date.now(),'No hay una instrucción de seguimiento autenticada y vigente para esta solicitud.',409)
     const items=decision.items.filter(item=>item.project_id===input.project_id && APPROVED_ITEM_STATES.includes(item.state))
     const project=(await this.db.query("SELECT id,title FROM entities WHERE id=$1 AND kind='project'",[input.project_id]))[0]
     check(project,'El proyecto no existe.',404)
-    const derived=deriveStandingPlan({project:{id:project.id,name:project.title},delegation:{version:automation.delegation_version,digest:automation.digest,document:delegation},
-      decision:{request_id:input.request_id,canonical_digest:decision.canonical_digest},items,follow_up:input.follow_up})
+    const derived=deriveStandingPlan({project:{id:project.id,name:project.title},delegation:{version:input.delegation_version,digest:automation.digest,document:delegation},
+      decision:{request_id:input.request_id,canonical_digest:decision.canonical_digest},items,follow_up:{text:followUp.text,ref:followUp.ref,source:followUp.source}})
     const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[who.channel_id]))[0]
     check(channel && !channel.closed_at,'El canal de automatización del proyecto está cerrado.',409)
     const parent=await this.orca.workspace(this.parentId(channel))
+    const expected=delegation.repositories[0]?.repo_path
+    check(expected?parent.kind!=='virtual' && parent.path===expected:parent.kind==='virtual','El espacio de trabajo no corresponde a los repositorios de la delegación.',409)
     const baseRevision=await this.resolveBase(parent,parent.head)
     const validations=await this.validateMembers(derived.members,who)
     await this.preflight(derived.members,who)
@@ -520,20 +571,24 @@ export class TeamOrchestration {
     const planId=randomUUID(),members=derived.members.map((item,index)=>({id:randomUUID(),ordinal:index,...item,capabilities:validations[index]}))
     const expiresAt=new Date(Date.now()+delegation.limits.max_runtime_minutes*60_000).toISOString()
     const document={schema_version:1,id:planId,objective:derived.objective,master_channel_id:channel.id,created_by:who.id,parent,base_revision:baseRevision,members,usage:[],
-      permissions:'full_access',derived:derived.document,expires_at:expiresAt}
+      permissions:'action_profile',derived:derived.document,expires_at:expiresAt}
     try {
       await this.db.transaction(async sql=>{
+        // Delegation validity and the concurrency slot are claimed in the same transaction that inserts the plan.
+        await this.assertDelegationCurrent(input.project_id,input.delegation_version,sql)
+        const active=(await sql.query("SELECT count(*) AS count FROM chat_team_plans WHERE delegation_project_id=$1 AND state NOT IN ('paused','cancelled','completed')",[input.project_id]))[0]
+        check(Number(active?.count ?? 0)<delegation.limits.max_concurrent_plans,'La delegación alcanzó su tope de planes simultáneos.',409)
         const root=(await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by) VALUES($1,$2,$3,$4) RETURNING *',
           [randomUUID(),channel.id,`Equipo: ${derived.objective}`.slice(0,200),who.id]))[0]!
         await sql.query(`INSERT INTO chat_team_plans(id,master_channel_id,root_thread_id,created_by,objective,parent,base_revision,plan,digest,state,delegation_project_id,delegation_version,decision_request_id)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'prepared',$10,$11,$12)`,[planId,channel.id,root.id,who.id,derived.objective,JSON.stringify(parent),baseRevision,JSON.stringify(document),derived.digest,
-          input.project_id,automation.delegation_version,input.request_id])
+          input.project_id,input.delegation_version,input.request_id])
         for(const item of members) {
           await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,team_root_thread_id) VALUES($1,$2,$3,$4,$5)',[item.id,channel.id,item.worktree_name,who.id,root.id])
           await sql.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,effort,role,task,prompt,capabilities,state,work_thread_id)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared',$1)`,[item.id,planId,item.ordinal,item.worktree_name,item.cli,item.model,item.effort ?? null,item.role,item.task,item.prompt,JSON.stringify(item.capabilities ?? null)])
         }
-        await this.event(sql,planId,null,'prepared',who.id,channel.id,root.id,{digest:derived.digest,delegation_version:automation.delegation_version})
+        await this.event(sql,planId,null,'prepared',who.id,channel.id,root.id,{digest:derived.digest,delegation_version:input.delegation_version,follow_up_ref:followUp.ref})
       })
     } catch(error) {
       // The unique (project, request) index makes a concurrent replay of the same approved request return the plan that won.
@@ -542,20 +597,37 @@ export class TeamOrchestration {
       throw error
     }
     return this.launch({plan_id:planId,digest:derived.digest,
-      human_instruction:`Seguimiento aprobado por respuesta de canal: solicitud ${input.request_id}, delegación v${automation.delegation_version} de ${project.title}`},
-    who,undefined,{source:DERIVED_APPROVAL_SOURCE,userId:this.derived.ownerId()})
+      human_instruction:`Seguimiento aprobado (${followUp.source}, recibo ${followUp.ref}): solicitud ${input.request_id}, delegación v${input.delegation_version} de ${project.title}`},
+    who,undefined,{source:followUp.source==='channel_reply'?DERIVED_APPROVAL_SOURCE:'standing_delegation+owner_ui',userId:this.derived.ownerId()})
   }
 
-  /** Closes derived plans whose delegation runtime limit elapsed. Safe to call from any periodic tick. */
-  async expireDerived(now=Date.now()) {
-    const plans=await this.db.query("SELECT id,digest,created_by,plan FROM chat_team_plans WHERE delegation_project_id IS NOT NULL AND state NOT IN ('paused','cancelled','completed')")
-    const closed:string[]=[]
+  /** Closes the given derived plans. A close that cannot be confirmed is recorded as an event and reported, never assumed to have stopped the fleet. */
+  private async closeDerived(plans:Array<Record<string,any>>,reason:string) {
+    const closed:string[]=[],failed:string[]=[]
     for(const plan of plans) {
-      if(!(Date.parse(asObject(plan.plan).expires_at)<=now))continue
       const who=(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[plan.created_by]))[0]
-      try {await this.close({plan_id:plan.id,digest:plan.digest,reason:'Se cumplió el tiempo máximo de la delegación.'},who!);closed.push(plan.id)} catch { /* collaboration off or session gone: the fleet is already stopped */ }
+      try {
+        check(who,'La sesión de automatización no existe.',409)
+        await this.close({plan_id:plan.id,digest:plan.digest,reason},who)
+        closed.push(plan.id)
+      } catch(error) {
+        failed.push(plan.id)
+        await this.event(this.db,plan.id,null,'close_failed',plan.created_by,plan.master_channel_id,plan.root_thread_id,{reason,error:error instanceof MemoryError?error.message:'close_failed'}).catch(()=>undefined)
+      }
     }
-    return closed
+    return {closed,failed}
+  }
+
+  /** Closes derived plans whose delegation runtime limit elapsed. */
+  async expireDerived(now=Date.now()) {
+    const plans=await this.db.query("SELECT id,digest,created_by,master_channel_id,root_thread_id,plan FROM chat_team_plans WHERE delegation_project_id IS NOT NULL AND state NOT IN ('paused','cancelled','completed')")
+    return this.closeDerived(plans.filter(plan=>Date.parse(asObject(plan.plan).expires_at)<=now),'Se cumplió el tiempo máximo de la delegación.')
+  }
+
+  /** Called when a delegation is revoked, replaced or its project deactivated: running plans and their handles must not outlive it. */
+  async closeDerivedForProject(projectId:string,reason:string) {
+    const plans=await this.db.query("SELECT id,digest,created_by,master_channel_id,root_thread_id,plan FROM chat_team_plans WHERE delegation_project_id=$1 AND state NOT IN ('paused','cancelled','completed')",[projectId])
+    return this.closeDerived(plans,reason)
   }
 
   private async join(token:string,who:Record<string,any>,agent:AgentContext) {
@@ -695,6 +767,7 @@ export class TeamOrchestration {
         await this.validateMembers([item],who)
         await this.preflight([item],who)
         await this.checkQuota([item],who)
+        if(plan.delegation_project_id)await this.assertDerivedLaunchable(plan)
         item=await load()
         check(item.launch_handle || !item.runtime || ['stopped','failed'].includes(item.runtime.state),
           'El runtime no tiene un recibo verificable para confirmar su detención. No se lanzará un reemplazo de un proceso desconocido.',409)
@@ -724,9 +797,11 @@ export class TeamOrchestration {
         await this.controlAuthority(plan.id,who)
         const prompt=this.workerPrompt(token)
         try {
+          const profile=plan.delegation_project_id?await this.derivedProfile(plan,item):undefined
           const receipt=await this.orca.launch({id:item.workspace_id,path:item.workspace_path,repo_id:item.workspace_repo_id,head:item.workspace_head},
-            {member_id:item.id,resume_worktree:true,authorize:async()=>{
+            {member_id:item.id,resume_worktree:true,...(profile?{profile}:{}),authorize:async()=>{
               await this.checkQuota([item],who)
+              if(plan.delegation_project_id)await this.assertDelegationCurrent(plan.delegation_project_id,plan.delegation_version)
               const current=await load()
               check(current.state==='launch_intent' && current.invitation_hash===invitationHash(token),'La incorporación cambió antes del lanzamiento',409)
             },cli:item.cli,model:item.model,...(item.effort?{effort:item.effort}:{}),prompt})
