@@ -597,10 +597,10 @@ CREATE TABLE schedule_artifacts (
  id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE REFERENCES schedule_runs(id) ON DELETE CASCADE,
  kind TEXT NOT NULL CHECK(kind IN ('notice','brief','close','status','report')), title TEXT NOT NULL, body_md TEXT NOT NULL,
  items JSON NOT NULL DEFAULT '[]', snapshot_refs JSON NOT NULL DEFAULT '[]', decision_request_ref TEXT,
- -- Effects validated by the template, kept only between persisting the artifact and storing decision_request_ref so a crash in between can be repaired; never exposed by any read path.
- proposed_effects JSON NOT NULL DEFAULT '[]',
- -- A restored reference carries no authority until the decision module reconciles it, whatever the mirror says.
- decision_authority TEXT CHECK(decision_authority IN ('verified','unavailable')),
+ -- Effects validated by the template, written with the artifact so a crash before decision_request_ref is stored can be repaired; never exposed by any read path.
+ effects JSON NOT NULL DEFAULT '[]',
+ -- A restored artifact carries no authority until the decision module reconciles it, whatever the mirror says.
+ authority TEXT NOT NULL DEFAULT 'live' CHECK(authority IN ('live','unavailable')),
  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, read_at TIMESTAMP
 );
 -- Public mirror of each decision item's state; authority stays in the isolated decision store.
@@ -694,7 +694,7 @@ CREATE INDEX chat_team_plans_delegation ON chat_team_plans(delegation_project_id
 -- Per-project status snapshots and hour estimates. Estimated, approved and sent seconds live in separate columns and never overwrite each other.
 ALTER TABLE tasks ADD COLUMN assignee_account_id TEXT;
 ALTER TABLE tasks ADD COLUMN due_at TIMESTAMP;
-CREATE INDEX tasks_assignee_account ON tasks(project_id) WHERE assignee_account_id IS NOT NULL;
+CREATE INDEX tasks_assignee_account ON tasks(assignee_account_id,project_id) WHERE assignee_account_id IS NOT NULL;
 CREATE TABLE project_status_snapshots (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, version INTEGER NOT NULL, as_of TIMESTAMP NOT NULL,
  coverage JSON, pending JSON, deterministic JSON, synthesis JSON, model TEXT, source_watermark JSON,
@@ -703,7 +703,7 @@ CREATE TABLE project_status_snapshots (
 );
 CREATE INDEX project_status_snapshots_asof ON project_status_snapshots(project_id,as_of DESC);
 CREATE TABLE hour_estimates (
- id TEXT PRIMARY KEY, run_id TEXT, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ id TEXT PRIMARY KEY, run_id TEXT, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
  issue_key TEXT, estimated_seconds INTEGER, basis TEXT, confidence TEXT CHECK(confidence IN ('low','medium','high')), assumptions JSON,
  method TEXT NOT NULL DEFAULT 'model_judgment', model TEXT, approved_seconds INTEGER, approved_item_ref TEXT, sent_seconds INTEGER, sent_receipt_ref TEXT,
  state TEXT NOT NULL CHECK(state IN ('proposed','approved','rejected','sent','uncertain')),

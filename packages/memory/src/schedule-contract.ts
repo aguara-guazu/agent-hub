@@ -35,7 +35,7 @@ export const scheduleEventTypes = ['schedule.created', 'schedule.updated', 'sche
 export type ScheduleEventType = typeof scheduleEventTypes[number]
 
 /** Closed error codes stored in schedule_runs.error_code and phase receipts; provider or CLI text never reaches them. */
-export const runErrorCodes = ['remote_processing_excluded', 'collect_failed', 'synthesis_failed', 'synthesis_invalid_output', 'synthesis_unavailable', 'quota_exhausted',
+export const runErrorCodes = ['remote_processing_excluded', 'collect_failed', 'synthesis_failed', 'synthesis_invalid_output', 'synthesis_unavailable', 'blocked_unsupported', 'transient_failure', 'quota_exhausted',
   'deadline_exceeded', 'spawn_failed', 'persist_failed', 'delivery_failed', 'delivery_unavailable', 'delivery_uncertain', 'hub_restart', 'automations_off', 'schedule_cancelled'] as const
 export type RunErrorCode = typeof runErrorCodes[number]
 
@@ -45,7 +45,7 @@ export const recurrenceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('daily'), time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), weekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7).optional() }).strict(),
   z.object({ type: z.literal('interval'), minutes: z.number().int().min(5).max(10080) }).strict()])
 
-/** Immutable copy of the mutable columns, stored per revision so a deferred run is rebuilt from the revision it was created under. */
+/** Immutable copy of the mutable columns, stored in schedule_runs.definition so a deferred run is rebuilt from the definition it was created under. */
 export interface ScheduleSnapshot {
   template: ScheduleTemplate; template_version: number; kind: ScheduleKind; title: string; instructions: string; params: Record<string, unknown>
   recurrence: Recurrence; delivery: DeliveryTarget[]; misfire: 'run_once' | 'skip'; grace_minutes: number; grace_policy: GracePolicy; grace_until: string | null; expires_at: string | null
@@ -119,9 +119,9 @@ export interface DecisionRequests {
 /** Implemented by the schedule store; the decision module calls it after each transition of an item. */
 export interface PublicStateSink {
   set(input: { run_id: string; ordinal: number; kind: string; effect_digest?: string; estimate_id?: string; state: ItemState }): Promise<void>
-  /** 'unavailable' after a restore: redispatch and repropose stay denied until the decision module reconciles the reference and calls verifyAuthority. */
-  authority(decision_request_ref: string): Promise<'verified' | 'unavailable' | 'none'>
-  verifyAuthority(decision_request_ref: string): Promise<void>
+  /** 'unavailable' on every artifact after a restore: preparing, consuming, redispatching and reproposing stay denied until the decision module reconciles and calls markLive. */
+  authority(run_id: string): Promise<'live' | 'unavailable' | 'none'>
+  markLive(run_id: string): Promise<void>
 }
 export interface ScheduleEffects { deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests }
 
