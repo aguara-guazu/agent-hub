@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { check, type ImportInput } from '../contracts.js'
 import { fileMime, fileText } from '../attachments.js'
 import { GMAIL_SCOPE } from '../google-auth.js'
+import { CONTROL_HEADER, isExcludedAny, referencedMessageIds } from '../decisions/exclusions.js'
 import { redactSecrets, SECRET_FILE } from '../secrets.js'
 import { splitText } from '../transcript.js'
 import { ProviderError } from './http.js'
@@ -116,10 +117,22 @@ async function importNew(connector: Connector, ctx: ConnectorContext, headers: R
   for (const id of ids) {
     ctx.signal.throwIfAborted()
     if (known.has(`gmail:${id}`)) continue
+    if (await isExcludedAny(ctx.store.db, 'gmail', mailbox, [{ kind: 'message', native_id: id }])) { known.add(`gmail:${id}`); continue }
     if (await importMessage(connector, ctx, headers, id, mailbox)) imported++
     known.add(`gmail:${id}`)
   }
   return imported
+}
+
+/**
+ * Mensajes de la solicitud de decisión y todo lo que cuelga de ellos (respuestas con el código, citas y reenvíos detectables por hilo o por referencias).
+ * Se decide con la cabecera, antes de leer adjuntos, guardar el original o indexar nada. Un fallo de la consulta detiene la ingesta.
+ */
+async function isDecisionControl(ctx: ConnectorContext, mailbox: string, message: any, header: (name: string) => string | undefined): Promise<boolean> {
+  if (header(CONTROL_HEADER) !== undefined) return true
+  const refs = [{ kind: 'message' as const, native_id: String(message.id ?? '') }, ...(message.threadId ? [{ kind: 'thread' as const, native_id: String(message.threadId) }] : []),
+    ...referencedMessageIds(header('Message-ID'), header('In-Reply-To'), header('References')).map(native_id => ({ kind: 'rfc_message_id' as const, native_id }))]
+  return isExcludedAny(ctx.store.db, 'gmail', mailbox, refs)
 }
 
 async function importMessage(connector: Connector, ctx: ConnectorContext, headers: Record<string, string>, id: string, mailbox: string): Promise<boolean> {
@@ -129,6 +142,7 @@ async function importMessage(connector: Connector, ctx: ConnectorContext, header
   const labels: string[] = message.labelIds ?? []
   if (labels.some(label => EXCLUDED_LABELS.includes(label))) return false
   const header = (name: string) => (message.payload?.headers ?? []).find((h: any) => String(h.name).toLowerCase() === name.toLowerCase())?.value as string | undefined
+  if (await isDecisionControl(ctx, mailbox, message, header)) return false
   const from = addresses(header('From'))[0]
   const to = addresses(header('To')), cc = addresses(header('Cc'))
   const subject = (header('Subject') ?? '').trim().slice(0, 500) || '(sin asunto)'

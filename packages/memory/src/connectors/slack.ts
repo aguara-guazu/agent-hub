@@ -1,5 +1,6 @@
 import { check, MemoryError, type ImportInput } from '../contracts.js'
 import type { Connector, ConnectorContext } from './types.js'
+import { isExcludedAny } from '../decisions/exclusions.js'
 
 export async function syncSlack(connector: Connector, ctx: ConnectorContext): Promise<void> {
   const credentials = ctx.vault.read(connector.id)
@@ -26,6 +27,8 @@ export async function syncSlack(connector: Connector, ctx: ConnectorContext): Pr
   const cursor = { ...connector.cursor }, started = String(Date.now() / 1000)
   let imported = 0
   for (const channel of channels) {
+    // La conversación de la solicitud de decisión no se lee: ni su historial, ni sus hilos, ni los que ya estaban importados.
+    if (await isExcludedAny(ctx.store.db, 'slack', null, [{ kind: 'conversation', native_id: channel }])) continue
     // Recent history discovers roots. Revisit every previously imported root, including roots that had no replies.
     const since = connector.config.since ? Date.parse(connector.config.since) / 1000 : Date.now() / 1000 - 30 * 86400
     const oldest = String(Math.max(since, Number(cursor[channel] ?? since) - 7 * 86400))
