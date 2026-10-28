@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { check, id, parse } from './contracts.js'
 import type { Sql } from './database.js'
 import { requireEntity, type MemoryStore } from './store.js'
+import { ScheduleStore } from './schedule-store.js'
 
 /** Identity the gateway attaches to every memory call (MCP `_meta`). Absent for the hub UI and for older gateways. */
 export interface AgentContext { agent_id: string; cli_kind: string; client: string; session_id: string; cwd: string | null; orca_workspace_id?: string | undefined }
@@ -156,7 +157,11 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
       AND COALESCE(data->>'memory_state','active')='active' AND (data->>'memory_project_id' IS NULL OR data->>'memory_project_id' IS $1)
       ORDER BY (data->>'memory_pinned') IN (1,'true') DESC,CAST(data->>'memory_importance' AS INTEGER) DESC,updated_at DESC LIMIT 8`, scope)
   const maintenance = await maintenanceStatus(store, match?.id)
+  // Interrupted processes and unread scheduled deliveries, so an agent knows something failed before or that the person has pending reports.
+  const schedules = new ScheduleStore(store.db)
+  const [incidents, unread] = await Promise.all([schedules.incidents(match ? { project_id: match.id } : {}), schedules.unreadDeliveries(match?.id)])
   return {
+    ...(incidents.length || unread.length ? { scheduler: { interrupted_processes: incidents.slice(0, 10), unread_deliveries: unread.slice(0, 10) } } : {}),
     memories, maintenance: { due: maintenance.due, last_run: maintenance.last?.finished_at ?? null, active: maintenance.active ? { id: maintenance.active.id, state: maintenance.active.state } : null },
     memory_capabilities: { primary_memory: true, remember: 'memory_remember', files: 'memory_import_file', retrieve_file: 'memory_get_file', tidy: 'memory_tidy_memory',
       formats: ['text','images','screenshots','audio','video','PDF','other files'], max_file_mb: 25, binary_search: 'title, description and annotations', local_media: { process: 'memory_process_files', settings: await mediaSettings(store), pdf: { max_pages: 200, text: true, requires_module_download: false, page_preview: 'memory_get_file con page', visual: 'encoder visual opcional' }, max_duration_minutes: 30, video_frame_interval_seconds: 5, requires_module_download: true, generated_content_requires_review: true },

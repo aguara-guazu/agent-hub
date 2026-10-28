@@ -6,6 +6,8 @@ import { UsageQuotas } from './usage-quotas.js'
 import { UsageNotices } from './usage-notices.js'
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
 import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
+import { callScheduleTool, scheduleDefinitions, scheduleReadOperations } from './schedule-tools.js'
+import type { ScheduleAdmin } from './schedule-admin.js'
 import type { TeamCatalog } from './team-catalog.js'
 import type { TeamOrca } from './team-orca.js'
 import { SharedPublications } from './sharing/publications.js'
@@ -37,6 +39,7 @@ const definitions = {
   usage_status: ['Consultar cuotas nativas y avisos del equipo: ventanas, reinicios, fuente y frescura. Desconocido no significa disponible; cuota no garantiza acceso ni completar una tarea. No ejecuta inferencia ni refresca proveedores.', z.object({session_key:z.string().min(32).max(200).optional(),cli:z.enum(CLI_KINDS).optional(),model:z.string().max(300).optional()}).strict()],
   ...chatDefinitions,
   ...teamDefinitions,
+  ...scheduleDefinitions,
   shared_status: ['Ver miembros, permisos, identidad y versiones de un proyecto compartido; consultar la skill hub-collaboration al trabajar en él.', z.object({ project_id: id }).strict()],
   shared_version: ['Leer una versión compartida completa y su autor, agente y peer de procedencia antes de resolver un conflicto. No devuelve los bytes del adjunto.', z.object({ project_id: id, event_id: z.string().length(64) }).strict()],
   publish_source: ['Adelantar la publicación de una fuente (normalmente automática) o compartir una tarea o colección. Conserva procedencia y evita duplicados; sólo comparte fragmentos del proyecto.', z.object({ project_id: id, entity_id: id, key: z.string().max(1000).optional() }).strict()],
@@ -117,7 +120,7 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...teamReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...teamReadOperations,...scheduleReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
   readonly usage: UsageQuotas
@@ -125,6 +128,8 @@ export class MemoryOperations {
   readonly chat: LocalChat
   readonly teams: TeamOrchestration | undefined
   readonly fleet: TeamOrca | undefined
+  /** Set by the service once the schedule runtime exists; absent in worker processes, where schedule tools are unavailable. */
+  schedules: ScheduleAdmin | undefined
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime,
@@ -170,6 +175,10 @@ export class MemoryOperations {
     if (operation.startsWith('team_')) {
       check(this.teams, 'La orquestación de equipos no está disponible en este servicio.', 503)
       return this.teams.call(operation, raw, agent)
+    }
+    if (operation.startsWith('schedule_')) {
+      check(this.schedules, 'Los schedules no están disponibles en este servicio.', 503)
+      return callScheduleTool(this.schedules, operation, raw, agent)
     }
     const definition = definitions[operation as keyof typeof definitions]
     check(definition, 'Operación de memoria inexistente', 404)
@@ -459,6 +468,7 @@ export class MemoryOperations {
         ORDER BY e.updated_at DESC LIMIT $1 OFFSET $2`, [input.limit, input.offset]) }
       case 'export_backup': return exportMemory(store)
       case 'delete_entity': {
+        if (this.schedules) await this.schedules.beforeProjectDelete(input.id)
         await deleteEntity(store, input.id)
         return { deleted: true, backups_preserved: true }
       }

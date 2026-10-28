@@ -33,6 +33,7 @@ import { googleScopes } from './google-auth.js'
 import { activateGoogleSource, ensureGoogleSource } from './google-setup.js'
 import { agentFromMeta } from './agents.js'
 import { requestMigrationRetry } from './legacy-postgres.js'
+import { registerScheduleRoutes } from './schedule-routes.js'
 
 const VERSION = String((createRequire(import.meta.url)('../package.json') as { version: string }).version)
 
@@ -46,9 +47,13 @@ export interface MemoryRouteOptions {
   authorizeChatAgent?(request: FastifyRequest, agentId: string): Promise<{ cli_kind: string }>
   worker?: boolean
   jiraMcp?: import('./tasks.js').JiraTaskReader
+  /** Switch of the scheduler and the effects the core injects (deliveries, approved actions, decisions); absent means enabled and no external adapters. */
+  automationsEnabled?(): boolean
+  scheduleEffects?: import('./schedule-contract.js').ScheduleEffects
 }
 export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions) {
-  const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true, options.collaborationEnabled)
+  const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true, options.collaborationEnabled,
+    { enabled: options.automationsEnabled ?? (() => true), ...(options.scheduleEffects ? { effects: options.scheduleEffects } : {}) })
   const collaborationEnabled = options.collaborationEnabled ?? (() => true)
   const requireCollaboration = () => check(collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
@@ -142,6 +147,8 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     return operations.teams.approveByHuman(planId,digest,user.id)
   })
   app.addHook('onListen', async () => { void runtime().catch(() => {}) })
+  app.addHook('onListen', async () => { void service.startSchedules().catch(() => {}) })
+  registerScheduleRoutes(app, service, options.authorize)
   sharingRoutes(app, service, options.authorize)
   // Human owner authorization only: never register activity in the MCP operation dispatcher.
   app.get('/api/memory/chat/agents/:sessionId/activity', { preHandler: auth }, async (request, reply) => {

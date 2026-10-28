@@ -97,7 +97,12 @@ export class ScheduleRuntime {
   activeRuns() { return this.store.activeRuns() }
   /** Aborts the in-flight run of a schedule; the run ends as cancelled. */
   async stopRun(scheduleId: string) {
-    for (const run of await this.store.runningRuns()) if (run.schedule_id === scheduleId) this.inFlight.get(run.id)?.controller.abort(new Error('schedule_cancelled'))
+    const stopping: Array<Promise<void>> = []
+    for (const run of await this.store.runningRuns()) {
+      const entry = run.schedule_id === scheduleId ? this.inFlight.get(run.id) : undefined
+      if (entry) { entry.controller.abort(new Error('schedule_cancelled')); stopping.push(entry.done) }
+    }
+    await Promise.allSettled(stopping)
   }
 
   /** One pass: switch handling, time zone, expiry, due occurrences, runnable runs and the durable delivery scan. */

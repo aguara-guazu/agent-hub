@@ -273,5 +273,22 @@ export class ScheduleAdmin {
     const result = await this.store.listRuns(filter)
     return { ...result, limit: filter.limit, offset: filter.offset, incidents: await this.store.incidents({ ...(filter.schedule_id ? { schedule_id: filter.schedule_id } : {}), ...(filter.project_id ? { project_id: filter.project_id } : {}) }) }
   }
+  /**
+   * Guard before a project is deleted: actions in flight or uncertain block the deletion; everything else is cancelled and stopped
+   * first, so the cascade never removes the evidence of a run that is still advancing.
+   */
+  async beforeProjectDelete(entityId: string) {
+    const entity = (await this.o.db.query<{ kind: string }>('SELECT kind FROM entities WHERE id=$1', [entityId]))[0]
+    if (entity?.kind !== 'project') return
+    if (await this.store.blockingItems(entityId)) this.fail(409, 'project_has_inflight_actions', 'El proyecto tiene acciones en curso o inciertas; resolvelas antes de eliminarlo.')
+    const live = await this.store.listSchedules({ project_id: entityId, limit: 200, offset: 0 })
+    for (const schedule of live.items.filter(row => ['active', 'paused'].includes(row.state))) {
+      await this.o.db.transaction(async () => {
+        await this.store.touchSchedule(schedule.id, { state: 'cancelled', next_run_at: null, cancelled_at: new Date(this.now()).toISOString(), cancelled_by: 'system', cancel_reason: 'project_deleted' })
+        await this.store.cancelLiveRuns(schedule.id, 'schedule_cancelled')
+      })
+      await this.o.stopRun?.(schedule.id)
+    }
+  }
   isScheduleError(error: unknown): error is MemoryError { return error instanceof ScheduleError }
 }

@@ -19,6 +19,12 @@ import { JobRunner } from './jobs.js'
 import { check, MemoryError, parse } from './contracts.js'
 import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
 import { reasoningEffortSchema } from './reasoning.js'
+import { ScheduleStore } from './schedule-store.js'
+import { ScheduleAdmin } from './schedule-admin.js'
+import { ScheduleRuntime } from './schedule-runtime.js'
+import { EngineSynthesizer } from './schedule-synthesizer.js'
+import type { ScheduleAutomation } from './schedule-contract.js'
+import './schedule-templates.js'
 
 export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode', ...extractionClis]), extraction_model: z.string().max(200),
   extraction_reasoning_effort: reasoningEffortSchema,
@@ -44,10 +50,11 @@ export class MemoryService {
   readonly google: GoogleAuth
   readonly openCode: OpenCodeRuntime
   readonly cliExtraction: CliExtractionRuntime
-  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork } | null = null
+  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime } } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
-    private jiraMcp?: import('./tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true) {
+    private jiraMcp?: import('./tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true,
+    private automation: ScheduleAutomation = { enabled: () => true }) {
     this.nativeEmbeddings = new NativeEmbeddingPool(directory)
     this.media = new MediaRuntime(directory)
     this.openCode = new OpenCodeRuntime(directory)
@@ -78,8 +85,24 @@ export class MemoryService {
     if (this.orchestrationOwner) await operations.teams?.initialize()
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     this.current = { db, store, ai, operations, runner, network: new SharedNetwork(operations.sharing) }
+    if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
     return this.current
   }
+  /** Clock and admission of schedules; they live only where the orchestration owner runs, never in the worker process. */
+  private createSchedules(db: MemoryDatabase, store: MemoryStore, ai: MemoryAI, operations: MemoryOperations) {
+    const schedules = new ScheduleStore(db), automation = this.automation
+    const runtime = new ScheduleRuntime({ store: schedules, db, memory: store, automation, usage: operations.usage, signals: operations.chat.events,
+      synthesizer: new EngineSynthesizer({ settings: () => this.aiSettings(), cli: this.cliExtraction, ai }) })
+    const unavailable = { available: false, reason: 'not_connected' }
+    const admin = new ScheduleAdmin({ store: schedules, db, automationsEnabled: () => automation.enabled(), wake: () => runtime.kick(), stopRun: id => runtime.stopRun(id),
+      deliveryAvailability: async () => automation.effects ? await automation.effects.deliveries.available().catch(() => ({ gmail_self: unavailable, slack_self: unavailable })) : { gmail_self: unavailable, slack_self: unavailable } })
+    operations.schedules = admin
+    return { store: schedules, admin, runtime }
+  }
+  /** Applies an automations switch change now instead of at the next tick. */
+  async kickSchedules() { (await this.get()).schedules?.runtime.kick() }
+  /** Starts the clock; independent of the collaboration switch. */
+  async startSchedules() { await (await this.get()).schedules?.runtime.start() }
   async status() {
     const configuration = { database_configured: true, google_client_configured: this.vault.has('google-client'),
       deepseek_configured: this.vault.has('deepseek'), google_redirect_url: this.google.redirectUrl }
@@ -151,5 +174,5 @@ export class MemoryService {
     const status=member ? await operations.fleet?.status?.(String(member.id)) : undefined
     return !!status && ['starting','busy','idle','waiting_input'].includes(status.state ?? '')
   }
-  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.operations.fleet?.close?.(); await current.network.stop(); await current.db.close() } }
+  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.current?.schedules?.runtime.close(); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.operations.fleet?.close?.(); await current.network.stop(); await current.db.close() } }
 }

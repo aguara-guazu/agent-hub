@@ -39,7 +39,7 @@ export const runErrorCodes = ['remote_processing_excluded', 'collect_failed', 's
   'deadline_exceeded', 'spawn_failed', 'persist_failed', 'delivery_failed', 'delivery_unavailable', 'delivery_uncertain', 'hub_restart', 'automations_off', 'schedule_cancelled'] as const
 export type RunErrorCode = typeof runErrorCodes[number]
 
-export type Recurrence = { type: 'once'; at: string } | { type: 'daily'; time: string; weekdays?: number[] } | { type: 'interval'; minutes: number }
+export type Recurrence = { type: 'once'; at: string } | { type: 'daily'; time: string; weekdays?: number[] | undefined } | { type: 'interval'; minutes: number }
 export const recurrenceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('once'), at: instant }).strict(),
   z.object({ type: z.literal('daily'), time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), weekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7).optional() }).strict(),

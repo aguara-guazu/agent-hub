@@ -1,4 +1,5 @@
 import { collaborationEnabled, COLLABORATION_ENABLED_SETTING } from './collaboration.js'
+import { automationsEnabled, readAutomationSettings, saveAutomationSettings } from './automations.js'
 /**
  * Aplicación Fastify del control plane local. Espeja la superficie HTTP de
  * `packages/core` implementa `docs/API_CONTRACT.md`: rutas, cuerpos, códigos y formas.
@@ -157,7 +158,8 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   // El cuerpo de las respuestas 204 no lleva contenido.
   fastify.setErrorHandler((error, _request, reply) => {
     if (error instanceof HttpError || error instanceof MemoryError) {
-      return reply.code(error instanceof HttpError ? error.status : error.statusCode).send({ detail: error.message })
+      const code = error instanceof MemoryError ? error.code : undefined
+      return reply.code(error instanceof HttpError ? error.status : error.statusCode).send({ detail: error.message, ...(code ? { code } : {}) })
     }
     if (error instanceof ValidationError) {
       return reply.code(422).send({ detail: error.message })
@@ -277,6 +279,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     fastify.addHook('onClose', async () => { await jiraPool.close() })
     const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
       collaborationEnabled: () => collaborationEnabled(store),
+      automationsEnabled: () => automationsEnabled(store),
       jiraMcp: createJiraTaskReader(store, owner.id, jiraPool, oauthStore),
       usageAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='usage_status')),
       chatAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='chat_join') && s.tools.some(t=>t.name==='chat_inbox')),
@@ -318,6 +321,22 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       if (!input.enabled) await memory.service.suspendFleet()
       publishPolicyChange(bus, store, 'user', owner.id)
       return { enabled: collaborationEnabled(store) }
+    })
+    fastify.get('/api/automations', async request => {
+      const user = await currentUser(request)
+      if (user.id !== owner.id) throw new HttpError(403, 'La configuración pertenece al dueño local del hub')
+      return readAutomationSettings(store)
+    })
+    fastify.put('/api/automations', async request => {
+      const user = await currentUser(request)
+      if (user.id !== owner.id) throw new HttpError(403, 'La configuración pertenece al dueño local del hub')
+      const input = request.body as Record<string, unknown> | null
+      if (!input || typeof input !== 'object' || Array.isArray(input) || !Object.keys(input).length) throw new HttpError(422, 'Se requiere al menos un ajuste')
+      const invalid = saveAutomationSettings(store, input)
+      if (invalid) throw new HttpError(422, `Ajuste inválido: ${invalid}`)
+      // A switch change takes effect now: the runtime cancels what has not started and stops what runs.
+      if ('automations_enabled' in input) await memory.service.kickSchedules()
+      return readAutomationSettings(store)
     })
     const registerCatalog = () => {
       const installedId = store.setting(MEMORY_CATALOG_SERVER_SETTING)
