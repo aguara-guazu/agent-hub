@@ -525,4 +525,185 @@ CREATE INDEX chat_deliveries_responses ON chat_deliveries(response_required,resp
 -- Execution workspaces no longer determine channel identity. Keep existing scopes/history.
 DROP INDEX chat_channels_orca;
 CREATE INDEX chat_channels_orca ON chat_channels(orca_workspace_id);
+`, String.raw`
+-- Scheduler. A run's definition is frozen at creation, so editing a schedule never changes an occurrence already created.
+CREATE TABLE schedules (
+ id TEXT PRIMARY KEY, scope TEXT NOT NULL CHECK(scope IN ('project','owner')), project_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
+ template TEXT NOT NULL CHECK(template IN ('reminder','custom_synthesis','daily_brief','daily_close','project_status','team_health')),
+ template_version INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('notice','synthesis')),
+ title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 200), instructions TEXT NOT NULL DEFAULT '' CHECK(length(instructions)<=4000),
+ params JSON NOT NULL DEFAULT '{}', recurrence JSON NOT NULL, delivery JSON NOT NULL,
+ misfire TEXT NOT NULL CHECK(misfire IN ('run_once','skip')), grace_minutes INTEGER NOT NULL,
+ grace_policy TEXT NOT NULL DEFAULT 'minutes' CHECK(grace_policy IN ('minutes','until_next','until_local_time')), grace_until TEXT, target_key TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('active','paused','cancelled','expired','completed')),
+ paused_by TEXT CHECK(paused_by IN ('agent','human','system')), next_run_at TIMESTAMP, expires_at TIMESTAMP,
+ revision INTEGER NOT NULL DEFAULT 1, created_by_kind TEXT NOT NULL CHECK(created_by_kind IN ('agent','human','system')),
+ created_by_agent TEXT, created_by_session TEXT, origin JSON NOT NULL DEFAULT '{}',
+ cancelled_at TIMESTAMP, cancelled_by TEXT CHECK(cancelled_by IN ('agent','human','system')), cancel_reason TEXT,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ CHECK((scope='project')=(project_id IS NOT NULL)),
+ CHECK(created_by_kind<>'agent' OR (created_by_agent IS NOT NULL AND created_by_session IS NOT NULL))
+);
+CREATE UNIQUE INDEX schedules_live_target ON schedules(target_key) WHERE state IN ('active','paused');
+CREATE INDEX schedules_due ON schedules(state,next_run_at);
+CREATE INDEX schedules_project ON schedules(project_id,state);
+CREATE TABLE schedule_constraints (
+ id TEXT PRIMARY KEY, subject TEXT NOT NULL CHECK(subject IN ('project','owner')), project_id TEXT, template TEXT NOT NULL,
+ scope TEXT NOT NULL CHECK(scope IN ('target','template_project')), target_key TEXT,
+ schedule_id TEXT REFERENCES schedules(id) ON DELETE SET NULL, created_by_user TEXT NOT NULL, reason TEXT,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, lifted_at TIMESTAMP, lifted_by_user TEXT,
+ CHECK(scope<>'target' OR target_key IS NOT NULL), CHECK((subject='project')=(project_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX schedule_constraints_active ON schedule_constraints(scope,COALESCE(project_id,''),template,COALESCE(target_key,'')) WHERE lifted_at IS NULL;
+CREATE TABLE schedule_runs (
+ id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+ scheduled_for TIMESTAMP NOT NULL, schedule_revision INTEGER NOT NULL, definition JSON NOT NULL,
+ trigger TEXT NOT NULL CHECK(trigger IN ('clock','misfire','run_now')),
+ state TEXT NOT NULL CHECK(state IN ('pending','running','deferred','succeeded','partial','failed','uncertain','skipped','cancelled','interrupted')),
+ phase TEXT NOT NULL CHECK(phase IN ('collect','synthesize','persist','deliver','done')),
+ generation INTEGER NOT NULL DEFAULT 0, skip_reason TEXT CHECK(skip_reason IN ('overlap','misfire_out_of_grace','automations_off','schedule_cancelled','remote_processing_excluded')),
+ deferred_reason TEXT CHECK(deferred_reason IN ('quota','automations_off','delivery_unavailable')),
+ next_attempt_at TIMESTAMP, quota JSON, artifact_id TEXT,
+ continuity TEXT CHECK(continuity IN ('live_destination','fork','exclusive_resume','linked_new','none')), error_code TEXT,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, started_at TIMESTAMP, finished_at TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ UNIQUE(schedule_id,scheduled_for)
+);
+CREATE INDEX schedule_runs_due ON schedule_runs(state,next_attempt_at);
+CREATE INDEX schedule_runs_schedule ON schedule_runs(schedule_id,scheduled_for DESC);
+CREATE TABLE schedule_run_attempts (
+ run_id TEXT NOT NULL REFERENCES schedule_runs(id) ON DELETE CASCADE, generation INTEGER NOT NULL, phase TEXT NOT NULL,
+ profile TEXT NOT NULL CHECK(profile IN ('notice','synthesis')), cli TEXT, model TEXT, boot_id TEXT,
+ host_pid INTEGER, host_started TEXT, cli_pid INTEGER, cli_started TEXT,
+ state TEXT NOT NULL CHECK(state IN ('starting','running','exited','deadline_exceeded','terminated','orphan_terminated','orphan_unverified','termination_unknown','spawn_failed')),
+ deadline_at TIMESTAMP NOT NULL, started_at TIMESTAMP, ended_at TIMESTAMP, exit_code TEXT,
+ PRIMARY KEY(run_id,generation)
+);
+CREATE INDEX schedule_run_attempts_live ON schedule_run_attempts(state);
+CREATE TABLE schedule_run_phases (
+ run_id TEXT NOT NULL REFERENCES schedule_runs(id) ON DELETE CASCADE, phase TEXT NOT NULL, generation INTEGER NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('started','done','failed','uncertain','skipped')), receipt JSON NOT NULL DEFAULT '{}',
+ started_at TIMESTAMP, finished_at TIMESTAMP,
+ PRIMARY KEY(run_id,phase,generation)
+);
+CREATE TABLE schedule_deliveries (
+ id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES schedule_runs(id) ON DELETE CASCADE,
+ target TEXT NOT NULL CHECK(target IN ('hub_inbox','app_window','gmail_self','slack_self')),
+ state TEXT NOT NULL CHECK(state IN ('pending','sending','sent','failed','uncertain','skipped')), outbox_ref TEXT,
+ attempts INTEGER NOT NULL DEFAULT 0, error_code TEXT, read_at TIMESTAMP,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ UNIQUE(run_id,target)
+);
+CREATE TABLE schedule_artifacts (
+ id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE REFERENCES schedule_runs(id) ON DELETE CASCADE,
+ kind TEXT NOT NULL CHECK(kind IN ('notice','brief','close','status','report')), title TEXT NOT NULL, body_md TEXT NOT NULL,
+ items JSON NOT NULL DEFAULT '[]', snapshot_refs JSON NOT NULL DEFAULT '[]', decision_request_ref TEXT,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, read_at TIMESTAMP
+);
+-- Public mirror of each decision item's state; authority stays in the isolated decision store.
+CREATE TABLE schedule_item_states (
+ run_id TEXT NOT NULL REFERENCES schedule_runs(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, kind TEXT NOT NULL, effect_digest TEXT, estimate_id TEXT,
+ state TEXT NOT NULL CHECK(state IN ('proposed','approved','rejected','dispatching','succeeded','uncertain','expired','superseded','unverifiable')),
+ updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}, PRIMARY KEY(run_id,ordinal)
+);
+CREATE TABLE schedule_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, schedule_id TEXT, run_id TEXT, type TEXT NOT NULL,
+ actor_kind TEXT NOT NULL CHECK(actor_kind IN ('agent','human','system')), actor_ref TEXT, request_id TEXT,
+ payload JSON NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE UNIQUE INDEX schedule_events_request ON schedule_events(actor_ref,request_id) WHERE request_id IS NOT NULL;
+CREATE INDEX schedule_events_run ON schedule_events(run_id);
+-- Terminated or interrupted processes of runs and fleet members; no foreign keys so the history outlives its subject.
+CREATE TABLE process_incidents (
+ id TEXT PRIMARY KEY, subject_kind TEXT NOT NULL CHECK(subject_kind IN ('schedule_run','fleet_member')), subject_id TEXT NOT NULL, generation TEXT,
+ schedule_id TEXT, run_id TEXT, team_id TEXT, member_id TEXT, session_id TEXT, project_id TEXT,
+ cause TEXT NOT NULL CHECK(cause IN ('hub_restart','deadline_exceeded','automations_off','collaboration_off','cancelled','spawn_failed','process_exited')),
+ action TEXT NOT NULL CHECK(action IN ('terminated','already_exited','unverified_left_running','termination_unknown','none')),
+ pid INTEGER, process_started TEXT, boot_id TEXT, observed_at TIMESTAMP NOT NULL, detail JSON NOT NULL DEFAULT '{}'
+);
+CREATE UNIQUE INDEX process_incidents_subject ON process_incidents(subject_kind,subject_id,COALESCE(generation,''),cause);
+CREATE INDEX process_incidents_project ON process_incidents(project_id,observed_at DESC);
+-- Non-secret tombstones of delivery messages consulted before ingesting Gmail or Slack content; approval authority lives elsewhere.
+CREATE TABLE decision_exclusions (
+ integration TEXT NOT NULL, account TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('message','thread','rfc_message_id','conversation')), native_id TEXT NOT NULL,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, PRIMARY KEY(integration,account,kind,native_id)
+);
+`, String.raw`
+ALTER TABLE chat_sessions ADD COLUMN model TEXT;
+ALTER TABLE chat_sessions ADD COLUMN native_cwd TEXT;
+ALTER TABLE chat_sessions ADD COLUMN start_source TEXT;
+ALTER TABLE chat_sessions ADD COLUMN surface TEXT;
+ALTER TABLE chat_sessions ADD COLUMN adapter_version TEXT;
+ALTER TABLE chat_sessions ADD COLUMN id_captured_by TEXT;
+ALTER TABLE chat_sessions ADD COLUMN id_captured_at TIMESTAMP;
+ALTER TABLE chat_sessions ADD COLUMN resumable INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE cli_capabilities (
+ cli TEXT NOT NULL, surface TEXT NOT NULL, version TEXT NOT NULL, capability TEXT NOT NULL,
+ support TEXT NOT NULL CHECK(support IN ('supported','unsupported','unverified')), source_url TEXT, checked_at TIMESTAMP NOT NULL,
+ PRIMARY KEY(cli,surface,version,capability)
+);
+CREATE TABLE liveness_incidents (
+ id TEXT PRIMARY KEY, dedupe_key TEXT NOT NULL UNIQUE, team_id TEXT, member_id TEXT, session_id TEXT NOT NULL, generation TEXT,
+ kind TEXT NOT NULL CHECK(kind IN ('possible_stall','missing_report','session_lost','report_undelivered')), episode TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('open','resolved')), evidence JSON NOT NULL DEFAULT '{}', notice_id TEXT,
+ opened_at TIMESTAMP NOT NULL, last_observed_at TIMESTAMP NOT NULL, resolved_at TIMESTAMP, resolution TEXT
+);
+CREATE INDEX liveness_incidents_team ON liveness_incidents(team_id,resolved_at);
+CREATE INDEX liveness_incidents_session ON liveness_incidents(session_id,resolved_at);
+CREATE TABLE progress_checkpoints (
+ checkpoint_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, generation TEXT, opening_turn_id TEXT, last_native_turn_id TEXT,
+ pending_since TIMESTAMP NOT NULL, status TEXT NOT NULL CHECK(status IN ('open','reported','missing_report','closed')),
+ report_kind TEXT CHECK(report_kind IN ('note','work_update','message')), report_ref TEXT, reported_at TIMESTAMP,
+ continuation_count INTEGER NOT NULL DEFAULT 0 CHECK(continuation_count IN (0,1)), continuation_consumed_at TIMESTAMP, closed_at TIMESTAMP, closed_reason TEXT
+);
+CREATE INDEX progress_checkpoints_session ON progress_checkpoints(session_id,closed_at);
+CREATE UNIQUE INDEX progress_checkpoints_open ON progress_checkpoints(session_id) WHERE closed_at IS NULL;
+`, String.raw`
+-- Standing delegation per project. channel_id and coordinator_session_id carry no foreign keys so deleting a channel or session never blocks on them.
+CREATE TABLE project_automation (
+ project_id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 0, delegation_version INTEGER,
+ channel_id TEXT, coordinator_session_id TEXT, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_by_user TEXT NOT NULL
+);
+CREATE TABLE project_delegations (
+ project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, version INTEGER NOT NULL, document JSON NOT NULL, digest TEXT NOT NULL,
+ approval_source TEXT NOT NULL CHECK(approval_source IN ('owner_ui','coordinator_declaration')), instruction TEXT,
+ created_by_user TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, revoked_at TIMESTAMP, PRIMARY KEY(project_id,version)
+);
+CREATE TABLE project_repositories (
+ id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, repo_path TEXT NOT NULL, canonical_remote_url TEXT NOT NULL,
+ remote_name TEXT NOT NULL DEFAULT 'origin', default_branch TEXT NOT NULL, allowed_branches JSON NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ UNIQUE(project_id,repo_path)
+);
+-- Pushes proposed by the agent that did the work; the close turns open candidates into approvable items.
+CREATE TABLE push_candidates (
+ id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, repo_id TEXT NOT NULL REFERENCES project_repositories(id) ON DELETE CASCADE,
+ branch TEXT NOT NULL, local_sha TEXT NOT NULL, reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 300), proposed_by_agent TEXT NOT NULL, proposed_by_session TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('open','proposed','superseded','withdrawn')), run_id TEXT,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}, UNIQUE(repo_id,branch,local_sha)
+);
+ALTER TABLE chat_team_plans ADD COLUMN delegation_project_id TEXT;
+ALTER TABLE chat_team_plans ADD COLUMN delegation_version INTEGER;
+ALTER TABLE chat_team_plans ADD COLUMN decision_request_id TEXT;
+-- The same approved request never launches two plans.
+CREATE UNIQUE INDEX chat_team_plans_derived ON chat_team_plans(delegation_project_id,decision_request_id) WHERE decision_request_id IS NOT NULL;
+CREATE INDEX chat_team_plans_delegation ON chat_team_plans(delegation_project_id,state) WHERE delegation_project_id IS NOT NULL;
+`, String.raw`
+-- Per-project status snapshots and hour estimates. Estimated, approved and sent seconds live in separate columns and never overwrite each other.
+ALTER TABLE tasks ADD COLUMN assignee_account_id TEXT;
+ALTER TABLE tasks ADD COLUMN due_at TIMESTAMP;
+CREATE INDEX tasks_assignee_account ON tasks(project_id) WHERE assignee_account_id IS NOT NULL;
+CREATE TABLE project_status_snapshots (
+ id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, version INTEGER NOT NULL, as_of TIMESTAMP NOT NULL,
+ coverage JSON, pending JSON, deterministic JSON, synthesis JSON, model TEXT, source_watermark JSON,
+ freshness TEXT CHECK(freshness IN ('current','stale_no_report','excluded_remote')), created_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ UNIQUE(project_id,version)
+);
+CREATE INDEX project_status_snapshots_asof ON project_status_snapshots(project_id,as_of DESC);
+CREATE TABLE hour_estimates (
+ id TEXT PRIMARY KEY, run_id TEXT, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ issue_key TEXT, estimated_seconds INTEGER, basis TEXT, confidence TEXT CHECK(confidence IN ('low','medium','high')), assumptions JSON,
+ method TEXT NOT NULL DEFAULT 'model_judgment', model TEXT, approved_seconds INTEGER, approved_item_ref TEXT, sent_seconds INTEGER, sent_receipt_ref TEXT,
+ state TEXT NOT NULL CHECK(state IN ('proposed','approved','rejected','sent','uncertain')),
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}, UNIQUE(run_id,task_id)
+);
+CREATE INDEX hour_estimates_project ON hour_estimates(project_id,state);
 `]

@@ -1,0 +1,138 @@
+import { z } from 'zod'
+import type { MemoryStore } from './store.js'
+import type { TransactionSql } from './database.js'
+import { instant } from './contracts.js'
+
+// Shared types for the scheduler. Every area imports from here; the SQL shape lives in migrations.ts and schedule-store.ts.
+
+export const scheduleTemplates = ['reminder', 'custom_synthesis', 'daily_brief', 'daily_close', 'project_status', 'team_health'] as const
+export type ScheduleTemplate = typeof scheduleTemplates[number]
+export type ScheduleKind = 'notice' | 'synthesis'
+/** `action` belongs to fleet members of derived plans with approved items; a schedule never has it. */
+export type RunProfile = 'notice' | 'synthesis' | 'action'
+export const deliveryTargets = ['hub_inbox', 'app_window', 'gmail_self', 'slack_self'] as const
+export type DeliveryTarget = typeof deliveryTargets[number]
+export const scheduleStates = ['active', 'paused', 'cancelled', 'expired', 'completed'] as const
+export type ScheduleState = typeof scheduleStates[number]
+export const runStates = ['pending', 'running', 'deferred', 'succeeded', 'partial', 'failed', 'uncertain', 'skipped', 'cancelled', 'interrupted'] as const
+export type RunState = typeof runStates[number]
+export const runPhases = ['collect', 'synthesize', 'persist', 'deliver'] as const
+export type RunPhase = typeof runPhases[number]
+export type Continuity = 'live_destination' | 'fork' | 'exclusive_resume' | 'linked_new' | 'none'
+export type Actor = 'agent' | 'human' | 'system'
+/** `owner` schedules aggregate every activated project into one delivery; `project` schedules belong to a single project. */
+export type ScheduleScope = 'project' | 'owner'
+/** `until_next` keeps a lost occurrence valid until the following one; `until_local_time` until a wall-clock cutoff of the same local day. */
+export type GracePolicy = 'minutes' | 'until_next' | 'until_local_time'
+export type ItemState = 'proposed' | 'approved' | 'rejected' | 'dispatching' | 'succeeded' | 'uncertain' | 'expired' | 'superseded' | 'unverifiable'
+export type RunTrigger = 'clock' | 'misfire' | 'run_now'
+export type AttemptState = 'starting' | 'running' | 'exited' | 'deadline_exceeded' | 'terminated' | 'orphan_terminated' | 'orphan_unverified' | 'termination_unknown' | 'spawn_failed'
+export type IncidentCause = 'hub_restart' | 'deadline_exceeded' | 'automations_off' | 'collaboration_off' | 'cancelled' | 'spawn_failed' | 'process_exited'
+export type IncidentAction = 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' | 'none'
+
+export const scheduleEventTypes = ['schedule.created', 'schedule.updated', 'schedule.paused', 'schedule.resumed', 'schedule.cancelled', 'schedule.constrained',
+  'run.started', 'run.deferred', 'run.persisted', 'run.delivered', 'run.finished', 'run.interrupted', 'decision.received', 'action.receipt'] as const
+export type ScheduleEventType = typeof scheduleEventTypes[number]
+
+/** Closed error codes stored in schedule_runs.error_code and phase receipts; provider or CLI text never reaches them. */
+export const runErrorCodes = ['remote_processing_excluded', 'collect_failed', 'synthesis_failed', 'synthesis_invalid_output', 'synthesis_unavailable', 'quota_exhausted',
+  'deadline_exceeded', 'spawn_failed', 'persist_failed', 'delivery_failed', 'delivery_unavailable', 'delivery_uncertain', 'hub_restart', 'automations_off', 'schedule_cancelled'] as const
+export type RunErrorCode = typeof runErrorCodes[number]
+
+export type Recurrence = { type: 'once'; at: string } | { type: 'daily'; time: string; weekdays?: number[] } | { type: 'interval'; minutes: number }
+export const recurrenceSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('once'), at: instant }).strict(),
+  z.object({ type: z.literal('daily'), time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), weekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7).optional() }).strict(),
+  z.object({ type: z.literal('interval'), minutes: z.number().int().min(5).max(10080) }).strict()])
+
+/** Immutable copy of the mutable columns, stored per revision so a deferred run is rebuilt from the revision it was created under. */
+export interface ScheduleSnapshot {
+  template: ScheduleTemplate; template_version: number; kind: ScheduleKind; title: string; instructions: string; params: Record<string, unknown>
+  recurrence: Recurrence; delivery: DeliveryTarget[]; misfire: 'run_once' | 'skip'; grace_minutes: number; grace_policy: GracePolicy; grace_until: string | null; expires_at: string | null
+}
+
+export interface RunContext {
+  run_id: string; schedule_id: string; generation: number; scheduled_for: string; scope: ScheduleScope; project_id: string | null; template: ScheduleTemplate; template_version: number
+  params: Record<string, unknown>; instructions: string; covered_since: string | null; signal: AbortSignal
+}
+/** Optional readers injected by the owning area; a template must omit its block when the reader is absent. */
+export interface CollectDeps { store: MemoryStore; now(): Date; jira?: JiraGuard; attention?: AttentionReaders; options?: Record<string, unknown> }
+export interface JiraGuard {
+  ownerAccountId(): Promise<string | null>
+  assigneeOf(issueKey: string): Promise<{ account_id: string | null; verified: boolean }>
+}
+/** Read-only views over the state of other areas (requests awaiting a reply, supervisor incidents, uncertain deliveries). */
+export type AttentionReaders = Partial<Record<'pending_responses' | 'liveness_incidents' | 'uncertain_deliveries' | 'overdue_close', () => Promise<Array<{ ref: string; summary: string; at: string }>>>>
+export interface RunPackage {
+  project_ids: string[]
+  sections: Array<{ id: string; title: string; data: unknown; sources: Array<{ entity_id?: string; task_id?: string; as_of: string }> }>
+  remote_allowed: boolean; char_count: number
+}
+export interface PublicItem { ordinal: number; estimate_id?: string; kind: 'jira_worklog' | 'jira_transition' | 'jira_comment' | 'git_push' | 'info'; project_id: string; summary: string; effect_digest?: string }
+export interface ArtifactDraft {
+  kind: 'notice' | 'brief' | 'close' | 'status' | 'report'; title: string; body_md: string; items: PublicItem[]
+  snapshot_refs: Array<{ project_id: string; version: number }>; proposed_effects?: Array<{ ordinal: number; effect: unknown }>
+  /** Executed by the persist phase inside the artifact transaction; the returned version is appended to snapshot_refs. */
+  snapshots?: Array<{ project_id: string; write(sql: TransactionSql): Promise<number> }>
+  /** Other rows written in the same transaction (hour estimates). */
+  writers?: Array<{ write(sql: TransactionSql): Promise<unknown> }>
+}
+export interface PhaseReceipt {
+  phase: RunPhase; generation: number; at: string; digest?: string; counts?: Record<string, number>; cli?: string; model?: string
+  usage?: { input_tokens?: number; output_tokens?: number }; error_code?: string; covered_since?: string | null
+}
+
+/** Each area registers its template; `identity` feeds target_key, so it must exclude time and ids. */
+export interface ScheduleTemplateDefinition<P = unknown> {
+  id: ScheduleTemplate; version: number; kind: ScheduleKind
+  params: z.ZodType<P>; identity(params: P): unknown
+  min_interval_minutes: number; max_live_per_project: number; max_runtime_ms: number
+  allowed_targets: DeliveryTarget[]; misfire: 'run_once' | 'skip'; grace_minutes: number; grace_policy: GracePolicy; grace_until?: string
+  scope: ScheduleScope
+  admission_note: string
+  collect(ctx: RunContext, deps: CollectDeps): Promise<RunPackage>
+  synthesize?: { system: string; output: Record<string, unknown>; max_input_chars: number }
+  render(ctx: RunContext, pkg: RunPackage, synthesis: unknown | null): ArtifactDraft
+}
+
+export type RunEvents = {
+  'run.persisted': [{ run_id: string; artifact_id: string; has_items: boolean }]
+  'run.finished': [{ run_id: string; state: RunState }]
+  'schedule.changed': [{ schedule_id: string; type: ScheduleEventType }]
+}
+
+export interface DeliveryReceipt { state: 'sent' | 'failed' | 'uncertain' | 'skipped'; outbox_ref?: string; error_code?: string }
+export interface DeliveryAdapters {
+  available(): Promise<Record<'gmail_self' | 'slack_self', { available: boolean; reason?: 'not_connected' | 'scope_missing' | 'identity_unverified' | 'identity_is_bot' | 'tool_off' }>>
+  executeDelivery(input: { delivery_id: string; run_id: string; artifact_id: string; target: 'gmail_self' | 'slack_self'; expected_generation: number }): Promise<DeliveryReceipt>
+}
+export interface ActionReceipt { intent_id: string; state: 'succeeded' | 'rejected_before_dispatch' | 'uncertain'; remote_ref?: string; result_digest?: string; error_code?: string }
+export interface ActionExecutor {
+  executeApprovedAction(input: { intent_id: string; expected_generation: number }): Promise<ActionReceipt>
+  /** Read-only. */
+  reconcile(intent_id: string): Promise<ActionReceipt>
+}
+/** Idempotent by run_id: a retry after a crash returns the same request reference. */
+export interface DecisionRequests {
+  prepareDecision(input: { run_id: string; artifact_id: string; owner_id: string; project_ids: string[]; items: Array<{ ordinal: number; kind: PublicItem['kind']; project_id: string; summary: string; effect: unknown }>; expires_at: string }): Promise<{ decision_request_ref: string }>
+}
+/** Implemented by the schedule store; the decision module calls it after each transition of an item. */
+export interface PublicStateSink {
+  set(input: { run_id: string; ordinal: number; kind: string; effect_digest?: string; estimate_id?: string; state: ItemState }): Promise<void>
+}
+export interface ScheduleEffects { deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests }
+
+/** Switch and effects injected by the core; the memory package never reads the core database. */
+export interface ScheduleAutomation { enabled(): boolean; effects?: ScheduleEffects }
+
+/** Identities registered by the core for run profiles; they never administer schedules. */
+export const RUN_PROFILE_CLI_KINDS: readonly string[] = ['hub_run_action', 'hub_effects']
+export function isRunProfileAgent(agent: { cli_kind: string }): boolean { return RUN_PROFILE_CLI_KINDS.includes(agent.cli_kind) }
+
+/** `next_run_local` carries the system offset; `delivery_unavailable` lists requested targets whose adapter reports unavailable. */
+export interface ScheduleView {
+  id: string; scope: ScheduleScope; project_id: string | null; template: ScheduleTemplate; template_version: number; kind: ScheduleKind; title: string; recurrence: Recurrence
+  timezone: string; next_run_at: string | null; next_run_local: string | null; delivery: DeliveryTarget[]; delivery_unavailable: DeliveryTarget[]
+  state: ScheduleState; paused_by: Actor | null; revision: number; created_by: { kind: Actor; agent_id: string | null; label: string }; admission_note: string
+  last_run?: { id: string; state: RunState; scheduled_for: string; trigger: RunTrigger; skip_reason?: string; deferred_reason?: string }
+}

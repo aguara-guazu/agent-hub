@@ -411,7 +411,7 @@ it('crea canales independientes, conserva identidad y cierra sólo el canal pedi
   await expect(ops.call('chat_join',{session_key:ka},'mcp',first)).rejects.toThrow('cerrado')
   expect((await ops.call('chat_read',{thread_id:message.thread_id})).items[0].text).toBe('Historia')
   const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-  expect(backup.schema_version).toBe(22)
+  expect(backup.schema_version).toBe(23)
   const restored=new MemoryDatabase(join(dir,'restored','memory.sqlite'));await restored.migrate()
   try {
     await restoreMemory(new MemoryStore(restored,join(dir,'restored')),backup)
@@ -508,7 +508,7 @@ it('migra canales por ruta sin cambiar IDs, mensajes ni recibos',async()=> {
   await db.query('ALTER TABLE chat_channels DROP COLUMN path')
   await db.query('ALTER TABLE chat_channels RENAME COLUMN scope_key TO path')
   await db.query('DELETE FROM schema_versions WHERE version=$1',[migrations.findIndex(m=>m.includes('RENAME COLUMN path TO scope_key'))+1])
-  await db.query('DELETE FROM schema_versions WHERE version=$1',[migrations.length])
+  await db.query('DELETE FROM schema_versions WHERE version=$1',[migrations.findIndex(m=>m.includes('DROP INDEX chat_channels_orca'))+1])
   await db.migrate()
   expect((await db.query('SELECT * FROM chat_channels'))[0]).toMatchObject({id:a.channel.id,path:a.channel.path,scope_key:`git:${a.channel.path}`,orca_workspace_id:null})
   expect(await db.query('SELECT * FROM chat_deliveries')).toEqual(receipts)

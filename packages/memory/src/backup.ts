@@ -13,10 +13,12 @@ const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identi
   'embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'changes'] as const
 // Added by schema version 3; backups taken before it restore without them.
 const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries', 'chat_read_receipts',
-  'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts', 'chat_turns', 'chat_status_notices', 'usage_quota_bindings', 'usage_quota_pools', 'usage_quota_memberships', 'usage_quota_transitions', 'usage_quota_notices'] as const
+  'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts', 'chat_turns', 'chat_status_notices', 'usage_quota_bindings', 'usage_quota_pools', 'usage_quota_memberships', 'usage_quota_transitions', 'usage_quota_notices',
+  'schedules', 'schedule_constraints', 'schedule_runs', 'schedule_run_attempts', 'schedule_run_phases', 'schedule_deliveries', 'schedule_artifacts', 'schedule_item_states', 'schedule_events', 'process_incidents',
+  'decision_exclusions', 'liveness_incidents', 'progress_checkpoints', 'project_automation', 'project_delegations', 'project_repositories', 'push_candidates', 'project_status_snapshots', 'hour_estimates'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–21 restore. */
-const BACKUP_SCHEMA_VERSION = 22
+/** Data-model version of agenthub-memory-v1; backups from 1–22 restore. */
+const BACKUP_SCHEMA_VERSION = 23
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -120,6 +122,17 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
         WHERE m.thread_id=chat_threads.id AND (s.agent_id<>'agenthub-system' OR s.cli_kind<>'hub'))`)
     await sql.query('UPDATE chat_status_notices SET cancelled_at=COALESCE(cancelled_at,$1),error=\'Aviso histórico restaurado\'', [backup.exported_at])
     await sql.query("UPDATE chat_sessions SET label='Sin nick todavía' WHERE nickname IS NULL AND cli_kind<>'hub'")
+    // A copy proves no ownership of processes, grants or decision requests on this host: schedules wait for a human, no occurrence is caught up,
+    // imported PIDs are never signalled, and items without verifiable authority stay blocked.
+    await sql.query("UPDATE schedules SET state='paused',paused_by='system',next_run_at=NULL WHERE state='active'")
+    await sql.query("UPDATE schedule_runs SET state='interrupted',error_code='hub_restart',finished_at=COALESCE(finished_at,$1),next_attempt_at=NULL WHERE state IN ('pending','running','deferred')", [backup.exported_at])
+    await sql.query(`UPDATE schedule_run_attempts SET host_pid=NULL,host_started=NULL,cli_pid=NULL,cli_started=NULL,boot_id=NULL,
+      state=CASE WHEN state IN ('starting','running') THEN 'orphan_unverified' ELSE state END`)
+    await sql.query("UPDATE schedule_deliveries SET state='uncertain' WHERE state='sending'")
+    await sql.query("UPDATE schedule_item_states SET state=CASE WHEN state='dispatching' THEN 'uncertain' ELSE 'unverifiable' END WHERE state IN ('proposed','approved','dispatching')")
+    await sql.query("UPDATE liveness_incidents SET status='resolved',resolved_at=COALESCE(resolved_at,$1),resolution='restored' WHERE status='open'", [backup.exported_at])
+    await sql.query("UPDATE progress_checkpoints SET status='closed',closed_at=$1,closed_reason='restored' WHERE closed_at IS NULL", [backup.exported_at])
+    await sql.query('UPDATE project_automation SET enabled=0,coordinator_session_id=NULL')
     await mkdir(join(store.directory, 'originals'), { recursive: true, mode: 0o700 })
     for (const version of backup.tables.versions ?? []) {
       const path = String(version.original_path)
