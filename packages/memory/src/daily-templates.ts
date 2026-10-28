@@ -81,7 +81,7 @@ const dailyBrief: ScheduleTemplateDefinition<Record<string, never>> = {
 const dailyClose: ScheduleTemplateDefinition<Record<string, never>> = {
   id: 'daily_close', version: 1, kind: 'synthesis', scope: 'owner', params: noParams, identity: () => ({}),
   min_interval_minutes: 60, max_live_per_project: 1, max_runtime_ms: 600_000, allowed_targets: ['hub_inbox', 'app_window', 'gmail_self', 'slack_self'], misfire: 'run_once', grace_minutes: 0,
-  grace_policy: 'until_local_time', grace_until: '22:00', admission_note: 'plantilla cierre: propone horas, transiciones y comentarios para que los apruebes; síntesis sin herramientas, entrega solo a ti',
+  grace_policy: 'until_local_time', grace_until: '22:00', admission_note: 'plantilla cierre: propone horas, transiciones y comentarios que solo se ejecutan si los apruebas; síntesis sin herramientas, entrega solo a ti',
   async collect(ctx, deps) {
     const pkg = await collectClose(dailyDeps(deps), { scheduledFor: ctx.scheduled_for, extendFrom: ctx.extend_from })
     // The model sees only the hour inputs of projects a remote model may receive; the full package stays out of its reach.
