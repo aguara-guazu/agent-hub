@@ -59,6 +59,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   }
   if(p.method==='turn/start') {
    if(p.params.approvalPolicy!=='never'||p.params.sandboxPolicy.type!=='dangerFullAccess')process.exit(9);
+   if(require('node:fs').realpathSync(p.params.cwd)!==process.cwd())process.exit(20);
    active='turn-'+(++n);
    if(mode==='observer') {
     out({method:'item/agentMessage/delta',params:{threadId:'unrelated',itemId:'foreign',delta:'FOREIGN OUTPUT'}});
@@ -140,6 +141,8 @@ createInterface({input:process.stdin}).on('line',line=>{
   }
  } else {
   if(p.type==='user') {
+   if(forking&&n>0&&p.session_id!==session)process.exit(21);
+   if(mode==='forkRebind'&&n>0)out({type:'system',subtype:'init',session_id:'99999999-8888-4777-8666-555555555555'});
    if(!n++)out({type:'system',subtype:'init',session_id:session});
    out({type:'assistant',session_id:session,message:{content:[{text:'SECRET TRANSCRIPT'}]}});
    if(mode==='observer') {
@@ -436,6 +439,17 @@ describe('FleetProcessManager', () => {
     expect(args).not.toContain('--session-id')
     expect(manager.status('one')?.native_id).toBe('11111111-2222-4333-8444-555555555555')
   })
+  it('sends later Claude messages with the learned fork ID and rejects a second init with another ID', async () => {
+    const { manager, input } = await setup('forkRebind')
+    input.cli = 'claude_code'; input.resume_id = '3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11'; input.fork = true
+    await manager.start(input)
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(manager.status('one')?.native_id).toBe('11111111-2222-4333-8444-555555555555')
+    await manager.send('one', 'second message')
+    await until(() => manager.status('one')?.state === 'failed')
+    expect(manager.status('one')?.error_code).toBe('fleet_session_mismatch')
+    expect(manager.status('one')?.native_id).toBe('11111111-2222-4333-8444-555555555555')
+  })
   it('rejects a Claude fork that answers with the source session', async () => {
     const { manager, input } = await setup('forkSame')
     input.cli = 'claude_code'; input.resume_id = '3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11'; input.fork = true
@@ -443,11 +457,12 @@ describe('FleetProcessManager', () => {
     await until(() => manager.status('one')?.state === 'failed')
     expect(manager.status('one')?.error_code).toBe('fleet_session_mismatch')
   })
-  it('forks a Codex thread with only the documented parameters and adopts the new thread ID', async () => {
+  it('forks a Codex thread with only the documented parameters, adopts the new thread ID and runs the turn in the new directory', async () => {
     const { manager, input } = await setup('hold')
     input.resume_id = 'thread-source'; input.fork = true
     expect((await manager.start(input)).state).toBe('busy')
     expect(manager.status('one')?.native_id).toBe('thread-native')
+    expect(manager.status('one')?.cwd).toBe(input.cwd)
   })
   it('rejects a Codex fork that answers with the source thread', async () => {
     const { manager, input } = await setup('forkSame')

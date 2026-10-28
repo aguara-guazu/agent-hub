@@ -1,14 +1,16 @@
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdir, realpath, readFile, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { mkdir, mkdtemp, readdir, realpath, readFile, rm, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { check, MemoryError } from './contracts.js'
 import { validCliModel, type ExtractionCli } from './cli-extraction.js'
-import { restorableNativeId } from './resume-capabilities.js'
-import { virtualFolder, type LocalChat } from './local-chat.js'
+import { helpCommands, helpFlags, parseCliVersion, resumeSurface, schemaMethods, type InstalledEvidence } from './resume-capabilities.js'
+import { planResume, type OriginObservation, type ResumeOrigin, type ResumePlan } from './resume-ladder.js'
+import { projectForPath } from './agents.js'
+import { sessionStatus, virtualFolder, type LocalChat } from './local-chat.js'
 import type { TeamOrca, TeamWorkspace, TeamLaunchReceipt, TeamLaunchMember } from './team-orca.js'
 import { FleetProcessManager, type FleetEvent, type FleetProcessOptions, type FleetStatus, type FleetPendingQuestion, type FleetQuestionAnswers } from './fleet-process.js'
 
@@ -17,15 +19,27 @@ type RunOptions = { cwd?: string; env: NodeJS.ProcessEnv; timeout: number; maxBu
 export interface HubTeamOptions extends FleetProcessOptions {
   /** Read-only CLI capability checks and Git operations; prompts never travel through this runner. */
   run?: (command: string, args: string[], options: RunOptions) => Promise<{ stdout: string }>
+  /** Account behind a CLI and model. undefined = unknown, which never allows restoring another conversation. */
+  resolveAccount?: (cli: string, model: string) => Promise<string | null | undefined>
 }
 export interface HubTeamStatus extends FleetStatus {
   provider: 'hub'
   generation: string
   updated_at: string
 }
-/** Continuation selected by `planResume`; a fork copies the conversation, otherwise the original is reused exclusively. */
-export interface HubResume { native_id: string; fork: boolean }
-export interface HubTeamLaunchReceipt extends TeamLaunchReceipt { runtime: HubTeamStatus }
+/**
+ * Request to continue a creator conversation. The runtime resolves the origin from its own records and decides the
+ * rung at the launch boundary; the caller supplies no capability, ID or exclusion claim.
+ */
+export interface HubContinuation {
+  /** chat_sessions.id of the conversation whose context should continue. */
+  origin_session_id: string
+  /** Project of the run, owned by the backend (null = verified none). */
+  project_id: string | null
+  /** A restricted profile is launched only after verify() proves the effective profile. */
+  profile?: { restricted: boolean; verify: () => Promise<boolean> }
+}
+export interface HubTeamLaunchReceipt extends TeamLaunchReceipt { runtime: HubTeamStatus; continuity?: ResumePlan }
 type ManagedChat = LocalChat & {
   managedLifecycle(sessionId: string, event: string, at: string, turnId?: string): Promise<unknown>
   managedQuestions(senderId: string, questions: FleetPendingQuestion[], generation: string): Promise<unknown>
@@ -88,14 +102,13 @@ export class HubTeamRuntime implements TeamOrca {
         timeout: 15_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true })).stdout.trim()
     } catch { throw new MemoryError(503, 'No se pudo verificar la operación local del Hub. No se reintentó ni se eliminaron recursos.') }
   }
-  async preflight(members: Array<{ cli: ExtractionCli; model: string; effort?: string; resume?: HubResume }>): Promise<void> {
+  async preflight(members: Array<{ cli: ExtractionCli; model: string; effort?: string }>): Promise<void> {
     this.requireEnabled()
     const checked = new Map<string, string>()
     for (const member of members) {
       check(member.cli === 'claude_code' || member.cli === 'codex_cli' || member.cli === 'kiro', 'La flota del Hub admite Claude Code, Codex CLI y Kiro.', 409)
       check(validCliModel(member.model), 'Elegí un nombre de modelo válido.', 400)
       check(!member.effort || /^[a-z][a-z0-9_-]{0,39}$/.test(member.effort), 'Esfuerzo inválido.', 400)
-      check(!member.resume || (restorableNativeId(member.resume.native_id) && (member.cli !== 'kiro' || !member.resume.fork)), 'La continuación pedida no usa un identificador nativo restaurable o la CLI no admite fork.', 400)
       let help = checked.get(member.cli)
       if (!help) {
         help = await this.run(member.cli === 'claude_code' ? 'claude' : member.cli === 'kiro' ? 'kiro-cli' : 'codex',
@@ -103,7 +116,7 @@ export class HubTeamRuntime implements TeamOrca {
         checked.set(member.cli, help)
       }
       const required = member.cli === 'claude_code'
-        ? ['--print', '--input-format', '--output-format', '--verbose', '--dangerously-skip-permissions', '--model', '--session-id', '--resume', ...(member.resume?.fork ? ['--fork-session'] : []), ...(member.effort ? ['--effort'] : [])]
+        ? ['--print', '--input-format', '--output-format', '--verbose', '--dangerously-skip-permissions', '--model', '--session-id', '--resume', ...(member.effort ? ['--effort'] : [])]
         : member.cli === 'kiro' ? ['--model', '--trust-all-tools', ...(member.effort ? ['--effort'] : [])]
         : ['--listen', 'stdio']
       check(required.every(flag => help.includes(flag)), 'La CLI instalada no confirma el protocolo nativo requerido por la flota del Hub. Actualizá la CLI antes de lanzar.', 409)
@@ -199,24 +212,89 @@ export class HubTeamRuntime implements TeamOrca {
       'Git no confirmó el worktree hijo esperado. Conservá los recursos e inspeccioná el resultado.', 502)
     return child
   }
-  async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean; resume?: HubResume; authorize?: () => Promise<void> }): Promise<HubTeamLaunchReceipt> {
+  /** Evidence of what the installed binary offers, gathered read-only; any probe that fails leaves its field unknown. */
+  private async installedEvidence(cli: ExtractionCli): Promise<InstalledEvidence> {
+    const surface = resumeSurface(cli, 'fleet')
+    const records = Object.values(surface?.capabilities ?? {})
+    const flags = records.flatMap(record => record.flags ?? []), commands = records.flatMap(record => record.commands ?? [])
+    const binary = cli === 'claude_code' ? 'claude' : cli === 'kiro' ? 'kiro-cli' : 'codex'
+    const evidence: InstalledEvidence = {}
+    const version = parseCliVersion(await this.run(binary, ['--version']).catch(() => ''))
+    if (version) evidence.version = version
+    const help = await this.run(binary, cli === 'claude_code' ? ['--help'] : cli === 'kiro' ? ['acp', '--help'] : ['--help']).catch(() => undefined)
+    if (help !== undefined) {
+      evidence.flags = helpFlags(help, flags)
+      if (cli !== 'codex_cli') evidence.commands = helpCommands(help, commands)
+    }
+    if (cli === 'codex_cli') {
+      // The fleet speaks the app-server protocol: its methods come from the schema the installed binary generates
+      // (no conversation is touched). Without that schema they stay unknown rather than contradicted.
+      const methods = commands
+      const directory = await mkdtemp(join(tmpdir(), 'hub-codex-schema-'))
+      try {
+        await this.run(binary, ['app-server', 'generate-json-schema', '--out', directory])
+        const files = (await readdir(directory, { recursive: true })).filter(name => name.endsWith('.json'))
+        const schema = (await Promise.all(files.map(name => readFile(join(directory, name), 'utf8').catch(() => '')))).join('\n')
+        if (schema.trim()) evidence.commands = schemaMethods(schema, methods)
+      } catch { /* Without the schema the protocol methods stay unverified. */ }
+      finally { await rm(directory, { recursive: true, force: true }).catch(() => {}) }
+    }
+    return evidence
+  }
+  /** Resolves the continuation from this runtime's own records; the decision cannot be supplied by the caller. */
+  private async planContinuation(member: TeamLaunchMember & { continuation: HubContinuation }, cwd: string): Promise<ResumePlan> {
+    const row = (await this.chat.db.query('SELECT * FROM chat_sessions WHERE id=$1', [member.continuation.origin_session_id]))[0]
+    const originCwd = typeof row?.native_cwd === 'string' ? row.native_cwd : null
+    const [originProject, originAccount, targetAccount, installed] = await Promise.all([
+      originCwd ? projectForPath(this.chat.db, originCwd) : Promise.resolve(undefined),
+      row ? this.options.resolveAccount?.(String(row.cli_kind), String(row.model ?? '')) : undefined,
+      this.options.resolveAccount?.(member.cli, member.model),
+      this.installedEvidence(member.cli),
+    ])
+    const now = Date.now()
+    const origin: ResumeOrigin = {
+      native_id: row && typeof row.native_id === 'string' ? row.native_id : null,
+      cli: row ? String(row.cli_kind) : '', surface: row && typeof row.surface === 'string' ? row.surface : '',
+      cwd: originCwd, live: row ? ['idle', 'busy', 'blocked'].includes(sessionStatus(row, now).state) : false,
+      id_authentic: Boolean(row && row.resumable === 1 && ['hook', 'fleet_protocol'].includes(String(row.id_captured_by))),
+      ...(originCwd ? { project_id: originProject?.id ?? null } : {}),
+      ...(originAccount !== undefined ? { account: originAccount } : {}),
+    }
+    const observed: OriginObservation = row ? { lease_active: Date.parse(row.lease_until) > now } : {}
+    const profile = member.continuation.profile
+    const verified = !profile?.restricted || await profile.verify().then(Boolean, () => false)
+    return planResume(origin, {
+      cli: member.cli, surface: 'fleet', cwd, headless: true, profile: { restricted: profile?.restricted === true, verified },
+      project_id: member.continuation.project_id, ...(targetAccount !== undefined ? { account: targetAccount } : {}),
+    }, installed, observed)
+  }
+  async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean; continuation?: HubContinuation; authorize?: () => Promise<void> }): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
     const id = member.member_id ?? randomUUID()
     check(safeId(id) && id.length <= 200, 'Identificador de miembro inválido.', 400)
     check(!this.launching.has(id), 'El miembro ya tiene un lanzamiento en curso.', 409)
     check(member.prompt.length > 0 && member.prompt.length <= 24_000 && !member.prompt.includes('\0'), 'Instrucción inicial inválida.', 400)
     this.launching.add(id)
-    let attempted = false
+    let attempted = false, plan: ResumePlan | undefined
     try {
       await this.preflight([member])
       const current = await this.unchanged(workspace, member.resume_worktree === true)
       await member.authorize?.()
       this.requireEnabled()
       check(member.cli === 'claude_code' || member.cli === 'codex_cli' || member.cli === 'kiro', 'CLI no soportada por la flota del Hub.', 409)
+      if (member.continuation) {
+        plan = await this.planContinuation({ ...member, continuation: member.continuation }, current.path)
+        this.requireEnabled()
+        const refuse = (message: string) => { throw Object.assign(new MemoryError(409, message), { continuity: plan }) }
+        if (plan.rung === 'live_destination') refuse('El chat creador sigue conectado: entregá el resultado allí; no se lanza otra conversación.')
+        if (plan.rung === 'blocked_unsupported') refuse('El perfil restringido no pudo verificarse; no se lanza ningún agente.')
+        // No adapter acquires an exclusion over the original session, so a plain resume is never launched.
+        if (plan.rung === 'exclusive_resume') refuse('El runtime no obtiene exclusión sobre la sesión original; sólo se admite fork o una conversación nueva vinculada.')
+      }
       this.nextGenerations.set(id, randomUUID())
       attempted = true
       const result = await this.manager.start({ id, cli: member.cli, cwd: current.path, model: member.model, prompt: member.prompt,
-        ...(member.effort ? { effort: member.effort } : {}), ...(member.resume ? { resume_id: member.resume.native_id, ...(member.resume.fork ? { fork: true } : {}) } : {}) })
+        ...(member.effort ? { effort: member.effort } : {}), ...(plan?.rung === 'fork' ? { resume_id: plan.native_id!, fork: true } : {}) })
       await this.verifyLaunchEnabled(id)
       if (!['busy', 'idle', 'waiting_input'].includes(result.state)) {
         throw new MemoryError(503, 'El agente del Hub no confirmó la entrega inicial. Inspeccioná su estado antes de volver a lanzar.')
@@ -224,12 +302,12 @@ export class HubTeamRuntime implements TeamOrca {
       const runtime = await this.status(id)
       check(runtime, 'El Hub no confirmó los metadatos del agente.', 503)
       await this.verifyLaunchEnabled(id)
-      return { handle: id, kind: 'hub_process', prompt_outcome: 'input-accepted', runtime }
+      return { handle: id, kind: 'hub_process', prompt_outcome: 'input-accepted', runtime, ...(plan ? { continuity: plan } : {}) }
     } catch (error) {
       if (!attempted) throw error
       const failure = error instanceof MemoryError ? error : new MemoryError(503, 'El Hub no confirmó el proceso del agente. Inspeccioná su estado antes de reintentar.')
       // After an attempted fork/resume a process may exist: the caller reconciles and never walks down another rung.
-      throw Object.assign(failure, { launch_handle: id, ...(member.resume ? { resume_outcome: 'launch_uncertain' as const } : {}) })
+      throw Object.assign(failure, { launch_handle: id, ...(plan ? { continuity: plan } : {}), ...(plan?.rung === 'fork' ? { resume_outcome: 'launch_uncertain' as const } : {}) })
     } finally { this.launching.delete(id); this.nextGenerations.delete(id) }
   }
   private async verifyLaunchEnabled(id: string): Promise<void> {

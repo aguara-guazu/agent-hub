@@ -154,11 +154,13 @@ export class FleetProcessManager {
       }
       if (packet.type === 'control_cancel_request') { this.cancelQuestion(s, packet.request_id); return }
       if (packet.type === 'system' && packet.subtype === 'init') {
-        // A fork learns its new native ID here; it must be a different session than the one it was copied from.
-        const identity = s.forkOf ? packet.session_id !== s.forkOf && FORK_SESSION_ID.test(packet.session_id ?? '') : packet.session_id === s.expectedNative
+        // A fork learns its new native ID here: once, different from its source, and fixed for every later packet and message.
+        const identity = s.expectedNative ? packet.session_id === s.expectedNative
+          : s.forkOf !== undefined && packet.session_id !== s.forkOf && FORK_SESSION_ID.test(packet.session_id ?? '')
         if (typeof packet.session_id !== 'string' || !identity) {
           this.fail(s, 'fleet_session_mismatch'); return
         }
+        s.expectedNative = packet.session_id
         s.status.native_id = packet.session_id
         this.publish(s, 'busy')
         s.ready?.resolve(); s.ready = undefined
@@ -513,7 +515,8 @@ export class FleetProcessManager {
     s.submitting = true
     s.activity.add('user', text)
     try {
-      const response = await this.request(s, 'turn/start', { threadId: s.status.native_id, input: [{ type: 'text', text }],
+      // cwd travels with every turn: a forked thread keeps its source's directory until a turn overrides it.
+      const response = await this.request(s, 'turn/start', { threadId: s.status.native_id, input: [{ type: 'text', text }], cwd: s.status.cwd,
         model: s.status.model, approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' }, ...(s.status.effort ? { effort: s.status.effort } : {}) })
       const id = response.turn?.id
       if (typeof id !== 'string' || !id) throw new Error('fleet_missing_turn_id')

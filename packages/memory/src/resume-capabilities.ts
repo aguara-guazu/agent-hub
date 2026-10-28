@@ -2,12 +2,18 @@ export type CapabilityStatus = 'supported' | 'unsupported' | 'unverified'
 export type ResumeCapabilityName = 'resume_by_id' | 'fork_headless' | 'fork_interactive' | 'headless_resume' | 'exclusive_resume' |
   'capture_id' | 'lifecycle_events' | 'profile_enforcement'
 
-/** Documentary evidence for one capability. `flags` are the CLI flags that must appear in the installed binary's help. */
+/**
+ * Documentary evidence for one capability. Documentation proves that a function exists, never that this installation
+ * offers it: `flags` must appear in the installed binary's help, `commands` (subcommands or protocol methods) in its
+ * help or generated protocol schema, and `min_version` is compared with the installed version.
+ */
 export interface CapabilityRecord {
   status: CapabilityStatus
   source: string | null
   checked_at: string
   flags?: string[]
+  commands?: string[]
+  min_version?: string
   note?: string
 }
 export interface ResumeSurface {
@@ -22,6 +28,8 @@ export interface InstalledEvidence {
   version?: string
   /** Flags confirmed in the installed binary's help output. Absent means the binary was not inspected. */
   flags?: string[]
+  /** Subcommands or protocol methods confirmed in the installed binary's help or generated schema. */
+  commands?: string[]
 }
 
 const CHECKED = '2026-10-28'
@@ -59,7 +67,7 @@ export const RESUME_CATALOG: readonly ResumeSurface[] = [
   { cli: 'claude_code', surface: 'fleet', id_namespace: 'claude_session', id_source: 'hook stdin session_id / stream-json system init',
     capabilities: {
       resume_by_id: doc(CLAUDE_CLI, { flags: ['--resume'] }),
-      fork_headless: doc(CLAUDE_CLI, { flags: ['--resume', '--fork-session'], note: '--fork-session crea un ID nuevo; su combinación con --session-id no está documentada.' }),
+      fork_headless: missing('--fork-session crea un ID nuevo, pero no está documentado cómo el modo stream-json admite el primer mensaje sin conocer ese ID ni su combinación con --session-id.', CLAUDE_CLI),
       fork_interactive: doc(CLAUDE_CLI, { flags: ['--resume', '--fork-session'] }),
       headless_resume: doc(CLAUDE_CLI, { flags: ['--print', '--resume'] }),
       exclusive_resume: missing(NO_LOCK, CLAUDE_CLI),
@@ -80,10 +88,10 @@ export const RESUME_CATALOG: readonly ResumeSurface[] = [
     } },
   { cli: 'codex_cli', surface: 'fleet', id_namespace: 'codex_thread', id_source: 'app-server thread.id (thread.sessionId identifies the session tree root, not the thread)',
     capabilities: {
-      resume_by_id: doc(CODEX_SERVER, { note: 'thread/resume con thread.id guardado.' }),
-      fork_headless: doc(CODEX_SERVER, { note: 'thread/fork copia el historial y devuelve un thread.id nuevo; documenta threadId, lastTurnId, excludeTurns y ephemeral, no cwd, modelo ni sandbox: el perfil se fija en turn/start.' }),
-      fork_interactive: doc(CODEX_COMMANDS, { note: 'codex fork <id>.' }),
-      headless_resume: doc(CODEX_SERVER),
+      resume_by_id: doc(CODEX_SERVER, { commands: ['thread/resume'], note: 'thread/resume con thread.id guardado.' }),
+      fork_headless: doc(CODEX_SERVER, { commands: ['thread/fork'], note: 'thread/fork copia el historial y devuelve un thread.id nuevo; documenta threadId, lastTurnId, excludeTurns y ephemeral, no cwd, modelo ni sandbox: turn/start los fija por turno.' }),
+      fork_interactive: doc(CODEX_COMMANDS, { commands: ['fork'], note: 'codex fork <id>.' }),
+      headless_resume: doc(CODEX_SERVER, { commands: ['thread/resume'] }),
       exclusive_resume: missing(NO_LOCK, CODEX_SERVER),
       capture_id: doc(CODEX_HOOKS),
       lifecycle_events: doc(CODEX_HOOKS),
@@ -91,10 +99,10 @@ export const RESUME_CATALOG: readonly ResumeSurface[] = [
     } },
   { cli: 'codex_cli', surface: 'interactive', id_namespace: 'codex_thread', id_source: 'hook stdin session_id',
     capabilities: {
-      resume_by_id: doc(CODEX_COMMANDS, { note: 'codex resume <id>.' }),
-      fork_headless: doc(CODEX_COMMANDS, { note: 'codex exec fork <id> [PROMPT].' }),
-      fork_interactive: doc(CODEX_COMMANDS, { note: 'codex fork <id>.' }),
-      headless_resume: doc(CODEX_COMMANDS, { note: 'codex exec resume <id>.' }),
+      resume_by_id: doc(CODEX_COMMANDS, { commands: ['resume'], note: 'codex resume <id>.' }),
+      fork_headless: doc(CODEX_COMMANDS, { commands: ['exec', 'fork'], note: 'codex exec fork <id> [PROMPT].' }),
+      fork_interactive: doc(CODEX_COMMANDS, { commands: ['fork'], note: 'codex fork <id>.' }),
+      headless_resume: doc(CODEX_COMMANDS, { commands: ['exec', 'resume'], note: 'codex exec resume <id>.' }),
       exclusive_resume: missing(NO_LOCK, CODEX_COMMANDS),
       capture_id: doc(CODEX_HOOKS),
       lifecycle_events: doc(CODEX_HOOKS),
@@ -146,7 +154,7 @@ export const RESUME_CATALOG: readonly ResumeSurface[] = [
     } },
   { cli: 'claude_desktop', surface: 'code_tab', id_namespace: 'claude_session', id_source: 'hooks compartidos con la CLI',
     capabilities: {
-      resume_by_id: doc(CLAUDE_DESKTOP, { note: 'claude --desktop --resume <id> continúa una sesión de la CLI en Desktop; no se hace con la sesión abierta.' }),
+      resume_by_id: doc(CLAUDE_DESKTOP, { min_version: '2.1.285', note: 'claude --desktop --resume <id> continúa una sesión de la CLI en Desktop; no se hace con la sesión abierta.' }),
       fork_headless: absent('Desktop es interactivo y no ofrece --print.', CLAUDE_DESKTOP),
       fork_interactive: missing('Fork propio de Desktop no verificado.', CLAUDE_DESKTOP),
       headless_resume: absent('Desktop es interactivo y no ofrece --print.', CLAUDE_DESKTOP),
@@ -161,15 +169,36 @@ export function resumeSurface(cli: string, surface: string): ResumeSurface | und
   return RESUME_CATALOG.find(item => item.cli === cli && item.surface === surface)
 }
 
+const versionParts = (value: string) => value.split(/[-+]/)[0]!.split('.').map(part => Number(part))
+/** Negative, zero or positive like a comparator; non-numeric parts make the versions incomparable (NaN). */
+export function compareVersions(a: string, b: string): number {
+  const left = versionParts(a), right = versionParts(b)
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
 /**
- * Status usable by the ladder. A documented capability that lists flags is only effective when the installed binary
- * confirmed every one of them; an uninspected binary leaves it `unverified`.
+ * Status usable by the ladder. Documentation alone never enables a function: every listed requirement (flags,
+ * commands, minimum version) must be confirmed by the installed binary. Missing inspection leaves it `unverified`;
+ * an inspection that lacks a requirement makes it `unsupported`.
  */
 export function effectiveCapability(record: CapabilityRecord | undefined, installed?: InstalledEvidence): CapabilityStatus {
   if (!record || record.status !== 'supported') return record?.status ?? 'unverified'
-  if (!record.flags?.length) return 'supported'
-  if (!installed?.flags) return 'unverified'
-  return record.flags.every(flag => installed.flags!.includes(flag)) ? 'supported' : 'unsupported'
+  // One entry per listed requirement: true = confirmed, false = contradicted, undefined = not inspected.
+  const checks: Array<boolean | undefined> = []
+  if (record.flags?.length) checks.push(installed?.flags ? record.flags.every(flag => installed.flags!.includes(flag)) : undefined)
+  if (record.commands?.length) checks.push(installed?.commands ? record.commands.every(command => installed.commands!.includes(command)) : undefined)
+  if (record.min_version) {
+    const diff = installed?.version ? compareVersions(installed.version, record.min_version) : Number.NaN
+    checks.push(Number.isNaN(diff) ? undefined : diff >= 0)
+  }
+  // No requirement to confirm means nothing installed can back the documentation.
+  if (!checks.length) return 'unverified'
+  if (checks.some(check => check === false)) return 'unsupported'
+  return checks.every(check => check === true) ? 'supported' : 'unverified'
 }
 
 /** Pulls the first dotted version out of `--version` output; anything else is not a version. */
@@ -180,6 +209,16 @@ export function parseCliVersion(output: string): string | undefined {
 /** Flags present in a CLI's help output, limited to those the catalog asks about. */
 export function helpFlags(help: string, wanted: Iterable<string>): string[] {
   return [...new Set(wanted)].filter(flag => new RegExp(`(?:^|[\\s,|\\[])${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`, 'm').test(help))
+}
+
+/** Subcommands listed at the start of a help line (`Commands:` sections) among those the catalog asks about. */
+export function helpCommands(help: string, wanted: Iterable<string>): string[] {
+  return [...new Set(wanted)].filter(command => new RegExp(`^\\s{0,8}${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|,|$)`, 'm').test(help))
+}
+
+/** Protocol methods present as quoted names in a schema generated by the installed binary. */
+export function schemaMethods(schema: string, wanted: Iterable<string>): string[] {
+  return [...new Set(wanted)].filter(method => schema.includes(`"${method}"`))
 }
 
 /** IDs that must never restore a conversation: transport identifiers, "last session" markers, empty values. */

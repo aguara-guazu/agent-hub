@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { LocalChat } from './local-chat.js'
 import { HubTeamRuntime, type HubTeamOptions, type HubTeamStatus } from './team-hub.js'
+import { resumeSurface } from './resume-capabilities.js'
 
 const exec = promisify(execFile)
 let directory: string
@@ -32,7 +33,9 @@ createInterface({input:process.stdin}).on('line',line=>{
  } else {
   if(p.method==='initialize')out({id:p.id,result:{}});
   if(p.method==='thread/start')out({id:p.id,result:{thread:{id:'native'}}});
+  if(p.method==='thread/fork')out({id:p.id,result:{thread:{id:'native-fork',sessionId:'root-session'}}});
   if(p.method==='turn/start') {
+   if(require('node:fs').realpathSync(p.params.cwd)!==process.cwd())process.exit(20);
    turn='turn-'+(++n);
    out({id:p.id,result:{turn:{id:turn,status:'inProgress'}}});
    out({method:'item/agentMessage/delta',params:{threadId:'native',delta:'PRIVATE output'}});
@@ -51,10 +54,13 @@ createInterface({input:process.stdin}).on('line',line=>{
 });`
 function mockChat() {
   const rows = new Map<string, { id: string; session_id: string | null; runtime: HubTeamStatus | null }>()
+  const sessions = new Map<string, Record<string, unknown>>()
   let authorized = true
   const managedQuestions = vi.fn(async (_sender: string, _questions: unknown[], _generation: string) => {})
   const lifecycle = vi.fn(async (_session: string, _event: string, _at: string, _turn?: string) => {})
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+    if (sql.startsWith('SELECT * FROM chat_sessions WHERE id=$1')) return sessions.has(String(params[0])) ? [{ ...sessions.get(String(params[0])) }] : []
+    if (sql.startsWith("SELECT id,title,data FROM entities WHERE kind='project'")) return []
     if (sql.startsWith('SELECT m.id FROM chat_team_members')) return authorized && rows.get(String(params[0]))?.session_id === params[1] ? [{ id: params[0] }] : []
     if (sql.startsWith('SELECT id,session_id,runtime') && sql.includes('WHERE session_id=$1')) return [...rows.values()].filter(row => row.session_id === params[0]).map(row => ({ ...row }))
     if (sql.startsWith('SELECT id,session_id,runtime')) {
@@ -65,7 +71,7 @@ function mockChat() {
     }
     throw new Error('Unexpected test SQL')
   })
-  return { chat: { db: { query }, managedLifecycle: lifecycle, managedQuestions } as unknown as LocalChat, rows, lifecycle, managedQuestions, query, setAuthorized: (value: boolean) => { authorized = value } }
+  return { chat: { db: { query }, managedLifecycle: lifecycle, managedQuestions } as unknown as LocalChat, rows, sessions, lifecycle, managedQuestions, query, setAuthorized: (value: boolean) => { authorized = value } }
 }
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'hub-team-runtime-'))
@@ -152,48 +158,90 @@ describe('HubTeamRuntime worktrees and native preflight', () => {
 })
 
 describe('HubTeamRuntime continuation', () => {
-  const source = '3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11'
-  const withFork = { run: async (command: string, args: string[], options: Parameters<NonNullable<HubTeamOptions['run']>>[2]) => command === 'git' ? exec(command, args, options) : { stdout: `${help} --fork-session` } }
-  it('requires the installed binary to confirm --fork-session and rejects unrestorable or unsupported continuations before spawning', async () => {
-    const plain = setup()
-    await expect(plain.backend.preflight([{ cli: 'claude_code', model: 'opus', resume: { native_id: source, fork: true } }])).rejects.toThrow('protocolo nativo')
-    await expect(plain.backend.preflight([{ cli: 'claude_code', model: 'opus', resume: { native_id: source, fork: false } }])).resolves.toBeUndefined()
-    const forking = setup('normal', withFork)
-    await expect(forking.backend.preflight([{ cli: 'claude_code', model: 'opus', resume: { native_id: source, fork: true } }])).resolves.toBeUndefined()
-    for (const native_id of ['tui:3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11', 'last', '']) {
-      await expect(forking.backend.preflight([{ cli: 'claude_code', model: 'opus', resume: { native_id, fork: false } }])).rejects.toThrow('restaurable')
-    }
-    await expect(forking.backend.preflight([{ cli: 'kiro', model: 'kiro-model', resume: { native_id: 'kiro-session', fork: true } }])).rejects.toThrow('no admite fork')
-    expect(plain.launched).not.toHaveBeenCalled()
-    expect(forking.launched).not.toHaveBeenCalled()
+  const methods = '{"methods":["thread/fork","thread/resume"]}'
+  const iso = (offset: number) => new Date(Date.now() + offset).toISOString()
+  const withSchema = (extra: Partial<HubTeamOptions> = {}): HubTeamOptions => ({
+    run: async (command, args, options) => {
+      if (command === 'git') return exec(command, args, options)
+      const out = args.indexOf('--out')
+      if (args.includes('generate-json-schema') && out >= 0) await writeFile(join(args[out + 1]!, 'schema.json'), methods)
+      return { stdout: help }
+    },
+    resolveAccount: async () => 'account-a', ...extra,
   })
-  it('launches a Claude fork without choosing its session ID and adopts the one the CLI reports', async () => {
-    const { backend, id, launched } = setup('hold', withFork)
-    const parent = await backend.workspace(join(directory, 'repo'))
-    const receipt = await backend.launch(parent, { member_id: id, cli: 'claude_code', model: 'opus', prompt: 'PRIVATE', resume: { native_id: source, fork: true } })
-    const args = launched.mock.calls[0]![1] as string[]
-    expect(args).toEqual(expect.arrayContaining(['--resume', source, '--fork-session']))
-    expect(args).not.toContain('--session-id')
-    expect(receipt.runtime.native_id).toBe('11111111-2222-4333-8444-555555555555')
+  const origin = (patch: Record<string, unknown> = {}) => ({ id: 'creator', cli_kind: 'codex_cli', surface: 'interactive', native_id: 'thread-source', native_cwd: '',
+    model: 'exact-model', resumable: 1, id_captured_by: 'hook', state: 'idle', closed_at: iso(-1000), lease_until: iso(-60_000), event_at: iso(-60_000), removed_at: null, ...patch })
+  async function prepare(mode = 'hold', extra: HubTeamOptions = withSchema(), patch: Record<string, unknown> = {}) {
+    const set = setup(mode, extra)
+    const parent = await set.backend.workspace(join(directory, 'repo'))
+    set.sessions.set('creator', origin({ native_cwd: parent.path, ...patch }))
+    return { ...set, parent, launch: (continuation: Parameters<typeof set.backend.launch>[1]['continuation']) =>
+      set.backend.launch(parent, { member_id: set.id, cli: 'codex_cli', model: 'exact-model', prompt: 'PRIVATE', ...(continuation ? { continuation } : {}) }) }
+  }
+  const request = { origin_session_id: 'creator', project_id: null }
+
+  it('forks a Codex thread only when installed schema, origin metadata, project and account are all verified', async () => {
+    const { launch, launched } = await prepare()
+    const receipt = await launch(request)
+    expect(receipt.continuity).toMatchObject({ rung: 'fork', reason: 'fork_headless', native_id: 'thread-source' })
+    expect(receipt.runtime.native_id).toBe('native-fork')
+    expect(launched).toHaveBeenCalledTimes(1)
   })
-  it('resumes the original Claude session only when asked to', async () => {
-    const { backend, id, launched } = setup('hold')
-    const parent = await backend.workspace(join(directory, 'repo'))
-    const receipt = await backend.launch(parent, { member_id: id, cli: 'claude_code', model: 'opus', prompt: 'PRIVATE', resume: { native_id: source, fork: false } })
-    const args = launched.mock.calls[0]![1] as string[]
-    expect(args).toEqual(expect.arrayContaining(['--resume', source]))
-    expect(args).not.toContain('--fork-session')
-    expect(receipt.runtime.native_id).toBe(source)
+  it('does not fork from documentation alone: without the installed schema it starts a new linked conversation', async () => {
+    const { launch } = await prepare('hold', { resolveAccount: async () => 'account-a' })
+    const receipt = await launch(request)
+    expect(receipt.continuity).toMatchObject({ rung: 'linked_new' })
+    expect(receipt.continuity!.downgrades).toContain('fork_headless_unverified')
+    expect(receipt.runtime.native_id).toBe('native')
   })
-  it('marks a failed attempted continuation as uncertain and never as a plain failure', async () => {
-    const { backend, id } = setup('invalid')
-    const parent = await backend.workspace(join(directory, 'repo'))
-    const failure = await backend.launch(parent, { member_id: id, cli: 'claude_code', model: 'opus', prompt: 'PRIVATE', resume: { native_id: source, fork: false } }).catch(error => error)
-    expect(failure).toMatchObject({ launch_handle: id, resume_outcome: 'launch_uncertain' })
-    const plain = setup('invalid')
-    const other = await plain.backend.launch(await plain.backend.workspace(join(directory, 'repo')), { member_id: plain.id, cli: 'claude_code', model: 'opus', prompt: 'PRIVATE' }).catch(error => error)
-    expect(other).toMatchObject({ launch_handle: plain.id })
-    expect(other).not.toHaveProperty('resume_outcome')
+  it.each([
+    ['an unknown account', withSchema({ resolveAccount: async () => undefined }), {}, 'account_unverified'],
+    ['another account', withSchema({ resolveAccount: async (_cli: string, model: string) => model === 'origin-model' ? 'account-b' : 'account-a' }), { model: 'origin-model' }, 'account_mismatch'],
+    ['a transport identifier', withSchema(), { native_id: 'tui:3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11' }, 'no_authentic_id'],
+    ['an ID that was not captured from a hook', withSchema(), { resumable: 0, id_captured_by: null }, 'no_authentic_id'],
+    ['another directory', withSchema(), { native_cwd: '/somewhere/else' }, 'cwd_incompatible'],
+    ['another CLI surface', withSchema(), { cli_kind: 'claude_code' }, 'id_namespace_mismatch'],
+  ])('starts a new linked conversation for %s', async (_name, options, patch, reason) => {
+    const { launch } = await prepare('hold', options, patch)
+    const receipt = await launch(request)
+    expect(receipt.continuity!.rung).toBe('linked_new')
+    expect(receipt.continuity!.downgrades).toContain(reason)
+    expect(receipt.runtime.native_id).toBe('native')
+  })
+  it('does not launch another conversation while the creator chat is still connected', async () => {
+    const { launch, launched } = await prepare('hold', withSchema(), { closed_at: null, state: 'idle', lease_until: iso(60_000), event_at: iso(-1000) })
+    await expect(launch(request)).rejects.toMatchObject({ message: expect.stringContaining('sigue conectado'), continuity: { rung: 'live_destination' } })
+    expect(launched).not.toHaveBeenCalled()
+  })
+  it('launches nothing when a restricted profile cannot be verified', async () => {
+    const { launch, launched } = await prepare()
+    await expect(launch({ ...request, profile: { restricted: true, verify: async () => false } })).rejects.toMatchObject({ continuity: { rung: 'blocked_unsupported' } })
+    await expect(launch({ ...request, profile: { restricted: true, verify: async () => { throw new Error('boom') } } })).rejects.toMatchObject({ continuity: { rung: 'blocked_unsupported' } })
+    expect(launched).not.toHaveBeenCalled()
+    expect((await launch({ ...request, profile: { restricted: true, verify: async () => true } })).continuity!.rung).toBe('fork')
+  })
+  it('never resumes the original session without an adapter-held exclusion', async () => {
+    const surface = resumeSurface('codex_cli', 'fleet')!
+    const lock = surface.capabilities.exclusive_resume, fork = surface.capabilities.fork_headless
+    const previous = { lock: { status: lock.status, commands: lock.commands }, fork: fork.status }
+    lock.status = 'supported'; lock.commands = ['thread/resume']; fork.status = 'unsupported'
+    try {
+      const { launch, launched } = await prepare()
+      await expect(launch(request)).rejects.toMatchObject({ message: expect.stringContaining('exclusión'), continuity: { rung: 'exclusive_resume' } })
+      expect(launched).not.toHaveBeenCalled()
+    } finally { lock.status = previous.lock.status; if (previous.lock.commands) lock.commands = previous.lock.commands; else delete lock.commands; fork.status = previous.fork }
+  })
+  it('reports an attempted fork that fails as uncertain and does not try another rung', async () => {
+    const { launch, launched, id } = await prepare('invalid')
+    const failure = await launch(request).catch(error => error)
+    expect(failure).toMatchObject({ launch_handle: id, resume_outcome: 'launch_uncertain', continuity: { rung: 'fork' } })
+    expect(launched).toHaveBeenCalledTimes(1)
+  })
+  it('keeps launches without a continuation exactly as before', async () => {
+    const { launch } = await prepare()
+    const receipt = await launch(undefined)
+    expect(receipt).not.toHaveProperty('continuity')
+    expect(receipt.runtime.native_id).toBe('native')
   })
 })
 

@@ -20,6 +20,7 @@ export interface ResumeOrigin {
   live: boolean
   /** The ID came from a hook or protocol receipt, never from inference or a catalog. */
   id_authentic: boolean
+  /** undefined = unknown, null = verified to have none. Unknown never makes a restore compatible. */
   project_id?: string | null
   account?: string | null
 }
@@ -44,9 +45,14 @@ export interface ResumePlan {
   headless?: boolean
 }
 
+/** Conservative: only separators and trailing slashes are normalized; the filesystem's case rules are never assumed. */
 const samePath = (a: string, b: string) => {
   const clean = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
-  return process.platform === 'linux' ? clean(a) === clean(b) : clean(a).toLowerCase() === clean(b).toLowerCase()
+  return clean(a) === clean(b)
+}
+const binding = (name: string, left: string | null | undefined, right: string | null | undefined, incompatible: string[]) => {
+  if (left === undefined || right === undefined) incompatible.push(`${name}_unverified`)
+  else if (left !== right) incompatible.push(`${name}_mismatch`)
 }
 
 /** Pure and inference-free: the same inputs always produce the same rung and the same reasons. */
@@ -63,8 +69,8 @@ export function planResume(origin: ResumeOrigin, target: ResumeTarget, installed
   if (!origin.id_authentic || !restorableNativeId(origin.native_id)) incompatible.push('no_authentic_id')
   if (!originSurface || !targetSurface || originSurface.id_namespace !== targetSurface.id_namespace) incompatible.push('id_namespace_mismatch')
   if (!origin.cwd || !samePath(origin.cwd, target.cwd)) incompatible.push('cwd_incompatible')
-  if (origin.project_id && target.project_id && origin.project_id !== target.project_id) incompatible.push('project_mismatch')
-  if (origin.account && target.account && origin.account !== target.account) incompatible.push('account_mismatch')
+  binding('project', origin.project_id, target.project_id, incompatible)
+  binding('account', origin.account, target.account, incompatible)
   if (incompatible.length) return { rung: 'linked_new', reason: incompatible[0]!, downgrades: [...incompatible], evidence }
 
   const nativeId = origin.native_id!
