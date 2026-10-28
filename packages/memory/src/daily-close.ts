@@ -15,13 +15,14 @@ export interface CloseProject {
   hours: HoursInputs | null
   /** Assignment of each candidate task as seen at collection time. */
   assignments: Record<string, Assignment>
-  transitions: CloseNote[]
   comments: CloseNote[]
   unattributed_notes: number
   meetings: { title: string; at: string }[]
 }
 export interface ClosePackage {
   scheduled_for: string; window: { since: string; until: string }; owner_account_id: string | null
+  /** Set when the previous close did not run and this one covers from that day. */
+  extended_from: string | null
   projects: CloseProject[]; pushes: ProposedItem[]; workday_seconds: number
   gaps: string[]
 }
@@ -37,9 +38,9 @@ async function confirmAssignment(deps: DailyDeps, account: string | null, keys: 
   const out = new Map<string, Assignment>()
   for (const key of keys) {
     if (!account || !deps.jira) { out.set(key, 'unverified'); continue }
-    const seen = await deps.jira.assigneeOf(key).catch(() => ({ accountId: null, verified: false }))
-    if (seen.verified && seen.accountId && seen.accountId !== account) continue
-    out.set(key, seen.verified && seen.accountId === account ? 'verified' : 'unverified')
+    const seen = await deps.jira.assigneeOf(key).catch(() => ({ account_id: null, verified: false }))
+    if (seen.verified && seen.account_id && seen.account_id !== account) continue
+    out.set(key, seen.verified && seen.account_id === account ? 'verified' : 'unverified')
   }
   return out
 }
@@ -48,10 +49,13 @@ async function confirmAssignment(deps: DailyDeps, account: string | null, keys: 
  * Gathers the close for one owner: only projects the owner activated, only Jira issues the mirror assigns to them, each confirmed with Jira when possible.
  * Without the owner's Jira identity no write candidate is produced and the gap is reported instead of guessed.
  */
-export async function collectClose(deps: DailyDeps, input: { scheduledFor: string; coveredSince: string | null }): Promise<ClosePackage> {
+export async function collectClose(deps: DailyDeps, input: { scheduledFor: string; extendFrom?: string | null }): Promise<ClosePackage> {
   const gaps: string[] = []
   const until = deps.now().toISOString()
-  const since = input.coveredSince ?? startOfLocalDay(input.scheduledFor).toISOString()
+  const dayStart = startOfLocalDay(input.scheduledFor).toISOString()
+  // The close covers the local day; it reaches further back only when the previous close was skipped.
+  const extended = input.extendFrom && Date.parse(input.extendFrom) < Date.parse(dayStart) ? new Date(input.extendFrom).toISOString() : null
+  const since = extended ?? dayStart
   const window = { since, until }
   const activated = deps.attention?.activated_projects ? await deps.attention.activated_projects().catch(() => { gaps.push('proyectos activados'); return [] as string[] }) : (gaps.push('proyectos activados'), [] as string[])
   const live = new Set(await deps.statusProjects())
@@ -68,23 +72,22 @@ export async function collectClose(deps: DailyDeps, input: { scheduledFor: strin
     const noteQuery = (state: string, reason: string) => deps.store.db.query<{ id: string; task_id: string; key: string; title: string; text: string; at: string }>(`SELECT n.id,n.task_id,t.external_key AS key,t.title,n.text,n.updated_at AS at
       FROM agent_notes n JOIN tasks t ON t.id=n.task_id WHERE n.project_id=$1 AND t.kind='jira' AND t.status IN ('todo','in_progress','blocked') AND n.state=$2 ${reason}
         AND n.updated_at>=$3 AND n.updated_at<$4 ORDER BY n.updated_at,n.id`, [row.id, state, since, until])
-    // Only an explicit close counts as finished work; a note closed by inactivity says nothing about the task.
-    const [done, blocked] = account ? await Promise.all([noteQuery('done', "AND n.finish_reason='explicit'"), noteQuery('blocked', '')]) : [[], []]
-    const candidates = [...done, ...blocked].filter(note => mine.has(note.task_id))
+    const blocked = account ? await noteQuery('blocked', '') : []
+    const candidates = blocked.filter(note => mine.has(note.task_id))
     const keys = [...new Set([...(hours?.tasks.map(task => task.key) ?? []), ...candidates.map(note => note.key)])]
     const confirmed = await confirmAssignment(deps, account, keys)
     const assignmentOf = (key: string): Assignment | null => confirmed.get(key) ?? null
     if (hours) hours.tasks = hours.tasks.filter(task => assignmentOf(task.key) !== null)
-    const toNote = (note: (typeof done)[number]): CloseNote | null => { const assignment = assignmentOf(note.key); return assignment ? { ...note, assignment } : null }
+    const toNote = (note: (typeof blocked)[number]): CloseNote | null => { const assignment = assignmentOf(note.key); return assignment ? { ...note, assignment } : null }
     const unattributed = (await deps.store.db.query('SELECT count(*) AS n FROM agent_notes WHERE project_id=$1 AND task_id IS NULL AND updated_at>=$2 AND updated_at<$3', [row.id, since, until]))[0]?.n ?? 0
     const meetings = await deps.store.db.query<{ title: string; at: string }>(`SELECT e.title,strftime('%Y-%m-%dT%H:%M:%fZ',e.data->>'occurred_at') AS at FROM entities e JOIN links l ON l.from_id=e.id AND l.to_id=$1 AND l.type='project'
       WHERE e.kind='event' AND COALESCE(e.data->>'status','')<>'cancelled' AND strftime('%Y-%m-%dT%H:%M:%fZ',e.data->>'occurred_at')>=$2 AND strftime('%Y-%m-%dT%H:%M:%fZ',e.data->>'occurred_at')<$3 ORDER BY at`,
     [row.id, startOfLocalDay(input.scheduledFor).toISOString(), endOfLocalDay(input.scheduledFor).toISOString()])
-    projects.push({ project_id: row.id, title: row.title, site: row.site, hours, assignments: Object.fromEntries(confirmed), transitions: done.map(toNote).filter((n): n is CloseNote => n !== null),
+    projects.push({ project_id: row.id, title: row.title, site: row.site, hours, assignments: Object.fromEntries(confirmed),
       comments: blocked.map(toNote).filter((n): n is CloseNote => n !== null), unattributed_notes: unattributed, meetings })
   }
   const pushes = deps.attention?.push_candidates ? (await deps.attention.push_candidates().catch(() => { gaps.push('pushes pendientes'); return [] as ProposedItem[] })).filter(item => ids.includes(item.project_id)) : (gaps.push('pushes pendientes'), [])
-  return { scheduled_for: input.scheduledFor, window, owner_account_id: account, projects, pushes, gaps,
+  return { scheduled_for: input.scheduledFor, window, owner_account_id: account, extended_from: extended, projects, pushes, gaps,
     workday_seconds: Math.round((deps.options?.workday_hours ?? DEFAULT_WORKDAY_HOURS) * 3600) }
 }
 
@@ -130,13 +133,15 @@ export function renderClose(pkg: ClosePackage, synthesis: HoursSynthesis | null,
       lines.push(`${n}. ${detail}`)
       totalSeconds += draft.estimated_seconds; hourTasks++
     }
-    for (const note of project.transitions) {
-      const text = `${note.key} → "Hecho" · Evidencia: nota ${localTime(note.at)} "${clip(note.text, 160)}"${flag(note.assignment)}`
-      lines.push(`${push(project, 'jira_transition', text, { kind: 'jira_transition', site: project.site, issue_key: note.key, account_id: pkg.owner_account_id, to_category: 'done', to_name: null, evidence_ref: note.id })}. ${text}`)
+    for (const draft of drafts) {
+      if (!draft.transition) continue
+      const task = project.hours!.tasks.find(candidate => candidate.task_id === draft.task_id)!
+      const text = `${task.key} → estado final (categoría Hecho) · Evidencia: ${clip(draft.transition.basis, 200)}${flag(project.assignments[task.key])}`
+      lines.push(`${push(project, 'jira_transition', text, { kind: 'jira_transition', site: task.site || project.site, issue_key: task.key, account_id: pkg.owner_account_id, to_category: 'done', to_name: null, evidence_ref: task.notes[0]?.id ?? task.task_id })}. ${text}`)
     }
     for (const note of project.comments) {
       const comment = clip(note.text, 300)
-      const text = `${note.key} comentar: "${comment}"${flag(note.assignment)}`
+      const text = `${note.key} comentar en Jira (desde tu nota de ${localTime(note.at)}): "${comment}"${flag(note.assignment)}`
       lines.push(`${push(project, 'jira_comment', text, { kind: 'jira_comment', site: project.site, issue_key: note.key, account_id: pkg.owner_account_id, text: comment, evidence_ref: note.id })}. ${text}`)
     }
     for (const item of pkg.pushes.filter(candidate => candidate.project_id === project.project_id)) {
@@ -144,15 +149,15 @@ export function renderClose(pkg: ClosePackage, synthesis: HoursSynthesis | null,
       lines.push(`${n}. ${item.summary}`)
     }
     if (project.unattributed_notes) lines.push(`_${plural(project.unattributed_notes, 'nota sin task_id', 'notas sin task_id')}: no se pueden atribuir horas a un ticket._`)
-    if (project.hours && !drafts.length && project.hours.tasks.length) lines.push('_Horas no estimadas: no hay un modelo permitido para estos datos._')
+    if (project.hours && !drafts.length && project.hours.tasks.length) lines.push('_Horas no estimadas ni transiciones propuestas: no hay un modelo permitido para estos datos._')
     if (lines.length) blocks.push(`### ${project.title}\n${lines.join('\n')}`)
   }
   const footer = hourTasks ? [`Total estimado: ${formatHours(totalSeconds)} en ${plural(hourTasks, 'ticket', 'tickets')}`, ...(totalSeconds > pkg.workday_seconds ? ['Atención: supera tu jornada configurada.'] : [])] : []
-  const header = [`# ${title}`, `Responde para ejecutar · vence hoy 23:59`]
+  const header = [`# ${title}`, 'Responde para ejecutar · vence hoy 23:59', ...(pkg.extended_from ? [`Incluye desde ${dayLabel(pkg.extended_from)}, cuyo cierre no corrió.`] : [])]
   const gaps = pkg.gaps.length ? [`_Sin datos de: ${[...new Set(pkg.gaps)].join(', ')}._`] : []
   const body = items.length || blocks.length ? [...header, '', ...blocks, ...(footer.length ? ['', ...footer] : []), ...gaps] : [`# ${title}`, '', 'Sin actividad registrada hoy; nada para proponer.', ...gaps]
   return { title, body_md: body.join('\n'), items, proposed_effects: effects, estimates, writers: estimates.length ? [estimateWriter(runId, estimates)] : [] }
 }
 
-export const closeDigest = (pkg: ClosePackage) => hash({ scheduled_for: pkg.scheduled_for, window: pkg.window, projects: pkg.projects.map(project => [project.project_id, project.hours?.tasks.map(task => task.task_id) ?? [], project.transitions.map(note => note.id), project.comments.map(note => note.id)]),
+export const closeDigest = (pkg: ClosePackage) => hash({ scheduled_for: pkg.scheduled_for, window: pkg.window, projects: pkg.projects.map(project => [project.project_id, project.hours?.tasks.map(task => task.task_id) ?? [], project.comments.map(note => note.id)]),
   pushes: pkg.pushes.map(item => item.effect_digest) })

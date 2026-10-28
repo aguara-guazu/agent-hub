@@ -8,10 +8,10 @@ export interface JiraGuard {
   /** Account the owner connected to Atlassian (atlassianUserInfo); null when it cannot be read. */
   ownerAccountId(): Promise<string | null>
   /** Current assignee of an issue as Jira reports it right now. */
-  assigneeOf(key: string): Promise<{ accountId: string | null; verified: boolean }>
+  assigneeOf(key: string): Promise<{ account_id: string | null; verified: boolean }>
 }
 
-export interface AttentionLine { ref: string; summary: string; at: string }
+export interface AttentionLine { ref: string; summary: string; at: string; project_id?: string }
 export interface AttentionReaders {
   pending_responses?: () => Promise<AttentionLine[]>
   liveness_incidents?: () => Promise<AttentionLine[]>
@@ -30,6 +30,7 @@ export interface ProposedItem { project_id: string; kind: PublicItem['kind']; su
 
 /** Exact effects a close may propose; the approved copy is executed by the core without a model in between. */
 export type JiraEffect =
+  /** `marker` lacks the request id: the decision layer appends it when it dispatches. */
   | { kind: 'jira_worklog'; site: string | null; issue_key: string; account_id: string | null; seconds: number; started: string; marker: string; estimate_id: string }
   | { kind: 'jira_transition'; site: string | null; issue_key: string; account_id: string | null; to_category: 'done'; to_name: string | null; evidence_ref: string }
   | { kind: 'jira_comment'; site: string | null; issue_key: string; account_id: string | null; text: string; evidence_ref: string }
