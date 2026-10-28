@@ -53,19 +53,31 @@ export interface ScheduleSnapshot {
 
 export interface RunContext {
   run_id: string; schedule_id: string; generation: number; scheduled_for: string; scope: ScheduleScope; project_id: string | null; template: ScheduleTemplate; template_version: number
-  params: Record<string, unknown>; instructions: string; covered_since: string | null; signal: AbortSignal
+  params: Record<string, unknown>; instructions: string; covered_since: string | null; trigger: RunTrigger
+  /** Set when the run waited for quota or for the machine to wake; lets a template label the delivery. */
+  deferred_until: string | null
+  /** Set only when the previous occurrence of an end-of-day template was skipped, so the content spans the gap. */
+  extend_from: string | null
+  signal: AbortSignal
 }
 /** Optional readers injected by the owning area; a template must omit its block when the reader is absent. */
-export interface CollectDeps { store: MemoryStore; now(): Date; jira?: JiraGuard; attention?: AttentionReaders; options?: Record<string, unknown> }
+export interface CollectDeps {
+  store: MemoryStore; now(): Date; jira?: JiraGuard; attention?: AttentionReaders; options?: Record<string, unknown>
+  /** Projects that have a live project_status schedule; owner-level templates aggregate only these. */
+  statusProjects?(): Promise<string[]>
+}
 export interface JiraGuard {
   ownerAccountId(): Promise<string | null>
   assigneeOf(issueKey: string): Promise<{ account_id: string | null; verified: boolean }>
 }
-/** Read-only views over the state of other areas (requests awaiting a reply, supervisor incidents, uncertain deliveries). */
-export type AttentionReaders = Partial<Record<'pending_responses' | 'liveness_incidents' | 'uncertain_deliveries' | 'overdue_close', () => Promise<Array<{ ref: string; summary: string; at: string }>>>>
+export interface AttentionLine { ref: string; summary: string; at: string; project_id?: string; effect?: unknown }
+export const attentionKeys = ['pending_responses', 'liveness_incidents', 'uncertain_deliveries', 'overdue_close', 'carryover_items', 'push_candidates', 'activated_projects'] as const
+/** Read-only views over the state of other areas (requests awaiting a reply, supervisor incidents, uncertain deliveries, push candidates). */
+export type AttentionReaders = Partial<Record<typeof attentionKeys[number], () => Promise<AttentionLine[]>>>
 export interface RunPackage {
   project_ids: string[]
-  sections: Array<{ id: string; title: string; data: unknown; sources: Array<{ entity_id?: string; task_id?: string; as_of: string }> }>
+  /** Only sections with model_visible !== false reach a model; the rest are for rendering. */
+  sections: Array<{ id: string; title: string; data: unknown; sources: Array<{ entity_id?: string; task_id?: string; as_of: string }>; model_visible?: boolean }>
   remote_allowed: boolean; char_count: number
 }
 export interface PublicItem { ordinal: number; estimate_id?: string; kind: 'jira_worklog' | 'jira_transition' | 'jira_comment' | 'git_push' | 'info'; project_id: string; summary: string; effect_digest?: string }
@@ -91,8 +103,9 @@ export interface ScheduleTemplateDefinition<P = unknown> {
   scope: ScheduleScope
   admission_note: string
   collect(ctx: RunContext, deps: CollectDeps): Promise<RunPackage>
-  synthesize?: { system: string; output: Record<string, unknown>; max_input_chars: number }
-  render(ctx: RunContext, pkg: RunPackage, synthesis: unknown | null): ArtifactDraft
+  /** `when` skips the process for a package that has nothing to synthesize. */
+  synthesize?: { system: string; output: Record<string, unknown>; max_input_chars: number; when?(pkg: RunPackage): boolean }
+  render(ctx: RunContext, pkg: RunPackage, synthesis: unknown | null, meta?: { model?: string }): ArtifactDraft
 }
 
 export type RunEvents = {
@@ -119,9 +132,11 @@ export interface DecisionRequests {
 /** Implemented by the schedule store; the decision module calls it after each transition of an item. */
 export interface PublicStateSink {
   set(input: { run_id: string; ordinal: number; kind: string; effect_digest?: string; estimate_id?: string; state: ItemState }): Promise<void>
-  /** 'unavailable' on every artifact after a restore: preparing, consuming, redispatching and reproposing stay denied until the decision module reconciles and calls markLive. */
-  authority(run_id: string): Promise<'live' | 'unavailable' | 'none'>
-  markLive(run_id: string): Promise<void>
+}
+/** Direction A to B: the decision module consults it before preparing, consuming, redispatching or reproposing, and denies anything but 'live'. */
+export interface ArtifactAuthorityReader {
+  /** 'unavailable' on every artifact after a restore, even without a reference; 'unknown' when no artifact matches. */
+  artifactAuthority(input: { run_id?: string; decision_request_ref?: string }): Promise<'live' | 'unavailable' | 'unknown'>
 }
 export interface ScheduleEffects { deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests }
 
