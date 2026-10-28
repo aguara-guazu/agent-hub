@@ -19,11 +19,15 @@ type RunOptions = { cwd?: string; env: NodeJS.ProcessEnv; timeout: number; maxBu
 export interface HubTeamOptions extends FleetProcessOptions {
   /** Read-only CLI capability checks and Git operations; prompts never travel through this runner. */
   run?: (command: string, args: string[], options: RunOptions) => Promise<{ stdout: string }>
-  /** Account that would run the new conversation now. undefined = unknown. */
+  /**
+   * Account that would run the new conversation now. undefined = unknown. null only with positive evidence that the
+   * CLI has no account: two nulls compare as compatible, so any doubt must resolve to undefined.
+   */
   resolveAccount?: (cli: string, model: string) => Promise<string | null | undefined>
   /**
    * Account bound to a conversation when its ID was captured: historical evidence about that session, never the
-   * login that is current today. undefined = unknown, and an unknown origin never allows restoring it.
+   * login that is current today. undefined = unknown, and an unknown origin never allows restoring it. null only with
+   * positive evidence that the session had no account (see resolveAccount).
    */
   resolveOriginAccount?: (session: Record<string, unknown>) => Promise<string | null | undefined>
 }
