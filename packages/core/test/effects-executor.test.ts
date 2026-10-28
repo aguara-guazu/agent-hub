@@ -202,6 +202,14 @@ describe('ejecutor del core', () => {
     expect(await run.reconcile('desconocida')).toMatchObject({ error_code: 'intent_not_found' })
   })
 
+  it('reconcile con un efecto guardado que ya no cumple el esquema devuelve incierto sin lanzar', async () => {
+    const { intentId } = await approvedIntent()
+    const run = executor(adapter({ execute: async () => { throw new Error('timeout') } }))
+    await run.executeApprovedAction({ intent_id: intentId, expected_generation: 0 })
+    const strict = executor(adapter({ effect: { parse: () => { throw new Error('schema') } } }))
+    expect(await strict.reconcile(intentId)).toMatchObject({ state: 'uncertain', error_code: 'invalid_effect' })
+  })
+
   it('reconcile de una intención terminal devuelve lo guardado sin consultar al adaptador', async () => {
     const { intentId } = await approvedIntent()
     const wl = adapter({ reconcile: vi.fn(async () => null) })

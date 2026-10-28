@@ -74,6 +74,8 @@ export interface ConsumeResult {
   follow_ups_recorded?: number
   /** Proyectos con más de un seguimiento en la misma respuesta: no se registra ninguno, porque no se puede asignar con certeza. */
   follow_ups_ambiguous?: number
+  /** Seguimientos descartados porque el proyecto ya tenía uno registrado para esta solicitud. */
+  follow_ups_ignored?: number
 }
 
 /** JSON con claves ordenadas: misma entrada lógica, mismos bytes. */

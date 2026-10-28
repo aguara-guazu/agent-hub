@@ -1,4 +1,4 @@
-import type { ConsumeResult, DecisionRequestInput, Integration, ParsedReply } from './contract.js'
+import type { ConsumeResult, DecisionRequestInput, FollowUpClaim, Integration, ParsedReply } from './contract.js'
 import type { DecisionStore, IntentRow } from './store.js'
 
 /** Vigencia de la autoridad de un artefacto, tal como la lee el runtime del scheduler (schedule_artifacts.authority). */
@@ -46,6 +46,14 @@ export class DecisionService {
     const requestId = this.store.requestOfIntent(intentId)
     if (!requestId || !(await this.live(requestId))) return { gated: true, reason: 'authority_unavailable' }
     return { gated: false, value: this.store.claimIntent(intentId, expectedGeneration) }
+  }
+
+  /** Reclama el seguimiento de un proyecto solo con autoridad vigente, solicitud ni revocada ni superseded y sin vencer. */
+  async claimFollowUp(requestId: string, projectId: string, consumerRef: string): Promise<GatedOutcome<FollowUpClaim>> {
+    const request = this.store.publicRequest(requestId)
+    const usable = request.state !== 'revoked' && request.state !== 'superseded' && request.state !== 'expired' && Date.parse(request.expires_at) > this.store.clock().getTime()
+    if (!usable || !(await this.live(requestId))) return { gated: true, reason: 'authority_unavailable' }
+    return { gated: false, value: this.store.claimFollowUp(requestId, projectId, consumerRef) }
   }
 
   /** Volver a proponer solo es posible con autoridad vigente; lo incierto nunca se repropone (lo bloquea el almacén al aprobar). */

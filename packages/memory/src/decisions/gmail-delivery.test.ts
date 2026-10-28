@@ -138,6 +138,16 @@ describe('entrega de la solicitud de decisión por Gmail', () => {
     expect(calls.filter(call => call.init?.method === 'POST')).toHaveLength(1)
   })
 
+  it('tras un fallo comprobado y un envío posterior, reintentar no confunde el binding fallido con uno incierto', async () => {
+    let attempt = 0, ids = 0
+    const { request_id, calls, deps } = setup(() => (++attempt === 1 ? json({ error: {} }, 400) : json({ id: 'gm-2', threadId: 'th-2' })))
+    const unique = { ...deps, messageId: () => `<hub-${++ids}@agent-hub.invalid>` }
+    expect(await deliverDecisionByGmail(unique, input(request_id))).toMatchObject({ state: 'failed' })
+    expect(await deliverDecisionByGmail(unique, input(request_id))).toMatchObject({ state: 'sent' })
+    expect(await deliverDecisionByGmail(unique, input(request_id))).toMatchObject({ state: 'sent', error_code: 'delivery_already_dispatched' })
+    expect(calls.filter(call => call.init?.method === 'POST')).toHaveLength(2)
+  })
+
   it('un envío concurrente solo sale una vez', async () => {
     const { request_id, calls, deps } = setup(() => json({ id: 'gm-1', threadId: 'th-1' }))
     const [a, b] = await Promise.all([deliverDecisionByGmail(deps, input(request_id)), deliverDecisionByGmail(deps, input(request_id))])

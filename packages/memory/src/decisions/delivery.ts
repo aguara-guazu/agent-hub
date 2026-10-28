@@ -46,7 +46,7 @@ export async function deliverDecisionByGmail(deps: { store: DecisionStore; sende
   } catch (error) {
     if (!(error instanceof DecisionError)) throw error
     if (error.code === 'request_not_open') return { state: 'skipped', error_code: error.code }
-    const prior = store.bindingsOf(input.request_id).find(binding => binding.integration === 'gmail' && binding.account === account)
+    const prior = store.bindingsOf(input.request_id).filter(binding => binding.integration === 'gmail' && binding.account === account && binding.delivery_state !== 'failed').at(-1)
     if (error.code === 'delivery_already_dispatched' && prior) return { state: prior.delivery_state === 'sent' ? 'sent' : 'uncertain', error_code: error.code }
     throw error
   }

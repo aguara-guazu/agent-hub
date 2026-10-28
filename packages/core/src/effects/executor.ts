@@ -135,8 +135,10 @@ export class CoreActionExecutor implements ActionExecutor {
     }
     const adapter = this.adapters.get(intent.kind)
     if (!adapter) return uncertain(intentId, 'adapter_not_allowed')
+    let effect: unknown
+    try { effect = adapter.effect.parse(JSON.parse(intent.effect)) } catch { return uncertain(intentId, 'invalid_effect') }
     try {
-      const serverId = this.serverFor(adapter, adapter.effect.parse(JSON.parse(intent.effect)))
+      const serverId = this.serverFor(adapter, effect)
       if (!serverId || serverId === 'ambiguous') return uncertain(intentId, serverId ?? 'tool_off')
       const result = await adapter.reconcile(this.context(intent, serverId), intentId)
       return result ? { ...result, intent_id: intentId } : uncertain(intentId, 'no_conclusive_evidence')

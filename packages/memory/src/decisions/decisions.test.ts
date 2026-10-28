@@ -673,3 +673,39 @@ describe('DecisionService: prepareDecision y lector por run', () => {
     expect(seen.at(-1)).toEqual({ run_id: 'run-10', decision_request_ref: request_id })
   })
 })
+
+describe('seguimientos: compuerta de reclamo e ignorados', () => {
+  async function withFollowUp() {
+    const { store, prepare, activate } = setup()
+    const { request_id } = prepare('run-fu', 2)
+    const { binding_id } = await activate(request_id)
+    const code = normalizeCode(store.codeFor(request_id))!
+    reply(store, binding_id, 'm1', { kind: 'approve', code, items: [1], follow_ups: [{ ordinal: 1, text: 'revisa A' }] })
+    return { store, request_id, binding_id, code }
+  }
+  it('reclama con autoridad vigente, una sola vez por consumidor', async () => {
+    const { store, request_id } = await withFollowUp()
+    const service = new DecisionService(store, async () => 'live')
+    expect(await service.claimFollowUp(request_id, 'p1', 'c-1')).toEqual({ gated: false, value: 'claimed' })
+    expect(await service.claimFollowUp(request_id, 'p1', 'c-1')).toEqual({ gated: false, value: 'already_claimed_by_same' })
+    expect(await service.claimFollowUp(request_id, 'p1', 'c-2')).toEqual({ gated: false, value: 'already_claimed_by_other' })
+  })
+  it('sin autoridad vigente, vencida o revocada no se reclama nada', async () => {
+    const { store, request_id } = await withFollowUp()
+    expect(await new DecisionService(store, async () => 'unavailable').claimFollowUp(request_id, 'p1', 'c-1')).toEqual({ gated: true, reason: 'authority_unavailable' })
+    clock = new Date(clock.getTime() + 11 * 3600_000)
+    expect(await new DecisionService(store, async () => 'live').claimFollowUp(request_id, 'p1', 'c-1')).toEqual({ gated: true, reason: 'authority_unavailable' })
+    clock = new Date('2026-10-28T20:00:00.000Z')
+    store.revokeRequest(request_id)
+    expect(await new DecisionService(store, async () => 'live').claimFollowUp(request_id, 'p1', 'c-1')).toEqual({ gated: true, reason: 'authority_unavailable' })
+    expect(store.getFollowUps(request_id)[0]).toMatchObject({ consumed: false })
+  })
+  it('un segundo seguimiento del mismo proyecto en otra respuesta se descarta y se informa', async () => {
+    const { store, request_id, binding_id, code } = await withFollowUp()
+    const second = reply(store, binding_id, 'm2', { kind: 'approve', code, items: [2], follow_ups: [{ ordinal: 2, text: 'otra cosa' }] })
+    expect(second).toMatchObject({ outcome: 'approved', follow_ups_ignored: 1 })
+    expect(second.follow_ups_recorded).toBeUndefined()
+    expect(store.getFollowUps(request_id)).toHaveLength(1)
+    expect(store.getFollowUps(request_id)[0]).toMatchObject({ ordinal: 1, text: 'revisa A' })
+  })
+})

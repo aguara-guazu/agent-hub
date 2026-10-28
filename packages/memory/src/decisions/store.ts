@@ -198,6 +198,8 @@ export class DecisionStore {
   private all<T>(sql: string, ...params: unknown[]): T[] { return this.db.prepare(sql).all(...params as never[]) as T[] }
   private run(sql: string, ...params: unknown[]): number { return Number(this.db.prepare(sql).run(...params as never[]).changes) }
   private iso(): string { return this.now().toISOString() }
+  /** Reloj del almacén, para que las compuertas de otros módulos comparen vencimientos con la misma hora. */
+  clock(): Date { return this.now() }
 
   // ---------------------------------------------------------------- solicitudes
 
@@ -609,7 +611,7 @@ export class DecisionStore {
             intent_id, item.request_id, item.item_id, item.kind, item.exact_effect, item.effect_digest, item.operation_key, at, at)
           approved.push({ item_id: item.item_id, ordinal: item.ordinal, intent_id })
         }
-        let recorded = 0, ambiguous = 0
+        let recorded = 0, ambiguous = 0, ignored = 0
         const byProject = new Map<string, Array<{ item: ItemRow; text: string }>>()
         for (const follow of parsed.follow_ups ?? []) {
           const item = chosen.find(candidate => candidate.ordinal === follow.ordinal)
@@ -621,8 +623,9 @@ export class DecisionStore {
           const { item, text } = entries[0]!
           if (this.run('INSERT OR IGNORE INTO follow_ups(request_id, ordinal, project_id, text, integration, account, native_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             item.request_id, item.ordinal, item.project_id, text, input.integration, input.account, input.native_message_id, this.iso()) === 1) recorded++
+          else ignored++
         }
-        outcome = { outcome: 'approved', request_id: request.request_id, approved, ...(blocked.length ? { blocked_uncertain: blocked } : {}), ...(recorded ? { follow_ups_recorded: recorded } : {}), ...(ambiguous ? { follow_ups_ambiguous: ambiguous } : {}) }
+        outcome = { outcome: 'approved', request_id: request.request_id, approved, ...(blocked.length ? { blocked_uncertain: blocked } : {}), ...(recorded ? { follow_ups_recorded: recorded } : {}), ...(ambiguous ? { follow_ups_ambiguous: ambiguous } : {}), ...(ignored ? { follow_ups_ignored: ignored } : {}) }
       }
       if (!this.get('SELECT 1 FROM decision_items WHERE request_id = ? AND state = \'pending\'', request.request_id)) {
         this.run('UPDATE decision_requests SET state = \'closed\', updated_at = ? WHERE request_id = ? AND state = \'open\'', this.iso(), request.request_id)
