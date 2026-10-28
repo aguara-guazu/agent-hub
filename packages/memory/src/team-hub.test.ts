@@ -16,7 +16,7 @@ const fixture = String.raw`
 const {createInterface}=require('node:readline');
 const [kind,mode,serialized]=process.argv.slice(2),args=JSON.parse(serialized);
 const out=p=>process.stdout.write(JSON.stringify(p)+'\n');
-const session=args[args.indexOf('--session-id')+1];
+const session=args.includes('--fork-session')?'11111111-2222-4333-8444-555555555555':args.includes('--resume')?args[args.indexOf('--resume')+1]:args[args.indexOf('--session-id')+1];
 let n=0,turn;
 createInterface({input:process.stdin}).on('line',line=>{
  const p=JSON.parse(line);
@@ -148,6 +148,52 @@ describe('HubTeamRuntime worktrees and native preflight', () => {
     expect(launched).not.toHaveBeenCalled()
     const old = setup('normal', { run: async () => ({ stdout: '--help --model' }) })
     await expect(old.backend.preflight([{ cli: 'claude_code', model: 'opus' }])).rejects.toThrow('protocolo nativo')
+  })
+})
+
+describe('HubTeamRuntime continuation', () => {
+  const source = '3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11'
+  const withFork = { run: async (command: string, args: string[], options: Parameters<NonNullable<HubTeamOptions['run']>>[2]) => command === 'git' ? exec(command, args, options) : { stdout: `${help} --fork-session` } }
+  it('requires the installed binary to confirm --fork-session and rejects unrestorable or unsupported continuations before spawning', async () => {
+    const plain = setup()
+    await expect(plain.backend.preflight([{ cli: 'claude_code', model: 'opus', resume: { native_id: source, fork: true } }])).rejects.toThrow('protocolo nativo')
+    await expect(plain.backend.preflight([{ cli: 'claude_code', model: 'opus', resume: { native_id: source, fork: false } }])).resolves.toBeUndefined()
+    const forking = setup('normal', withFork)
+    await expect(forking.backend.preflight([{ cli: 'claude_code', model: 'opus', resume: { native_id: source, fork: true } }])).resolves.toBeUndefined()
+    for (const native_id of ['tui:3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11', 'last', '']) {
+      await expect(forking.backend.preflight([{ cli: 'claude_code', model: 'opus', resume: { native_id, fork: false } }])).rejects.toThrow('restaurable')
+    }
+    await expect(forking.backend.preflight([{ cli: 'kiro', model: 'kiro-model', resume: { native_id: 'kiro-session', fork: true } }])).rejects.toThrow('no admite fork')
+    expect(plain.launched).not.toHaveBeenCalled()
+    expect(forking.launched).not.toHaveBeenCalled()
+  })
+  it('launches a Claude fork without choosing its session ID and adopts the one the CLI reports', async () => {
+    const { backend, id, launched } = setup('hold', withFork)
+    const parent = await backend.workspace(join(directory, 'repo'))
+    const receipt = await backend.launch(parent, { member_id: id, cli: 'claude_code', model: 'opus', prompt: 'PRIVATE', resume: { native_id: source, fork: true } })
+    const args = launched.mock.calls[0]![1] as string[]
+    expect(args).toEqual(expect.arrayContaining(['--resume', source, '--fork-session']))
+    expect(args).not.toContain('--session-id')
+    expect(receipt.runtime.native_id).toBe('11111111-2222-4333-8444-555555555555')
+  })
+  it('resumes the original Claude session only when asked to', async () => {
+    const { backend, id, launched } = setup('hold')
+    const parent = await backend.workspace(join(directory, 'repo'))
+    const receipt = await backend.launch(parent, { member_id: id, cli: 'claude_code', model: 'opus', prompt: 'PRIVATE', resume: { native_id: source, fork: false } })
+    const args = launched.mock.calls[0]![1] as string[]
+    expect(args).toEqual(expect.arrayContaining(['--resume', source]))
+    expect(args).not.toContain('--fork-session')
+    expect(receipt.runtime.native_id).toBe(source)
+  })
+  it('marks a failed attempted continuation as uncertain and never as a plain failure', async () => {
+    const { backend, id } = setup('invalid')
+    const parent = await backend.workspace(join(directory, 'repo'))
+    const failure = await backend.launch(parent, { member_id: id, cli: 'claude_code', model: 'opus', prompt: 'PRIVATE', resume: { native_id: source, fork: false } }).catch(error => error)
+    expect(failure).toMatchObject({ launch_handle: id, resume_outcome: 'launch_uncertain' })
+    const plain = setup('invalid')
+    const other = await plain.backend.launch(await plain.backend.workspace(join(directory, 'repo')), { member_id: plain.id, cli: 'claude_code', model: 'opus', prompt: 'PRIVATE' }).catch(error => error)
+    expect(other).toMatchObject({ launch_handle: plain.id })
+    expect(other).not.toHaveProperty('resume_outcome')
   })
 })
 

@@ -7,6 +7,7 @@ import { delimiter, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { check, MemoryError } from './contracts.js'
 import { validCliModel, type ExtractionCli } from './cli-extraction.js'
+import { restorableNativeId } from './resume-capabilities.js'
 import { virtualFolder, type LocalChat } from './local-chat.js'
 import type { TeamOrca, TeamWorkspace, TeamLaunchReceipt, TeamLaunchMember } from './team-orca.js'
 import { FleetProcessManager, type FleetEvent, type FleetProcessOptions, type FleetStatus, type FleetPendingQuestion, type FleetQuestionAnswers } from './fleet-process.js'
@@ -22,6 +23,8 @@ export interface HubTeamStatus extends FleetStatus {
   generation: string
   updated_at: string
 }
+/** Continuation selected by `planResume`; a fork copies the conversation, otherwise the original is reused exclusively. */
+export interface HubResume { native_id: string; fork: boolean }
 export interface HubTeamLaunchReceipt extends TeamLaunchReceipt { runtime: HubTeamStatus }
 type ManagedChat = LocalChat & {
   managedLifecycle(sessionId: string, event: string, at: string, turnId?: string): Promise<unknown>
@@ -85,13 +88,14 @@ export class HubTeamRuntime implements TeamOrca {
         timeout: 15_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true })).stdout.trim()
     } catch { throw new MemoryError(503, 'No se pudo verificar la operación local del Hub. No se reintentó ni se eliminaron recursos.') }
   }
-  async preflight(members: Array<{ cli: ExtractionCli; model: string; effort?: string }>): Promise<void> {
+  async preflight(members: Array<{ cli: ExtractionCli; model: string; effort?: string; resume?: HubResume }>): Promise<void> {
     this.requireEnabled()
     const checked = new Map<string, string>()
     for (const member of members) {
       check(member.cli === 'claude_code' || member.cli === 'codex_cli' || member.cli === 'kiro', 'La flota del Hub admite Claude Code, Codex CLI y Kiro.', 409)
       check(validCliModel(member.model), 'Elegí un nombre de modelo válido.', 400)
       check(!member.effort || /^[a-z][a-z0-9_-]{0,39}$/.test(member.effort), 'Esfuerzo inválido.', 400)
+      check(!member.resume || (restorableNativeId(member.resume.native_id) && (member.cli !== 'kiro' || !member.resume.fork)), 'La continuación pedida no usa un identificador nativo restaurable o la CLI no admite fork.', 400)
       let help = checked.get(member.cli)
       if (!help) {
         help = await this.run(member.cli === 'claude_code' ? 'claude' : member.cli === 'kiro' ? 'kiro-cli' : 'codex',
@@ -99,7 +103,7 @@ export class HubTeamRuntime implements TeamOrca {
         checked.set(member.cli, help)
       }
       const required = member.cli === 'claude_code'
-        ? ['--print', '--input-format', '--output-format', '--verbose', '--dangerously-skip-permissions', '--model', '--session-id', '--resume', ...(member.effort ? ['--effort'] : [])]
+        ? ['--print', '--input-format', '--output-format', '--verbose', '--dangerously-skip-permissions', '--model', '--session-id', '--resume', ...(member.resume?.fork ? ['--fork-session'] : []), ...(member.effort ? ['--effort'] : [])]
         : member.cli === 'kiro' ? ['--model', '--trust-all-tools', ...(member.effort ? ['--effort'] : [])]
         : ['--listen', 'stdio']
       check(required.every(flag => help.includes(flag)), 'La CLI instalada no confirma el protocolo nativo requerido por la flota del Hub. Actualizá la CLI antes de lanzar.', 409)
@@ -195,7 +199,7 @@ export class HubTeamRuntime implements TeamOrca {
       'Git no confirmó el worktree hijo esperado. Conservá los recursos e inspeccioná el resultado.', 502)
     return child
   }
-  async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean; authorize?: () => Promise<void> }): Promise<HubTeamLaunchReceipt> {
+  async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean; resume?: HubResume; authorize?: () => Promise<void> }): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
     const id = member.member_id ?? randomUUID()
     check(safeId(id) && id.length <= 200, 'Identificador de miembro inválido.', 400)
@@ -212,7 +216,7 @@ export class HubTeamRuntime implements TeamOrca {
       this.nextGenerations.set(id, randomUUID())
       attempted = true
       const result = await this.manager.start({ id, cli: member.cli, cwd: current.path, model: member.model, prompt: member.prompt,
-        ...(member.effort ? { effort: member.effort } : {}) })
+        ...(member.effort ? { effort: member.effort } : {}), ...(member.resume ? { resume_id: member.resume.native_id, ...(member.resume.fork ? { fork: true } : {}) } : {}) })
       await this.verifyLaunchEnabled(id)
       if (!['busy', 'idle', 'waiting_input'].includes(result.state)) {
         throw new MemoryError(503, 'El agente del Hub no confirmó la entrega inicial. Inspeccioná su estado antes de volver a lanzar.')
@@ -224,7 +228,8 @@ export class HubTeamRuntime implements TeamOrca {
     } catch (error) {
       if (!attempted) throw error
       const failure = error instanceof MemoryError ? error : new MemoryError(503, 'El Hub no confirmó el proceso del agente. Inspeccioná su estado antes de reintentar.')
-      throw Object.assign(failure, { launch_handle: id })
+      // After an attempted fork/resume a process may exist: the caller reconciles and never walks down another rung.
+      throw Object.assign(failure, { launch_handle: id, ...(member.resume ? { resume_outcome: 'launch_uncertain' as const } : {}) })
     } finally { this.launching.delete(id); this.nextGenerations.delete(id) }
   }
   private async verifyLaunchEnabled(id: string): Promise<void> {

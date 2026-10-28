@@ -12,6 +12,8 @@ export interface FleetStart {
   effort?: string
   prompt: string
   resume_id?: string
+  /** With resume_id, continue in a new native session copied from it instead of reusing the original. */
+  fork?: boolean
 }
 /** No prompts, transcripts, command output or CLI error text. Native questions are explicitly structured. */
 export interface FleetQuestion {
@@ -43,6 +45,7 @@ export interface FleetProcessOptions {
   requestTimeoutMs?: number
   shutdownTimeoutMs?: number
 }
+const FORK_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type Packet = Record<string, any>
 type Pending = { resolve: (value: Packet) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
 type PendingQuestion = {
@@ -66,6 +69,7 @@ type Session = {
   pending: Map<number, Pending>
   questions: Map<string, PendingQuestion>
   expectedNative: string | undefined
+  forkOf: string | undefined
   ready: { resolve: () => void; reject: (error: Error) => void } | undefined
   submitting: boolean
   completedTurns: Set<string>
@@ -150,7 +154,9 @@ export class FleetProcessManager {
       }
       if (packet.type === 'control_cancel_request') { this.cancelQuestion(s, packet.request_id); return }
       if (packet.type === 'system' && packet.subtype === 'init') {
-        if (typeof packet.session_id !== 'string' || packet.session_id !== s.expectedNative) {
+        // A fork learns its new native ID here; it must be a different session than the one it was copied from.
+        const identity = s.forkOf ? packet.session_id !== s.forkOf && FORK_SESSION_ID.test(packet.session_id ?? '') : packet.session_id === s.expectedNative
+        if (typeof packet.session_id !== 'string' || !identity) {
           this.fail(s, 'fleet_session_mismatch'); return
         }
         s.status.native_id = packet.session_id
@@ -409,10 +415,13 @@ export class FleetProcessManager {
       if (!old.exited) throw new Error('fleet_previous_process_unconfirmed')
       if (this.closing) throw new Error('fleet_manager_closed')
     }
-    const expectedNative = input.cli === 'claude_code' ? input.resume_id ?? randomUUID() : input.resume_id
+    // Only Claude Code and Codex document a fork; Kiro cannot continue a copy.
+    if (input.fork && (!input.resume_id || input.cli === 'kiro')) throw new Error('fleet_fork_unsupported')
+    // --session-id is not documented together with --fork-session, so a fork never chooses its ID.
+    const expectedNative = input.cli === 'claude_code' ? (input.fork ? undefined : input.resume_id ?? randomUUID()) : input.resume_id
     const args = input.cli === 'claude_code'
       ? ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool=stdio', '--model', input.model,
-        ...(input.effort ? ['--effort', input.effort] : []), ...(input.resume_id ? ['--resume', input.resume_id] : ['--session-id', expectedNative!])]
+        ...(input.effort ? ['--effort', input.effort] : []), ...(input.resume_id ? ['--resume', input.resume_id, ...(input.fork ? ['--fork-session'] : [])] : ['--session-id', expectedNative!])]
       : input.cli === 'kiro' ? ['acp', '--model', input.model, ...(input.effort ? ['--effort', input.effort] : []), '--trust-all-tools']
       : ['app-server', '--listen', 'stdio://']
     const env = { ...process.env }
@@ -422,7 +431,7 @@ export class FleetProcessManager {
     const status: FleetStatus = { id: input.id, cli: input.cli, cwd: input.cwd, model: input.model, state: 'starting', ...(input.effort ? { effort: input.effort } : {}) }
     let closed!: () => void
     const s: Session = { status, activity: new FleetActivityBuffer(input.prompt), acpSegment: 0, child, closed: new Promise(resolve => { closed = resolve }), exited: false, stopping: false, seq: 0,
-      pending: new Map(), questions: new Map(), expectedNative, ready: undefined, submitting: false, completedTurns: new Set(), eventQueue: Promise.resolve(), cleanup: undefined }
+      pending: new Map(), questions: new Map(), expectedNative, forkOf: input.fork ? input.resume_id : undefined, ready: undefined, submitting: false, completedTurns: new Set(), eventQueue: Promise.resolve(), cleanup: undefined }
     this.sessions.set(input.id, s)
     this.publish(s, 'starting')
     child.stdin.on('error', () => this.fail(s, 'fleet_stdin_failed'))
@@ -460,11 +469,11 @@ export class FleetProcessManager {
       if (input.cli === 'codex_cli') {
         await this.request(s, 'initialize', { clientInfo: { name: 'agent-hub-fleet', version: '1' }, capabilities: { experimentalApi: false } })
         this.write(s, { method: 'initialized' })
-        const result = await this.request(s, input.resume_id ? 'thread/resume' : 'thread/start', {
-          cwd: input.cwd, model: input.model, approvalPolicy: 'never', sandbox: 'danger-full-access',
-          ...(input.resume_id ? { threadId: input.resume_id } : {}),
-        })
-        if (typeof result.thread?.id !== 'string' || !result.thread.id || (input.resume_id && result.thread.id !== input.resume_id)) throw new Error('fleet_session_mismatch')
+        // thread/fork documents threadId, lastTurnId, excludeTurns and ephemeral only; model and sandbox are applied by turn/start.
+        const result = await this.request(s, input.fork ? 'thread/fork' : input.resume_id ? 'thread/resume' : 'thread/start', input.fork
+          ? { threadId: input.resume_id, excludeTurns: true }
+          : { cwd: input.cwd, model: input.model, approvalPolicy: 'never', sandbox: 'danger-full-access', ...(input.resume_id ? { threadId: input.resume_id } : {}) })
+        if (typeof result.thread?.id !== 'string' || !result.thread.id || (input.fork ? result.thread.id === input.resume_id : input.resume_id && result.thread.id !== input.resume_id)) throw new Error('fleet_session_mismatch')
         s.status.native_id = result.thread.id
         await this.submit(s, input.prompt)
       } else if (input.cli === 'kiro') {

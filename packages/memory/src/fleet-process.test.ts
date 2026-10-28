@@ -29,7 +29,9 @@ const out=p=>{
  }));
 };
 const rpc=(id,result)=>out({id,result});
-let n=0,session=args[args.indexOf('--session-id')+1]||args[args.indexOf('--resume')+1];
+const forking=args.includes('--fork-session');
+if(forking&&args.includes('--session-id'))process.exit(19);
+let n=0,session=forking?(mode==='forkSame'?args[args.indexOf('--resume')+1]:'11111111-2222-4333-8444-555555555555'):(args[args.indexOf('--session-id')+1]||args[args.indexOf('--resume')+1]);
 let active,descendant;
 if(mode==='descendant') { descendant=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});require('node:fs').writeFileSync(__dirname+'/descendant.pid',String(descendant.pid)); }
 createInterface({input:process.stdin}).on('line',line=>{
@@ -42,6 +44,10 @@ createInterface({input:process.stdin}).on('line',line=>{
   if(p.method==='initialize') {
    if(process.env.ORCA_WORKTREE_ID||process.env.AGENTHUB_CHAT_SESSION_KEY||process.env.AGENTHUB_TUI_AGENT_ID||process.env.ELECTRON_RUN_AS_NODE||process.env.CLAUDECODE||process.env.CODEX_THREAD_ID) process.exit(8);
    rpc(p.id,{});
+  }
+  if(p.method==='thread/fork') {
+   if(p.params.threadId!=='thread-source'||p.params.excludeTurns!==true||'cwd' in p.params||'model' in p.params||'sandbox' in p.params)process.exit(18);
+   rpc(p.id,{thread:{id:mode==='forkSame'?p.params.threadId:'thread-native',sessionId:'root-session'}});
   }
   if(p.method==='thread/start'||p.method==='thread/resume') {
    if(p.params.approvalPolicy!=='never'||p.params.sandbox!=='danger-full-access')process.exit(9);
@@ -420,6 +426,41 @@ describe('FleetProcessManager', () => {
     await new Promise(resolve => setTimeout(resolve, 80))
     expect(manager.status('one')?.state).toBe('busy')
     expect(events.at(-1)?.state).toBe('busy')
+  })
+  it('forks a Claude conversation into a new native ID without choosing it', async () => {
+    const { manager, input, launches } = await setup('hold')
+    input.cli = 'claude_code'; input.resume_id = '3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11'; input.fork = true
+    expect((await manager.start(input)).state).toBe('busy')
+    const args = launches[0]!.args
+    expect(args).toEqual(expect.arrayContaining(['--resume', input.resume_id, '--fork-session']))
+    expect(args).not.toContain('--session-id')
+    expect(manager.status('one')?.native_id).toBe('11111111-2222-4333-8444-555555555555')
+  })
+  it('rejects a Claude fork that answers with the source session', async () => {
+    const { manager, input } = await setup('forkSame')
+    input.cli = 'claude_code'; input.resume_id = '3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11'; input.fork = true
+    await manager.start(input)
+    await until(() => manager.status('one')?.state === 'failed')
+    expect(manager.status('one')?.error_code).toBe('fleet_session_mismatch')
+  })
+  it('forks a Codex thread with only the documented parameters and adopts the new thread ID', async () => {
+    const { manager, input } = await setup('hold')
+    input.resume_id = 'thread-source'; input.fork = true
+    expect((await manager.start(input)).state).toBe('busy')
+    expect(manager.status('one')?.native_id).toBe('thread-native')
+  })
+  it('rejects a Codex fork that answers with the source thread', async () => {
+    const { manager, input } = await setup('forkSame')
+    input.resume_id = 'thread-source'; input.fork = true
+    await manager.start(input)
+    await until(() => manager.status('one')?.state === 'failed')
+    expect(manager.status('one')?.error_code).toBe('fleet_session_mismatch')
+  })
+  it('refuses a fork without a source session or for a CLI that cannot fork', async () => {
+    const { manager, input, launches } = await setup('hold')
+    await expect(manager.start({ ...input, fork: true })).rejects.toThrow('fleet_fork_unsupported')
+    await expect(manager.start({ ...input, cli: 'kiro', resume_id: 'kiro-native', fork: true })).rejects.toThrow('fleet_fork_unsupported')
+    expect(launches).toHaveLength(0)
   })
   it('sanitizes parent identities and returns defensive metadata copies', async () => {
     const { manager, input, launches } = await setup('hold')
