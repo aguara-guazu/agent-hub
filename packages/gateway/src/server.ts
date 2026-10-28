@@ -314,7 +314,7 @@ export class GatewayServer {
   private profilePermits(view: SnapshotView, tool: { serverSlug: string; toolName: string }): boolean {
     if (!isRunProfileCliKind(view.cliKind)) return true
     const spec = view.specFor(tool.serverSlug)
-    return spec !== undefined && profileAllowsTool(view.cliKind, { memory: isMemorySpec(spec), tool: tool.toolName })
+    return spec !== undefined && profileAllowsTool(view.cliKind, { memory: isMemorySpec(spec), tool: tool.toolName, endpoint: { transport: spec.transport, url: spec.url } })
   }
 
   /** El server de memoria vigente para este agente, si expone la herramienta pedida. */

@@ -22,7 +22,7 @@ function seed() {
   const user = store.insertUser({ organization_id: org.id, email: 'dev@craftech.io', full_name: 'Dev', password_hash: '!', org_role: 'owner' })
   const machine = store.insertMachine({ user_id: user.id, hostname: 'laptop', os: 'macos', daemon_version: '0.2.0' })
   const memory = store.insertServer({ ...base, user_id: user.id, slug: 'memory', display_name: 'Memory' })
-  const atlassian = store.insertServer({ ...base, user_id: user.id, slug: 'atlassian', display_name: 'Atlassian' })
+  const atlassian = store.insertServer({ ...base, user_id: user.id, slug: 'atlassian', display_name: 'Atlassian', transport: 'http', url: 'https://mcp.atlassian.com/v1/mcp' })
   store.setSetting(MEMORY_CATALOG_SERVER_SETTING, memory.id)
   const tool = (server: string, name: string) => store.insertTool({ server_id: server, name, exposed_name: `${server.slice(0, 4)}_${name}`, title: '', description: '', input_schema: {}, definition_hash: `h-${name}` })
   for (const name of ['search', 'context', 'remember', 'schedule_create', 'schedule_list', 'chat_send', 'create_entity', 'write_note', 'team_launch', 'run_report', 'new_unknown_tool']) tool(memory.id, name)
@@ -72,7 +72,7 @@ describe('perfiles de run', () => {
   it('hub_effects no tiene memoria y solo ve las escrituras y lecturas exactas del ejecutor', () => {
     const { user } = seed()
     const agent = ensureRunProfileAgent(store, user.id, 'hub_effects')!
-    expect(exposed(agent.id)).toEqual(['atlassian/addWorklogToJiraIssue', 'atlassian/getJiraIssue', 'atlassian/slack_send_message'])
+    expect(exposed(agent.id)).toEqual(['atlassian/addWorklogToJiraIssue', 'atlassian/getJiraIssue'])
   })
   it('ningún perfil recibe skills', () => {
     const { user } = seed()
@@ -99,7 +99,15 @@ describe('perfiles de run', () => {
     expect(profileAllowsTool('hub_run_action', { memory: false, tool: 'search' })).toBe(false)
     expect(profileAllowsTool('hub_run_action', { memory: true, tool: 'schedule_create' })).toBe(false)
     expect(profileAllowsTool('hub_effects', { memory: true, tool: 'search' })).toBe(false)
-    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'AddWorklogToJiraIssue' })).toBe(true)
-    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'deleteIssue' })).toBe(false)
+    const atlassian = { transport: 'http', url: 'https://mcp.atlassian.com/v1/mcp' }, slack = { transport: 'http', url: 'https://mcp.slack.com/mcp' }
+    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'AddWorklogToJiraIssue', endpoint: atlassian })).toBe(true)
+    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'deleteIssue', endpoint: atlassian })).toBe(false)
+    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'slack_send_message', endpoint: slack })).toBe(true)
+    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'slack_send_message', endpoint: atlassian })).toBe(false)
+    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'addWorklogToJiraIssue', endpoint: slack })).toBe(false)
+    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'addWorklogToJiraIssue' })).toBe(false)
+    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'addWorklogToJiraIssue', endpoint: { transport: 'stdio', url: 'https://mcp.atlassian.com/v1/mcp' } })).toBe(false)
+    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'addWorklogToJiraIssue', endpoint: { transport: 'http', url: 'http://mcp.atlassian.com/v1/mcp' } })).toBe(false)
+    expect(profileAllowsTool('hub_effects', { memory: false, tool: 'addWorklogToJiraIssue', endpoint: { transport: 'http', url: 'https://mcp.atlassian.com.evil.example/mcp' } })).toBe(false)
   })
 })

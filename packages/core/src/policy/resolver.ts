@@ -187,7 +187,7 @@ export function computeSnapshot(
         continue
       }
       // La cota del perfil va después de las reglas: un `on` del dueño no devuelve lo que el perfil no tiene.
-      if (profile && !profileAllowsTool(profile, { memory: server.id === memoryServerId, tool: tool.name })) {
+      if (profile && !profileAllowsTool(profile, { memory: server.id === memoryServerId, tool: tool.name, endpoint: { transport: server.transport, url: server.url } })) {
         denied.push({ resource_type: RESOURCE.tool, resource_id: tool.id, slug: `${server.slug}/${tool.name}`, exposed: false, source: 'run_profile', detail: RUN_PROFILE_DENIAL })
         continue
       }

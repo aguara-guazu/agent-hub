@@ -29,26 +29,50 @@ const ACTION_MEMORY_TOOLS: ReadonlySet<string> = new Set([
   'run_report',
 ])
 
-/** Lecturas y escrituras exactas que el ejecutor puede invocar sobre las integraciones del dueño (Jira y Slack). Nombres en minúsculas. */
-const EFFECT_TOOLS: ReadonlySet<string> = new Set([
+/** Lecturas y escrituras exactas que el ejecutor puede invocar sobre Jira. Nombres en minúsculas. */
+const ATLASSIAN_TOOLS: ReadonlySet<string> = new Set([
   'atlassianuserinfo', 'getaccessibleatlassianresources', 'getjiraissue', 'searchjiraissuesusingjql', 'gettransitionsforjiraissue',
   'addworklogtojiraissue', 'transitionjiraissue', 'addcommenttojiraissue',
   'jira_get_issue', 'jira_get_transitions', 'jira_add_worklog', 'jira_transition_issue', 'jira_add_comment',
-  'slack_send_message', 'slack_read_user_profile', 'slack_read_channel', 'slack_read_thread', 'slack_search_users', 'auth_test',
 ])
+
+/** Lecturas y escrituras exactas que el ejecutor puede invocar sobre Slack. Nombres en minúsculas. */
+const SLACK_TOOLS: ReadonlySet<string> = new Set(['slack_send_message', 'slack_read_user_profile', 'slack_read_channel', 'slack_read_thread', 'slack_search_users', 'auth_test'])
+
+/** Hosts que identifican un MCP remoto como Atlassian o Slack. Un servidor local (stdio) o de otro dominio nunca recibe estas herramientas. */
+const ATLASSIAN_HOST = /(^|\.)(atlassian\.com|atlassian\.net)$/
+const SLACK_HOST = /(^|\.)slack\.com$/
+
+export interface ProfileEndpoint {
+  transport: string
+  url: string
+}
 
 export interface ProfileToolRef {
   /** El server es el de memoria integrado en el hub. */
   memory: boolean
   /** Nombre de la herramienta tal como la publica su server, sin el prefijo expuesto. */
   tool: string
+  /** Cómo se conecta el server. `hub_effects` lo exige: la cota depende de a quién pertenece el server, no solo del nombre de la herramienta. */
+  endpoint?: ProfileEndpoint | undefined
+}
+
+function hostOf(endpoint: ProfileEndpoint | undefined): string | null {
+  if (!endpoint || endpoint.transport !== 'http') return null
+  try {
+    const url = new URL(endpoint.url)
+    return url.protocol === 'https:' ? url.hostname.toLowerCase() : null
+  } catch { return null }
 }
 
 /** Decide si el perfil tiene la herramienta. Por defecto deniega. */
 export function profileAllowsTool(kind: RunProfileKind, ref: ProfileToolRef): boolean {
   const name = ref.tool.toLowerCase()
   if (kind === 'hub_run_action') return ref.memory && ACTION_MEMORY_TOOLS.has(ref.tool)
-  return !ref.memory && EFFECT_TOOLS.has(name)
+  if (ref.memory) return false
+  const host = hostOf(ref.endpoint)
+  if (!host) return false
+  return (ATLASSIAN_TOOLS.has(name) && ATLASSIAN_HOST.test(host)) || (SLACK_TOOLS.has(name) && SLACK_HOST.test(host))
 }
 
 export const RUN_PROFILE_DENIAL = 'La herramienta no forma parte de la capacidad fija de este perfil de run'

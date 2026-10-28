@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { randomBytes } from 'node:crypto'
 import { DecisionService, DecisionStore } from '@agenthub/memory'
 import { CoreActionExecutor, EffectRejected, type ActionAdapter } from '../src/effects/executor.js'
-import type { EffectTools } from '../src/effects/tools.js'
+import type { EffectToolResolver, EffectTools } from '../src/effects/tools.js'
 
 const key = randomBytes(32)
 const OWNER = 'owner-1'
@@ -12,10 +12,14 @@ const effect = { cloud: 'site', issue_key: 'ABC-1', seconds: 1800 }
 let store: DecisionStore
 let authority: 'live' | 'unavailable' | 'unknown'
 let automations: boolean
-let enabledTools: Set<string>
-let toolTraces: Array<{ runId?: string; intentId: string; callId: string }>
+/** servidor → herramientas habilitadas para hub_effects */
+let catalog: Map<string, Set<string>>
+let toolTraces: Array<{ serverId: string; runId?: string; intentId?: string; callId?: string }>
 
-const tools: EffectTools = { enabled: name => enabledTools.has(name), call: async () => ({ is_error: false, content: [] }) }
+const resolver: EffectToolResolver = {
+  candidates: names => [...catalog].filter(([, tools]) => names.every(name => tools.has(name))).map(([id]) => id),
+  forServer: (serverId, trace) => { toolTraces.push({ serverId, ...trace }); return { server_id: serverId, enabled: name => !!catalog.get(serverId)?.has(name), call: async () => ({ is_error: false, content: [] }) } as EffectTools },
+}
 
 function adapter(over: Partial<ActionAdapter<typeof effect>> = {}): ActionAdapter<typeof effect> & { calls: { prepare: number; execute: number } } {
   const calls = { prepare: 0, execute: 0 }
@@ -31,7 +35,7 @@ function adapter(over: Partial<ActionAdapter<typeof effect>> = {}): ActionAdapte
 
 function executor(...adapters: ActionAdapter<any>[]) {
   const decisions = new DecisionService(store, async () => authority)
-  return new CoreActionExecutor({ decisions, adapters, automationsEnabled: () => automations, toolsFor: trace => { toolTraces.push(trace); return tools } })
+  return new CoreActionExecutor({ decisions, adapters, automationsEnabled: () => automations, tools: resolver })
 }
 
 async function approvedIntent() {
@@ -48,7 +52,7 @@ async function approvedIntent() {
 
 beforeEach(() => {
   clock = new Date('2026-10-28T20:00:00.000Z')
-  authority = 'live'; automations = true; enabledTools = new Set(['addWorklogToJiraIssue']); toolTraces = []
+  authority = 'live'; automations = true; catalog = new Map([['srv-a', new Set(['addWorklogToJiraIssue'])]]); toolTraces = []
   store = new DecisionStore(':memory:', { key, now: () => clock, exclusions: { async add() {} } })
 })
 afterEach(() => store.close())
@@ -61,7 +65,7 @@ describe('ejecutor del core', () => {
     expect(receipt).toEqual({ intent_id: intentId, state: 'succeeded', remote_ref: 'wl-1', result_digest: 'd1' })
     expect(wl.calls).toEqual({ prepare: 1, execute: 1 })
     expect(store.intent(intentId)).toMatchObject({ state: 'succeeded', remote_ref: 'wl-1' })
-    expect(toolTraces[0]).toMatchObject({ runId: 'run-1', intentId })
+    expect(toolTraces[0]).toMatchObject({ serverId: 'srv-a', runId: 'run-1', intentId })
   })
 
   it('con las automatizaciones apagadas no despacha ni toca la intención', async () => {
@@ -91,11 +95,38 @@ describe('ejecutor del core', () => {
 
   it('una herramienta apagada para la identidad de servicio se rechaza antes del dispatch', async () => {
     const { intentId } = await approvedIntent()
-    enabledTools = new Set()
+    catalog = new Map()
     const wl = adapter()
     expect(await executor(wl).executeApprovedAction({ intent_id: intentId, expected_generation: 0 })).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'tool_off' })
     expect(wl.calls).toEqual({ prepare: 0, execute: 0 })
     expect(store.intent(intentId)).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'tool_off' })
+  })
+
+  it('con dos servidores que publican la misma herramienta y nada que fije uno, rechaza sin red', async () => {
+    const { intentId } = await approvedIntent()
+    catalog = new Map([['srv-a', new Set(['addWorklogToJiraIssue'])], ['srv-b', new Set(['addWorklogToJiraIssue'])]])
+    const wl = adapter()
+    expect(await executor(wl).executeApprovedAction({ intent_id: intentId, expected_generation: 0 })).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'ambiguous_server' })
+    expect(wl.calls).toEqual({ prepare: 0, execute: 0 })
+    expect(toolTraces).toEqual([])
+    expect(store.intent(intentId)).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'ambiguous_server' })
+  })
+
+  it('el efecto fija el servidor: todas las herramientas de la intención salen por él', async () => {
+    const { intentId } = await approvedIntent()
+    catalog = new Map([['srv-a', new Set(['addWorklogToJiraIssue'])], ['srv-b', new Set(['addWorklogToJiraIssue'])]])
+    const seen: string[] = []
+    const wl = adapter({ server: () => 'srv-b', prepare: async ctx => { seen.push(ctx.server_id, ctx.tools.server_id); return {} }, execute: async ctx => { seen.push(ctx.server_id, ctx.tools.server_id); return { state: 'succeeded' } } })
+    expect(await executor(wl).executeApprovedAction({ intent_id: intentId, expected_generation: 0 })).toMatchObject({ state: 'succeeded' })
+    expect(seen).toEqual(['srv-b', 'srv-b', 'srv-b', 'srv-b'])
+  })
+
+  it('si el servidor fijado apagó la herramienta no cae a otro servidor', async () => {
+    const { intentId } = await approvedIntent()
+    catalog = new Map([['srv-a', new Set(['addWorklogToJiraIssue'])], ['srv-b', new Set()]])
+    const wl = adapter({ server: () => 'srv-b' })
+    expect(await executor(wl).executeApprovedAction({ intent_id: intentId, expected_generation: 0 })).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'tool_off' })
+    expect(wl.calls).toEqual({ prepare: 0, execute: 0 })
   })
 
   it('un guard del adaptador rechaza sin ejecutar y conserva su código', async () => {

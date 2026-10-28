@@ -16,7 +16,7 @@ function snapshot(cliKind: string): Record<string, unknown> {
     agent_instance_id: AGENT, cli_kind: cliKind, snapshot_hash: `hash-${cliKind}`, generated_at: '2026-01-01T00:00:00Z', user_email: 'dev@craftech.io', skills: [], denied: [],
     servers: [
       server('memory', ['search', 'remember', 'schedule_create', 'run_report'], 'http://127.0.0.1:4010/api/memory/mcp'),
-      server('atlassian', ['getJiraIssue', 'addWorklogToJiraIssue', 'deleteEverything'], 'https://mcp.atlassian.example/v1/mcp'),
+      server('atlassian', ['getJiraIssue', 'addWorklogToJiraIssue', 'deleteEverything'], 'https://mcp.atlassian.com/v1/mcp'),
     ],
   }
 }

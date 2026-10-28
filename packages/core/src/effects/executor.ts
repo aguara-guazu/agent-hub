@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { ActionExecutor, ActionReceipt, DecisionItemKind, DecisionService, IntentRow } from '@agenthub/memory'
-import type { EffectTools } from './tools.js'
+import type { EffectToolResolver, EffectTools } from './tools.js'
 
 /** Lo que el adaptador conoce de la intención que ejecuta. El efecto ya viene validado por `ActionAdapter.effect`. */
 export interface ActionContext {
@@ -11,6 +11,8 @@ export interface ActionContext {
   kind: DecisionItemKind
   operation_key: string
   effect_digest: string
+  /** Servidor del catálogo fijado para esta intención; guard, lectura y escritura van por él. */
+  server_id: string
   tools: EffectTools
 }
 
@@ -25,6 +27,8 @@ export interface ActionAdapter<E = unknown> {
   effect: { parse(raw: unknown): E }
   /** Herramientas MCP que `execute` puede invocar. Se comprueban contra la identidad `hub_effects` antes del dispatch. */
   tools: readonly string[]
+  /** Servidor del catálogo (id estable, no slug) que el efecto canónico fija. Sin él, el ejecutor solo continúa si un único servidor publica las herramientas. */
+  server?(effect: E): string | undefined
   /** Solo lecturas y guards. Cualquier fallo aquí significa que nada se escribió. */
   prepare(ctx: ActionContext, effect: E): Promise<unknown>
   /** La única fase con efectos. Una excepción se trata como resultado incierto. */
@@ -38,8 +42,8 @@ export interface CoreActionExecutorOptions {
   adapters: readonly ActionAdapter<any>[]
   /** Interruptor de automatizaciones: apagado, nada se despacha. */
   automationsEnabled: () => boolean
-  /** Herramientas de la identidad de servicio con la correlación de esta ejecución. */
-  toolsFor: (trace: { runId?: string; intentId: string; callId: string }) => EffectTools
+  /** Resolvedor de herramientas de la identidad de servicio `hub_effects`. */
+  tools: EffectToolResolver
 }
 
 const rejected = (intentId: string, code: string): ActionReceipt => ({ intent_id: intentId, state: 'rejected_before_dispatch', error_code: code })
@@ -64,12 +68,21 @@ export class CoreActionExecutor implements ActionExecutor {
 
   private get store() { return this.options.decisions.store }
 
-  private context(intent: IntentRow): ActionContext {
+  private context(intent: IntentRow, serverId: string): ActionContext {
     const run = this.store.runOfRequest(intent.request_id)
     return {
       intent_id: intent.intent_id, request_id: intent.request_id, item_id: intent.item_id, run_id: run, kind: intent.kind, operation_key: intent.operation_key, effect_digest: intent.effect_digest,
-      tools: this.options.toolsFor({ ...(run ? { runId: run } : {}), intentId: intent.intent_id, callId: randomUUID() }),
+      server_id: serverId, tools: this.options.tools.forServer(serverId, { ...(run ? { runId: run } : {}), intentId: intent.intent_id, callId: randomUUID() }),
     }
+  }
+
+  /** El servidor fijado por el efecto, o el único que publica las herramientas. `null` si no hay ninguno habilitado; `'ambiguous'` si hay varios y nada fija uno. */
+  private serverFor(adapter: ActionAdapter<any>, effect: unknown): string | 'ambiguous' | null {
+    const candidates = this.options.tools.candidates(adapter.tools)
+    const bound = adapter.server?.(effect)
+    if (bound) return candidates.includes(bound) ? bound : null
+    if (candidates.length > 1) return 'ambiguous'
+    return candidates[0] ?? null
   }
 
   async executeApprovedAction(input: { intent_id: string; expected_generation: number }): Promise<ActionReceipt> {
@@ -88,8 +101,10 @@ export class CoreActionExecutor implements ActionExecutor {
     if (!adapter) return release('adapter_not_allowed')
     let effect: unknown
     try { effect = adapter.effect.parse(JSON.parse(intent.effect)) } catch { return release('invalid_effect') }
-    const ctx = this.context(intent)
-    if (!adapter.tools.every(tool => ctx.tools.enabled(tool))) return release('tool_off')
+    const serverId = this.serverFor(adapter, effect)
+    if (serverId === 'ambiguous') return release('ambiguous_server')
+    if (!serverId) return release('tool_off')
+    const ctx = this.context(intent, serverId)
 
     let prepared: unknown
     try { prepared = await adapter.prepare(ctx, effect) } catch (error) { return release(error instanceof EffectRejected ? error.code : 'prepare_failed') }
@@ -121,7 +136,9 @@ export class CoreActionExecutor implements ActionExecutor {
     const adapter = this.adapters.get(intent.kind)
     if (!adapter) return uncertain(intentId, 'adapter_not_allowed')
     try {
-      const result = await adapter.reconcile(this.context(intent), intentId)
+      const serverId = this.serverFor(adapter, adapter.effect.parse(JSON.parse(intent.effect)))
+      if (!serverId || serverId === 'ambiguous') return uncertain(intentId, serverId ?? 'tool_off')
+      const result = await adapter.reconcile(this.context(intent, serverId), intentId)
       return result ? { ...result, intent_id: intentId } : uncertain(intentId, 'no_conclusive_evidence')
     } catch { return uncertain(intentId, 'reconcile_failed') }
   }
