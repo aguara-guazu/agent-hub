@@ -349,7 +349,7 @@ export class LocalChat {
     check(!s.removed_at,'Esta sesión fue expulsada del canal',410)
     return s
   }
-  async lifecycle(agent: AgentContext, input: { session_key: string; native_id: string; event: string; at: string; turn_id?:string | undefined; process_id?: number | undefined; process_started?: string | undefined; transport?:string | undefined }) {
+  async lifecycle(agent: AgentContext, input: { session_key: string; native_id: string; event: string; at: string; turn_id?:string | undefined; process_id?: number | undefined; process_started?: string | undefined; transport?:string | undefined; model?:string | undefined; source?:string | undefined }) {
     const result=await this.db.transaction(async()=>{
     await this.assertNotRemoved(agent,input.session_key)
     const known = (await this.db.query('SELECT * FROM chat_sessions WHERE key_hash=$1 AND agent_id=$2',[hash(input.session_key),agent.agent_id]))[0]
@@ -369,6 +369,7 @@ export class LocalChat {
         closed_at=CASE WHEN $2='offline' THEN $3 ELSE NULL END,process_id=COALESCE($5,process_id),process_started=COALESCE($6,process_started),
         capability=CASE WHEN $7 IS NOT NULL THEN $7 WHEN cli_kind='codex_cli' AND capability NOT IN ('codex_appserver','tui_prompt') THEN 'codex_queue' ELSE capability END
         WHERE id=$1 AND event_at<=$3`, [sid, state, input.at, new Date(Date.now()+90000).toISOString(), input.process_id ?? null, input.process_started ?? null, input.transport ?? null])
+      await this.captureNative(sid,agent,input)
     } else if(input.event==='Heartbeat' || input.event==='Watch') {
       await this.db.query(`UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2,
         capability=CASE WHEN capability='hub_fleet' THEN capability WHEN $3='Watch' AND $4 IS NOT NULL THEN $4 WHEN $3='Watch' AND cli_kind='claude_code' THEN 'claude_rewake' ELSE capability END WHERE id=$1 AND closed_at IS NULL`,
@@ -386,6 +387,18 @@ export class LocalChat {
     })
     this.events.emit('change',result.session.id)
     return result
+  }
+  /**
+   * Metadata the CLI itself reported through its hook. An absent field never erases a known one, the first captured
+   * directory is kept unless a new SessionStart reports another, and nothing is inferred or completed from a catalog.
+   */
+  private async captureNative(sid:string,agent:AgentContext,input:{native_id:string;event:string;at:string;model?:string | undefined;source?:string | undefined}) {
+    await this.db.query(`UPDATE chat_sessions SET model=COALESCE($2,model),
+      start_source=CASE WHEN $3 IS NOT NULL AND ($4='SessionStart' OR start_source IS NULL) THEN $3 ELSE start_source END,
+      native_cwd=CASE WHEN $5 IS NOT NULL AND ($4='SessionStart' OR native_cwd IS NULL) THEN $5 ELSE native_cwd END,
+      surface=COALESCE(surface,'interactive'),id_captured_by=COALESCE(id_captured_by,'hook'),id_captured_at=COALESCE(id_captured_at,$6),resumable=1
+      WHERE id=$1 AND native_id IS NOT NULL AND native_id=$7 AND (id_captured_at IS NULL OR $2 IS NOT NULL OR $3 IS NOT NULL OR $4='SessionStart')`,
+    [sid,input.model ?? null,input.source ?? null,input.event,agent.cwd,input.at,input.native_id])
   }
   /** Authoritative native protocol from a Hub-owned process; never a caller-supplied tool. */
   async managedLifecycle(sessionId:string,event:string,at:string,turnId?:string) {

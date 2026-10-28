@@ -75,6 +75,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
       orca_workspace_id: orcaWorkspaceSchema.optional(), session_key: z.string().min(32).max(200), cwd: z.string().min(1).max(4000), at: z.iso.datetime(),
       event: z.enum(['SessionStart','HubPromptSubmit','UserPromptSubmit','BeforeAgent','PreToolUse','BeforeTool','PostToolUse','PostToolUseFailure','Stop','AfterAgent','SessionEnd','Interrupt','StopFailure','Heartbeat','Watch']),
       turn_id:z.string().min(1).max(300).optional(),
+      model:z.string().min(1).max(200).optional(), source:z.string().regex(/^[a-z_]{1,40}$/).optional(),
       process_id: z.number().int().min(1).optional(), process_started: z.string().max(100).optional(), watch_started:z.iso.datetime().optional(),
       transport:z.enum(['opencode_prompt','acp_prompt','antigravity_stream','codex_appserver','tui_prompt']).optional() }).strict(), request.body)
     requireCollaboration()

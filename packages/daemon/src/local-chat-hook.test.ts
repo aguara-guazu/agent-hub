@@ -139,3 +139,19 @@ it('injects only enrollment before naming even when a legacy response contains c
   const boundary=await localChatHook(state,'agent','gemini_cli',{session_id:'session',cwd:'/worktree',hook_event_name:'PreToolUse'})
   expect(boundary).toEqual({})
 })
+
+it('reenvía model y source del payload nativo sólo cuando tienen la forma esperada y nunca en Watch',async()=>{
+  const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({})}))
+  const sent=()=>JSON.parse(vi.mocked(fetch).mock.calls.at(-1)![1]!.body as string)
+  await localChatHook(state,'agent','claude_code',{session_id:'session',cwd:'/worktree',hook_event_name:'SessionStart',model:'claude-sonnet-5-5',source:'resume'})
+  expect(sent()).toMatchObject({event:'SessionStart',model:'claude-sonnet-5-5',source:'resume'})
+  await localChatHook(state,'agent','codex_cli',{session_id:'session',cwd:'/worktree',hook_event_name:'Stop',model:'gpt-x',source:'Not A Source!'})
+  expect(sent()).toMatchObject({model:'gpt-x'})
+  expect(sent()).not.toHaveProperty('source')
+  await localChatHook(state,'agent','codex_cli',{session_id:'session',cwd:'/worktree',hook_event_name:'Stop',model:'x'.repeat(201),source:42})
+  expect(sent()).not.toHaveProperty('model')
+  expect(sent()).not.toHaveProperty('source')
+  await localChatHook(state,'agent','codex_cli',{session_id:'session',cwd:'/worktree',hook_event_name:'Stop'})
+  expect(sent()).not.toHaveProperty('model')
+})

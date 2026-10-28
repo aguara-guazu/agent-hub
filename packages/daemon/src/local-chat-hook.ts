@@ -46,10 +46,15 @@ export async function localChatHook(state: DaemonState, agentId: string, kind: s
   url.pathname = '/api/memory/chat/native'; url.search=''; url.hash=''
   const base = { agent_id:agentId, native_id:nativeId, cwd, orca_workspace_id:orcaWorkspaceId(), session_key:sessionKey,
     ...(event==='Watch' ? {watch_started:observedAt}: {}) }
+  // Optional native metadata, bounded and shape-checked; never copied from anything but the hook's own payload.
+  const capture = {
+    ...(typeof raw.model==='string' && raw.model.length>0 && raw.model.length<=200 ? {model:raw.model} : {}),
+    ...(typeof raw.source==='string' && /^[a-z_]{1,40}$/.test(raw.source) ? {source:raw.source} : {}),
+  }
   const processInfo = ['SessionStart','UserPromptSubmit','Stop','Watch'].includes(event) ? await cliProcess(kind) : undefined
   const send = async (name: string, timeout=1800) => {
     const response = await fetch(url,{ method:'POST', headers:{ Authorization:`Bearer ${credentials.token}`, 'Content-Type':'application/json' },
-      body:JSON.stringify({ ...base,event:name,at:name==='Watch'?new Date().toISOString():observedAt,...processInfo }), signal:AbortSignal.timeout(timeout) })
+      body:JSON.stringify({ ...base,event:name,at:name==='Watch'?new Date().toISOString():observedAt,...processInfo,...(name==='Watch'?{}:capture) }), signal:AbortSignal.timeout(timeout) })
     if (!response.ok) throw new Error(String(response.status))
     return await response.json() as any
   }
