@@ -1,15 +1,11 @@
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { HashRouter } from 'react-router-dom'
+import { StrictMode } from "react"
+import { createRoot } from "react-dom/client"
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { HashRouter } from "react-router-dom"
 
 import "./i18n"
-import App from './App'
-import './styles/tokens.css'
-import './styles/app.css'
-import './styles/hub.css'
-import './styles/memory.css'
-import './styles/automations.css'
+import App from "./App"
+import "./styles/tokens.css"
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -17,7 +13,7 @@ const queryClient = new QueryClient({
   },
 })
 
-createRoot(document.getElementById('root')!).render(
+createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <HashRouter>
