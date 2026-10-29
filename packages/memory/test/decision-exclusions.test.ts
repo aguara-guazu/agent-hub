@@ -94,6 +94,12 @@ describe('gate de exclusión de mensajes de control en la ingesta', () => {
     expect(f.requests.some(request => request.includes('conversations.history') && request.includes('channel=D0OTHER001'))).toBe(true)
   })
 
+  it('si Slack no identifica al usuario del token, un DM no se lee y la sincronización se detiene', async () => {
+    const f = fixture('slack', { channel_ids: ['D0SELF0001'] }, url => url.pathname.endsWith('auth.test') ? { ok: true } : { ok: true, channel: { is_im: true, user: 'U0OWNER001' }, messages: [] })
+    await expect(syncSlack(f.connector, f.ctx)).rejects.toThrow(/no identificó al usuario/)
+    expect(f.requests.some(request => request.includes('conversations.history'))).toBe(false)
+  })
+
   it('si la consulta falla, la ingesta se detiene en lugar de importar sin clasificar', async () => {
     const f = fixture('google', {}, url => url.pathname.endsWith('/profile') ? { emailAddress: MAILBOX, historyId: '10' } : { messages: [{ id: 'm-ok' }] })
     const broken = { ...f.ctx, store: { ...f.ctx.store, db: { query: async (sql: string, params?: unknown[]) => { if (sql.includes('decision_exclusions')) throw new Error('db down'); return db.query(sql, params) } } } } as unknown as ConnectorContext

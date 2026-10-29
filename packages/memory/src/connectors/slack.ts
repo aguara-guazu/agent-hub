@@ -19,8 +19,9 @@ export async function syncSlack(connector: Connector, ctx: ConnectorContext): Pr
   async function isOwnDirectMessage(channel: string): Promise<boolean> {
     if (!channel.startsWith('D')) return false
     own ??= String((await call('auth.test', {})).user_id ?? '')
+    check(own, 'Slack no identificó al usuario del token; no se puede descartar que este mensaje directo sea el de las solicitudes de decisión', 409)
     const info = (await call('conversations.info', { channel })).channel ?? {}
-    return info.is_im === true && Boolean(own) && info.user === own
+    return info.is_im === true && info.user === own
   }
   const users = new Map<string, any>()
   async function participant(userId: string): Promise<ImportInput['participants'][number]> {
