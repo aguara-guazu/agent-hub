@@ -19,14 +19,15 @@ function setup(options: { members?: Array<{ id: string; runtime: HubTeamStatus; 
   const settle = vi.fn(async () => {})
   const log: RecoveryIncidentLog = { claim, settle }
   const publishResumption = vi.fn(async () => true)
-  const recovery = new FleetQuotaRecovery({ query } as never, { exhaustedAt, forCli }, { resumeMember, checkResume }, log, withNotices ? { publishResumption } : undefined)
-  return { recovery, exhaustedAt, forCli, resumeMember, checkResume, claim, settle, publishResumption }
+  const publishLeaderClosed = vi.fn(async () => true)
+  const recovery = new FleetQuotaRecovery({ query } as never, { exhaustedAt, forCli }, { resumeMember, checkResume }, log, withNotices ? { publishResumption, publishLeaderClosed } : undefined)
+  return { recovery, exhaustedAt, forCli, resumeMember, checkResume, claim, settle, publishResumption, publishLeaderClosed }
 }
 const transition = (patch: Partial<UsageQuotaTransition> = {}): UsageQuotaTransition => ({ id: 't', pool_key: 'pool-a', before: 'exhausted', after: 'available', observed_at: '2026-10-29T04:00:00.000Z', binding_ids: ['b'], clis: ['codex_cli'], ...patch })
 
 it('resumes a Codex member whose protocol reported a usage limit once the same pool recovered', async () => {
   const { recovery, resumeMember, claim, settle } = setup()
-  expect(await recovery.recover()).toEqual([{ member_id: 'member-1', team_id: 'team-1', worktree_name: 'tree-member-1', cli: 'codex_cli', model: 'model-a', result: 'resumed', reason: 'exclusive_resume', evidence: 'protocol' }])
+  expect(await recovery.recover()).toEqual([{ member_id: 'member-1', team_id: 'team-1', worktree_name: 'tree-member-1', cli: 'codex_cli', model: 'model-a', generation: 'gen-1', result: 'resumed', reason: 'exclusive_resume', evidence: 'protocol' }])
   expect(resumeMember).toHaveBeenCalledExactlyOnceWith('member-1', { prompt: QUOTA_RESUME_PROMPT, pool_key: 'pool-a' })
   expect(claim.mock.calls.map(call => (call[0] as { cause: string }).cause)).toEqual(['quota_exhausted', 'quota_resume'])
   expect(claim.mock.calls[1]![0]).toMatchObject({ member_id: 'member-1', generation: 'gen-1', detail: { evidence: 'protocol', pool_key: 'pool-a', cli: 'codex_cli', model: 'model-a' } })
@@ -40,7 +41,7 @@ it('accepts a Claude failure only when the Hub observed the pool exhausted aroun
   expect((await corroborated.recovery.recover())[0]).toMatchObject({ result: 'resumed', evidence: 'protocol+quota_observation' })
   expect(corroborated.exhaustedAt).toHaveBeenCalledWith('claude_code', 'model-a', failedAt, 120_000)
   const alone = setup({ members: [{ id: 'member-1', runtime: claude }], exhausted: undefined })
-  expect(await alone.recovery.recover()).toEqual([{ member_id: 'member-1', team_id: 'team-1', worktree_name: 'tree-member-1', cli: 'claude_code', model: 'model-a', result: 'skipped', reason: 'generic_failure' }])
+  expect(await alone.recovery.recover()).toEqual([{ member_id: 'member-1', team_id: 'team-1', worktree_name: 'tree-member-1', cli: 'claude_code', model: 'model-a', generation: 'gen-1', result: 'skipped', reason: 'generic_failure' }])
   expect(alone.resumeMember).not.toHaveBeenCalled()
   expect(alone.claim).not.toHaveBeenCalled()
 })
@@ -117,4 +118,19 @@ it('keeps the single attempt when authority or the exit proof is missing, and sp
   expect(unsupported.claim.mock.calls.map(call => (call[0] as { cause: string }).cause)).toEqual(['quota_exhausted', 'quota_resume'])
   expect(unsupported.settle).toHaveBeenCalledWith(expect.objectContaining({ action: 'resume_unsupported' }))
   expect(unsupported.resumeMember).not.toHaveBeenCalled()
+})
+
+it('waits without spending the attempt when the leader is closed and leaves one notice per team and episode', async () => {
+  const members = [{ id: 'a', runtime: runtime(), team_id: 'team-1' }, { id: 'b', runtime: runtime({ generation: 'gen-b' }), team_id: 'team-1' }, { id: 'c', runtime: runtime(), team_id: 'team-2' }]
+  const { recovery, claim, resumeMember, publishLeaderClosed, publishResumption } = setup({ members, check: { ready: false, kind: 'leader_closed' } }, true)
+  const outcomes = await recovery.recover()
+  expect(outcomes.map(item => [item.member_id, item.result, item.reason])).toEqual([['a', 'skipped', 'leader_closed'], ['b', 'skipped', 'leader_closed'], ['c', 'skipped', 'leader_closed']])
+  expect(claim.mock.calls.every(call => (call[0] as { cause: string }).cause === 'quota_exhausted')).toBe(true)
+  expect(resumeMember).not.toHaveBeenCalled()
+  expect(publishResumption).not.toHaveBeenCalled()
+  const events = publishLeaderClosed.mock.calls.map(call => call[0] as { key: string; team_id: string; members: string[] })
+  expect(events.map(item => [item.team_id, item.members])).toEqual([['team-1', ['tree-a', 'tree-b']], ['team-2', ['tree-c']]])
+  const again = setup({ members, check: { ready: false, kind: 'leader_closed' } }, true)
+  await again.recovery.recover()
+  expect(again.publishLeaderClosed.mock.calls.map(call => (call[0] as { key: string }).key)).toEqual(events.map(item => item.key))
 })

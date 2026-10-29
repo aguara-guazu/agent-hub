@@ -330,6 +330,9 @@ export class HubTeamRuntime implements TeamOrca {
     const member = (await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE id=$1', [handle]))[0]
     const runtime = this.runtime(member?.runtime)
     if (!member?.session_id || runtime?.state !== 'failed' || !runtime.native_id) return { kind: 'not_failed' as const }
+    const leader = (await this.chat.db.query(`SELECT leader.closed_at,leader.removed_at FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id
+      LEFT JOIN chat_sessions leader ON leader.id=t.created_by WHERE m.id=$1`, [handle]))[0]
+    if (!leader || leader.closed_at || leader.removed_at) return { kind: 'leader_closed' as const }
     try { await this.assertAuthorized(handle, String(member.session_id), true) } catch { return { kind: 'unauthorized' as const } }
     const owned = this.manager.status(handle)
     const exited = owned ? this.generations.get(handle) === runtime.generation && this.manager.exitConfirmed(handle)
@@ -352,7 +355,7 @@ export class HubTeamRuntime implements TeamOrca {
     return { kind: 'ready' as const, runtime, current, plan: possible }
   }
   /** Side-effect-free verdict for the caller that rations attempts: only 'unsupported' is a property of the CLI, the rest can change. */
-  async checkResume(handle: string, request: HubResumeRequest): Promise<{ ready: boolean; kind: 'ready' | 'not_failed' | 'unauthorized' | 'unavailable' | 'exit_unconfirmed' | 'unsupported'; plan?: ResumePlan }> {
+  async checkResume(handle: string, request: HubResumeRequest): Promise<{ ready: boolean; kind: 'ready' | 'not_failed' | 'leader_closed' | 'unauthorized' | 'unavailable' | 'exit_unconfirmed' | 'unsupported'; plan?: ResumePlan }> {
     const result = await this.evaluateResume(handle, request)
     return { ready: result.kind === 'ready', kind: result.kind, ...('plan' in result && result.plan ? { plan: result.plan } : {}) }
   }
@@ -372,6 +375,7 @@ export class HubTeamRuntime implements TeamOrca {
       await this.queues.get(handle)
       const evaluated = await this.evaluateResume(handle, request)
       check(evaluated.kind !== 'not_failed', 'El miembro no tiene una conversación fallida que reanudar.', 409)
+      check(evaluated.kind !== 'leader_closed', 'El líder del equipo está cerrado; los miembros esperan a que se reabra.', 409)
       check(evaluated.kind !== 'unauthorized', 'El equipo o sus sesiones ya no están autorizados para recibir el aviso.', 403)
       check(evaluated.kind !== 'unavailable', 'El Hub no pudo verificar el espacio de trabajo ni la CLI instalada.', 503)
       plan = 'plan' in evaluated ? evaluated.plan : undefined

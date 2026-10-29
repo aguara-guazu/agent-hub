@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { UsageQuotaTransition } from '@agenthub/shared'
 import type { MemoryDatabase } from './database.js'
 import type { HubResumeRequest, HubTeamStatus } from './team-hub.js'
-import type { ResumptionEvent } from './usage-notices.js'
+import type { LeaderClosedEvent, ResumptionEvent } from './usage-notices.js'
 import { isRestored, type UsageQuotas } from './usage-quotas.js'
 
 /** Fixed instruction of a resumed member; it carries no task text so the conversation itself stays the source of truth. */
@@ -19,9 +19,15 @@ export interface RecoveryOutcome {
   worktree_name: string
   cli: string
   model: string
+  /** Generation of the failed process this outcome is about; with the member it identifies an episode. */
+  generation: string
   result: 'resumed' | 'unsupported' | 'failed' | 'skipped'
   reason: string
   evidence?: QuotaEvidence
+}
+export interface RecoveryNotices {
+  publishResumption(event: ResumptionEvent): Promise<boolean>
+  publishLeaderClosed(event: LeaderClosedEvent): Promise<boolean>
 }
 export interface ResumeRuntime {
   resumeMember(handle: string, request: HubResumeRequest): Promise<unknown>
@@ -58,7 +64,7 @@ export class FleetQuotaRecovery {
     private readonly usage: Pick<UsageQuotas, 'exhaustedAt' | 'forCli'>,
     private readonly runtime: ResumeRuntime,
     private readonly log: RecoveryIncidentLog,
-    private readonly notices?: { publishResumption(event: ResumptionEvent): Promise<boolean> },
+    private readonly notices?: RecoveryNotices,
   ) {}
 
   /** Entry point for the quota recovery event: only a pool leaving exhaustion or cooldown triggers a sweep. */
@@ -94,6 +100,12 @@ export class FleetQuotaRecovery {
       list.push({ member_id: outcome.member_id, worktree_name: outcome.worktree_name, cli: outcome.cli, model: outcome.model, result: outcome.result, reason: outcome.reason })
       teams.set(outcome.team_id, list)
     }
+    const closed = new Map<string, RecoveryOutcome[]>()
+    for (const outcome of outcomes) if (outcome.result === 'skipped' && outcome.reason === 'leader_closed') closed.set(outcome.team_id, [...(closed.get(outcome.team_id) ?? []), outcome])
+    for (const [teamId, waiting] of closed) {
+      const episode = createHash('sha256').update(JSON.stringify(waiting.map(item => [item.member_id, item.generation]).sort())).digest('hex').slice(0, 16)
+      await this.notices.publishLeaderClosed({ key: `leader_closed:${teamId}:${episode}`, team_id: teamId, observed_at: new Date().toISOString(), members: waiting.map(item => item.worktree_name) }).catch(() => false)
+    }
     for (const [teamId, members] of teams) {
       const generation = createHash('sha256').update(JSON.stringify(members.map(item => [item.member_id, item.result]).sort())).digest('hex').slice(0, 16)
       await this.notices.publishResumption({ key: `fleet_resumption:${teamId}:${trigger}:${generation}`, team_id: teamId, observed_at: new Date().toISOString(), members }).catch(() => false)
@@ -101,7 +113,7 @@ export class FleetQuotaRecovery {
   }
 
   private async attempt(memberId: string, teamId: string, worktreeName: string, sessionId: string | null, runtime: HubTeamStatus): Promise<RecoveryOutcome> {
-    const named = { member_id: memberId, team_id: teamId, worktree_name: worktreeName, cli: runtime.cli, model: runtime.model }
+    const named = { member_id: memberId, team_id: teamId, worktree_name: worktreeName, cli: runtime.cli, model: runtime.model, generation: runtime.generation }
     const skip = (reason: string, evidence?: QuotaEvidence): RecoveryOutcome => ({ ...named, result: 'skipped', reason, ...(evidence ? { evidence } : {}) })
     const failure = await classifyQuotaFailure(runtime, this.usage)
     if (!failure) return skip('generic_failure')
@@ -159,7 +171,7 @@ export class SqlRecoveryIncidentLog implements RecoveryIncidentLog {
 
 /** Builds the recovery over the Hub's own fleet runtime; absent when the runtime cannot resume members (another backend or no fleet). */
 export function createFleetRecovery(db: Pick<MemoryDatabase, 'query'>, usage: Pick<UsageQuotas, 'exhaustedAt' | 'forCli'>,
-  fleet: unknown, notices?: { publishResumption(event: ResumptionEvent): Promise<boolean> }): FleetQuotaRecovery | undefined {
+  fleet: unknown, notices?: RecoveryNotices): FleetQuotaRecovery | undefined {
   const runtime = fleet as Partial<ResumeRuntime> | undefined
   if (!runtime || typeof runtime.resumeMember !== 'function' || typeof runtime.checkResume !== 'function') return undefined
   return new FleetQuotaRecovery(db, usage, runtime as ResumeRuntime, new SqlRecoveryIncidentLog(db), notices)

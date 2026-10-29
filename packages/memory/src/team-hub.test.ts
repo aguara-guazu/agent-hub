@@ -57,12 +57,14 @@ function mockChat() {
   const rows = new Map<string, { id: string; session_id: string | null; runtime: HubTeamStatus | null }>()
   const sessions = new Map<string, Record<string, unknown>>()
   let authorized = true
+  let leaderClosed = false
   const incidents = new Set<string>()
   const managedQuestions = vi.fn(async (_sender: string, _questions: unknown[], _generation: string) => {})
   const lifecycle = vi.fn(async (_session: string, _event: string, _at: string, _turn?: string) => {})
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     if (sql.startsWith('SELECT * FROM chat_sessions WHERE id=$1')) return sessions.has(String(params[0])) ? [{ ...sessions.get(String(params[0])) }] : []
     if (sql.startsWith("SELECT id,title,data FROM entities WHERE kind='project'")) return []
+    if (sql.includes('leader.closed_at,leader.removed_at')) return [{ closed_at: leaderClosed ? new Date().toISOString() : null, removed_at: null }]
     if (sql.includes('FROM process_incidents')) return incidents.has(`${params[0]}:${params[1]}`) ? [{ id: 'incident' }] : []
     if (sql.startsWith('SELECT m.id FROM chat_team_members')) return authorized && rows.get(String(params[0]))?.session_id === params[1] ? [{ id: params[0] }] : []
     if (sql.startsWith('SELECT id,session_id,runtime') && sql.includes('WHERE session_id=$1')) return [...rows.values()].filter(row => row.session_id === params[0]).map(row => ({ ...row }))
@@ -74,7 +76,7 @@ function mockChat() {
     }
     throw new Error('Unexpected test SQL')
   })
-  return { chat: { db: { query }, managedLifecycle: lifecycle, managedQuestions } as unknown as LocalChat, rows, sessions, lifecycle, managedQuestions, query, incidents, setAuthorized: (value: boolean) => { authorized = value } }
+  return { chat: { db: { query }, managedLifecycle: lifecycle, managedQuestions } as unknown as LocalChat, rows, sessions, lifecycle, managedQuestions, query, incidents, setAuthorized: (value: boolean) => { authorized = value }, setLeaderClosed: (value: boolean) => { leaderClosed = value } }
 }
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'hub-team-runtime-'))
@@ -520,11 +522,15 @@ describe('HubTeamRuntime same-conversation resume', () => {
     expect(receipt.runtime.native_id).toBe('thread-old')
   })
   it('does not resume a member that did not fail, lost its authority or has no installed resume evidence', async () => {
-    const { backend, rows, id, setAuthorized, launched } = setup('hold', options)
+    const { backend, rows, id, setAuthorized, setLeaderClosed, launched } = setup('hold', options)
     rows.get(id)!.session_id = 'member-session'
     await expect(backend.resumeMember(id, request)).rejects.toMatchObject({ statusCode: 409 })
     const workspace = await backend.workspace(join(directory, 'repo'))
     rows.get(id)!.runtime = { id, cli: 'codex_cli', cwd: workspace.path, model: 'exact-model', state: 'failed', native_id: 'thread-old', provider: 'hub', generation: 'g', updated_at: new Date().toISOString() } as HubTeamStatus
+    setLeaderClosed(true)
+    expect(await backend.checkResume(id, request)).toMatchObject({ ready: false, kind: 'leader_closed' })
+    await expect(backend.resumeMember(id, request)).rejects.toMatchObject({ statusCode: 409 })
+    setLeaderClosed(false)
     setAuthorized(false)
     expect(await backend.checkResume(id, request)).toMatchObject({ ready: false, kind: 'unauthorized' })
     await expect(backend.resumeMember(id, request)).rejects.toMatchObject({ statusCode: 403 })

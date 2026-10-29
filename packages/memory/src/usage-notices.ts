@@ -9,6 +9,7 @@ export interface QuotaNoticeEvent {
 }
 const activeTeam = "('launching','launched','partial','uncertain','active')"
 export interface ResumptionMember { member_id:string; worktree_name:string; cli:string; model:string; result:'resumed'|'unsupported'|'failed'; reason:string }
+export interface LeaderClosedEvent { key:string; team_id:string; observed_at:string; members:string[] }
 export interface ResumptionEvent { key:string; team_id:string; observed_at:string; members:ResumptionMember[] }
 
 /** Informational system notices: no synthetic participant, impersonated chat author or model polling. */
@@ -59,6 +60,27 @@ export class UsageNotices {
     [randomUUID(),event.key,team.created_by,team.master_channel_id,event.team_id,JSON.stringify(payload)])
     if(notify && inserted.length)this.chat.events.emit('change')
     return inserted.length>0
+  }
+  /**
+   * The quota came back but the team's leader session is closed, so its members wait. The person sees it as a team event; the
+   * notice also reaches the leader if that same conversation is reopened. One of each per team and episode.
+   */
+  async publishLeaderClosed(event:LeaderClosedEvent,notify=true) {
+    const team=(await this.db.query(`SELECT t.created_by,t.master_channel_id,t.objective FROM chat_team_plans t
+      JOIN chat_channels c ON c.id=t.master_channel_id AND c.closed_at IS NULL WHERE t.id=$1 AND t.state IN ${activeTeam}`,[event.team_id]))[0]
+    if(!team || !event.members.length)return false
+    const objective=String(team.objective ?? '').replace(/\s+/g,' ').trim().slice(0,80)
+    const message=`El líder del equipo «${objective}» está cerrado; reábrelo para que el equipo continúe (${event.members.join(', ')} esperan su reanudación por cuota).`
+    const payload={kind:'leader_closed',key:event.key,state:'restored',observed_at:event.observed_at,members:event.members,message,
+      routing:{direct_channel:false,team_ids:[event.team_id]}}
+    const inserted=await this.db.query(`INSERT INTO usage_quota_notices(id,event_key,recipient_id,channel_id,team_id,payload)
+      VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(event_key,recipient_id) DO NOTHING RETURNING id`,
+    [randomUUID(),event.key,team.created_by,team.master_channel_id,event.team_id,JSON.stringify(payload)])
+    if(!inserted.length)return false
+    await this.db.query(`INSERT INTO chat_team_events(id,team_id,type,source_channel_id,payload) VALUES($1,$2,'quota_leader_closed',$3,$4)`,
+      [randomUUID(),event.team_id,team.master_channel_id,JSON.stringify({message,members:event.members,observed_at:event.observed_at})])
+    if(notify)this.chat.events.emit('change')
+    return true
   }
   private valid = `EXISTS(SELECT 1 FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
     WHERE s.id=usage_quota_notices.recipient_id AND s.closed_at IS NULL AND s.removed_at IS NULL
