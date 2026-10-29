@@ -29,7 +29,7 @@ it.each([false, true])('relee la escritura Jira y refleja el resultado o avisa s
     expect(callTool.mock.calls.map(c => c[2])).toEqual(['transitionJiraIssue', 'getJiraIssue', 'sync_tasks'])
     expect(callTool).toHaveBeenNthCalledWith(3, agentId, expect.anything(), 'sync_tasks', { issues: [issue], source: 'mcp_mirror' },
       { [MEMORY_META_KEY]: expect.objectContaining({ agent_id: agentId, cli_kind: 'codex_cli', client: 'fixture', session_id: expect.any(String) }) })
-    expect(JSON.stringify(result).includes('No repitas el cambio en Jira')).toBe(failed)
+    expect(JSON.stringify(result).includes('Never repeat the Jira change')).toBe(failed)
     await gateway.close()
     expect(callTool).toHaveBeenLastCalledWith(agentId, expect.anything(), 'finish_notes', { reason: 'session_end' }, expect.anything())
   } finally { await client.close(); await gateway.close() }

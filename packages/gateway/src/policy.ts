@@ -63,35 +63,35 @@ export interface ExposedSkill {
 
 export function denialMessage(denied: DeniedTool): string {
   const parts = [
-    `El hub tiene apagada la herramienta '${denied.exposedName}' para este agente, asi que la llamada no se ejecuto.`,
-    'La lista que muestra este CLI quedo vieja: la decision vigente del hub es la que vale.',
+    `The hub turned off tool '${denied.exposedName}' for this agent; the call did not run.`,
+    'This CLI shows a stale list; the current hub decision prevails.',
   ]
-  if (denied.detail) parts.push(`Motivo: ${denied.detail}.`)
-  if (denied.source) parts.push(`Nivel que decide: ${denied.source}.`)
-  if (denied.lockedAt) parts.push(`La decision esta congelada en el nivel ${denied.lockedAt}.`)
+  if (denied.detail) parts.push(`Reason: ${denied.detail}.`)
+  if (denied.source) parts.push(`Deciding level: ${denied.source}.`)
+  if (denied.lockedAt) parts.push(`Locked at level ${denied.lockedAt}.`)
   parts.push(
-    `Para ver el detalle completo: 'agenthub why ${denied.exposedName}'. ` +
-      'Para volver a habilitarla hace falta cambiarlo en el panel del hub.',
+    `Details: 'agenthub why ${denied.exposedName}'. ` +
+      'Re-enable it in the hub panel.',
   )
   return parts.join(' ')
 }
 
 export function serverOffMessage(exposedName: string, server: DeniedTool): string {
   const parts = [
-    `El hub tiene apagado el MCP server '${server.slug}' para este cliente, asi que su herramienta '${exposedName}' no se expone y la llamada no se ejecuto.`,
+    `The hub turned off MCP server '${server.slug}' for this client; tool '${exposedName}' is not exposed and did not run.`,
   ]
   const motivo = (server.detail || '').trim()
-  if (motivo) parts.push(`Motivo: ${motivo.replace(/\.+$/, '')}.`)
-  if (server.source) parts.push(`Nivel que decide: ${server.source}.`)
-  parts.push('Para volver a tenerla hay que prender el server en el panel del hub.')
+  if (motivo) parts.push(`Reason: ${motivo.replace(/\.+$/, '')}.`)
+  if (server.source) parts.push(`Deciding level: ${server.source}.`)
+  parts.push('Re-enable the server in the hub panel.')
   return parts.join(' ')
 }
 
 export function unknownToolMessage(exposedName: string): string {
   return (
-    `El hub no expone ninguna herramienta llamada '${exposedName}' para este agente. ` +
-    'Puede que este CLI este mostrando una lista vieja o que la herramienta se haya quitado del catalogo. ' +
-    'Volve a listar las herramientas para ver las vigentes.'
+    `The hub exposes no tool named '${exposedName}' for this agent. ` +
+    'This CLI may show a stale list, or the tool left the catalog. ' +
+    'List tools again for the current ones.'
   )
 }
 

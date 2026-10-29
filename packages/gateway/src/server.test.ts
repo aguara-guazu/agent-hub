@@ -131,7 +131,7 @@ describe('GatewayServer — invariante del producto', () => {
       const denied = await c.callTool({ name: 'ops_restart_service', arguments: { service: 'api' } })
       expect((denied as { isError?: boolean }).isError).toBe(true)
       const text = ((denied as { content: Array<{ text?: string }> }).content[0]?.text ?? '')
-      expect(text).toContain('apagada')
+      expect(text).toContain('turned off')
 
       // 4) ...y el archivo de auditoria del upstream NO crecio: la llamada nunca llego.
       const linesAfterDeny = readFileSync(auditFile, 'utf-8').trim().split('\n').filter(Boolean)

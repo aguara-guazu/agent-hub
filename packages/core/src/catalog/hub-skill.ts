@@ -10,42 +10,44 @@ import { STARTER_SERVERS, type StarterServer } from './starter.js'
 
 export const HUB_SKILL_SLUG = 'agent-hub'
 export const HUB_SKILL_DISPLAY_NAME = 'Usar Agent Hub'
-export const HUB_SKILL_DESCRIPTION = 'Cómo usar lo que Agent Hub expone a este agente por el servidor MCP hub: nombres de las herramientas, qué hacer si una está apagada o pide autorizar la cuenta, y qué fuente preferir según el tema. Para consultas sobre AWS (servicios, límites, precios, APIs, regiones, CDK, CloudFormation, Well-Architected) usar primero AWS Knowledge si está disponible y, si no, buscar en internet.'
+export const HUB_SKILL_DESCRIPTION = 'Using Agent Hub tools via the hub MCP server: naming, turned-off or unauthorized tools, preferred source per topic. For AWS (services, limits, pricing, APIs, regions, CDK, CloudFormation, Well-Architected) use AWS Knowledge first if available, else web search.'
 
 const AWS_KNOWLEDGE_DOCS = 'https://awslabs.github.io/mcp/servers/aws-knowledge-mcp-server'
 
 export function renderHubSkill(servers: readonly StarterServer[] = STARTER_SERVERS): string {
   const factory = servers.map(s => `- **${s.display_name}** (\`${s.slug}\`): ${s.description}`).join('\n')
-  return `# Usar Agent Hub
+  return `# Using Agent Hub
 
-Agent Hub es el hub local de MCP servers y skills de la persona. Este agente ve un único servidor MCP, \`hub\`, que reúne las herramientas de todos los MCP servers habilitados para él. La lista de herramientas la decide el hub según la política vigente: qué servers están conectados y encendidos para este cliente. Las skills que instala el hub, esta incluida, llegan por la carpeta de skills de cada cliente; en Claude Desktop, que no lee skills del disco, llegan por la herramienta \`use_skill\` del mismo servidor \`hub\`: su descripción lista las skills habilitadas y la llamada con el slug devuelve el SKILL.md completo (con \`file\`, un archivo auxiliar de la skill).
+Talk to the person in their language.
 
-## Cómo se nombran las herramientas
+You see one MCP server, \`hub\`, aggregating the tools the person's local Agent Hub policy enables for this client. Hub skills (this one too) arrive in the client's skills folder; Claude Desktop, which doesn't read skills from disk, gets them via \`use_skill\` on \`hub\` (its description lists enabled skills; a slug returns the full SKILL.md, adding \`file\` an auxiliary file).
 
-- Cada herramienta llega como \`<server>_<herramienta>\`: el identificador del MCP server y el nombre original de la herramienta, ambos normalizados a minúsculas, dígitos y guiones bajos (los guiones y las secuencias de guiones bajos se reducen a un solo \`_\`). Por ejemplo, \`aws___search_documentation\` del server \`aws-knowledge\` llega como \`aws_knowledge_aws_search_documentation\`, y \`search\` del server \`memory\` como \`memory_search\`.
-- Según el cliente, el nombre completo lleva un prefijo: \`mcp__hub__\` en Claude Code, \`hub__\` en Codex y Gemini, \`hub___\` en Kiro, \`hub_\` en OpenCode y \`mcp_hub_\` en Antigravity. Claude Desktop no documenta el suyo.
-- Si un nombre no entra en el límite del cliente, se acorta y termina en un sufijo estable de seis caracteres.
+## Tool names
 
-## Cuando una herramienta falta, está apagada o pide autorización
+- \`<server>_<tool>\`: server id and original tool name, normalized to lowercase letters, digits and underscores (hyphens and underscore runs become one \`_\`). E.g. \`aws___search_documentation\` of \`aws-knowledge\` → \`aws_knowledge_aws_search_documentation\`; \`search\` of \`memory\` → \`memory_search\`.
+- Client prefixes: \`mcp__hub__\` Claude Code, \`hub__\` Codex and Gemini, \`hub___\` Kiro, \`hub_\` OpenCode, \`mcp_hub_\` Antigravity; Claude Desktop's is undocumented.
+- Names over the client's limit are shortened, ending in a stable six-character suffix.
 
-- Si una herramienta figura pero el hub la apagó, la llamada devuelve un error que explica el motivo. No reintentar con otros argumentos ni buscar rodeos: decirle a la persona qué server o herramienta habilitar desde la consola de Agent Hub.
-- Si un server requiere autorizar la cuenta, la persona lo hace con «Conectar cuenta» en la consola; hasta entonces el server aparece sin herramientas. Nunca pedir, escribir ni reproducir credenciales, tokens ni claves: el hub las administra y las inyecta por su cuenta.
-- Si un server de fábrica no aparece en la lista, la persona pudo haberlo borrado o apagado. Mencionarlo como opción disponible en el hub, sin asumir que existe.
+## Missing, off or unauthorized
 
-## Qué fuente preferir según el tema
+- A tool the hub turned off returns an error with the reason. Don't retry with other arguments or work around it: tell the person which server or tool to enable in the Agent Hub console.
+- A server needing account authorization shows no tools until the person uses «Conectar cuenta» in the console. Never ask for, write or reproduce credentials, tokens or keys: the hub manages and injects them.
+- A missing factory server may have been deleted or turned off: mention it as a hub option without assuming it exists.
 
-- **AWS** (servicios, APIs, cuotas y límites, precios, disponibilidad por región, CDK, CloudFormation, Well-Architected, resolución de problemas, novedades): usar primero el MCP server **AWS Knowledge** si sus herramientas \`aws_knowledge_*\` están disponibles. Buscar con \`aws_knowledge_aws_search_documentation\`: cada resultado trae un fragmento literal de la página, que suele alcanzar para responder. Leer la página completa con \`aws_knowledge_aws_read_documentation\` sólo cuando el fragmento no baste. Usar \`aws_knowledge_aws_list_regions\` y \`aws_knowledge_aws_get_regional_availability\` para regiones y disponibilidad de servicios, funciones, APIs y recursos de CloudFormation, y \`aws_knowledge_aws_retrieve_skill\` para cargar una skill de agente de AWS con el \`skill_name\` exacto que devolvió la búsqueda. Citar la URL de la documentación que devuelve cada resultado. Si el server no figura, está apagado o la llamada falla, buscar en internet con la herramienta de búsqueda web del cliente, priorizando docs.aws.amazon.com y aws.amazon.com, y citar igualmente la fuente. No responder precios, límites ni disponibilidad de AWS de memoria ni sin enlace.
-- **Clientes, proyectos, reuniones y personas del equipo**: la memoria local del hub (herramientas \`memory_*\`), siguiendo la skill \`memory\` cuando esté instalada, antes que el conocimiento propio.
-- **Conexión de Google (Calendar, Meet, Drive, Docs) para la memoria**: la skill \`google-setup\` cuando falte el cliente de Google o una fuente no conecte.
-- **Cualquier otro proveedor con MCP server habilitado** (Jira y Confluence con Atlassian Rovo, Notion, Supabase, Cloudflare, Datadog, etc.): usar sus herramientas antes que buscar en internet o responder de memoria, y citar el enlace al recurso.
+## Source per topic
 
-## MCP servers de fábrica
+- **AWS** (services, APIs, quotas, limits, pricing, regional availability, CDK, CloudFormation, Well-Architected, troubleshooting, news): **AWS Knowledge** first if \`aws_knowledge_*\` tools exist: \`aws_knowledge_aws_search_documentation\` (results include a literal excerpt, usually enough), \`aws_knowledge_aws_read_documentation\` for full pages only if needed, \`aws_knowledge_aws_list_regions\` and \`aws_knowledge_aws_get_regional_availability\` for regions and availability of services, features, APIs and CloudFormation resources, \`aws_knowledge_aws_retrieve_skill\` to load an AWS agent skill by the exact \`skill_name\` from search. Cite each result's doc URL. If it is missing, off or failing, use web search (prefer docs.aws.amazon.com, aws.amazon.com), still citing the source. Never state AWS pricing, limits or availability from memory or without a link.
+- **Clients, projects, meetings, team members**: local memory (\`memory_*\`, per the \`memory\` skill if installed) before your own knowledge.
+- **Google for memory (Calendar, Meet, Drive, Docs)**: the \`google-setup\` skill if the Google client is missing or a source won't connect.
+- **Other providers with an enabled server** (Jira and Confluence via Atlassian Rovo, Notion, Supabase, Cloudflare, Datadog, etc.): their tools before web search or memory; cite the resource link.
 
-Vienen cargados en el hub desde la instalación. Los que requieren autorizar la cuenta aparecen sin herramientas hasta que la persona los conecte.
+## Factory MCP servers
+
+Preloaded at install:
 
 ${factory}
 
-Referencia de AWS Knowledge: ${AWS_KNOWLEDGE_DOCS}
+AWS Knowledge reference: ${AWS_KNOWLEDGE_DOCS}
 `
 }
 

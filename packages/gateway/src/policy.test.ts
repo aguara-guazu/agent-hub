@@ -74,7 +74,7 @@ describe('SnapshotView', () => {
   it('explica una herramienta denegada con el motivo', () => {
     const view = SnapshotView.fromSnapshot(snapshot('h1', { toolDenied: true }))
     const msg = view.explain('ops_restart_service')
-    expect(msg).toContain('apagada')
+    expect(msg).toContain('turned off')
     expect(msg).toContain('herramienta peligrosa')
   })
 })

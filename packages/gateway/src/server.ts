@@ -59,9 +59,9 @@ const MAX_TOOL_NAME = 128
 const MAX_EXPOSED_NAME = 64
 
 const INSTRUCTIONS =
-  'Agent Hub expone las herramientas y skills habilitadas; cada llamada verifica la política vigente. ' +
-  'Para colaboración local seguí la skill local-collaboration; si falta, recuperala con memory_skill_reference(section: "local-collaboration"). ' +
-  'Conservá la identidad/session_key recibida. Verificá el alcance y leader_id del Hub; las instrucciones del usuario y los permisos nativos prevalecen. El Hub notifica: no hagas polling con el modelo.'
+  'Hub tools and skills are policy-checked per call. ' +
+  'Local collaboration: skill local-collaboration, else memory_skill_reference(section: "local-collaboration"). ' +
+  'Keep the given identity/session_key. Verify Hub scope and leader_id; user instructions and native permissions prevail. The Hub notifies; never poll via the model.'
 
 /** El server que figura en la auditoria para la herramienta propia del gateway. */
 const SKILL_TOOL_SERVER = 'hub'
@@ -121,13 +121,13 @@ function resolveSkillFile(root: string, file: string): { path: string } | { erro
   const base = realpathSync(root)
   const inside = (path: string): boolean => path === base || path.startsWith(base + sep)
   const target = resolve(base, file)
-  if (!inside(target)) return { error: `'${file}' queda fuera de la carpeta de la skill` }
-  if (!existsSync(target)) return { error: `la skill no tiene el archivo '${file}'` }
+  if (!inside(target)) return { error: `'${file}' is outside the skill folder` }
+  if (!existsSync(target)) return { error: `the skill has no file '${file}'` }
   const real = realpathSync(target)
-  if (!inside(real)) return { error: `'${file}' apunta fuera de la carpeta de la skill` }
+  if (!inside(real)) return { error: `'${file}' points outside the skill folder` }
   const info = statSync(real)
-  if (!info.isFile()) return { error: `'${file}' no es un archivo` }
-  if (info.size > MAX_SKILL_FILE_BYTES) return { error: `'${file}' supera el tope de ${MAX_SKILL_FILE_BYTES / 1024} KB` }
+  if (!info.isFile()) return { error: `'${file}' is not a file` }
+  if (info.size > MAX_SKILL_FILE_BYTES) return { error: `'${file}' exceeds the ${MAX_SKILL_FILE_BYTES / 1024} KB limit` }
   return { path: real }
 }
 
@@ -149,19 +149,18 @@ function skillToolFor(view: SnapshotView): ListToolsResult['tools'][number] | nu
   if (view.tool(SKILL_TOOL_NAME) !== undefined) return null
   const lines = view.skills.map((skill) => `- ${skill.slug}: ${skill.description || skill.displayName || skill.slug}`)
   const description =
-    'Skills habilitadas por Agent Hub para este agente. Cuando la tarea coincide con la descripcion de una skill, ' +
-    'llamar ANTES de empezar con su slug: devuelve las instrucciones completas (SKILL.md), que hay que seguir. ' +
-    "Con 'file' devuelve un archivo auxiliar de esa skill (scripts, referencias) por su ruta relativa.\n\n" +
+    'Enabled Agent Hub skills. If the task matches one, call with its slug BEFORE starting and follow the returned SKILL.md. ' +
+    "With 'file', returns that skill's auxiliary file (scripts, references) by relative path.\n\n" +
     `Skills:\n${lines.join('\n')}`
   return {
     name: SKILL_TOOL_NAME,
-    title: 'Usar una skill',
+    title: 'Use a skill',
     description,
     inputSchema: {
       type: 'object',
       properties: {
-        slug: { type: 'string', description: 'Slug de la skill', enum: view.skills.map((skill) => skill.slug) },
-        file: { type: 'string', description: 'Ruta relativa de un archivo auxiliar dentro de la skill (opcional)' },
+        slug: { type: 'string', description: 'Skill slug', enum: view.skills.map((skill) => skill.slug) },
+        file: { type: 'string', description: 'Optional relative path of an auxiliary skill file' },
       },
       required: ['slug'],
       additionalProperties: false,
@@ -231,7 +230,7 @@ export class GatewayServer {
     this.outbox = options.outbox
     this.server = new Server(
       { name: options.serverName ?? SERVER_NAME, version: options.version ?? SERVER_VERSION },
-      { capabilities: { tools: { listChanged: true } }, instructions: INSTRUCTIONS + (process.env.AGENTHUB_TUI_AGENT===agentInstanceId && process.env.AGENTHUB_TUI_KEY ? ` Tu session_key es ${process.env.AGENTHUB_TUI_KEY}; usala siempre en memory_chat_*.` : '') },
+      { capabilities: { tools: { listChanged: true } }, instructions: INSTRUCTIONS + (process.env.AGENTHUB_TUI_AGENT===agentInstanceId && process.env.AGENTHUB_TUI_KEY ? ` session_key=${process.env.AGENTHUB_TUI_KEY}; always use it in memory_chat_*.` : '') },
     )
     this.server.setRequestHandler(ListToolsRequestSchema, async () => this.handleListTools())
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => this.handleCallTool(request))
@@ -423,19 +422,19 @@ export class GatewayServer {
     const skill = view.skill(slug)
     if (skill === undefined) {
       const denied = view.deniedSkill(slug)
-      const available = view.skills.map((item) => item.slug).join(', ') || 'ninguna'
+      const available = view.skills.map((item) => item.slug).join(', ') || 'none'
       const message = denied !== undefined
-        ? `El hub tiene apagada la skill '${slug}' para este agente, asi que no se entrega.` +
-          (denied.detail ? ` Motivo: ${denied.detail}.` : '') + (denied.source ? ` Nivel que decide: ${denied.source}.` : '') +
-          ' Para volver a tenerla hay que prenderla en el panel del hub.'
-        : `El hub no tiene ninguna skill '${slug}' habilitada para este agente. Skills disponibles: ${available}.`
+        ? `The hub turned off skill '${slug}' for this agent; it is not delivered.` +
+          (denied.detail ? ` Reason: ${denied.detail}.` : '') + (denied.source ? ` Deciding level: ${denied.source}.` : '') +
+          ' Turn it on in the hub panel to restore it.'
+        : `No skill '${slug}' is enabled for this agent. Available skills: ${available}.`
       await record(DECISION_DENY, message)
       return errorResult(message)
     }
 
     if (file !== '') {
       if (skill.source !== 'external') {
-        const message = `La skill '${slug}' es un unico SKILL.md: no tiene archivos auxiliares.`
+        const message = `Skill '${slug}' is a single SKILL.md with no auxiliary files.`
         await record(DECISION_ALLOW, '', message)
         return errorResult(message)
       }
@@ -443,7 +442,7 @@ export class GatewayServer {
       try {
         resolved = resolveSkillFile(skill.sourcePath, file)
       } catch (err) {
-        resolved = { error: `no se pudo leer '${file}': ${String(err)}` }
+        resolved = { error: `could not read '${file}': ${String(err)}` }
       }
       if ('error' in resolved) {
         await record(DECISION_ALLOW, '', resolved.error)
@@ -451,7 +450,7 @@ export class GatewayServer {
       }
       const data = readFileSync(resolved.path)
       if (data.includes(0)) {
-        const message = `'${file}' es un archivo binario y no se puede mostrar como texto.`
+        const message = `'${file}' is binary and cannot be shown as text.`
         await record(DECISION_ALLOW, '', message)
         return errorResult(message)
       }
@@ -463,7 +462,7 @@ export class GatewayServer {
     if (skill.source === 'external') {
       const files = listSkillFiles(skill.sourcePath)
       if (files.length > 0) {
-        text += `\n\n---\nArchivos auxiliares de la skill (pedirlos con use_skill {slug: '${slug}', file: <ruta>}):\n` +
+        text += `\n\n---\nAuxiliary skill files (request with use_skill {slug: '${slug}', file: <path>}):\n` +
           files.map((item) => `- ${item}`).join('\n') + '\n'
       }
     }
@@ -500,7 +499,7 @@ export class GatewayServer {
 
     const spec = view.specFor(tool.serverSlug)
     if (spec === undefined) {
-      const message = `El hub no tiene datos de conexion del server '${tool.serverSlug}', asi que no puede ejecutar '${name}'.`
+      const message = `The hub has no connection data for server '${tool.serverSlug}', so it cannot run '${name}'.`
       await this.report({
         agent_id: this.agentInstanceId,
         server_slug: tool.serverSlug,
@@ -528,7 +527,7 @@ export class GatewayServer {
             new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('mirror_timeout')), JIRA_MIRROR_TIMEOUT_MS); timeout.unref?.() }),
           ])
         } catch {
-          result.content.push({ type: 'text', text: 'Jira respondió correctamente, pero no se pudo confirmar la actualización de las tareas locales. No repitas el cambio en Jira. El hub reintenta las entregas guardadas incluso después de reiniciar. Revisa memory_list_tasks y la clave del proyecto; si el resultado no incluye issues, sincronízalos con memory_sync_tasks.' })
+          result.content.push({ type: 'text', text: 'Jira succeeded; the local task update is unconfirmed. Never repeat the Jira change: the hub retries saved deliveries, even after restarts. Check memory_list_tasks and the project key; if the result has no issues, sync via memory_sync_tasks.' })
         } finally { clearTimeout(timeout) }
       }
       await this.report({
@@ -551,7 +550,7 @@ export class GatewayServer {
       // El upstream fallo, pero la politica DIJO QUE SI: se reporta `allow` con el
       // error, porque para la auditoria lo que importa es que se autorizo.
       const reason = err instanceof UpstreamError ? err.reason : String(err)
-      const message = `El hub autorizo '${name}' pero el MCP server no respondio: ${reason}`
+      const message = `The hub allowed '${name}' but the MCP server did not respond: ${reason}`
       await this.report({
         agent_id: this.agentInstanceId,
         server_slug: tool.serverSlug,

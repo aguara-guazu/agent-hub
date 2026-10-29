@@ -75,4 +75,4 @@ export function profileAllowsTool(kind: RunProfileKind, ref: ProfileToolRef): bo
   return (ATLASSIAN_TOOLS.has(name) && ATLASSIAN_HOST.test(host)) || (SLACK_TOOLS.has(name) && SLACK_HOST.test(host))
 }
 
-export const RUN_PROFILE_DENIAL = 'La herramienta no forma parte de la capacidad fija de este perfil de run'
+export const RUN_PROFILE_DENIAL = 'Tool outside the fixed capability of this run profile'

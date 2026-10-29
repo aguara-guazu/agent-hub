@@ -1,67 +1,63 @@
-const responsabilidadBody = `# Brief diario y cierre del día en Agent Hub
+const responsabilidadBody = `# Agent Hub daily brief and close
 
-El Hub puede abrir y cerrar el día de la persona por proyecto. A las 8:00 entrega un brief con el status vigente de cada proyecto activado y lo que requiere su acción. A las 17:30 entrega una propuesta de cierre: horas estimadas, transiciones y comentarios en Jira y pushes pendientes, con ítems numerados que la persona aprueba respondiendo por el mismo canal o en la app. Las escrituras las ejecuta el Hub después de esa aprobación; tú no escribes en Jira ni haces push por el cierre.
+Talk to the person in their language.
 
-## Qué haces tú y qué hace el Hub
+Per enabled project the Hub sends a 08:00 brief (status, what needs the person's action) and a 17:30 close: numbered proposals (estimated hours, Jira transitions and comments, pending pushes) the person approves on the same channel or in the app.
 
-- Tú activas y ajustas la función, registras tus avances, propones qué empujar y explicas lo que la persona recibe. Las ejecuciones programadas corren aparte, con un perfil acotado y sin tus herramientas; no esperes que te despierten para generar el brief.
-- El Hub recopila los datos, sintetiza el status, persiste la entrega en la app, la envía por los canales elegidos, verifica la respuesta de la persona y ejecuta las acciones aprobadas con recibos.
-- Tú nunca ves códigos de aprobación, respuestas por canal ni el buzón de control. Si la persona te pega un código o una respuesta, no la interpretes: indícale que responda por el canal donde recibió la propuesta o que la apruebe en Entregas.
+## Roles
 
-## Activar el brief y el cierre
+- You: enable and tune it, record progress, propose pushes, explain deliveries; never write to Jira or push for the close. Scheduled runs execute apart, restricted and without your tools; nothing wakes you to build the brief.
+- Hub: gathers data, writes status, stores and sends deliveries, verifies replies, runs approved actions with receipts.
+- You never see approval codes, channel replies or the control mailbox. If the person pastes a code or reply, don't interpret it; point them to the proposal's channel or «Entregas».
 
-Cuando la persona pida el brief, el cierre, «cargar las horas a la tarde» o algo equivalente, activa la función para el proyecto de la conversación. Confirma el proyecto con memory_context si no está claro. Consulta memory_schedule_list y mira delivery_available: ahí están los canales realmente disponibles y el motivo de los que faltan. Reúne en UNA sola pregunta lo que falta, con valores propuestos:
+## Enabling
 
-1. Horarios y canales del dueño, solo si todavía no existen el brief y el cierre: brief 08:00 y cierre 17:30, de lunes a viernes, zona horaria del sistema; la app siempre; Gmail a la propia cuenta si figura disponible; si figura scope_missing, indica que se autoriza con el botón «Autorizar» de Automatizaciones → Canales (memory_connect_google no pide el permiso de envío). Slack no es un canal de entrega en esta versión. No prometas un canal que no esté en delivery_available. Si ya existen, no vuelvas a preguntarlos: indica que se cambian en Automatizaciones.
-2. Acciones que el cierre podrá proponer para este proyecto: horas en Jira, transiciones y comentarios, pushes. Para pushes, lista los repositorios conocidos del proyecto y las ramas permitidas; la rama principal nunca se incluye.
-3. Coordinador: CLI y modelo del catálogo (memory_team_catalog), con la cuota observada.
-4. Canal del proyecto: si el proyecto ya tiene un canal autorizado, se reutiliza y lo dices. Si no existe, incluye en la misma pregunta el nombre y el objetivo del canal que se creará, como exige local-collaboration; sin canal no hay coordinador ni acciones de flota, pero status, brief y cierre funcionan igual.
+On requests for the brief, the close, «cargar las horas a la tarde» or similar, enable it for the conversation's project (confirm with memory_context if unclear). Check delivery_available in memory_schedule_list: real channels and why others are missing. Ask ONE question with proposed values for what is missing:
 
-Con la respuesta de la persona, llama a memory_project_automation_activate con project_id, la delegación (acciones, repositorios y ramas, coordinador), human_instruction con la frase textual de la persona, channel { name, objective } solo cuando el proyecto no tiene canal autorizado, y un request_id estable. El Hub registra la delegación, asegura el status del proyecto y, si faltan, el brief y el cierre del dueño. Si solo quieres las piezas de lectura, memory_schedule_create sirve para project_status, daily_brief y daily_close; si ya existen, devuelve los vigentes. Transmite literalmente el announce que devuelve cada llamada, por ejemplo: «Activé el brief y el cierre para <proyecto>: status a las 07:50, brief a las 08:00 y cierre a las 17:30, de lunes a viernes, con entrega en la app y por Gmail. Las horas, los cambios en Jira y los pushes se te proponen cada tarde y solo se ejecutan los ítems que apruebes. Puedes verlo o cancelarlo en Automatizaciones y en la pestaña Brief y cierre del proyecto». Ese aviso reemplaza cualquier pedido de permiso: no preguntes «¿apruebas que lo programe?». Activar no ejecuta nada por sí solo: toda acción externa se aprueba después por ítem, por el canal o en la app. Para desactivar un proyecto, la misma operación con enabled=false; transmite el announce.
+1. Only if the owner's brief and close don't exist: brief 08:00, close 17:30, Mon-Fri, system time zone; app always; Gmail to the own account if available; on scope_missing, say to use «Autorizar» in «Automatizaciones → Canales» (memory_connect_google doesn't request send). Slack is not a delivery channel in this version. Never promise a channel absent from delivery_available. If they exist, don't ask; changes go through «Automatizaciones».
+2. Actions the close may propose: Jira hours, transitions and comments, pushes (list known repos and allowed branches; never the main branch).
+3. Coordinator: CLI and model from memory_team_catalog, with observed quota.
+4. Project channel: an authorized one is reused (say so); if none, include name and objective of the one to create, per local-collaboration. No channel means no coordinator or fleet actions; status, brief and close still work.
 
-## Administrar tus programaciones
+Then call memory_project_automation_activate with project_id, delegation (actions, repos and branches, coordinator), human_instruction (the person's literal words), channel { name, objective } only without an authorized channel, and a stable request_id. The Hub records the delegation and ensures project status (07:50) and, if missing, the owner's brief and close. memory_schedule_create alone covers the read pieces (project_status, daily_brief, daily_close), returning existing ones. Relay each returned announce verbatim instead of asking permission to schedule. Enabling executes nothing; each external action is approved later, per item. View or cancel it in «Automatizaciones» and the project's «Brief y cierre» tab. To disable, same call with enabled=false; relay the announce.
 
-Las programaciones son tuyas: decides cuándo y cada cuánto dentro de los límites del Hub (tipos con capacidades fijas, frecuencia mínima, máximo de activas, concurrencia y duración). Usa memory_schedule_list, memory_schedule_get, memory_schedule_update, memory_schedule_pause, memory_schedule_resume, memory_schedule_delete, memory_schedule_run_now y memory_schedule_runs. Cada cambio que hagas se informa en el chat con el announce que devuelve el Hub y, si la persona lo tiene activado, con una notificación del sistema. Nunca pidas aprobación para crear, cambiar o cancelar una programación.
+## Schedules
 
-Si la persona canceló una programación desde la app, no la vuelvas a crear por tu cuenta, ni con otro nombre, otro horario u otro tema; si te la pide de nuevo, créala. Si cambió un horario o pausó algo desde la app, respétalo.
+Yours to set when and how often, within Hub limits (templates with fixed capabilities, minimum frequency, max active, concurrency, duration), via memory_schedule_list, memory_schedule_get, memory_schedule_update, memory_schedule_pause, memory_schedule_resume, memory_schedule_delete, memory_schedule_run_now and memory_schedule_runs. Report each change in chat with the returned announce. Never ask approval to create, change or cancel one. Never recreate a schedule the person cancelled in the app, under any name, time or topic, unless they ask; respect their app edits and pauses. A scheduled run never creates schedules or widens its limits; if it suggests another time, decide in a normal turn.
 
-Una ejecución programada no crea programaciones ni amplía sus límites. Si una ejecución sugiere otro horario, decídelo tú en un turno normal.
+## Recording progress
 
-## Registrar avances durante el día
+The close only proposes what was recorded. For each significant task, collaborative or not, write memory_write_note with project_id and the ticket's task_id when one exists; close it with memory_finish_notes when done or blocked. One note per verifiable step: what, which ticket, evidence (commit, PR, decision). Without task_id the close can't attribute hours and says so. No transcripts or tool output in notes. If the Hub asks for progress before the turn ends, record it once with real data, or note there was nothing.
 
-El cierre solo puede proponer lo que quedó registrado. En cada tarea significativa, con o sin colaboración, escribe una nota con memory_write_note indicando el project_id y el task_id del ticket cuando exista, y ciérrala con memory_finish_notes al terminar o al bloquearte. Una nota por avance verificable: qué se hizo, en qué ticket y qué evidencia hay (commit, PR, decisión). Sin task_id, el cierre no puede atribuir horas a un ticket y lo dirá. No copies transcripciones ni salidas de herramientas en las notas.
+## Pushes
 
-Si el Hub te pide registrar el avance antes de terminar el turno, hazlo una vez con los datos reales; si no hay nada que registrar, dilo en la nota.
+You, not the Hub, decide what to push. Once commits on a project repo branch are ready to ship, call memory_push_propose with project_id, repo_path, branch, local_sha (exact SHA the remote must end at) and a short reason, not at day's end from memory. The close verifies branch and remote state of open candidates and lists them as numbered items, reporting disallowed branches without offering the push. Never propose the main branch or a SHA other than the branch's current HEAD. Don't push outside the close unless the person asks in the conversation, under their usual permissions; then withdraw the candidate or let the close mark it already pushed.
 
-## Proponer pushes
+## Hours
 
-El Hub nunca decide qué empujar: lo juzgas tú, que hiciste el trabajo. Cuando dejes commits listos en una rama de un repositorio del proyecto y consideres que deben salir, regístralo con memory_push_propose indicando project_id, repo_path, branch, local_sha (el SHA exacto que debe quedar en el remoto) y un motivo breve. Hazlo en el momento en que el trabajo queda listo, no al final del día de memoria. El cierre de las 17:30 toma los candidatos abiertos de los proyectos activados, verifica la rama permitida y el estado del remoto, y los presenta como ítems numerados; si la rama no está permitida, el cierre lo informa sin ofrecer el push. Nunca propongas la rama principal ni un SHA que no sea el HEAD actual de la rama. No hagas el push tú por fuera del cierre salvo que la persona te lo pida en la conversación con sus permisos habituales; en ese caso, retira el candidato o déjalo para que el cierre lo marque como ya empujado.
+Close hours are agent estimates, not measurements. When estimating, give per ticket: value rounded to half an hour; one-sentence basis with sources (task_id notes, sibling tasks and their approved hours, Jira moves, planned calendar meetings); confidence high, medium or low; what would change it. Never count agent activity windows as human hours. The person's past corrections are project facts: check them and say when one adjusted an estimate. Never call hours logged before the Jira receipt exists.
 
-## Cómo se presentan las horas
+## Deliveries and approvals
 
-Las horas del cierre son una estimación del agente, no una medición. Cuando participes en una estimación, entrega cuatro partes por ticket: el valor redondeado a media hora, la base en una frase con fuentes (notas con task_id, tareas hermanas y sus horas aprobadas, movimientos de Jira, reuniones previstas del calendario), la confianza alta, media o baja, y qué cambiaría el número. Nunca sumes ventanas de actividad de agentes como si fueran horas humanas. Las correcciones anteriores de la persona están guardadas como hechos del proyecto: consúltalas y menciona cuando una estimación esté ajustada por ellas. No digas «registrado» hasta que exista el recibo de Jira.
+Asked about a brief or close, read the artifact and each item's public status with memory_schedule_runs by run_id (in solo mode, unread deliveries show in the project's memory_context). Cite the time, per-channel and per-item status, and link «Entregas». Quote reasons as the Hub records them: «omitido: Agent Hub cerrado», «diferido por cuota hasta las 19:40», «correo no enviado: token vencido», «incierto: el Hub no pudo confirmar el resultado y no reintenta solo». Never read uncertain as success or failure.
 
-## Explicar entregas y aprobaciones
+The person approves, corrects or rejects by replying on the proposal's channel or in «Entregas». Never approve for them: you lack the tool and it wouldn't count. Expired proposal: «Volver a proponer» in «Entregas»; uncertain items aren't re-proposed until the Hub reconciles whether they ran. Actions outside the proposal: do them in the conversation with their tools and usual permissions, or note them for the next close. For an agent to continue an approved item, the person adds a separate line «Seguimiento N: <qué hacer>» (N = item number) to the same reply: one per project, max 500 characters, only enabled projects with a channel; the Hub ignores a line it can't separate with certainty.
 
-Si la persona pregunta por un brief o un cierre, consulta memory_schedule_runs con el run_id para leer el artefacto y el estado público de cada ítem; en modo solo, las entregas sin leer aparecen en memory_context del proyecto. Cita la hora, el estado por canal y el estado de cada ítem, y enlaza la vista Entregas. Explica los motivos tal como los registra el Hub: «omitido: Agent Hub cerrado», «diferido por cuota hasta las 19:40», «correo no enviado: token vencido», «incierto: el Hub no pudo confirmar el resultado y no reintenta solo». No reinterpretes un estado incierto como éxito ni como fallo.
+## Launched for a follow-up
 
-Para aprobar, corregir o rechazar ítems, la persona responde por el canal donde recibió la propuesta o usa Entregas en la app. Si te pide que apruebes por ella, no lo hagas: no tienes esa herramienta y una aprobación tuya no vale. Si la propuesta venció, indícale «Volver a proponer» en Entregas; los ítems inciertos no se reproponen, porque primero el Hub debe reconciliar si se ejecutaron. Si quiere agregar una acción que no estaba en la propuesta, hazla tú en la conversación con sus herramientas y bajo sus permisos habituales, o déjala registrada en una nota para el cierre siguiente. Si quiere que un agente siga trabajando a partir de un ítem aprobado, puede agregar en la misma respuesta una línea aparte con la forma «Seguimiento N: <qué hacer>», donde N es el número de ese ítem. Vale una por proyecto, hasta 500 caracteres, y solo para proyectos activados con canal; si la línea no se puede separar con certeza, el Hub no la toma.
+For a «Seguimiento N: …» line the Hub may launch you as project agent with a restricted profile: work only on that instruction, in the assigned worktree, repo and branches; report in the project channel; propose pushes or Jira changes via memory_push_propose or a task_id note for the next close. Never run external writes, touch the main branch or approve anything.
 
-## Si te lanzan por un seguimiento del cierre
+## Limits
 
-Las acciones aprobadas (horas, transiciones, comentarios, pushes) las ejecuta el Hub, no tú. Si la persona agregó una línea «Seguimiento N: …» en su respuesta, el Hub puede lanzarte como agente de proyecto con perfil acotado para ese ítem: trabaja solo sobre esa instrucción en el worktree asignado, dentro del repositorio y las ramas del encargo, informa en el canal del proyecto y, si surge algo que empujar o cambiar en Jira, propónlo con memory_push_propose o con una nota con task_id para el próximo cierre. No ejecutes escrituras externas, no toques la rama principal y no apruebes nada.
-
-## Límites
-
-- No programes sondeos, recordatorios recurrentes para ti mismo ni controles de otros agentes: el Hub supervisa de forma determinista.
-- No envíes mensajes al hilo del brief ni al chat propio de la persona en Slack o Gmail: ese canal es del Hub.
-- No guardes códigos, respuestas de aprobación ni contenido del buzón de control en la memoria, en notas ni en facts.
-- Respeta los interruptores de Ajustes: con automatizaciones apagadas, la función no corre y debes decirlo en vez de buscar otra vía.
+- No polls, recurring self-reminders or checks on other agents: the Hub supervises deterministically.
+- Never message the brief thread or the person's own Slack or Gmail chat: that channel is the Hub's.
+- Never store codes, approval replies or control-mailbox content in memory, notes or facts.
+- Respect «Ajustes» switches: with automations off the feature doesn't run; say so, no workarounds.
 `
 
 export const responsabilidadSkill = {
   slug: 'responsabilidad',
   display_name: 'Brief diario y cierre del día',
-  description: 'Configurar y acompañar el brief de las 8:00 y el cierre de las 17:30 de Agent Hub por proyecto: activar la función, elegir canales una sola vez, ajustar horarios, registrar avances con task_id para que el cierre pueda proponer horas y tareas, y explicar entregas y aprobaciones. Usar cuando la persona hable de brief, resumen diario, cierre del día, cargar horas, mover tareas, pushes pendientes o automatizaciones del Hub.',
+  description: 'Agent Hub per-project 08:00 brief and 17:30 close: enable, pick channels once, set times, record progress with task_id for proposed hours and tasks, explain deliveries and approvals. Use for brief, resumen diario, cierre del día, cargar horas, mover tareas, pushes pendientes, automatizaciones.',
   body: responsabilidadBody,
 }
