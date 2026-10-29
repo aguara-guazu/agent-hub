@@ -297,7 +297,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
       await activateGoogleSource((await service.get()).store, service.google, connectorId).catch(() => undefined)
       const send = gmail_send_requested ? (sendGranted ? '<p>El envío por Gmail quedó autorizado.</p>' : '<p>Google no concedió el envío por Gmail: la fuente sigue solo con lectura.</p>') : ''
       return reply.send(`<!doctype html><meta charset="utf-8"><title>Google conectado</title><h1>Google conectado a Agent Hub</h1><p>La fuente quedó activa y empezó a sincronizar. Esta ventana ya se puede cerrar.</p>${send}`)
-    } catch { return reply.code(400).send('<!doctype html><meta charset="utf-8"><title>Conexión pendiente</title><h1>No se completó la conexión</h1><p>Volvé al hub y revisá el cliente OAuth antes de reintentar.</p>') }
+    } catch { return reply.code(400).send('<!doctype html><meta charset="utf-8"><title>Conexión pendiente</title><h1>No se completó la conexión</h1><p>Vuelve al hub y revisa el cliente OAuth antes de reintentar.</p>') }
   })
   app.get('/api/memory/backups/:id', { preHandler: auth }, async (request, reply) => {
     const backupId = parse(id, (request.params as { id: string }).id)

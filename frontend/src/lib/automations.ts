@@ -59,7 +59,7 @@ export interface ScheduleView {
 }
 
 export type DeliveryUnavailableReason = 'not_connected' | 'scope_missing' | 'identity_unverified' | 'identity_is_bot' | 'tool_off'
-export type DeliveryAvailability = Record<'gmail_self' | 'slack_self', { available: boolean; reason?: DeliveryUnavailableReason }>
+export type DeliveryAvailability = Record<'gmail_self' | 'slack_self', { available: boolean; reason?: DeliveryUnavailableReason; destination?: string }>
 
 export interface ScheduleConstraint {
   id: string

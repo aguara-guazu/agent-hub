@@ -12,6 +12,7 @@ import { LoadingBlock } from '../components/Spinner'
 import { Markdown } from '../components/Markdown'
 import { Modal, ConfirmDialog } from '../components/Modal'
 import { GmailAuthorize } from '../components/GmailAuthorize'
+import { GmailSetupNotice } from '../components/GmailSetup'
 import { useToast } from '../components/Toast'
 import { api } from '../lib/api'
 import { useMemory } from '../lib/memory'
@@ -205,6 +206,7 @@ export function SchedulesPage() {
   return <>
     <AutomationsHeader />
     <ScheduleNotices />
+    {loaded && <GmailSetupNotice schedules={rows} availability={schedules.data?.delivery_available} />}
     <DataTable columns={columns} rows={rows} rowKey={schedule => schedule.id} loading={schedules.isLoading} error={schedules.error} onRetry={() => void schedules.refetch()} caption="Automatizaciones programadas"
       rowId={schedule => `schedule-${schedule.id}`} rowClassName={schedule => schedule.id === highlighted ? 'automations-focus' : undefined}
       empty={<>Todavía no hay automatizaciones. Activa el brief y el cierre desde un proyecto, o pídeselo a tu agente. <Link to="/projects">Ir a proyectos</Link></>} />

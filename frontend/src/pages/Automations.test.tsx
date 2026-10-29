@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Route, Routes } from 'react-router-dom'
 import { DeliveriesPage, DeliveryDetailPage, SchedulesPage, describeNextRun, describeRecurrence, generatedNote } from './Automations'
 import type { RawRunDetail, RawRunListItem, ScheduleView } from '../lib/automations'
@@ -126,6 +126,61 @@ describe('Programaciones', () => {
     expect(textOf(document.body)).toContain('Gmail a mi propia cuenta (ana@example.com)')
     expect(textOf(document.body)).toContain('Falta autorizar el envío')
     expect(buttonByText(document.body, 'Autorizar')).toBeTruthy()
+  })
+
+  function mockGmailSetup(items: ScheduleView[], gmail: { available: boolean; reason?: string; destination?: string }) {
+    return installFetch({ user, handle: call => {
+      calls.push(call)
+      if (call.path === '/memory/schedules') return jsonResponse({ items, total: items.length, limit: 200, offset: 0, delivery_available: { gmail_self: gmail, slack_self: { available: false, reason: 'not_connected' } } })
+      if (call.path === '/memory/schedule-constraints') return jsonResponse({ items: [] })
+      if (call.path === '/automations') return jsonResponse({ automations_enabled: true, notify_schedule_created: true, notify_delivery: true, workday_hours: 9, keep_awake: true })
+      if (call.path === '/memory/call') return jsonResponse((call.body as { operation: string }).operation === 'list_connectors' ? [{ id: 'g1', provider: 'google', name: 'A', config: {}, project_ids: [], interval_minutes: 30, enabled: true, account_email: 'ana@example.com' }] : {})
+      if (call.path === '/memory/connectors/g1/google/start') return jsonResponse({ authorization_url: 'https://accounts.google.com/o/oauth2/auth?x=1', gmail_send: true })
+      if (call.path.startsWith('/memory/schedules/s')) return jsonResponse(schedule())
+      return undefined
+    } })
+  }
+
+  it('el aviso de Gmail sin autorizar abre el asistente: explica el permiso, abre Google y espera la confirmación', async () => {
+    const api = mockGmailSetup([schedule({ delivery: ['hub_inbox', 'app_window'], delivery_unavailable: [] })], { available: false, reason: 'scope_missing', destination: 'ana@example.com' })
+    const open = vi.fn()
+    vi.stubGlobal('open', open)
+    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
+    await flush(3)
+    expect(textOf(container)).toContain('Recibe el brief y el cierre en tu correo')
+    await click(buttonByText(container, 'Autorizar Gmail'))
+    await flush(3)
+    expect(textOf(document.body)).toContain('1. Permiso')
+    expect(textOf(document.body)).toContain('ana@example.com; nunca a terceros')
+    await click(buttonByText(document.body, 'Continuar con Google'))
+    await flush(2)
+    expect(api.lastCall('/memory/connectors/g1/google/start', 'POST')?.body).toEqual({ gmail_send: true })
+    expect(open).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/auth?x=1', '_blank', 'noopener,noreferrer')
+    expect(textOf(document.body)).toContain('Completa el permiso en el navegador')
+  })
+
+  it('con Gmail listo y sin usar, el asistente agrega Gmail a las automatizaciones elegidas conservando sus otros canales', async () => {
+    const api = mockGmailSetup([schedule({ delivery: ['hub_inbox', 'app_window'], delivery_unavailable: [] }),
+      schedule({ id: 's2', title: 'Cierre del día', template: 'daily_close', revision: 5, delivery: ['hub_inbox', 'app_window', 'slack_self'], delivery_unavailable: [] })], { available: true, destination: 'ana@example.com' })
+    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
+    await flush(3)
+    await click(buttonByText(container, 'Elegir automatizaciones'))
+    await flush(2)
+    const boxes = qa<HTMLInputElement>(document.body, '[role="dialog"] input[type="checkbox"]')
+    expect(boxes.map(box => box.checked)).toEqual([true, true])
+    await click(buttonByText(document.body, 'Agregar Gmail'))
+    await flush(4)
+    expect(api.lastCall('/memory/schedules/s1/delivery', 'PUT')?.body).toEqual({ expected_revision: 3, delivery: ['hub_inbox', 'app_window', 'gmail_self'] })
+    expect(api.lastCall('/memory/schedules/s2/delivery', 'PUT')?.body).toEqual({ expected_revision: 5, delivery: ['hub_inbox', 'app_window', 'slack_self', 'gmail_self'] })
+  })
+
+  it('«Ahora no» oculta el aviso de Gmail y no llama a nada', async () => {
+    const api = mockGmailSetup([schedule({ delivery: ['hub_inbox', 'app_window'], delivery_unavailable: [] })], { available: false, reason: 'scope_missing' })
+    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
+    await flush(3)
+    await click(buttonByText(container, 'Ahora no'))
+    expect(textOf(container)).not.toContain('Recibe el brief y el cierre en tu correo')
+    expect(api.callsTo('/memory/connectors/g1/google/start', 'POST')).toHaveLength(0)
   })
 
   it('avisa si las automatizaciones están apagadas y explica el estado vacío', async () => {
