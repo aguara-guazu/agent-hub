@@ -13,7 +13,7 @@ import { Store } from '../src/store.js'
 import { createCoreScheduleEffects } from '../src/effects/wiring.js'
 import { createJiraAdapters } from '../src/effects/jira.js'
 import { createGitPushAdapter } from '../src/effects/git-push-adapter.js'
-import { readJiraServerId } from '../src/effects/jira-server.js'
+import { JIRA_SERVER_NONE, JIRA_SERVER_SETTING, jiraWriteServerId } from '../src/effects/jira-server.js'
 import type { ActionTickResult } from '@agenthub/memory'
 import type { ActionAdapter } from '../src/effects/executor.js'
 
@@ -310,7 +310,7 @@ describe('adaptadores de Jira cableados con el servidor fijado por el dueño', (
 
   const worklog = { kind: 'jira_worklog', site: 'https://example.atlassian.net', account_id: '5b10ac8d82e05b22cc7d4ef5', issue_key: 'ABC-1', seconds: 1800, started: '2026-10-29T08:00:00.000Z', marker: 'cierre', estimate_id: 'est-1' }
   async function setup(pool: ConnectionPool) {
-    const effects = createCoreScheduleEffects({ store, pool, ownerId, automationsEnabled: () => true, adapters: () => [...createJiraAdapters({ serverId: () => readJiraServerId(store, ownerId) })],
+    const effects = createCoreScheduleEffects({ store, pool, ownerId, automationsEnabled: () => true, adapters: () => [...createJiraAdapters({ serverId: () => jiraWriteServerId(store, ownerId) })],
       host: { directory: dir, vault: new Vault(dir), google: { granted: () => false } as never, load: async () => ({ db: { query: async () => [] as any[] },
         schedules: { set: async () => {}, artifactAuthority: async () => 'live' as const, artifactOfRun: async () => undefined, replaceDecisionRef: async () => true } }) } })
     await effects.decisions.prepareDecision({ run_id: 'run-j', artifact_id: 'a-j', owner_id: ownerId, project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z',
@@ -332,25 +332,41 @@ describe('adaptadores de Jira cableados con el servidor fijado por el dueño', (
     expect(calls).toEqual([])
   })
 
-  it('con dos servidores Atlassian y sin jira.server_id la intención queda rechazada por ambigüedad, sin llamadas', async () => {
-    const base = { description: '', transport: 'http' as const, command: '', args: [], env: {}, cwd: '', headers: {}, secret_refs: {}, requires_host_access: false, container_image: '', allow_hosts: [], allow_ports: [], read_mounts: [], write_mounts: [], auth: 'none' as const }
-    for (const slug of ['atlassian_rovo', 'atlassian_rovo_2']) {
-      const server = store.insertServer({ ...base, user_id: ownerId, slug, display_name: slug, url: 'https://mcp.atlassian.com/v1/mcp' })
-      for (const name of ['atlassianUserInfo', 'getAccessibleAtlassianResources', 'getJiraIssue', 'addWorklogToJiraIssue']) store.insertTool({ server_id: server.id, name, title: name, exposed_name: `${slug}_${name}`, description: '', input_schema: { type: 'object' }, definition_hash: `${slug}-${name}` })
-    }
+  const base = { description: '', transport: 'http' as const, command: '', args: [], env: {}, cwd: '', headers: {}, secret_refs: {}, requires_host_access: false, container_image: '', allow_hosts: [], allow_ports: [], read_mounts: [], write_mounts: [], auth: 'none' as const }
+  const atlassian = (slug: string) => {
+    const server = store.insertServer({ ...base, user_id: ownerId, slug, display_name: slug, url: 'https://mcp.atlassian.com/v1/mcp' })
+    for (const name of ['atlassianUserInfo', 'getAccessibleAtlassianResources', 'getJiraIssue', 'addWorklogToJiraIssue']) store.insertTool({ server_id: server.id, name, title: name, exposed_name: `${slug}_${name}`, description: '', input_schema: { type: 'object' }, definition_hash: `${slug}-${name}` })
+    return server
+  }
+
+  it('sin jira.server_id ni conector atlassian-rovo, el único servidor Atlassian del catálogo no recibe la escritura', async () => {
+    atlassian('atlassian_rovo')
     const effects = await setup(pool)
     const { store: decisions } = await effects.ready()
-    await vi.waitFor(() => expect(errorCodes(decisions)).toEqual([{ state: 'rejected_before_dispatch', error_code: 'ambiguous_server' }]))
+    await vi.waitFor(() => expect(errorCodes(decisions)).toEqual([{ state: 'rejected_before_dispatch', error_code: 'tool_off' }]))
     expect(calls).toEqual([])
   })
 
+  it('«Ninguno» elegido rechaza un ítem ya aprobado aunque el conector atlassian-rovo sea el único que publica las herramientas', async () => {
+    atlassian('atlassian-rovo')
+    store.setSetting(JIRA_SERVER_SETTING, JIRA_SERVER_NONE)
+    const effects = await setup(pool)
+    const { store: decisions } = await effects.ready()
+    await vi.waitFor(() => expect(errorCodes(decisions)).toEqual([{ state: 'rejected_before_dispatch', error_code: 'tool_off' }]))
+    expect(calls).toEqual([])
+  })
+
+  it('sin elección la escritura sale por el conector atlassian-rovo y por ningún otro', async () => {
+    const rovo = atlassian('atlassian-rovo')
+    atlassian('atlassian_rovo_2')
+    const effects = await setup(pool)
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0))
+    await effects.ready()
+    expect(new Set(serverIds)).toEqual(new Set([rovo.id]))
+  })
+
   it('con jira.server_id fijado, todas las llamadas de la intención salen por ese servidor y por ningún otro', async () => {
-    const base = { description: '', transport: 'http' as const, command: '', args: [], env: {}, cwd: '', headers: {}, secret_refs: {}, requires_host_access: false, container_image: '', allow_hosts: [], allow_ports: [], read_mounts: [], write_mounts: [], auth: 'none' as const }
-    const created = ['atlassian_rovo', 'atlassian_rovo_2'].map(slug => {
-      const server = store.insertServer({ ...base, user_id: ownerId, slug, display_name: slug, url: 'https://mcp.atlassian.com/v1/mcp' })
-      for (const name of ['atlassianUserInfo', 'getAccessibleAtlassianResources', 'getJiraIssue', 'addWorklogToJiraIssue']) store.insertTool({ server_id: server.id, name, title: name, exposed_name: `${slug}_${name}`, description: '', input_schema: { type: 'object' }, definition_hash: `${slug}-${name}` })
-      return server
-    })
+    const created = ['atlassian_rovo', 'atlassian_rovo_2'].map(atlassian)
     store.setSetting('jira.server_id', created[1]!.id)
     const effects = await setup(pool)
     await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0))

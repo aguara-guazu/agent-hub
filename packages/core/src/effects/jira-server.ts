@@ -25,6 +25,14 @@ export function readJiraServerId(store: Store, ownerId: string): string | undefi
   return fallback && isUsableJiraServer(store, fallback.id) ? fallback.id : undefined
 }
 
+/**
+ * Servidor que reciben los adaptadores de Jira del core: el de `readJiraServerId` o `JIRA_SERVER_NONE`, que nunca es candidato del ejecutor.
+ * Con `undefined` el ejecutor tomaría el único servidor que publique las herramientas; el centinela rechaza la intención con `tool_off`.
+ */
+export function jiraWriteServerId(store: Store, ownerId: string): string {
+  return readJiraServerId(store, ownerId) ?? JIRA_SERVER_NONE
+}
+
 export interface JiraServerOption {
   id: string
   name: string
