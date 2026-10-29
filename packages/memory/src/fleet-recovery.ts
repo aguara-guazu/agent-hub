@@ -39,7 +39,7 @@ export interface ResumeRuntime {
  * It runs at most once per member and generation, because it sits behind the same claim as the resume attempt.
  */
 export interface RecoveryFallback {
-  restart(member: { member_id: string; team_id: string }): Promise<'restarted' | 'refused' | 'failed'>
+  restart(member: { member_id: string; team_id: string; generation: string }): Promise<'restarted' | 'refused' | 'failed'>
 }
 /** One attempt per member, generation and cause: claim() is the atomic gate and reports whether this call won it. */
 export interface RecoveryIncidentLog {
@@ -123,7 +123,7 @@ export class FleetQuotaRecovery {
 
   /** The CLI cannot continue the conversation: leave the incident and, when a fallback is configured, start the member again in a new conversation. */
   private async unsupported(named: Pick<RecoveryOutcome, 'member_id' | 'team_id' | 'worktree_name' | 'cli' | 'model' | 'generation'>, detail: Record<string, unknown>, planReason: string | undefined, evidence: QuotaEvidence): Promise<RecoveryOutcome> {
-    const fallback = this.fallback ? await this.fallback.restart({ member_id: named.member_id, team_id: named.team_id }).catch(() => 'failed' as const) : undefined
+    const fallback = this.fallback ? await this.fallback.restart({ member_id: named.member_id, team_id: named.team_id, generation: named.generation }).catch(() => 'failed' as const) : undefined
     await this.log.settle({ member_id: named.member_id, generation: named.generation, action: 'resume_unsupported',
       detail: { ...detail, ...(planReason ? { reason: planReason } : {}), ...(fallback ? { fallback } : {}) } })
     if (fallback === 'restarted') return { ...named, result: 'restarted', reason: 'new_conversation', evidence }

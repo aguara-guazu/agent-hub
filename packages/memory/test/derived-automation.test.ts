@@ -81,7 +81,7 @@ describe('despachador de planes derivados', () => {
       [project, JSON.stringify(over.channel === false ? { item_kinds: [] } : { channel: { name: 'c', objective: 'o' } }), 'd', 'owner_ui', 'owner', over.revoked ? new Date().toISOString() : null])
   }
   const dispatcher = (over: Record<string, unknown> = {}) => new DerivedDispatcher({ db, teams, decisions: service(), now: () => now.getTime(), ...over })
-  beforeEach(() => { for (const fn of Object.values(teams)) fn.mockClear(); teams.derivedAvailable.mockReturnValue(true) })
+  beforeEach(() => { for (const fn of Object.values(teams)) fn.mockClear(); teams.launchDerived.mockReset().mockResolvedValue({} as any); teams.derivedAvailable.mockReturnValue(true) })
 
   it('offers each unclaimed follow-up of an activated project to launchDerived and nothing else', async () => {
     await activate(projectId)
@@ -120,5 +120,21 @@ describe('despachador de planes derivados', () => {
     for (let index = 0; index < 4; index++) await repeated.tick()
     expect(teams.launchDerived).toHaveBeenCalledTimes(2)
     expect((await repeated.tick()).failed).toEqual([])
+  })
+
+  it('offers again a plan that was inserted but never launched, and stops after repeated failures', async () => {
+    await activate(projectId)
+    await db.query(`INSERT INTO chat_team_plans(id,master_channel_id,root_thread_id,created_by,objective,parent,base_revision,plan,digest,state,delegation_project_id,delegation_version,decision_request_id)
+      VALUES('plan-1','c','t','s','o','{}','b','{}','d','prepared',$1,1,'req-waiting')`, [projectId])
+    await db.query(`INSERT INTO chat_team_plans(id,master_channel_id,root_thread_id,created_by,objective,parent,base_revision,plan,digest,state,delegation_project_id,delegation_version,decision_request_id)
+      VALUES('plan-2','c','t2','s','o','{}','b','{}','d2','launched',$1,1,'req-running')`, [projectId])
+    const result = await dispatcher().tick()
+    expect(teams.launchDerived).toHaveBeenCalledExactlyOnceWith({ project_id: projectId, delegation_version: 1, request_id: 'req-waiting' })
+    expect(result.launched).toEqual([`${projectId}:req-waiting`])
+    teams.launchDerived.mockClear()
+    teams.launchDerived.mockRejectedValue(new MemoryError(503, 'transitorio'))
+    const limited = dispatcher({ maxAttempts: 1 })
+    await limited.tick(); await limited.tick()
+    expect(teams.launchDerived).toHaveBeenCalledTimes(1)
   })
 })

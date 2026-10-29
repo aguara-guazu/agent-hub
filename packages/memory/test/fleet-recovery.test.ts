@@ -143,7 +143,7 @@ it('restarts the member in a new conversation once, and says so in the incident 
   const { recovery, restart, settle, resumeMember, publishResumption } = setup({ check: cannotResume, fallback: async () => 'restarted' }, true)
   const [outcome] = await recovery.recover()
   expect(outcome).toMatchObject({ result: 'restarted', reason: 'new_conversation', evidence: 'protocol', member_id: 'member-1', generation: 'gen-1' })
-  expect(restart).toHaveBeenCalledExactlyOnceWith({ member_id: 'member-1', team_id: 'team-1' })
+  expect(restart).toHaveBeenCalledExactlyOnceWith({ member_id: 'member-1', team_id: 'team-1', generation: 'gen-1' })
   expect(resumeMember).not.toHaveBeenCalled()
   expect(settle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'resume_unsupported', detail: expect.objectContaining({ fallback: 'restarted', reason: 'resume_by_id_unverified' }) }))
   expect(publishResumption).toHaveBeenCalledWith(expect.objectContaining({ members: [expect.objectContaining({ member_id: 'member-1', result: 'restarted', reason: 'new_conversation' })] }))

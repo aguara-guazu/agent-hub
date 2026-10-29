@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { MemoryDatabase } from '../src/database.js'
+import { MemoryError } from '../src/contracts.js'
 import { MemoryStore } from '../src/store.js'
 import { LocalChat } from '../src/local-chat.js'
 import { HubTeamRuntime } from '../src/team-hub.js'
@@ -60,7 +61,7 @@ beforeEach(async () => {
   vi.spyOn(backend, 'stop').mockImplementation(async handle => {
     const row = (await db.query('SELECT runtime FROM chat_team_members WHERE launch_handle=$1', [handle]))[0]
     if (row) await db.query('UPDATE chat_team_members SET runtime=$2 WHERE launch_handle=$1', [handle, JSON.stringify({ ...row.runtime, state: 'stopped' })])
-    return { state: 'stopped' } as any
+    return { id: handle, state: 'stopped' } as any
   })
   collaboration = true; automations = true
   teams = new TeamOrchestration(chat, { catalog: async () => ({ clis: [{ id: 'claude_code', launchable: true }], models: [{ cli: 'claude_code', id: 'test-model' }] }), validate: async () => ({ launchable: true }) }, backend, undefined, () => collaboration)
@@ -506,4 +507,61 @@ it('closeAllDerived closes every open derived plan of every project, with a conf
   expect((await db.query('SELECT state,close_reason FROM chat_team_plans WHERE id=$1', [plan.id]))[0]).toMatchObject({ state: 'cancelled', close_reason: 'Automatizaciones desactivadas.' })
   expect(vi.mocked(backend.stop).mock.calls.length).toBe(2)
   expect(await teams.closeAllDerived('otra vez')).toEqual({ closed: [], failed: [] })
+})
+
+it('treats the exit recorded by the restart reconciliation as the stop receipt, so a plan lost in a Hub restart closes and frees its slot', async () => {
+  await activate()
+  const plan = await teams.launchDerived(input())
+  const members = await db.query('SELECT id,runtime FROM chat_team_members WHERE team_id=$1', [plan.id])
+  for (const member of members) await db.query('UPDATE chat_team_members SET runtime=$2 WHERE id=$1', [member.id, JSON.stringify({ generation: `g-${member.id}`, state: 'unknown' })])
+  vi.mocked(backend.stop).mockRejectedValue(new Error('fleet_unknown_id'))
+  expect(await teams.closeDerivedForProject(projectId, 'Revocada.')).toEqual({ closed: [], failed: [plan.id] })
+  expect(await rejection(teams.launchDerived(input({ request_id: 'req-2' })))).toMatch(/tope de planes simultáneos/)
+  for (const member of members) await db.query(`INSERT INTO process_incidents(id,subject_kind,subject_id,generation,team_id,member_id,cause,action,observed_at,detail) VALUES($1,'fleet_member',$2,$3,$4,$2,'hub_restart','terminated',now(),'{}')`, [randomUUID(), member.id, `g-${member.id}`, plan.id])
+  expect(await teams.closeDerivedForProject(projectId, 'Revocada.')).toEqual({ closed: [], failed: [] })
+  expect((await memberStates(plan.id)).map(row => row.error)).toEqual(['stop_unconfirmed', 'stop_unconfirmed'])
+  followUps = [reply({ ref: 'msg-2' })]
+  expect((await teams.launchDerived(input({ request_id: 'req-2' }))).state).toBe('launched')
+})
+
+it('closes a launched derived plan as soon as none of its processes is left, without waiting for the runtime limit', async () => {
+  await activate()
+  const plan = await teams.launchDerived(input())
+  expect(await teams.expireDerived()).toEqual({ closed: [], failed: [] })
+  await db.query(`UPDATE chat_team_members SET runtime=json_patch(runtime,'{"state":"exited"}') WHERE team_id=$1`, [plan.id])
+  expect(await teams.expireDerived()).toEqual({ closed: [plan.id], failed: [] })
+  expect((await db.query('SELECT state FROM chat_team_plans WHERE id=$1', [plan.id]))[0]!.state).toBe('cancelled')
+})
+
+it('resumes a plan that was inserted but never launched with the follow-up it already holds, and the dispatcher offers it again', async () => {
+  await activate()
+  vi.mocked(backend.preflight).mockResolvedValueOnce().mockRejectedValueOnce(new MemoryError(503, 'transitorio'))
+  expect(await rejection(teams.launchDerived(input()))).toMatch(/transitorio/)
+  const prepared = (await db.query('SELECT id,state FROM chat_team_plans WHERE delegation_project_id=$1', [projectId]))[0]!
+  expect(prepared.state).toBe('prepared')
+  expect(vi.mocked(ports.claimFollowUp)).toHaveBeenCalledTimes(1)
+  const resumed = await teams.launchDerived(input())
+  expect(resumed).toMatchObject({ id: prepared.id, state: 'launched' })
+  expect(await plansCount()).toBe(1)
+  expect(vi.mocked(backend.launch)).toHaveBeenCalledTimes(2)
+  expect((await teams.launchDerived(input())).id).toBe(prepared.id)
+  expect(vi.mocked(backend.launch)).toHaveBeenCalledTimes(2)
+})
+
+it('rebuilds the system session when it was closed since the activation, so a follow-up still launches', async () => {
+  const first = await activate()
+  await db.query('UPDATE chat_sessions SET closed_at=now() WHERE id=$1', [first])
+  const plan = await teams.launchDerived(input())
+  expect(plan.state).toBe('launched')
+  expect(plan.created_by).not.toBe(first)
+  expect((await sessionRow(plan.created_by)).closed_at).toBeNull()
+})
+
+it('refuses the stop receipt of another handle or without an id', async () => {
+  await activate()
+  const plan = await teams.launchDerived(input())
+  vi.mocked(backend.stop).mockResolvedValue({ state: 'stopped' } as any)
+  expect(await teams.closeDerivedForProject(projectId, 'Revocada.')).toEqual({ closed: [], failed: [plan.id] })
+  vi.mocked(backend.stop).mockResolvedValue({ id: 'otro', state: 'stopped' } as any)
+  expect(await teams.closeDerivedForProject(projectId, 'Revocada.')).toEqual({ closed: [], failed: [plan.id] })
 })

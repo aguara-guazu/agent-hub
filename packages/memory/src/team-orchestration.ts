@@ -42,6 +42,7 @@ const CONTINUATION_NOTE = `${CONTINUATION_MARK}\nTu conversación anterior se de
 const TERMINAL_RUNTIME = ['stopped', 'exited', 'failed']
 /** A derived plan whose workers may still be running or whose stop was never confirmed keeps its slot and stays visible to later closes, whatever its logical state. */
 const HOLDS_PROCESS = `EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=chat_team_plans.id AND m.launch_handle IS NOT NULL
+  AND NOT EXISTS(SELECT 1 FROM process_incidents i WHERE i.subject_kind='fleet_member' AND i.subject_id=m.id AND i.generation=json_extract(m.runtime,'$.generation') AND i.action IN ('terminated','already_exited'))
   AND (m.error='${STOP_UNCONFIRMED}' OR COALESCE(json_extract(m.runtime,'$.state'),'unknown') NOT IN (${TERMINAL_RUNTIME.map(state=>`'${state}'`).join(',')})))`
 const OPEN_DERIVED = `delegation_project_id IS NOT NULL AND (state NOT IN ('paused','cancelled','completed') OR ${HOLDS_PROCESS})`
 const asObject = (value: unknown) => typeof value === 'string' ? JSON.parse(value) : value
@@ -492,8 +493,11 @@ export class TeamOrchestration {
         receipt=await this.orca.stop(item.launch_handle)
       } catch {receipt=undefined}
       const value=receipt as {id?:unknown;state?:unknown}|undefined
-      const ok=Boolean(value && typeof value==='object' && TERMINAL_RUNTIME.includes(String(value.state)) && (value.id===undefined || value.id===item.launch_handle))
       const generation=item.runtime?.generation ?? null
+      // After a Hub restart the handle is unknown to the runtime; the exit the restart reconciliation recorded for this generation is the evidence instead.
+      const recorded=!receipt && generation!==null && Boolean((await this.db.query(`SELECT 1 FROM process_incidents WHERE subject_kind='fleet_member' AND subject_id=$1 AND generation=$2
+        AND action IN ('terminated','already_exited') LIMIT 1`,[item.id,generation]))[0])
+      const ok=recorded || Boolean(value && typeof value==='object' && TERMINAL_RUNTIME.includes(String(value.state)) && value.id===item.launch_handle)
       if(ok) {
         confirmed.push(item.id)
         if(item.error===STOP_UNCONFIRMED) {
@@ -662,11 +666,15 @@ export class TeamOrchestration {
     check(this.orca.provider==='hub','Los planes derivados requieren workers administrados por el Hub.',409)
     check(this.orca.supportsProfiles && this.derived.actionProfile,'action_profile_unavailable: los planes derivados no pueden lanzarse sin el perfil de ejecución action.',409)
     check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
+    check(this.derived.automationsEnabled(),'Las automatizaciones están deshabilitadas.',409)
+    // A system session closed since the activation is rebuilt from the delegation's own authorization; an inconsistent live one stays refused by the gate below.
+    await this.ensureProjectLeader(input.project_id).catch(()=>undefined)
     const automation=await this.assertDelegationCurrent(input.project_id,input.delegation_version)
     const who=(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[automation.coordinator_session_id]))[0]
     check(who,'La sesión de automatización del proyecto no coincide con su canal.',409)
-    const prior=(await this.db.query('SELECT id FROM chat_team_plans WHERE delegation_project_id=$1 AND decision_request_id=$2',[input.project_id,input.request_id]))[0]
-    if(prior)return this.view(prior.id,who)
+    const prior=(await this.db.query('SELECT * FROM chat_team_plans WHERE delegation_project_id=$1 AND decision_request_id=$2',[input.project_id,input.request_id]))[0]
+    // A plan still waiting to launch (a transient failure before its first effect) resumes with the follow-up it already holds; any other state is returned as it is.
+    if(prior)return prior.state==='prepared'?this.resumePrepared(prior,who,input):this.view(prior.id,who)
     const delegation=asObject(automation.document) as StoredDelegation
     check(await this.derived.live(input.request_id),'La autoridad de la solicitud aprobada no está vigente.',409)
     const decision=await this.derived.approved(input.request_id)
@@ -717,32 +725,46 @@ export class TeamOrchestration {
       if(winner)return this.view(winner.id,who)
       throw error
     }
-    // The slot is already held, so a request that loses the race for capacity never burns its follow-up. The claim is idempotent per (project, request).
-    const claim=await this.derived.claimFollowUp(input.request_id,input.project_id,`derived:${input.project_id}:${input.request_id}`).catch(()=>'authority_unavailable' as const)
+    return this.claimAndLaunch(planId,who,input,{ref:followUp.ref,source:followUp.source},project.title,derived.digest,expiresAt)
+  }
+
+  /** The slot is already held, so a request that loses the race for capacity never burns its follow-up. The claim is idempotent per (project, request). */
+  private async claimAndLaunch(planId:string,who:Record<string,any>,input:{project_id:string;delegation_version:number;request_id:string},
+    followUp:{ref:string;source:'channel_reply'|'owner_ui'},title:string,digest:string,expiresAt:string) {
+    const claim=await this.derived!.claimFollowUp(input.request_id,input.project_id,`derived:${input.project_id}:${input.request_id}`).catch(()=>'authority_unavailable' as const)
     if(claim!=='claimed' && claim!=='already_claimed_by_same') {
       const row=(await this.db.query('SELECT * FROM chat_team_plans WHERE id=$1',[planId]))[0]
       if(row)await this.cancelPlan(row,`El seguimiento no pudo reclamarse (${claim}).`,who).catch(()=>undefined)
       check(false,'El seguimiento aprobado ya no puede reclamarse: la solicitud perdió su autoridad, venció o lo tomó otro consumidor.',409)
     }
-    await this.event(this.db,planId,null,'follow_up_claimed',who.id,channel.id,(await this.db.query('SELECT root_thread_id FROM chat_team_plans WHERE id=$1',[planId]))[0]!.root_thread_id,
-      {follow_up_ref:followUp.ref,claim,plan_expires_at:expiresAt})
-    return this.launch({plan_id:planId,digest:derived.digest,
-      human_instruction:`Seguimiento aprobado (${followUp.source}, recibo ${followUp.ref}): solicitud ${input.request_id}, delegación v${input.delegation_version} de ${project.title}`},
-    who,undefined,{source:followUp.source==='channel_reply'?DERIVED_APPROVAL_SOURCE:'standing_delegation+owner_ui',userId:this.derived.ownerId()})
+    const plan=(await this.db.query('SELECT root_thread_id,master_channel_id FROM chat_team_plans WHERE id=$1',[planId]))[0]!
+    await this.event(this.db,planId,null,'follow_up_claimed',who.id,plan.master_channel_id,plan.root_thread_id,{follow_up_ref:followUp.ref,claim,plan_expires_at:expiresAt})
+    return this.launch({plan_id:planId,digest,
+      human_instruction:`Seguimiento aprobado (${followUp.source}, recibo ${followUp.ref}): solicitud ${input.request_id}, delegación v${input.delegation_version} de ${title}`},
+    who,undefined,{source:followUp.source==='channel_reply'?DERIVED_APPROVAL_SOURCE:'standing_delegation+owner_ui',userId:this.derived!.ownerId()})
+  }
+
+  private async resumePrepared(plan:Record<string,any>,who:Record<string,any>,input:{project_id:string;delegation_version:number;request_id:string}) {
+    const derived=asObject(plan.plan).derived as {follow_up?:{ref?:string;source?:'channel_reply'|'owner_ui'}}|undefined
+    check(derived?.follow_up?.ref && derived.follow_up.source,'El plan derivado no conserva su recibo de seguimiento.',409)
+    const project=(await this.db.query("SELECT title FROM entities WHERE id=$1 AND kind='project'",[input.project_id]))[0]
+    check(project,'El proyecto no existe.',404)
+    return this.claimAndLaunch(plan.id,who,input,{ref:derived.follow_up.ref,source:derived.follow_up.source},project.title,plan.digest,asObject(plan.plan).expires_at)
   }
 
   /**
    * Fallback of the quota recovery for a CLI that cannot resume: the same edit + clear the leader would do by hand. The prompt gets one marked
    * continuation note (replaced, never stacked), the previous process must be confirmed stopped, and the worktree, CLI and model stay those the plan approved.
-   * It never runs for derived plans, and anything the leader's authority would refuse (closed leader, collaboration off) is refused here too.
+   * It is bound to the failed generation the recovery claimed, never runs for derived plans, and anything the leader's authority would refuse (closed leader, collaboration off) is refused here too.
    */
-  async continueMemberFresh(memberId:string):Promise<'restarted'|'refused'|'failed'> {
+  async continueMemberFresh(memberId:string,claimedGeneration:string):Promise<'restarted'|'refused'|'failed'> {
     const item=(await this.db.query(`SELECT m.id,m.team_id,m.prompt,m.runtime,t.created_by,t.delegation_project_id FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id WHERE m.id=$1`,[memberId]))[0]
     const leader=item?(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[item.created_by]))[0]:undefined
-    if(!item || !leader || leader.closed_at || leader.removed_at || item.delegation_project_id)return 'refused'
+    // The recovery claimed one failed generation; a member that was relaunched since then is healthy and must not be cleared.
+    if(!item || !leader || leader.closed_at || leader.removed_at || item.delegation_project_id || item.runtime?.generation!==claimedGeneration || item.runtime?.state!=='failed')return 'refused'
     const control={plan_id:item.team_id,member_id:item.id,expected_generation:item.runtime?.generation ?? 'none'}
     try {
-      const base=String(item.prompt).split(CONTINUATION_MARK)[0]!.trimEnd().slice(0,15000)
+      const base=String(item.prompt).split(CONTINUATION_MARK)[0]!.trimEnd().slice(0,16000-CONTINUATION_NOTE.length-2)
       await this.control({...control,action:'edit',prompt:`${base}\n\n${CONTINUATION_NOTE}`} as z.infer<typeof controlInput>,leader)
       await this.control({...control,action:'clear'} as z.infer<typeof controlInput>,leader)
       return 'restarted'
@@ -777,7 +799,13 @@ export class TeamOrchestration {
   /** Closes derived plans whose delegation runtime limit elapsed. */
   async expireDerived(now=Date.now()) {
     const plans=await this.db.query(`SELECT * FROM chat_team_plans WHERE ${OPEN_DERIVED}`)
-    return this.closeDerived(plans.filter(plan=>Date.parse(asObject(plan.plan).expires_at)<=now),'Se cumplió el tiempo máximo de la delegación.')
+    const expired=plans.filter(plan=>Date.parse(asObject(plan.plan).expires_at)<=now)
+    // A launched plan whose every process is gone (exited, or lost in a Hub restart with the exit on record) has nothing left to wait for and frees its slot now.
+    const finished=await this.db.query(`SELECT * FROM chat_team_plans WHERE delegation_project_id IS NOT NULL AND state IN ('launched','partial','uncertain','active')
+      AND EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=chat_team_plans.id AND m.launch_handle IS NOT NULL) AND NOT ${HOLDS_PROCESS}`)
+    const seen=new Set(expired.map(plan=>plan.id))
+    const closed=await this.closeDerived([...expired,...finished.filter(plan=>!seen.has(plan.id))],'Se cumplió el tiempo máximo de la delegación o terminaron sus procesos.')
+    return closed
   }
 
   /** Every derived plan that is open or still holds a process, whatever its project: what the automations switch must stop. */

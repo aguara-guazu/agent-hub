@@ -809,7 +809,9 @@ it('impide operar la flota con una identidad pendiente de elegir nick',async()=>
 it('el fallback de cuota rehace edit y clear con una sola nota de continuación, detiene el proceso anterior y conserva worktree, CLI y modelo',async()=>{
   const {backend,teams,slot}=await hubTeam()
   const oldToken=invitation(backend.prompts.get(slot.workspace_id)!)
-  expect(await teams.continueMemberFresh(slot.id)).toBe('restarted')
+  await db.query(`UPDATE chat_team_members SET runtime=json_patch(runtime,'{"state":"failed"}') WHERE id=$1`,[slot.id])
+  const generation=slot.runtime.generation
+  expect(await teams.continueMemberFresh(slot.id,generation)).toBe('restarted')
   const row=(await db.query('SELECT prompt,workspace_id,cli,model,session_id,runtime FROM chat_team_members WHERE id=$1',[slot.id]))[0]
   expect(row).toMatchObject({workspace_id:slot.workspace_id,cli:slot.cli,model:slot.model,session_id:null})
   expect(row.prompt).toContain('Atendé la tarea 1')
@@ -818,21 +820,29 @@ it('el fallback de cuota rehace edit y clear con una sola nota de continuación,
   expect(backend.stop).toHaveBeenCalledWith(slot.launch_handle)
   expect(backend.launch.mock.calls[1]![1]).toMatchObject({member_id:slot.id,resume_worktree:true,cli:slot.cli,model:slot.model})
   expect(invitation(backend.prompts.get(slot.workspace_id)!)).not.toBe(oldToken)
-  expect(await teams.continueMemberFresh(slot.id)).toBe('restarted')
+  await db.query(`UPDATE chat_team_members SET runtime=json_patch(runtime,'{"state":"failed"}') WHERE id=$1`,[slot.id])
+  const again=(await db.query('SELECT runtime FROM chat_team_members WHERE id=$1',[slot.id]))[0].runtime.generation
+  expect(await teams.continueMemberFresh(slot.id,again)).toBe('restarted')
   expect((await db.query('SELECT prompt FROM chat_team_members WHERE id=$1',[slot.id]))[0].prompt.match(/--- Continuación tras cuota ---/g)).toHaveLength(1)
 })
 
 it('el fallback de cuota se niega con el líder cerrado, la colaboración apagada, un miembro inexistente o un proceso que no confirma su detención',async()=>{
   let collaboration=true
   const {master,backend,teams,slot}=await hubTeam(()=>collaboration)
-  expect(await teams.continueMemberFresh(randomUUID())).toBe('refused')
+  const generation=slot.runtime.generation
+  await db.query(`UPDATE chat_team_members SET runtime=json_patch(runtime,'{"state":"failed"}') WHERE id=$1`,[slot.id])
+  expect(await teams.continueMemberFresh(randomUUID(),generation)).toBe('refused')
+  expect(await teams.continueMemberFresh(slot.id,'otra-generacion')).toBe('refused')
   collaboration=false
-  expect(await teams.continueMemberFresh(slot.id)).toBe('refused')
+  expect(await teams.continueMemberFresh(slot.id,generation)).toBe('refused')
   collaboration=true
   backend.stop.mockRejectedValueOnce(new Error('sin confirmar'))
-  expect(await teams.continueMemberFresh(slot.id)).toBe('refused')
+  expect(await teams.continueMemberFresh(slot.id,generation)).toBe('refused')
   expect(backend.launch).toHaveBeenCalledTimes(1)
+  await db.query(`UPDATE chat_team_members SET runtime=json_patch(runtime,'{"state":"busy"}') WHERE id=$1`,[slot.id])
+  expect(await teams.continueMemberFresh(slot.id,generation)).toBe('refused')
+  await db.query(`UPDATE chat_team_members SET runtime=json_patch(runtime,'{"state":"failed"}') WHERE id=$1`,[slot.id])
   await db.query("UPDATE chat_sessions SET closed_at=now() WHERE id=$1",[master.session.id])
-  expect(await teams.continueMemberFresh(slot.id)).toBe('refused')
+  expect(await teams.continueMemberFresh(slot.id,generation)).toBe('refused')
   expect(backend.launch).toHaveBeenCalledTimes(1)
 })

@@ -85,6 +85,19 @@ export class DerivedDispatcher {
       .filter(row => (typeof row.document === 'string' ? JSON.parse(row.document) : row.document)?.channel)
     if (!projects.length) return result
     const requests = (await this.o.db.query('SELECT DISTINCT decision_request_ref AS ref FROM schedule_artifacts WHERE decision_request_ref IS NOT NULL AND created_at>=$1', [since])).map(row => String(row.ref))
+    // A plan that was inserted but never launched (a transient failure before its first effect) already holds its follow-up: offer it again until its limit elapses.
+    const waiting = (await this.o.db.query("SELECT delegation_project_id AS project_id,delegation_version,decision_request_id AS ref FROM chat_team_plans WHERE delegation_project_id IS NOT NULL AND state='prepared'"))
+    for (const plan of waiting) {
+      const key = `${plan.project_id}:${plan.ref}`
+      if (!projects.some(row => row.project_id === plan.project_id) || (this.attempts.get(key) ?? 0) >= (this.o.maxAttempts ?? 3)) continue
+      try {
+        await this.o.teams.launchDerived({ project_id: plan.project_id, delegation_version: plan.delegation_version, request_id: plan.ref })
+        result.launched.push(key)
+      } catch (error) {
+        this.attempts.set(key, (this.attempts.get(key) ?? 0) + 1)
+        result.failed.push(`${key}:${error instanceof MemoryError ? error.statusCode : 'error'}`)
+      }
+    }
     for (const ref of requests) {
       let followUps
       try { followUps = this.o.decisions.store.getFollowUps(ref).filter(entry => !entry.consumed) } catch { continue }
