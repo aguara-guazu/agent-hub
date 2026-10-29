@@ -13,8 +13,10 @@
   },
   "dependencies": {
     "@tanstack/react-query": "5.102.8",
+    "i18next": "26.5.11",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "react-i18next": "17.1.9",
     "react-router-dom": "7.18.3"
   },
   "devDependencies": {
