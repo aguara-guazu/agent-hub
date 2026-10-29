@@ -223,3 +223,4 @@ export type { UsageQuotaState, UsageQuotaModelScope, UsageQuotaWindow, UsageQuot
 export * from './run-profiles.js'
 export * from "./skill-files.js"
 export * from "./unmanaged.js"
+export * from "./entity-summary.js"
