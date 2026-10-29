@@ -29,7 +29,8 @@ automáticamente a los equipos que se quedaron sin cuota a mitad de una tarea.
   07:50, el brief a las 08:00 y el cierre a las 17:30, de lunes a viernes.
 - El brief reúne en un resumen ejecutivo el status vigente de cada proyecto,
   lo que requiere atención, la agenda del día y lo que quedó pendiente del
-  cierre anterior. Se entrega en la app y, si se configuró, por Gmail.
+  cierre anterior. Se entrega en la app y, si se configuró, por Gmail, con un
+  correo con formato (títulos, listas y tablas) y su versión en texto plano.
 - El cierre propone, con numeración única, horas por ticket de Jira como
   estimación del agente (en pasos de media hora, con su base y supuestos),
   transiciones, comentarios y pushes. Nada se ejecuta sin aprobación.
@@ -72,9 +73,15 @@ miembros esperan y la persona recibe un aviso.
   automatizaciones elegidas. También se autoriza desde la acción «Canales» de
   cada automatización. Slack no es un canal de entrega en esta versión.
 - Al hacer clic en la notificación del brief o del cierre se abre su entrega.
+- Cancelar una automatización solo la cancela. Si un agente la vuelve a
+  programar, llega el aviso de siempre y se puede cancelar de nuevo.
 
 ## Otros cambios
 
+- Las skills de fábrica, las descripciones de herramientas y los prompts que el
+  Hub envía a los modelos y agentes están en inglés y son más breves. Lo que lee
+  la persona (brief, cierre, correos, razones y sugerencias) sigue en español
+  neutro.
 - Al reiniciar el Hub, los miembros de la flota que quedaron sin proceso se
   reconocen como detenidos y se pueden volver a lanzar. Un miembro con un
   proceso todavía activo en su espacio de trabajo nunca se reemplaza.
