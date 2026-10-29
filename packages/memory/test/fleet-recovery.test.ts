@@ -7,9 +7,9 @@ const failedAt = '2026-10-28T18:38:00.000Z'
 const runtime = (patch: Partial<HubTeamStatus> = {}): HubTeamStatus => ({ id: 'member-1', cli: 'codex_cli', cwd: '/work', model: 'model-a', state: 'failed', error_code: 'fleet_turn_failed',
   error_cause: 'quota_exhausted', error_evidence: 'protocol', native_id: 'thread-1', provider: 'hub', generation: 'gen-1', updated_at: failedAt, ...patch })
 const pool = (status = 'available') => ({ id: 'pool-a', status }) as never
-function setup(options: { members?: Array<{ id: string; runtime: HubTeamStatus; team_id?: string }>; exhausted?: { pool_key: string } | undefined; quota?: { status: string; pools: unknown[] }; claims?: boolean[]; resume?: () => Promise<unknown> } = {}) {
+function setup(options: { members?: Array<{ id: string; runtime: HubTeamStatus; team_id?: string }>; exhausted?: { pool_key: string } | undefined; quota?: { status: string; pools: unknown[] }; claims?: boolean[]; resume?: () => Promise<unknown> } = {}, withNotices = false) {
   const members = options.members ?? [{ id: 'member-1', runtime: runtime() }]
-  const query = vi.fn(async () => members.map(member => ({ id: member.id, team_id: member.team_id ?? 'team-1', session_id: `session-${member.id}`, runtime: JSON.stringify(member.runtime) })))
+  const query = vi.fn(async () => members.map(member => ({ id: member.id, team_id: member.team_id ?? 'team-1', worktree_name: `tree-${member.id}`, session_id: `session-${member.id}`, runtime: JSON.stringify(member.runtime) })))
   const exhaustedAt = vi.fn(async () => 'exhausted' in options ? options.exhausted : { pool_key: 'pool-a' })
   const forCli = vi.fn(async () => (options.quota ?? { status: 'available', pools: [pool()] }) as never)
   const resumeMember = vi.fn(options.resume ?? (async () => ({})))
@@ -17,14 +17,15 @@ function setup(options: { members?: Array<{ id: string; runtime: HubTeamStatus; 
   const claim = vi.fn(async () => queue.length ? queue.shift()! : true)
   const settle = vi.fn(async () => {})
   const log: RecoveryIncidentLog = { claim, settle }
-  const recovery = new FleetQuotaRecovery({ query } as never, { exhaustedAt, forCli }, { resumeMember }, log)
-  return { recovery, exhaustedAt, forCli, resumeMember, claim, settle }
+  const publishResumption = vi.fn(async () => true)
+  const recovery = new FleetQuotaRecovery({ query } as never, { exhaustedAt, forCli }, { resumeMember }, log, withNotices ? { publishResumption } : undefined)
+  return { recovery, exhaustedAt, forCli, resumeMember, claim, settle, publishResumption }
 }
 const transition = (patch: Partial<UsageQuotaTransition> = {}): UsageQuotaTransition => ({ id: 't', pool_key: 'pool-a', before: 'exhausted', after: 'available', observed_at: '2026-10-29T04:00:00.000Z', binding_ids: ['b'], clis: ['codex_cli'], ...patch })
 
 it('resumes a Codex member whose protocol reported a usage limit once the same pool recovered', async () => {
   const { recovery, resumeMember, claim, settle } = setup()
-  expect(await recovery.recover()).toEqual([{ member_id: 'member-1', team_id: 'team-1', result: 'resumed', reason: 'exclusive_resume', evidence: 'protocol' }])
+  expect(await recovery.recover()).toEqual([{ member_id: 'member-1', team_id: 'team-1', worktree_name: 'tree-member-1', cli: 'codex_cli', model: 'model-a', result: 'resumed', reason: 'exclusive_resume', evidence: 'protocol' }])
   expect(resumeMember).toHaveBeenCalledExactlyOnceWith('member-1', { prompt: QUOTA_RESUME_PROMPT, pool_key: 'pool-a' })
   expect(claim.mock.calls.map(call => (call[0] as { cause: string }).cause)).toEqual(['quota_exhausted', 'quota_resume'])
   expect(claim.mock.calls[1]![0]).toMatchObject({ member_id: 'member-1', generation: 'gen-1', detail: { evidence: 'protocol', pool_key: 'pool-a', cli: 'codex_cli', model: 'model-a' } })
@@ -38,7 +39,7 @@ it('accepts a Claude failure only when the Hub observed the pool exhausted aroun
   expect((await corroborated.recovery.recover())[0]).toMatchObject({ result: 'resumed', evidence: 'protocol+quota_observation' })
   expect(corroborated.exhaustedAt).toHaveBeenCalledWith('claude_code', 'model-a', failedAt, 120_000)
   const alone = setup({ members: [{ id: 'member-1', runtime: claude }], exhausted: undefined })
-  expect(await alone.recovery.recover()).toEqual([{ member_id: 'member-1', team_id: 'team-1', result: 'skipped', reason: 'generic_failure' }])
+  expect(await alone.recovery.recover()).toEqual([{ member_id: 'member-1', team_id: 'team-1', worktree_name: 'tree-member-1', cli: 'claude_code', model: 'model-a', result: 'skipped', reason: 'generic_failure' }])
   expect(alone.resumeMember).not.toHaveBeenCalled()
   expect(alone.claim).not.toHaveBeenCalled()
 })
@@ -87,4 +88,18 @@ it('sweeps only the CLIs whose pool left exhaustion or cooldown', async () => {
   const outcomes = await second.recovery.onTransitions([transition({ before: 'cooldown', after: 'low', clis: ['claude_code'] })])
   expect(outcomes.map(item => item.member_id)).toEqual(['claude-member'])
   expect(second.resumeMember).toHaveBeenCalledExactlyOnceWith('claude-member', expect.objectContaining({ pool_key: 'pool-a' }))
+})
+
+it('tells each team leader once what was attempted, never about skipped members, and survives a failing notice', async () => {
+  const members = [{ id: 'a', runtime: runtime(), team_id: 'team-1' }, { id: 'b', runtime: runtime({ error_cause: undefined } as Partial<HubTeamStatus>), team_id: 'team-1' }, { id: 'c', runtime: runtime(), team_id: 'team-2' }]
+  const { recovery, publishResumption } = setup({ members, resume: async () => { throw Object.assign(new Error('refused'), { continuity: { rung: 'linked_new', reason: 'no_fork_or_exclusive_resume' } }) } }, true)
+  await recovery.onTransitions([transition({ id: 'restore-1' })])
+  expect(publishResumption).toHaveBeenCalledTimes(2)
+  const events = publishResumption.mock.calls.map(call => call[0] as { key: string; team_id: string; members: Array<{ member_id: string; result: string }> })
+  expect(events.map(item => [item.team_id, item.members.map(member => [member.member_id, member.result])])).toEqual([
+    ['team-1', [['a', 'unsupported']]], ['team-2', [['c', 'unsupported']]]])
+  expect(events[0]!.key).toMatch(/^fleet_resumption:team-1:restore-1:[0-9a-f]{16}$/)
+  const failing = setup({}, true)
+  failing.publishResumption.mockRejectedValueOnce(new Error('db'))
+  await expect(failing.recovery.recover()).resolves.toHaveLength(1)
 })

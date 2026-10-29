@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto'
 import type { UsageQuotaTransition } from '@agenthub/shared'
 import type { MemoryDatabase } from './database.js'
 import type { HubResumeRequest, HubTeamStatus } from './team-hub.js'
+import type { ResumptionEvent } from './usage-notices.js'
 import { isRestored, type UsageQuotas } from './usage-quotas.js'
 
 /** Fixed instruction of a resumed member; it carries no task text so the conversation itself stays the source of truth. */
@@ -14,6 +16,9 @@ export type ResumeAction = 'resumed' | 'resume_unsupported' | 'resume_failed'
 export interface RecoveryOutcome {
   member_id: string
   team_id: string
+  worktree_name: string
+  cli: string
+  model: string
   result: 'resumed' | 'unsupported' | 'failed' | 'skipped'
   reason: string
   evidence?: QuotaEvidence
@@ -49,30 +54,51 @@ export class FleetQuotaRecovery {
     private readonly usage: Pick<UsageQuotas, 'exhaustedAt' | 'forCli'>,
     private readonly runtime: { resumeMember(handle: string, request: HubResumeRequest): Promise<unknown> },
     private readonly log: RecoveryIncidentLog,
+    private readonly notices?: { publishResumption(event: ResumptionEvent): Promise<boolean> },
   ) {}
 
   /** Entry point for the quota recovery event: only a pool leaving exhaustion or cooldown triggers a sweep. */
   async onTransitions(transitions: UsageQuotaTransition[]): Promise<RecoveryOutcome[]> {
     const clis = new Set(transitions.flatMap(item => isRestored(item).clis))
-    return clis.size ? this.recover([...clis]) : []
+    if (!clis.size) return []
+    const trigger = transitions.filter(item => isRestored(item).restored).map(item => item.id).sort().join(',')
+    return this.recover([...clis], trigger)
   }
 
   /** Also used after a Hub restart, when the recovery may have happened while nobody was listening. */
-  async recover(clis?: string[]): Promise<RecoveryOutcome[]> {
-    const rows = await this.db.query<{ id: string; team_id: string; session_id: string | null; runtime: unknown }>(`SELECT m.id,m.team_id,m.session_id,m.runtime
+  async recover(clis?: string[], trigger = 'sweep'): Promise<RecoveryOutcome[]> {
+    const rows = await this.db.query<{ id: string; team_id: string; worktree_name: string; session_id: string | null; runtime: unknown }>(`SELECT m.id,m.team_id,m.worktree_name,m.session_id,m.runtime
       FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id
       WHERE m.state='joined' AND m.runtime IS NOT NULL AND t.state NOT IN ('paused','cancelled','completed','prepared') ORDER BY m.team_id,m.ordinal`)
     const outcomes: RecoveryOutcome[] = []
     for (const row of rows) {
       const runtime = parseRuntime(row.runtime)
       if (!runtime || runtime.state !== 'failed' || (clis && !clis.includes(runtime.cli))) continue
-      outcomes.push(await this.attempt(String(row.id), String(row.team_id), row.session_id ? String(row.session_id) : null, runtime))
+      outcomes.push(await this.attempt(String(row.id), String(row.team_id), String(row.worktree_name), row.session_id ? String(row.session_id) : null, runtime))
     }
+    await this.notifyLeaders(outcomes, trigger)
     return outcomes
   }
 
-  private async attempt(memberId: string, teamId: string, sessionId: string | null, runtime: HubTeamStatus): Promise<RecoveryOutcome> {
-    const skip = (reason: string, evidence?: QuotaEvidence): RecoveryOutcome => ({ member_id: memberId, team_id: teamId, result: 'skipped', reason, ...(evidence ? { evidence } : {}) })
+  /** One short notice per team, only about what the Hub actually tried; skipped members produce none. */
+  private async notifyLeaders(outcomes: RecoveryOutcome[], trigger: string) {
+    if (!this.notices) return
+    const teams = new Map<string, ResumptionEvent['members']>()
+    for (const outcome of outcomes) {
+      if (outcome.result === 'skipped') continue
+      const list = teams.get(outcome.team_id) ?? []
+      list.push({ member_id: outcome.member_id, worktree_name: outcome.worktree_name, cli: outcome.cli, model: outcome.model, result: outcome.result, reason: outcome.reason })
+      teams.set(outcome.team_id, list)
+    }
+    for (const [teamId, members] of teams) {
+      const generation = createHash('sha256').update(JSON.stringify(members.map(item => [item.member_id, item.result]).sort())).digest('hex').slice(0, 16)
+      await this.notices.publishResumption({ key: `fleet_resumption:${teamId}:${trigger}:${generation}`, team_id: teamId, observed_at: new Date().toISOString(), members }).catch(() => false)
+    }
+  }
+
+  private async attempt(memberId: string, teamId: string, worktreeName: string, sessionId: string | null, runtime: HubTeamStatus): Promise<RecoveryOutcome> {
+    const named = { member_id: memberId, team_id: teamId, worktree_name: worktreeName, cli: runtime.cli, model: runtime.model }
+    const skip = (reason: string, evidence?: QuotaEvidence): RecoveryOutcome => ({ ...named, result: 'skipped', reason, ...(evidence ? { evidence } : {}) })
     const failure = await classifyQuotaFailure(runtime, this.usage)
     if (!failure) return skip('generic_failure')
     if (!failure.pool_key) return skip('pool_not_identified', failure.evidence)
@@ -85,12 +111,12 @@ export class FleetQuotaRecovery {
     try {
       await this.runtime.resumeMember(memberId, { prompt: QUOTA_RESUME_PROMPT, pool_key: failure.pool_key })
       await this.log.settle({ member_id: memberId, generation: runtime.generation, action: 'resumed', detail })
-      return { member_id: memberId, team_id: teamId, result: 'resumed', reason: 'exclusive_resume', evidence: failure.evidence }
+      return { ...named, result: 'resumed', reason: 'exclusive_resume', evidence: failure.evidence }
     } catch (error) {
       const plan = (error as { continuity?: { rung?: string; reason?: string } }).continuity
       const unsupported = plan !== undefined && plan.rung !== 'exclusive_resume'
       await this.log.settle({ member_id: memberId, generation: runtime.generation, action: unsupported ? 'resume_unsupported' : 'resume_failed', detail: { ...detail, ...(plan?.reason ? { reason: plan.reason } : {}) } })
-      return { member_id: memberId, team_id: teamId, result: unsupported ? 'unsupported' : 'failed', reason: plan?.reason ?? 'resume_failed', evidence: failure.evidence }
+      return { ...named, result: unsupported ? 'unsupported' : 'failed', reason: plan?.reason ?? 'resume_failed', evidence: failure.evidence }
     }
   }
 }

@@ -153,3 +153,21 @@ it('captura del cliente instalado funciona sin sesiones y rechaza fuente o clien
   expect((await operations.call('usage_status',{cli:'codex_cli'})).clis[0]).toMatchObject({status:'available',pools:[{observation:{windows:[{used:23}]}}]})
   enabled=false;expect((await report()).statusCode).toBe(403)
 })
+it('entrega al líder un único aviso de reanudación por equipo y lo revoca al cerrar el equipo',async()=>{
+  const master=await session('resume-master'),{operations,db}=await service.get()
+  const team=randomUUID(),thread=randomUUID()
+  await db.query('INSERT INTO chat_threads(id,channel_id,title,created_by) VALUES($1,$2,$3,$4)',[thread,master.channel.id,'Equipo',master.session.id])
+  await db.query(`INSERT INTO chat_team_plans(id,master_channel_id,root_thread_id,created_by,objective,parent,base_revision,plan,digest,state)
+    VALUES($1,$2,$3,$4,'Resume test','{}',$5,'{}',$6,'active')`,[team,master.channel.id,thread,master.session.id,'a'.repeat(40),'b'.repeat(64)])
+  const event={key:'fleet_resumption:test',team_id:team,observed_at:new Date().toISOString(),
+    members:[{member_id:'m1',worktree_name:'child',cli:'codex_cli',model:'real-model',result:'resumed' as const,reason:'exclusive_resume'}]}
+  expect(await operations.usageNotices.publishResumption(event)).toBe(true)
+  expect(await operations.usageNotices.publishResumption(event)).toBe(false)
+  expect(await operations.usageNotices.publishResumption({...event,key:'fleet_resumption:empty',members:[]})).toBe(false)
+  expect(await operations.usageNotices.publishResumption({...event,key:'fleet_resumption:other',team_id:randomUUID()})).toBe(false)
+  const pending=await operations.usageNotices.pending(master.session.id)
+  expect(pending).toHaveLength(1)
+  expect(pending[0]!.payload).toMatchObject({kind:'fleet_resumption',members:[{member_id:'m1',result:'resumed'}]})
+  await db.query("UPDATE chat_team_plans SET state='cancelled' WHERE id=$1",[team])
+  expect(await operations.usageNotices.pending(master.session.id)).toEqual([])
+})

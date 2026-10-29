@@ -8,6 +8,8 @@ export interface QuotaNoticeEvent {
   account_ref?:string
 }
 const activeTeam = "('launching','launched','partial','uncertain','active')"
+export interface ResumptionMember { member_id:string; worktree_name:string; cli:string; model:string; result:'resumed'|'unsupported'|'failed'; reason:string }
+export interface ResumptionEvent { key:string; team_id:string; observed_at:string; members:ResumptionMember[] }
 
 /** Informational system notices: no synthetic participant, impersonated chat author or model polling. */
 export class UsageNotices {
@@ -42,6 +44,21 @@ export class UsageNotices {
       [randomUUID(),event.key,recipient,target.channel_id,target.direct_channel?null:[...target.team_ids][0] ?? null,
         JSON.stringify({...event,routing:{direct_channel:target.direct_channel,team_ids:[...target.team_ids].sort()}})])
     if(notify && recipients.size)this.chat.events.emit('change')
+  }
+  /** What the Hub did for a team's members when their quota came back; one notice per team and event, addressed to the current leader. */
+  async publishResumption(event:ResumptionEvent,notify=true) {
+    const team=(await this.db.query(`SELECT t.created_by,t.master_channel_id FROM chat_team_plans t
+      JOIN chat_channels c ON c.id=t.master_channel_id AND c.leader_id=t.created_by AND c.closed_at IS NULL
+      JOIN chat_sessions leader ON leader.id=t.created_by AND leader.closed_at IS NULL AND leader.removed_at IS NULL
+      WHERE t.id=$1 AND t.state IN ${activeTeam}`,[event.team_id]))[0]
+    if(!team || !event.members.length)return false
+    const payload={kind:'fleet_resumption',key:event.key,state:'restored',observed_at:event.observed_at,members:event.members,
+      routing:{direct_channel:false,team_ids:[event.team_id]}}
+    const inserted=await this.db.query(`INSERT INTO usage_quota_notices(id,event_key,recipient_id,channel_id,team_id,payload)
+      VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(event_key,recipient_id) DO NOTHING RETURNING id`,
+    [randomUUID(),event.key,team.created_by,team.master_channel_id,event.team_id,JSON.stringify(payload)])
+    if(notify && inserted.length)this.chat.events.emit('change')
+    return inserted.length>0
   }
   private valid = `EXISTS(SELECT 1 FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
     WHERE s.id=usage_quota_notices.recipient_id AND s.closed_at IS NULL AND s.removed_at IS NULL
