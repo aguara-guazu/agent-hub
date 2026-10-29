@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { KeepAwake, type KeepAwakeDeps } from './keep-awake.js'
+import { holdLimitFor, KeepAwake, type KeepAwakeDeps } from './keep-awake.js'
 
 function harness(maxHoldMs = 1000) {
   const started: number[] = []
@@ -92,5 +92,28 @@ describe('KeepAwake', () => {
     keepAwake.dispose()
     expect(stopped).toEqual([1])
     expect(timers.size).toBe(0)
+  })
+})
+
+describe('sync con tope por razón', () => {
+  it('cada razón usa el tope que informa el core y la que no lo trae usa el de respaldo', () => {
+    const { keepAwake, timers } = harness(1000)
+    keepAwake.sync([{ reason: 'a', maxMs: 5000 }, 'b'])
+    expect([...timers.values()].map(timer => timer.ms).sort((x, y) => x - y)).toEqual([1000, 5000])
+  })
+})
+
+describe('holdLimitFor', () => {
+  const now = Date.parse('2026-10-29T10:00:00Z')
+  it('dura hasta el plazo más el margen', () => {
+    expect(holdLimitFor('2026-10-29T10:30:00Z', now, 1000)).toBe(30 * 60_000 + 120_000)
+  })
+  it('un plazo vencido deja solo el margen y uno lejano se acota al techo', () => {
+    expect(holdLimitFor('2026-10-29T09:00:00Z', now, 1000)).toBe(120_000)
+    expect(holdLimitFor('2026-10-30T10:00:00Z', now, 1000)).toBe(2 * 3_600_000)
+  })
+  it('sin plazo válido rige el tope de respaldo', () => {
+    expect(holdLimitFor(null, now, 1000)).toBe(1000)
+    expect(holdLimitFor('no es una fecha', now, 1000)).toBe(1000)
   })
 })
