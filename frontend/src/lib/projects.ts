@@ -74,12 +74,25 @@ export function useCompanies(enabled = true) {
   })
 }
 
-/** Total de contenido vinculado a un proyecto; consulta de una fila, sin sondeo. */
-export function useProjectContentCount(projectId: string, kind?: string) {
+const COUNT_CONCURRENCY = 4
+let countsRunning = 0
+const countsWaiting: Array<() => void> = []
+
+/** Cola con tope de concurrencia para los conteos: la lista no dispara N consultas a la vez. */
+async function limited<T>(task: () => Promise<T>): Promise<T> {
+  if (countsRunning >= COUNT_CONCURRENCY) await new Promise<void>(resolve => countsWaiting.push(resolve))
+  countsRunning++
+  try { return await task() }
+  finally { countsRunning--; countsWaiting.shift()?.() }
+}
+
+/** Total de contenido vinculado a un proyecto (`limit: 1`, solo `total`); sin sondeo. `enabled` permite pedirlo solo para filas visibles. */
+export function useProjectContentCount(projectId: string, kind?: string, enabled = true) {
   return useQuery({
     queryKey: ["memory", "project-count", projectId, kind ?? "all"],
-    queryFn: () => memoryCall<Page<MemoryEntity>>("list_entities", { project_id: projectId, ...(kind ? { kind } : {}), limit: 1 }).then(page => page.total),
+    queryFn: () => limited(() => memoryCall<Page<MemoryEntity>>("list_entities", { project_id: projectId, ...(kind ? { kind } : {}), limit: 1 }).then(page => page.total)),
     staleTime: 30_000,
+    enabled,
   })
 }
 

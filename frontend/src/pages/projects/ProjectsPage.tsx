@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import { useSearchParams } from "react-router-dom"
 import {
@@ -174,8 +174,18 @@ function ProjectRow({ project, company, showContent }: { project: MemoryEntity; 
   )
 }
 
+/** El conteo se pide recién cuando la fila entra en pantalla (y queda en caché), con el tope de concurrencia de `useProjectContentCount`. */
 function ContentCount({ projectId, plural, empty }: { projectId: string; plural: ReturnType<typeof useT<"projects">>["plural"]; empty: string }) {
-  const count = useProjectContentCount(projectId)
-  if (count.data === undefined) return <>—</>
-  return <>{count.data ? plural("row.content", count.data) : empty}</>
+  const ref = useRef<HTMLSpanElement>(null)
+  const [seen, setSeen] = useState(false)
+  useEffect(() => {
+    const element = ref.current
+    if (!element || seen) return
+    if (typeof IntersectionObserver === "undefined") { setSeen(true); return }
+    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) setSeen(true) }, { rootMargin: "200px" })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [seen])
+  const count = useProjectContentCount(projectId, undefined, seen)
+  return <span ref={ref}>{count.data === undefined ? "—" : count.data ? plural("row.content", count.data) : empty}</span>
 }
