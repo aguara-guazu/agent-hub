@@ -167,7 +167,7 @@ export default function ServersPage() {
   let content
   if (loading) content = <SkeletonRows label={t("loading")} />
   else if (loadError) content = <List><ErrorState error={loadError} title={t("empty.errorTitle")} onRetry={() => { void servers.refetch(); void overview.refetch() }} /></List>
-  else if (all.length === 0) content = <List><Empty icon="servers" title={t("empty.title")} detail={t("empty.detail")} action={<Button small variant="primary" icon="add" onClick={() => setCreating(true)}>{t("actions.add")}</Button>} /></List>
+  else if (all.length === 0) content = <List><Empty icon="servers" title={t("empty.title")} detail={t("empty.detail")} action={<Button small onClick={() => setCreating(true)}>{t("actions.add")}</Button>} /></List>
   else if (visible.length === 0) content = <List><EmptyFiltered text={query.trim() ? t("empty.filteredQuery", { query: query.trim() }) : t("empty.filtered")} onClear={clearFilters} /></List>
   else content = (
     <List className="scroll-x">
@@ -194,9 +194,9 @@ export default function ServersPage() {
             sub={server.description ? `${server.description} · ${transport}` : transport}
             meta={<>
               <span className={`col num xs ${server.tools.length ? "t2" : "t3"}`} style={{ width: 100 }}>{server.tools.length || "—"}</span>
-              <span className="col" style={{ width: 170 }}><Chip tone={STATUS_TONE[state]}>{t(`status.${state}`)}</Chip></span>
+              <span className="col" style={{ width: 170, display: "flex", flexDirection: "row" }}><Chip tone={STATUS_TONE[state]}>{t(`status.${state}`)}</Chip></span>
             </>}
-            action={<span className="col" style={{ width: 40, display: "flex", justifyContent: "flex-end" }}>
+            action={<span className="col" style={{ width: 40, display: "flex", flexDirection: "row", justifyContent: "flex-end" }}>
               <Switch
                 checked={enabled}
                 disabled={rules.isPending || paused}
