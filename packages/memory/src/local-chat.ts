@@ -255,6 +255,8 @@ export class LocalChat {
       // The person may also remove a leader that lives in another channel: that revokes this leadership only.
       const target=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1 AND (channel_id=$2 OR id=$3)',[input.participant_id,channel.id,'agent' in actor?null:channel.leader_id]))[0]
       check(target,'El agente no pertenece a este canal',404)
+      // A removal drops the reclaim right, so a leader that took the channel could otherwise make its takeover permanent.
+      if('agent' in actor)check(target.id!==channel.displaced_leader_id,'Esa sesión puede reclamar este canal; sólo la persona puede expulsarla desde la UI.',403)
       if(target.channel_id!==channel.id) {
         await sql.query('UPDATE chat_channels SET leader_id=NULL,leader_changed_at=now(),updated_at=now() WHERE id=$1 AND leader_id=$2',[channel.id,target.id])
         await recordAuthorityEvent(sql,{kind:"leadership_kick",channel_id:channel.id,project_id:await channelProjectId(sql,channel.id),actor_user_id:removedBy.slice(5),

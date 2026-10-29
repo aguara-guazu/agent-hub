@@ -200,6 +200,15 @@ describe("multi-canal y expulsión", () => {
     await rejected(thread(leader, leader.channel.id), 400)
   })
 
+  it("el nuevo líder no puede expulsar al desplazado para quitarle el reclamo", async () => {
+    const leader = await register("leader"), candidate = await register("candidate")
+    await silence(leader, silentMinutes)
+    await take(candidate, leader.channel.id, leader.session.id)
+    await rejected(call(candidate, "chat_kick", { channel_id: leader.channel.id, participant_id: leader.session.id, reason: "fuera" }), 403)
+    expect((await db.query("SELECT removed_at FROM chat_sessions WHERE id=$1", [leader.session.id]))[0]!.removed_at).toBeNull()
+    expect(await take(leader, leader.channel.id, candidate.session.id, "Volví")).toMatchObject({ mode: "reclaim" })
+  })
+
   it("un líder sigue expulsando a un miembro común de su canal", async () => {
     const leader = await register("leader"), member = await register("member")
     const result = await call(leader, "chat_kick", { channel_id: leader.channel.id, participant_id: member.session.id, reason: "fuera" })
