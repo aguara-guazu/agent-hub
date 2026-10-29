@@ -150,6 +150,15 @@ describe('ciclo de sondeo (replyTick)', () => {
     return decision_request_ref
   }
 
+  it('los adaptadores dados como función se evalúan al resolver, una sola vez', async () => {
+    let calls = 0
+    const effects = createCoreScheduleEffects({ store, pool: {} as ConnectionPool, ownerId, automationsEnabled: () => true, adapters: () => { calls++; return [] },
+      host: { directory: dir, vault: new Vault(dir), google: { granted: () => false } as never, load: async () => ({ db: { query: async () => [] as any[] }, schedules: { set: async () => {}, artifactAuthority: async () => 'live' as const, artifactOfRun: async () => undefined } }) } })
+    expect(calls).toBe(0)
+    await effects.deliveries.available(); await effects.replyTick()
+    expect(calls).toBe(1)
+  })
+
   it('con las automatizaciones apagadas no hace nada', async () => {
     const effects = build({ enabled: () => false })
     expect(await effects.replyTick()).toEqual({ skipped: 'automations_off' })

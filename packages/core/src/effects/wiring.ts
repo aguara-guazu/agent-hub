@@ -31,8 +31,11 @@ export interface CoreEffectsOptions {
   ownerId: string
   host: EffectsHost
   automationsEnabled: () => boolean
-  /** Adaptadores de acción registrados por las áreas dueñas de cada tipo (Jira, push). */
-  adapters?: readonly ActionAdapter<any>[]
+  /**
+   * Adaptadores de acción registrados por las áreas dueñas de cada tipo (Jira, push). Una función se evalúa al resolver los efectos, de modo que
+   * pueden leer del core (p. ej. `readJiraServerId`) sin que el cableado conozca su forma.
+   */
+  adapters?: readonly ActionAdapter<any>[] | (() => readonly ActionAdapter<any>[])
 }
 
 /** Resultado de un ciclo de sondeo: cada canal informa por separado y un fallo en uno no detiene al otro. */
@@ -79,7 +82,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       } }
       const effects = createScheduleEffects({
         deliveries: createDeliveryAdapters({ store, artifacts, exclusions, gmail, slack: new SlackSelfDelivery({ store, tools, exclusions }) }),
-        actions: new CoreActionExecutor({ decisions: service, adapters: options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
+        actions: new CoreActionExecutor({ decisions: service, adapters: typeof options.adapters === 'function' ? options.adapters() : options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
         decisions: service,
         ownerId: options.ownerId,
       })
