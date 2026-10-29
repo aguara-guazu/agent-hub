@@ -24,7 +24,7 @@ export async function teamChannelIds(sql: Sql, sessionId: string): Promise<strin
   const rows = await sql.query(`SELECT p.master_channel_id AS channel_id FROM chat_team_plans p
       WHERE p.state IN (${activeStates}) AND (p.created_by=$1 OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=p.id AND m.session_id=$1 AND m.state='joined'))
     UNION SELECT m2.channel_id FROM chat_team_members m2 JOIN chat_team_plans p ON p.id=m2.team_id
-      WHERE m2.channel_id IS NOT NULL AND p.state IN (${activeStates}) AND (p.created_by=$1 OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=p.id AND m.session_id=$1 AND m.state='joined'))`, [sessionId])
+      WHERE m2.channel_id IS NOT NULL AND m2.state='joined' AND p.state IN (${activeStates}) AND (p.created_by=$1 OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=p.id AND m.session_id=$1 AND m.state='joined'))`, [sessionId])
   return rows.map(row => String(row.channel_id))
 }
 
@@ -35,6 +35,14 @@ export async function sessionProjectId(sql: Sql, sessionId: string): Promise<str
       WHERE m.session_id=s.id AND m.channel_id=s.channel_id AND m.state='joined' AND p.state IN (${activeStates})
       ORDER BY p.created_at DESC LIMIT 1),c.project_id) AS project_id
     FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.id=$1`, [sessionId]))[0]
+  return row?.project_id ?? null
+}
+
+/** Effective project of a channel: a worker channel belongs to its master's project. */
+export async function channelProjectId(sql: Sql, channelId: string): Promise<string | null> {
+  const row = (await sql.query(`SELECT COALESCE((SELECT master.project_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+    JOIN chat_channels master ON master.id=p.master_channel_id WHERE m.channel_id=c.id ORDER BY p.created_at DESC LIMIT 1),c.project_id) AS project_id
+    FROM chat_channels c WHERE c.id=$1`, [channelId]))[0]
   return row?.project_id ?? null
 }
 

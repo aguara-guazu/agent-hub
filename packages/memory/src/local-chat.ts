@@ -13,8 +13,8 @@ import { projectForPath, orcaWorkspaceSchema, type AgentContext } from './agents
 import type { MemoryStore } from './store.js'
 import type { Sql } from './database.js'
 import { teamGuidance, teamGuidanceVersion } from './local-chat-team.js'
-import { recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
-import { channelProjectId, lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
+import { channelProjectId, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
+import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
 
 const exec = promisify(execFile)

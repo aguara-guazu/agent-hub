@@ -24,14 +24,6 @@ export async function writeAssociation(sql: Sql, sessionId: string, channelId: s
   return displaced ? null : membership
 }
 
-/** A worker channel belongs to its master's project. Never derived from anything the agent declares. */
-export async function channelProjectId(sql: Sql, channelId: string): Promise<string | null> {
-  const row = (await sql.query(`SELECT COALESCE((SELECT master.project_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
-      JOIN chat_channels master ON master.id=p.master_channel_id WHERE m.channel_id=c.id ORDER BY p.created_at DESC LIMIT 1),c.project_id) AS project_id
-    FROM chat_channels c WHERE c.id=$1`, [channelId]))[0]
-  return row?.project_id ?? null
-}
-
 export type LivenessEvidence = { last_liveness_at: string; source: "lease" | "last_seen" | "created" | "closed"; silent_ms: number }
 
 /** Last signal the Hub itself recorded for a session (hooks, PID birth check, fleet probe, authenticated inbox). */
