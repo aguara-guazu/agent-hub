@@ -26,3 +26,4 @@ export { renderDecisionFooter, deliverDecisionByGmail, MemoryExclusionSink, isEx
 export { GmailSelfSender } from './connectors/gmail-send.js'
 export { pollGmailReplies, verifySlackReply, verifyGmailReply } from './decisions/index.js'
 export type { SlackEvidence, SlackBindingView, ReplyPollResult } from './decisions/index.js'
+export type { GoogleAuth } from './google-auth.js'

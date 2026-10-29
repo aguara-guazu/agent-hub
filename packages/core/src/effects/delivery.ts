@@ -4,7 +4,7 @@ import type { SlackSelfDelivery } from './slack-self.js'
 
 /** Artefacto que el runtime del scheduler persistió para un run. `decision_request_ref` es el id opaco de la solicitud de decisión, si el artefacto propone acciones. */
 export interface DeliveryArtifact { title: string; body_md: string; decision_request_ref: string | null }
-export interface DeliveryArtifacts { load(artifactId: string): Promise<DeliveryArtifact | null> }
+export interface DeliveryArtifacts { load(input: { run_id: string; artifact_id: string }): Promise<DeliveryArtifact | null> }
 
 export interface DeliveryDeps {
   store: DecisionStore
@@ -49,7 +49,7 @@ export function createDeliveryAdapters(deps: DeliveryDeps): DeliveryAdapters {
 
     async executeDelivery(input) {
       if (!ROUTE[input.target]) return { state: 'failed', error_code: 'target_not_allowed' }
-      const artifact = await deps.artifacts.load(input.artifact_id)
+      const artifact = await deps.artifacts.load({ run_id: input.run_id, artifact_id: input.artifact_id })
       if (!artifact) return { state: 'failed', error_code: 'artifact_missing' }
       const text = `${artifact.title}\n\n${artifact.body_md}`
       const requestId = artifact.decision_request_ref

@@ -71,6 +71,7 @@ import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthSt
 import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
 import { createJiraTaskReader } from './memory-jira.js'
 import { createPoolCallAudit } from './effects/call-audit.js'
+import { createCoreScheduleEffects } from './effects/wiring.js'
 
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
 const ORG_ROLES = ['owner', 'admin', 'member']
@@ -278,9 +279,14 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const baseUrl = new URL(settings.oauthRedirectUrl).origin
     const jiraPool = new ConnectionPool(undefined, { oauthStore, detectContainers: false, onCall: createPoolCallAudit(store, owner.id) })
     fastify.addHook('onClose', async () => { await jiraPool.close() })
+    const memoryRef: { service?: { vault: any; google: any; get(): Promise<any> } } = {}
+    const scheduleEffects = createCoreScheduleEffects({ store, pool: jiraPool, ownerId: owner.id, automationsEnabled: () => automationsEnabled(store),
+      host: { directory: memoryDirectory, get vault() { return memoryRef.service!.vault }, get google() { return memoryRef.service!.google },
+        load: async () => { const current = await memoryRef.service!.get(); return { db: current.db, schedules: current.schedules.store } } } })
     const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
       collaborationEnabled: () => collaborationEnabled(store),
       automationsEnabled: () => automationsEnabled(store),
+      scheduleEffects,
       jiraMcp: createJiraTaskReader(store, owner.id, jiraPool, oauthStore),
       usageAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='usage_status')),
       chatAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='chat_join') && s.tools.some(t=>t.name==='chat_inbox')),
@@ -307,6 +313,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
         return user
       },
     })
+    memoryRef.service = memory.service
     fastify.get('/api/collaboration', async request => {
       const user = await currentUser(request)
       if (user.id !== owner.id) throw new HttpError(403, 'La configuración pertenece al dueño local del hub')
