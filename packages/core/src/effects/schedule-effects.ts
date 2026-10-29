@@ -16,7 +16,7 @@ export class NoActionableItems extends Error {
  * Arma el objeto que el core entrega a `registerMemory`. `prepareDecision` ordena los ítems por su número, los pasa al servicio con la compuerta de autoridad
  * (con `ownerId`, la solicitud queda a nombre del dueño real del hub aunque el runtime envíe su valor por defecto; los de tipo `info` no se aprueban y se omiten, y el resto conserva su número del artefacto) y devuelve la referencia opaca de la solicitud; es idempotente por run.
  */
-export function createScheduleEffects(parts: { deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionService; ownerId?: string }): ScheduleEffects {
+export function createScheduleEffects(parts: { deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionService; ownerId?: string; review?: ScheduleEffects['review'] }): ScheduleEffects {
   const decisions: ScheduleEffects['decisions'] & { revokeAll(): Promise<number> } = {
       /** El número de cada ítem es el del artefacto: la persona responde por ese número y los `info` simplemente no figuran. */
       async prepareDecision(input) {
@@ -29,5 +29,5 @@ export function createScheduleEffects(parts: { deliveries: DeliveryAdapters; act
       /** Apagar las automatizaciones revoca toda solicitud viva: el gate atómico de `markDispatching` lo ve aunque un efecto ya estuviera reclamado. */
       async revokeAll() { return parts.decisions.store.revokeAll() },
   }
-  return { deliveries: parts.deliveries, actions: parts.actions, decisions }
+  return { deliveries: parts.deliveries, actions: parts.actions, decisions, ...(parts.review ? { review: parts.review } : {}) }
 }

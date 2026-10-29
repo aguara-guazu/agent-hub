@@ -190,3 +190,24 @@ describe('ciclo de sondeo (replyTick)', () => {
     expect(result.expired).toBe(0)
   })
 })
+
+describe('revisión de decisiones cableada', () => {
+  it('el objeto de efectos expone la revisión sobre el mismo almacén y reapunta el artefacto al corregir', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'effects-review-'))
+    const db = new Database(':memory:'); runMigrations(db, ':memory:')
+    const store = new Store(db), ownerId = ensureLocalOwner(store).id
+    const replaced: unknown[] = []
+    try {
+      const effects = createCoreScheduleEffects({ store, pool: {} as ConnectionPool, ownerId, automationsEnabled: () => true, adapters: [],
+        host: { directory: dir, vault: new Vault(dir), google: { granted: () => false } as never, load: async () => ({ db: { query: async () => [] as any[] },
+          schedules: { set: async () => {}, artifactAuthority: async () => 'live' as const, artifactOfRun: async () => undefined, replaceDecisionRef: async (...args: unknown[]) => { replaced.push(args); return true } } }) } })
+      const { decision_request_ref } = await effects.decisions.prepareDecision({ run_id: 'run-r', artifact_id: 'a-r', owner_id: 'owner', project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z',
+        items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p1', summary: 'uno', effect: { issue_key: 'ABC-1', seconds: 1800 } }] })
+      const view = await effects.review!.view('run-r')
+      expect(view).toMatchObject({ request_id: decision_request_ref, authority: 'verified' })
+      const revised = await effects.review!.revise('run-r', { ordinal: 1, seconds: 3600 })
+      expect(replaced).toEqual([['run-r', decision_request_ref, revised.request_id]])
+      expect(await effects.review!.view('run-missing')).toBeNull()
+    } finally { db.close(); rmSync(dir, { recursive: true, force: true }) }
+  })
+})

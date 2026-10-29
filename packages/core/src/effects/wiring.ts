@@ -9,6 +9,7 @@ import { SlackSelfDelivery } from './slack-self.js'
 import { pollSlackReplies, type SlackPollResult } from './slack-replies.js'
 import { createEffectToolResolver } from './tools.js'
 import { createScheduleEffects } from './schedule-effects.js'
+import { createDecisionReview } from './decision-review.js'
 
 const KEY_NAME = 'decision-verifier'
 const STORE_FILE = 'decisions.sqlite'
@@ -21,7 +22,7 @@ export interface EffectsHost {
   load(): Promise<{
     db: { query<T = Record<string, any>>(sql: string, params?: unknown[]): Promise<T[]> }
     /** Espejo público por ítem, lector de autoridad del artefacto y lectura del artefacto de un run. */
-    schedules: { set(entry: any): Promise<void>; artifactAuthority: DecisionAuthorityReader; artifactOfRun(runId: string): Promise<{ id: string; title: string; body_md: string; decision_request_ref: string | null } | undefined> }
+    schedules: { set(entry: any): Promise<void>; replaceDecisionRef(runId: string, oldRef: string, newRef: string): Promise<boolean>; artifactAuthority: DecisionAuthorityReader; artifactOfRun(runId: string): Promise<{ id: string; title: string; body_md: string; decision_request_ref: string | null } | undefined> }
   }>
 }
 
@@ -85,11 +86,13 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
         actions: new CoreActionExecutor({ decisions: service, adapters: typeof options.adapters === 'function' ? options.adapters() : options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
         decisions: service,
         ownerId: options.ownerId,
+        review: createDecisionReview({ store, service, schedules }),
       })
       return { store, service, effects, tools, gmailConnector: gmail.connectorId }
     } catch (error) { store.close(); throw error }
   })().catch(error => { ready = undefined; throw error })
   const effects = async () => (await resolve()).effects
+  const review = async () => (await effects()).review!
   return {
     deliveries: {
       available: async () => (await effects()).deliveries.available(),
@@ -103,6 +106,12 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       prepareDecision: async input => (await effects()).decisions.prepareDecision(input),
       revokeAll: async () => ((await effects()).decisions as { revokeAll(): Promise<number> }).revokeAll(),
     } as ScheduleEffects['decisions'],
+    review: {
+      view: async runId => (await review()).view(runId),
+      decide: async (runId, input) => (await review()).decide(runId, input),
+      revise: async (runId, input) => (await review()).revise(runId, input),
+      repropose: async runId => (await review()).repropose(runId),
+    },
     ready: async () => { const { store, service } = await resolve(); return { store, service } },
     /**
      * Ciclo de sondeo para el reloj del scheduler: vence solicitudes, lee las respuestas de Gmail y de Slack y publica el espejo público.
