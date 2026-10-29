@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, NavLink } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { api } from './api'
 import { useToast } from '../components/Toast'
 
@@ -29,10 +29,8 @@ export function formatTime(value: string | null | undefined) { return value ? ne
 export function ErrorBox({ error, retry }: { error: Error | null; retry?: () => unknown }) {
   return error ? <div className="hub-notice error" role="alert"><p>{error.message}</p>{retry && <button className="btn" onClick={() => void retry()}>Reintentar</button>}</div> : null
 }
-export function MemoryNav() { return <nav className="memory-nav" aria-label="Navegación de memoria">
-  <NavLink to="/projects" end>Proyectos</NavLink><NavLink to="/memory/collaboration">Colaboración sin proyecto</NavLink><NavLink to="/memory" end>Explorar</NavLink>
-  <NavLink to="/memory/search">Buscar</NavLink><NavLink to="/memory/review">Por revisar</NavLink><NavLink to="/memory/processing">Procesamiento</NavLink><NavLink to="/memory/sources">Fuentes y ajustes</NavLink>
-</nav> }
+/** Los destinos de Memoria pasaron a la barra lateral (Proyectos, Colaboración, Actividad, Ajustes); no hay un tercer nivel de navegación. */
+export function MemoryNav() { return null }
 export function MemoryFrame({ children, setup = false }: { children: ReactNode; setup?: boolean }) {
   const status = useMemoryStatus()
   return <div className="memory-page"><MemoryNav /><ErrorBox error={status.error} retry={status.refetch} />
