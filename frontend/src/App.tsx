@@ -10,7 +10,7 @@ import { ToastProvider } from "./components/ui/Toast"
 import { useT } from "./i18n"
 import { AuthProvider, useAuth } from "./lib/auth"
 import { useTheme } from "./lib/theme"
-import { DeliveriesPage, DeliveryDetailPage, SchedulesPage } from "./pages/Automations"
+import AutomationsPage from "./pages/automations/AutomationsPage"
 import { HubActivity } from "./pages/Hub"
 import MemoryPage from "./pages/memory/MemoryPage"
 import MemoryEntityView from "./pages/memory/EntityPage"
@@ -57,8 +57,8 @@ export function App() {
               <Route path="memory" element={<MemoryPage />} />
               <Route path="memory/entities/:id" element={<MemoryEntityView />} />
               <Route path="collaboration" element={legacy(<MemoryLocalCollaboration />)} />
-              <Route path="automations" element={legacy(<BySearchParam name="view" cases={{ history: <DeliveriesPage /> }} fallback={<SchedulesPage />} />)} />
-              <Route path="automations/deliveries/:runId" element={legacy(<DeliveryDetailPage />)} />
+              <Route path="automations" element={<AutomationsPage />} />
+              <Route path="automations/deliveries/:runId" element={<AutomationsPage />} />
 
               <Route path="servers" element={<ServersPage />} />
               <Route path="skills" element={<SkillsPage />} />

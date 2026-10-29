@@ -6,7 +6,7 @@ import {
 import { useFormat, useT } from "../../i18n"
 import { entityPath, memoryCall, useMemory, type MemoryEntity, type Page } from "../../lib/memory"
 import { RELATION_CHOICES, STAGE_CHOICES, isRelation, projectStage, type Relation, type Stage } from "../../lib/projects"
-import { ProjectAutomation } from "../ProjectAutomation"
+import { ProjectAutomationPanel } from "../automations/ProjectAutomationPanel"
 import { CompanyCombobox, companyPayload, type CompanyChoice } from "../projects/CompanyCombobox"
 import { useErrorText, useKindLabel, useMemoryAction } from "./shared"
 
@@ -265,15 +265,9 @@ export function HistoryPanel({ detail, onClose }: { detail: ProjectDetail; onClo
   )
 }
 
-/** Brief y cierre: la configuración completa (delegación, canal, repositorios) sigue siendo la de `ProjectAutomation`. */
+/** Brief y cierre: delegación, canal, equipo y repositorios del proyecto. */
 export function AutomationPanel({ project, onClose }: { project: MemoryEntity; onClose: () => void }) {
-  const { t } = useT("project")
-  return (
-    <Panel label={t("header.automation.title")} onClose={onClose} wide>
-      <PanelHeader title={t("header.automation.title")} status={<span className="xs t3 trunc" title={project.title}>{project.title}</span>} />
-      <PanelBody><ProjectAutomation project={project} /></PanelBody>
-    </Panel>
-  )
+  return <ProjectAutomationPanel project={project} onClose={onClose} />
 }
 
 type FieldType = "text" | "number" | "boolean" | "date" | "datetime" | "entity" | "json"
