@@ -8,6 +8,8 @@
  * Las formas de `FeedEvent` y `FeedResponse` siguen el contrato del scheduler y se alinean con `schedule-contract.ts`.
  */
 
+import { t } from "./i18n.js"
+
 export interface FeedEvent {
   seq: number
   type: string
@@ -72,23 +74,22 @@ const SCHEDULE_CHANGES: Record<string, 'created' | 'updated' | 'cancelled'> = {
 export function deliveryNotice(event: FeedEvent): Notice | null {
   if (event.type !== 'run.persisted' || !event.run_id) return null
   if (event.artifact_kind !== 'brief' && event.artifact_kind !== 'close') return null
-  return { title: event.artifact_kind === 'close' ? 'Cierre listo' : 'Brief listo', body: event.title ?? 'Abre la entrega para verla.', route: `/deliveries/${event.run_id}` }
+  return { title: t(event.artifact_kind === "close" ? "schedules.closeReady" : "schedules.briefReady"), body: event.title ?? t("schedules.openDelivery"), route: `/deliveries/${event.run_id}` }
 }
 
 function describeChanges(changes: { kind: 'created' | 'updated' | 'cancelled'; event: FeedEvent }[]): Notice {
   const [first] = changes
-  const named = (event: FeedEvent): string => event.title ?? 'una automatización'
+  const named = (event: FeedEvent): string => event.title ?? t("schedules.unnamed")
   if (changes.length === 1 && first) {
     const { kind, event } = first
-    const route = event.schedule_id ? `/schedules?focus=${event.schedule_id}` : '/schedules'
-    if (kind === 'created') return { title: `Tu agente programó: ${named(event)}`, body: 'Haz clic para verlo o cancelarlo.', route }
-    if (kind === 'updated') return { title: `Tu agente cambió el horario: ${named(event)}`, body: 'Haz clic para revisarlo.', route }
-    return { title: `Tu agente canceló: ${named(event)}`, body: 'Haz clic para ver las automatizaciones.', route }
+    const route = event.schedule_id ? `/schedules?focus=${event.schedule_id}` : "/schedules"
+    if (kind === "created") return { title: t("schedules.created", { name: named(event) }), body: t("schedules.createdBody"), route }
+    if (kind === "updated") return { title: t("schedules.updated", { name: named(event) }), body: t("schedules.updatedBody"), route }
+    return { title: t("schedules.cancelled", { name: named(event) }), body: t("schedules.cancelledBody"), route }
   }
   const kinds = new Set(changes.map(change => change.kind))
-  const verb = kinds.size > 1 ? 'cambió' : kinds.has('created') ? 'programó' : kinds.has('cancelled') ? 'canceló' : 'cambió'
-  const title = kinds.size > 1 ? `Tu agente cambió ${changes.length} automatizaciones` : `Tu agente ${verb} ${changes.length} automatizaciones`
-  return { title, body: 'Haz clic para verlas.', route: '/schedules' }
+  const key = kinds.size > 1 ? "schedules.batchUpdated" : kinds.has("created") ? "schedules.batchCreated" : kinds.has("cancelled") ? "schedules.batchCancelled" : "schedules.batchUpdated"
+  return { title: t(key, { count: changes.length }), body: t("schedules.batchBody"), route: "/schedules" }
 }
 
 export interface NoticeBatcherDeps {

@@ -25,6 +25,7 @@ import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
+import { t } from "./i18n.js"
 
 export const DEFAULT_REPO = 'aguara-guazu/agent-hub'
 export const DEFAULT_API_BASE = 'https://api.github.com'
@@ -130,14 +131,14 @@ export async function fetchLatestRelease(options: {
       signal: AbortSignal.timeout(options.timeoutMs ?? CHECK_TIMEOUT_MS),
     })
     if (response.status === 404) return null
-    if (!response.ok) throw new Error(`GitHub no pudo consultar las actualizaciones (HTTP ${response.status}).`)
+    if (!response.ok) throw new Error(t("updater.githubHttp", { status: response.status }))
     const release = await response.json() as {
       tag_name?: string
       body?: string
       html_url?: string
       assets?: Array<{ name?: string; browser_download_url?: string; size?: number; digest?: string }>
     }
-    if (!release.tag_name || !/^v?\d+(\.\d+)*/.test(release.tag_name)) throw new Error('GitHub devolvió información de versión inválida.')
+    if (!release.tag_name || !/^v?\d+(\.\d+)*/.test(release.tag_name)) throw new Error(t("updater.githubInvalid"))
     return {
       version: release.tag_name.replace(/^v/, ''),
       notes: release.body?.trim() ?? '',
@@ -148,7 +149,7 @@ export async function fetchLatestRelease(options: {
     }
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('GitHub')) throw error
-    throw new Error('No se pudo consultar GitHub. Revisá la conexión y volvé a intentar.')
+    throw new Error(t("updater.githubUnreachable"))
   }
 }
 
@@ -183,11 +184,11 @@ export async function downloadAsset(url: string, target: string, options: {
       if (offset) for await (const chunk of createReadStream(target)) hash.update(chunk)
       touch()
       const response = await fetchFn(url, { redirect: 'follow', signal, ...(offset ? { headers: { Range: `bytes=${offset}-` } } : {}) })
-      if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error(`La descarga falló con HTTP ${response.status}.`) }
+      if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error(t("updater.downloadHttp", { status: response.status })) }
       if (response.status === 206) {
         const range = response.headers.get('content-range')?.match(/^bytes (\d+)-(\d+)\/(\d+)$/)
         if (!range || Number(range[1]) !== offset || (options.expectedBytes && Number(range[3]) !== options.expectedBytes)) {
-          await response.body.cancel(); transport = false; throw new Error('El servidor devolvió un rango de descarga inválido.')
+          await response.body.cancel(); transport = false; throw new Error(t("updater.badRange"))
         }
       } else { offset = 0; hash = createHash('sha256') } // Server ignored Range; start clean.
       const length = Number(response.headers.get('content-length') ?? 0)
@@ -201,18 +202,18 @@ export async function downloadAsset(url: string, target: string, options: {
       })
       await pipeline(source, createWriteStream(target, { flags: offset ? 'a' : 'w' }), { signal })
       const written = await stat(target)
-      if (totalBytes !== null && written.size !== totalBytes) throw new Error('La descarga quedó incompleta. Volvé a intentar.')
+      if (totalBytes !== null && written.size !== totalBytes) throw new Error(t("updater.incomplete"))
       transport = false
-      if (written.size < (options.minBytes ?? MIN_ASSET_BYTES)) throw new Error(`El archivo descargado pesa ${written.size} bytes; no parece un instalador.`)
-      if (expectedHash && hash.digest('hex') !== expectedHash) throw new Error('La descarga no coincide con el SHA-256 publicado.')
+      if (written.size < (options.minBytes ?? MIN_ASSET_BYTES)) throw new Error(t("updater.tooSmall", { bytes: written.size }))
+      if (expectedHash && hash.digest('hex') !== expectedHash) throw new Error(t("updater.hashMismatch"))
       return
     } catch (error) {
       const partial = (await stat(target).catch(() => ({ size: 0 }))).size
       if (transport && expectedHash && partial > 0 && attempt < 2 && !timeout.aborted && !options.signal?.aborted && (!options.expectedBytes || partial < options.expectedBytes)) continue
       await rm(target, { force: true }).catch(() => undefined)
       if (options.signal?.aborted) throw options.signal.reason
-      if (idle.signal.aborted) throw new Error('La descarga se detuvo por falta de datos. Se reintentará automáticamente.')
-      if (timeout.aborted) throw new Error('La descarga superó el tiempo máximo. Se reintentará automáticamente.')
+      if (idle.signal.aborted) throw new Error(t("updater.stalled"))
+      if (timeout.aborted) throw new Error(t("updater.timedOut"))
       throw error
     } finally { clearTimeout(timer) }
   }
@@ -364,7 +365,7 @@ export class AutoUpdater {
     if (!this.deps.enabled || this.deps.env.AGENTHUB_NO_AUTO_UPDATE === '1') return { state: 'disabled' }
     if (this.downloading) return this.downloading
     this.downloading = this.checkOnce().catch((error: unknown): UpdateStatus => ({ state: 'failed', version: this.deps.currentVersion,
-      error: error instanceof Error ? error.message : 'No se pudo buscar la actualización.' })).finally(() => { this.downloading = null })
+      error: error instanceof Error ? error.message : t("updater.checkFailed") })).finally(() => { this.downloading = null })
     return this.downloading
   }
 

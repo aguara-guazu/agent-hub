@@ -12,7 +12,8 @@ import { waitForDesktopSession } from './session.js'
 import { CoreSupervisor } from './supervisor.js'
 import { resolvePaths, type PathContext } from './paths.js'
 import { windowOptions, isAllowedNavigation, externalUrl } from './window.js'
-import { buildTrayTemplate, TRAY_TOOLTIP, type TrayAction } from './tray.js'
+import { buildTrayTemplate, trayTooltip, type TrayAction } from './tray.js'
+import { activeLanguage, isLanguagePreference, onLanguageChange, resolveLanguage, setActiveLanguage, t, type LanguagePreference } from "./i18n.js"
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus, type OpenFileResult } from './ipc.js'
 import { NavigationRelay } from './navigation.js'
@@ -250,6 +251,35 @@ const KEEP_AWAKE_MAX_MS = 20 * 60_000
 /** Espera tras resume/unlock-screen: la red suele volver unos segundos después. */
 const CLOCK_WAKE_SETTLE_MS = 3_000
 const autostartOfferedFile = join(stateDir, 'autostart-offered')
+/** Preferencia de idioma (`es`, `en` o `auto`) que elige la persona en Ajustes; el renderer la lee y la escribe por IPC. */
+const languageFile = join(stateDir, "language")
+let languagePreference: LanguagePreference = readLanguagePreference()
+
+function readLanguagePreference(): LanguagePreference {
+  try {
+    const stored = readFileSync(languageFile, "utf8").trim()
+    return isLanguagePreference(stored) ? stored : "auto"
+  } catch {
+    return "auto"
+  }
+}
+
+/** `app.getLocale()` sólo es fiable tras `ready` (Windows): se llama desde `whenReady` y desde el IPC. */
+function applyLanguagePreference(): void {
+  setActiveLanguage(resolveLanguage(languagePreference, app.getLocale()))
+}
+
+function saveLanguagePreference(value: unknown): LanguagePreference {
+  if (!isLanguagePreference(value)) return languagePreference
+  try {
+    writeFileSync(languageFile, value)
+  } catch (error) {
+    coreLog.write(`[language] no se pudo guardar la preferencia: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  languagePreference = value
+  applyLanguagePreference()
+  return languagePreference
+}
 
 /** Pedido autenticado al core local; renueva la sesión una vez si el token venció. */
 async function coreFetch(path: string, init: RequestInit = {}): Promise<Response> {
@@ -285,9 +315,9 @@ const autostartOffer = new AutostartOffer({
   ask: async () => {
     const options: Electron.MessageBoxOptions = {
       type: 'question',
-      message: 'Iniciar Agent Hub al ingresar',
-      detail: 'Las automatizaciones solo corren mientras Agent Hub está abierto. Si lo iniciamos al ingresar, el brief de la mañana no depende de que lo abras tú.',
-      buttons: ['Iniciar al ingresar', 'Ahora no'],
+      message: t("autostartOffer.message"),
+      detail: t("autostartOffer.detail"),
+      buttons: [t("autostartOffer.accept"), t("autostartOffer.decline")],
       defaultId: 0,
       cancelId: 1,
     }
@@ -374,15 +404,15 @@ function coreStatus(): CoreStatus {
 
 function describePending(entry: PendingRestart): string {
   const changes = entry.changes
-  if (!changes) return 'la lista de herramientas cambió'
+  if (!changes) return t("clientRestart.changesGeneric")
   const parts = [
-    changes.skills.added.length ? `skills nuevas: ${changes.skills.added.join(', ')}` : '',
-    changes.skills.changed.length ? `skills actualizadas: ${changes.skills.changed.join(', ')}` : '',
-    changes.skills.removed.length ? `skills retiradas: ${changes.skills.removed.join(', ')}` : '',
-    changes.servers.added.length ? `MCP servers nuevos: ${changes.servers.added.join(', ')}` : '',
-    changes.servers.removed.length ? `MCP servers retirados: ${changes.servers.removed.join(', ')}` : '',
+    changes.skills.added.length ? t("clientRestart.skillsAdded", { list: changes.skills.added.join(", ") }) : "",
+    changes.skills.changed.length ? t("clientRestart.skillsChanged", { list: changes.skills.changed.join(", ") }) : "",
+    changes.skills.removed.length ? t("clientRestart.skillsRemoved", { list: changes.skills.removed.join(", ") }) : "",
+    changes.servers.added.length ? t("clientRestart.serversAdded", { list: changes.servers.added.join(", ") }) : "",
+    changes.servers.removed.length ? t("clientRestart.serversRemoved", { list: changes.servers.removed.join(", ") }) : "",
   ].filter(Boolean)
-  return parts.length ? parts.join('; ') : 'la lista de herramientas cambió'
+  return parts.length ? parts.join("; ") : t("clientRestart.changesGeneric")
 }
 
 /**
@@ -391,7 +421,7 @@ function describePending(entry: PendingRestart): string {
  * ejecuta como programa. Devuelve `ok: false` con el motivo cuando no hay aplicación asociada.
  */
 async function openStoredPdf(versionId: unknown): Promise<OpenFileResult> {
-  if (typeof versionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(versionId)) return { ok: false, detail: 'identificador de archivo inválido' }
+  if (typeof versionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(versionId)) return { ok: false, detail: t("storedPdf.invalidId") }
   const request = (token: string): Promise<Response> => fetch(`${CORE_BASE_URL}/api/memory/files/${versionId}`, { headers: { Authorization: `Bearer ${token}` } })
   if (!sessionToken) sessionToken = await waitForSession()
   let response = await request(sessionToken)
@@ -399,9 +429,9 @@ async function openStoredPdf(versionId: unknown): Promise<OpenFileResult> {
     sessionToken = await waitForSession()
     response = await request(sessionToken)
   }
-  if (!response.ok) return { ok: false, detail: `no se pudo leer el archivo (HTTP ${response.status})` }
+  if (!response.ok) return { ok: false, detail: t("storedPdf.readFailed", { status: response.status }) }
   const data = Buffer.from(await response.arrayBuffer())
-  if (data.subarray(0, 5).toString() !== '%PDF-') return { ok: false, detail: 'el archivo no es un PDF' }
+  if (data.subarray(0, 5).toString() !== '%PDF-') return { ok: false, detail: t("storedPdf.notPdf") }
   const disposition = /filename\*=UTF-8''([^;]+)/.exec(response.headers.get('content-disposition') ?? '')?.[1]
   let name = 'documento'
   try { if (disposition) name = decodeURIComponent(disposition) } catch { /* keep the generic name */ }
@@ -466,8 +496,8 @@ async function pollPendingRestarts(): Promise<void> {
   try {
     if (!Notification.isSupported()) return
     const notification = new Notification({
-      title: `Skill instalada: ${skills}`,
-      body: 'Claude Desktop tiene que reiniciarse para verla. Hacé clic para reiniciarla ahora.',
+      title: t("clientRestart.skillInstalled", { skills, count: fresh.length }),
+      body: t("clientRestart.skillInstalledBody", { count: fresh.length }),
     })
     notification.on('click', () => void confirmAndRestartClient())
     showRetained(notification)
@@ -480,12 +510,12 @@ async function pollPendingRestarts(): Promise<void> {
 async function confirmAndRestartClient(): Promise<void> {
   if (restartingClient) return
   const entry = pendingClientRestart
-  const detail = entry ? `Cambios pendientes: ${describePending(entry)}. Se cierra y se vuelve a abrir Claude Desktop; guardá lo que tengas a medias en la app.` : 'Se cierra y se vuelve a abrir Claude Desktop; guardá lo que tengas a medias en la app.'
+  const detail = entry ? t("clientRestart.confirmDetailPending", { changes: describePending(entry) }) : t("clientRestart.confirmDetail")
   const choice = await dialog.showMessageBox({
     type: 'question',
-    message: 'Reiniciar Claude Desktop',
+    message: t("clientRestart.confirmTitle"),
     detail,
-    buttons: ['Reiniciar ahora', 'Más tarde'],
+    buttons: [t("clientRestart.confirmAccept"), t("clientRestart.confirmDecline")],
     defaultId: 0,
     cancelId: 1,
   })
@@ -493,7 +523,7 @@ async function confirmAndRestartClient(): Promise<void> {
   restartingClient = true
   try {
     const result = await restartClient('claude_desktop', clientDeps)
-    notify(result.ok ? 'Claude Desktop reiniciada' : 'No se pudo reiniciar Claude Desktop', result.detail)
+    notify(t(result.ok ? "clientRestart.restarted" : "clientRestart.failed"), result.detail)
   } finally {
     restartingClient = false
   }
@@ -508,7 +538,7 @@ function refreshTray(): void {
     windowVisible: Boolean(mainWindow?.isVisible()),
     autostartEnabled: safeAutostart(),
     showShortcut: { label: SHOW_WINDOW_SHORTCUT_LABEL, registered: showWindowShortcutRegistered },
-    clientRestart: pendingClientRestart ? { label: 'Reiniciar Claude Desktop (cambios sin cargar)' } : null,
+    clientRestart: Boolean(pendingClientRestart),
   })
   tray.setContextMenu(Menu.buildFromTemplate(template.map((item): Electron.MenuItemConstructorOptions => {
     if (item.type === 'separator') return { type: 'separator' }
@@ -519,7 +549,7 @@ function refreshTray(): void {
     if (item.id) entry.click = () => handleTrayAction(item.id!)
     return entry
   })))
-  tray.setToolTip(showWindowShortcutRegistered ? `${TRAY_TOOLTIP} — Mostrar/ocultar: ${SHOW_WINDOW_SHORTCUT_LABEL}` : TRAY_TOOLTIP)
+  tray.setToolTip(trayTooltip(showWindowShortcutRegistered ? SHOW_WINDOW_SHORTCUT_LABEL : null))
 }
 function broadcastCoreState(): void {
   mainWindow?.webContents.send(IPC.coreStateChanged, coreStatus())
@@ -581,11 +611,11 @@ function registerShowWindowShortcut(): void {
     console.error('[shortcut]', error)
   }
   if (!showWindowShortcutRegistered) {
-    const message = `No se pudo activar ${SHOW_WINDOW_SHORTCUT_LABEL} para abrir Agent Hub. Puede estar reservado por otra app o no estar permitido por el sistema. Podés abrir Agent Hub desde el menú de aplicaciones del sistema o desde su icono.`
-    coreLog.write(`[shortcut] ${message}`)
+    const message = t("shortcut.body", { shortcut: SHOW_WINDOW_SHORTCUT_LABEL })
+    coreLog.write(`[shortcut] no se pudo registrar ${SHOW_WINDOW_SHORTCUT}`)
     if (!process.argv.includes('--updated') && Notification.isSupported()) {
       try {
-        const notification = new Notification({ title: 'Atajo de Agent Hub no disponible', body: message })
+        const notification = new Notification({ title: t("shortcut.title"), body: message })
         notification.on('click', showWindow)
         showRetained(notification)
       } catch (error) {
@@ -640,8 +670,21 @@ function createWindow(token: string, hidden: boolean): void {
     if (external) void shell.openExternal(external)
     return { action: 'deny' }
   })
+  forwardLanguageToCore(win)
   void win.loadURL(consoleUrl(token))
   if (!hidden) win.once('ready-to-show', () => win.show())
+}
+/**
+ * El core arma páginas HTML fuera de la consola (retorno de OAuth en el navegador del sistema) y no conoce la preferencia:
+ * toma el idioma del `Accept-Language` de `oauth/start`. Chromium manda el locale del sistema, así que se reemplaza por el
+ * idioma activo en los pedidos del renderer al core local.
+ */
+function forwardLanguageToCore(win: BrowserWindow): void {
+  win.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
+    if (!details.url.startsWith(`${CORE_BASE_URL}/api/`)) return callback({})
+    const requestHeaders = Object.fromEntries(Object.entries(details.requestHeaders).filter(([name]) => name.toLowerCase() !== "accept-language"))
+    callback({ requestHeaders: { ...requestHeaders, "Accept-Language": activeLanguage() } })
+  })
 }
 function createTray(): void {
   // nativeImage reads PNG and ICO; the macOS .icns bundle icon is not a supported input. Windows picks the 16/32 px
@@ -662,7 +705,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.openStoredPdf, (_event, versionId: unknown) => openStoredPdf(versionId).catch((error: unknown) =>
     ({ ok: false, detail: error instanceof Error ? error.message : String(error) })))
   ipcMain.handle(IPC.restartClient, async (_event, cliKind: string) => {
-    if (restartingClient) return { ok: false, detail: 'ya hay un reinicio en curso' }
+    if (restartingClient) return { ok: false, detail: t("clientRestart.alreadyRunning") }
     restartingClient = true
     try {
       return await restartClient(String(cliKind), clientDeps)
@@ -675,6 +718,8 @@ function registerIpc(): void {
     coreLog.write(`[navigation] renderer escuchando${pending ? `; entrega la ruta pendiente ${pending}` : ''}`)
     return pending
   })
+  ipcMain.handle(IPC.getLanguage, () => languagePreference)
+  ipcMain.handle(IPC.setLanguage, (_event, preference: unknown) => saveLanguagePreference(preference))
   ipcMain.handle(IPC.getAutostart, safeAutostart)
   ipcMain.handle(IPC.setAutostart, (_event, enabled: boolean) => {
     autostart.setEnabled(Boolean(enabled))
@@ -704,11 +749,11 @@ async function showStartupFailure(message: string): Promise<void> {
   const cause = core.filter(line => /error|exception|fall[oó]/i.test(line)).slice(-3).map(line => line.replace(/^\S+ /, ''))
   const { response } = await dialog.showMessageBox({
     type: 'error',
-    title: 'Agent Hub no pudo iniciar',
-    message: 'Agent Hub no pudo iniciar',
-    detail: [message, ...(cause.length ? ['', 'Último error del core:', ...cause] : []), '', `Registros: ${logsDir}`,
-      'El reporte filtra credenciales conocidas, emails y la carpeta del usuario. Revisalo antes de publicarlo en GitHub.'].join('\n'),
-    buttons: ['Abrir issue en GitHub', 'Copiar reporte', 'Cerrar'],
+    title: t("startup.title"),
+    message: t("startup.title"),
+    detail: [message, ...(cause.length ? ["", t("startup.lastCoreError"), ...cause] : []), "", t("startup.logs", { path: logsDir }),
+      t("startup.reportNote")].join("\n"),
+    buttons: [t("startup.openIssue"), t("startup.copyReport"), t("startup.close")],
     defaultId: 0,
     cancelId: 2,
     noLink: true,
@@ -751,8 +796,7 @@ async function ensureCorePort(): Promise<void> {
     app.exit(0)
     return new Promise(() => undefined)
   }
-  throw new Error(`el puerto ${CORE_PORT} no se puede usar (${problem}) y tampoco ${FALLBACK_CORE_PORTS.join(', ')}. ` +
-    'En Windows, los rangos reservados se ven con «netsh interface ipv4 show excludedportrange protocol=tcp».')
+  throw new Error(t("startup.portUnavailable", { port: CORE_PORT, problem, fallbacks: FALLBACK_CORE_PORTS.join(", ") }))
 }
 /** Los puentes MCP leen la URL del hub de las credenciales del daemon: tiene que seguir al puerto actual. */
 function syncDaemonUrl(): void {
@@ -824,6 +868,8 @@ else {
   process.once('SIGINT', () => { void quit() })
   app.on('second-instance', (_event, argv) => { if (!hiddenUpdateLaunch(argv)) showWindow() })
   app.whenReady().then(async () => {
+    applyLanguagePreference()
+    onLanguageChange(refreshTray)
     coreSupervisor.on('state', broadcastCoreState)
     daemonSupervisor.on('state', broadcastCoreState)
     for (const [name, supervisor, log] of [['core', coreSupervisor, coreLog], ['daemon', daemonSupervisor, daemonLog]] as const) {
@@ -861,7 +907,7 @@ else {
     console.error(message)
     coreLog.write(`[desktop] no pudo iniciar: ${message}`)
     // Sin esto la app desaparecía en silencio y parecía que "no abría".
-    if (!process.argv.includes('--updated')) await showStartupFailure(message).catch(() => dialog.showErrorBox('Agent Hub no pudo iniciar', message))
+    if (!process.argv.includes('--updated')) await showStartupFailure(message).catch(() => dialog.showErrorBox(t("startup.title"), message))
     app.quit()
   })
   app.on('window-all-closed', () => undefined)
