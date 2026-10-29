@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patrones de interacción · Agent Hub</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/ah.css">
+<link rel="stylesheet" href="assets/viewer.css">
+</head>
+<body>
+<div class="ah" style="min-height: 100vh; padding: 64px 40px 80px">
+<div style="max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 48px">
+
+<header style="display: flex; flex-direction: column; gap: 12px; max-width: 720px">
+<span class="eyebrow">04 · PATRONES</span>
+<h1 style="margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.025em">Las capas, una por una</h1>
+<p class="t2 md prose" style="line-height: 1.6">De 33 modales quedan tres usos: crear, confirmar lo irreversible y la paleta de búsqueda. Todo lo demás se resuelve en la página o en el panel.</p>
+</header>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 20px">
+
+<section style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px"><h2 class="h2">Crear · modal corto</h2><span class="t3 xs">Nuevo proyecto absorbe «Nueva empresa»: se crea desde el selector.</span></div>
+<div style="background: var(--overlay); border: 1px solid var(--border); border-radius: 12px; padding: 40px 24px; display: flex; justify-content: center">
+<div class="pop modal" role="dialog" aria-label="Nuevo proyecto">
+<div class="modal-h"><h3 class="h2">Nuevo proyecto</h3></div>
+<div class="modal-b">
+<div class="field"><label class="label" for="np-n">Nombre</label><input class="input" id="np-n" value="Portal de proveedores"></div>
+<div class="field"><label class="label" for="np-e">Empresa</label><input class="input" id="np-e" value="Lumen Ret">
+<div class="pop menu" style="margin-top: 4px; box-shadow: none">
+<button class="menu-item" type="button"><span class="av av-sm hue6" style="width: 20px; height: 20px; font-size: 9px">LR</span>Lumen Retail</button>
+<button class="menu-item" type="button" style="color: var(--accent-text)"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Crear «Lumen Ret»</button>
+</div></div>
+<div class="field"><span class="label">Etapa</span><div class="seg" role="group" aria-label="Etapa" style="align-self: flex-start"><button type="button" aria-pressed="true">Descubrimiento</button><button type="button" aria-pressed="false">Preventa</button><button type="button" aria-pressed="false">En ejecución</button><button type="button" aria-pressed="false">Otra…</button></div></div>
+</div>
+<div class="modal-f"><button class="btn btn-ghost" type="button">Cancelar</button><button class="btn btn-primary" type="button">Crear proyecto</button></div>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px"><h2 class="h2">Buscar o ir a · ⌘K</h2><span class="t3 xs">Una sola búsqueda global: destinos, acciones y memoria. Reemplaza la barra superior.</span></div>
+<div style="background: var(--overlay); border: 1px solid var(--border); border-radius: 12px; padding: 40px 24px; display: flex; justify-content: center">
+<div class="pop" role="dialog" aria-label="Buscar o ir a" style="width: 100%; max-width: 560px; display: flex; flex-direction: column">
+<div style="display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 52px; border-bottom: 1px solid var(--border)"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--text-3)"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><input class="input" value="north" aria-label="Buscar" style="border: 0; background: transparent; padding: 0; height: 50px; font-size: 15px; box-shadow: none"><span class="kbd">esc</span></div>
+<div style="padding: 6px; display: flex; flex-direction: column">
+<span class="eyebrow" style="padding: 8px 10px 4px">Proyectos y memoria</span>
+<button class="menu-item" type="button" style="background: var(--surface-2)"><span class="av av-sm hue1">MA</span><span style="flex: 1">Migración a AWS de <b>North</b>wind</span><span class="xs t3">Proyecto</span></button>
+<button class="menu-item" type="button"><span class="av av-sm hue6">NL</span><span style="flex: 1"><b>North</b>wind Logistics</span><span class="xs t3">Empresa</span></button>
+<button class="menu-item" type="button"><span class="tag">Reunión</span><span style="flex: 1" class="trunc">Kick-off con <b>North</b>wind</span><span class="xs t3">6 oct</span></button>
+<span class="eyebrow" style="padding: 10px 10px 4px">Acciones</span>
+<button class="menu-item" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg><span style="flex: 1">Nueva nota en Migración a AWS de Northwind</span></button>
+<button class="menu-item" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><span style="flex: 1">Buscar «north» en toda la memoria</span><span class="kbd">↵</span></button>
+</div>
+<div style="display: flex; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--border)" class="xs t3"><span><span class="kbd">↑↓</span> moverse</span><span><span class="kbd">↵</span> abrir</span><span><span class="kbd">⌘↵</span> abrir en panel</span></div>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px"><h2 class="h2">Deshacer en lugar de confirmar</h2><span class="t3 xs">Pausar, reanudar, ejecutar, eliminar un servidor o cancelar una automatización.</span></div>
+<div class="card" style="padding: 20px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap"><span class="chip c-danger">Antes</span><span class="t2">Click en «Cancelar» → modal «¿Cancelar automatización?» → «Volver» / «Cancelar automatización»</span></div>
+<hr class="divider">
+<div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap"><span class="chip c-ok">Ahora</span><span class="t2">Click en «Eliminar» → la fila desaparece → aviso con «Deshacer» durante 6 s</span></div>
+<div class="toast" style="align-self: flex-start; min-width: 340px"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--ok)"><path d="m5 12 5 5L20 7"></path></svg><span style="flex: 1">Se eliminó «Recordatorio de parches»</span><button class="btn btn-sm btn-ghost" type="button" style="color: var(--accent-text)">Deshacer</button></div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px"><h2 class="h2">Confirmar · solo lo irreversible</h2><span class="t3 xs">El botón repite la acción y dice qué se pierde. Nunca «Aceptar».</span></div>
+<div style="background: var(--overlay); border: 1px solid var(--border); border-radius: 12px; padding: 40px 24px; display: flex; justify-content: center">
+<div class="pop modal" role="alertdialog" aria-label="Restaurar respaldo" style="max-width: 420px">
+<div class="modal-h"><h3 class="h2">¿Restaurar el respaldo del 28 de octubre?</h3></div>
+<div class="modal-b"><p class="t2">Se reemplaza toda la memoria actual. Lo que guardaste después de esa fecha se pierde.</p></div>
+<div class="modal-f"><button class="btn btn-ghost" type="button">Cancelar</button><button class="btn btn-danger" type="button" style="background: var(--danger-weak)">Restaurar y reemplazar</button></div>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px; grid-column: 1 / -1">
+<div style="display: flex; flex-direction: column; gap: 4px"><h2 class="h2">Estados de toda lista</h2><span class="t3 xs">Cargando, vacía y con error. Cada uno con una sola acción; ninguno con párrafos.</span></div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 16px">
+<div class="list" aria-label="Cargando">
+<div class="row"><span class="av" style="background: var(--surface-3)"></span><div class="row-main" style="gap: 8px"><span style="height: 10px; width: 60%; border-radius: 4px; background: var(--surface-3)"></span><span style="height: 8px; width: 40%; border-radius: 4px; background: var(--surface-2)"></span></div></div>
+<div class="row"><span class="av" style="background: var(--surface-3)"></span><div class="row-main" style="gap: 8px"><span style="height: 10px; width: 48%; border-radius: 4px; background: var(--surface-3)"></span><span style="height: 8px; width: 30%; border-radius: 4px; background: var(--surface-2)"></span></div></div>
+<div class="row"><span class="av" style="background: var(--surface-3)"></span><div class="row-main" style="gap: 8px"><span style="height: 10px; width: 55%; border-radius: 4px; background: var(--surface-3)"></span><span style="height: 8px; width: 36%; border-radius: 4px; background: var(--surface-2)"></span></div></div>
+</div>
+<div class="list"><div class="empty"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"></path></svg><span class="h3">Todavía no hay servidores</span><span class="t3 xs">Conectá uno y queda disponible en todos tus clientes.</span><button class="btn btn-sm btn-primary" type="button" style="margin-top: 4px">Agregar servidor</button></div></div>
+<div class="list"><div class="empty"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--danger)"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5M12 16h.01"></path></svg><span class="h3">La memoria no responde</span><span class="t3 xs">El servicio local se detuvo hace 2 min.</span><button class="btn btn-sm" type="button" style="margin-top: 4px">Reiniciar servicio</button></div></div>
+</div>
+</section>
+
+</div>
+</div>
+</div>
+
+<script src="assets/viewer.js"></script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plantillas y reglas · Agent Hub</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/ah.css">
+<link rel="stylesheet" href="assets/viewer.css">
+</head>
+<body>
+<div class="ah" style="min-height: 100vh; padding: 64px 40px 80px">
+<div style="max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px">
+
+<header style="display: flex; flex-direction: column; gap: 12px; max-width: 720px">
+<span class="eyebrow">03 · PLANTILLAS Y REGLAS</span>
+<h1 style="margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.025em">Cuatro plantillas. Ninguna vista fuera de ellas.</h1>
+<p class="t2 md prose" style="line-height: 1.6">Toda pantalla nueva elige una plantilla y llena sus zonas. Si algo no entra en ninguna zona, la respuesta es simplificar la función, no inventar una zona.</p>
+</header>
+
+<section style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 20px">
+
+<div class="card" style="display: flex; flex-direction: column">
+<div style="padding: 16px 20px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap"><span class="h3">A · Colección con panel</span><span class="t3 xs">Servidores MCP · Skills · Clientes · Automatizaciones · Actividad · Memoria</span></div>
+<div style="margin: 0 20px 20px; height: 300px; display: flex; gap: 6px; padding: 6px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border)">
+<div style="width: 64px; border-radius: 4px; background: var(--surface-2); padding: 8px 6px; display: flex; flex-direction: column; gap: 5px"><span class="mono t3" style="font-size: 10px">nav</span></div>
+<div style="flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0">
+<div style="height: 42px; border-radius: 4px; border: 1px dashed var(--accent-border); display: flex; align-items: center; padding: 0 10px"><span class="mono" style="font-size: 10.5px; color: var(--accent-text)">1 · Encabezado: título + 1 primaria</span></div>
+<div style="height: 26px; border-radius: 4px; border: 1px dashed var(--border-strong); display: flex; align-items: center; padding: 0 10px"><span class="mono t3" style="font-size: 10.5px">2 · Barra: segmentado + buscar + filtros</span></div>
+<div style="flex: 1; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); display: flex; flex-direction: column">
+<div style="height: 26px; border-bottom: 1px solid var(--border)"></div><div style="height: 26px; border-bottom: 1px solid var(--border); box-shadow: inset 2px 0 0 var(--accent); background: var(--surface-2)"></div><div style="height: 26px; border-bottom: 1px solid var(--border)"></div><div style="height: 26px; border-bottom: 1px solid var(--border)"></div>
+<span class="mono t3" style="font-size: 10.5px; padding: 8px 10px">3 · Lista de filas</span></div>
+</div>
+<div style="width: 170px; border-radius: 4px; background: var(--surface); border: 1px dashed var(--accent-border); padding: 10px"><span class="mono" style="font-size: 10.5px; color: var(--accent-text)">4 · Panel del elemento seleccionado: ver y editar</span></div>
+</div>
+</div>
+
+<div class="card" style="display: flex; flex-direction: column">
+<div style="padding: 16px 20px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap"><span class="h3">B · Ficha</span><span class="t3 xs">Proyecto · Persona · Empresa · Reunión · Documento</span></div>
+<div style="margin: 0 20px 20px; height: 300px; display: flex; gap: 6px; padding: 6px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border)">
+<div style="width: 64px; border-radius: 4px; background: var(--surface-2); padding: 8px 6px"><span class="mono t3" style="font-size: 10px">nav</span></div>
+<div style="flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0">
+<div style="height: 58px; border-radius: 4px; border: 1px dashed var(--accent-border); display: flex; flex-direction: column; justify-content: center; padding: 0 10px; gap: 2px"><span class="mono t3" style="font-size: 10px">migas</span><span class="mono" style="font-size: 10.5px; color: var(--accent-text)">1 · Título editable + estado + 1 primaria + «…»</span></div>
+<div style="height: 22px; border-bottom: 1px dashed var(--border-strong); display: flex; align-items: center; padding: 0 10px"><span class="mono t3" style="font-size: 10.5px">2 · Pestañas (máx. 5)</span></div>
+<div style="flex: 1; display: flex; gap: 6px; min-height: 0">
+<div style="flex: 1; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); padding: 10px"><span class="mono t3" style="font-size: 10.5px">3 · Contenido de la pestaña</span></div>
+<div style="width: 150px; border-radius: 4px; border: 1px dashed var(--border-strong); padding: 10px"><span class="mono t3" style="font-size: 10.5px">4 · Columna de datos: propiedades y conexiones</span></div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="card" style="display: flex; flex-direction: column">
+<div style="padding: 16px 20px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap"><span class="h3">C · Configuración</span><span class="t3 xs">Ajustes (única)</span></div>
+<div style="margin: 0 20px 20px; height: 260px; display: flex; gap: 6px; padding: 6px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border)">
+<div style="width: 64px; border-radius: 4px; background: var(--surface-2); padding: 8px 6px"><span class="mono t3" style="font-size: 10px">nav</span></div>
+<div style="width: 120px; border-radius: 4px; border: 1px dashed var(--border-strong); padding: 10px"><span class="mono t3" style="font-size: 10.5px">1 · Índice de secciones</span></div>
+<div style="flex: 1; display: flex; flex-direction: column; gap: 6px">
+<div style="flex: 1; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); padding: 10px"><span class="mono t3" style="font-size: 10.5px">2 · Grupo: filas de ajuste (etiqueta a la izquierda, control a la derecha)</span></div>
+<div style="flex: 1; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); padding: 10px"><span class="mono t3" style="font-size: 10.5px">Grupo</span></div>
+</div>
+</div>
+</div>
+
+<div class="card" style="display: flex; flex-direction: column">
+<div style="padding: 16px 20px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap"><span class="h3">D · Bandeja</span><span class="t3 xs">Inicio (única)</span></div>
+<div style="margin: 0 20px 20px; height: 260px; display: flex; gap: 6px; padding: 6px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border)">
+<div style="width: 64px; border-radius: 4px; background: var(--surface-2); padding: 8px 6px"><span class="mono t3" style="font-size: 10px">nav</span></div>
+<div style="flex: 1; display: flex; flex-direction: column; gap: 6px">
+<div style="height: 36px; border-radius: 4px; border: 1px dashed var(--accent-border); padding: 0 10px; display: flex; align-items: center"><span class="mono" style="font-size: 10.5px; color: var(--accent-text)">1 · Saludo + estado general en una línea</span></div>
+<div style="flex: 1; display: flex; gap: 6px">
+<div style="flex: 2; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); padding: 10px"><span class="mono t3" style="font-size: 10.5px">2 · Pendientes, agrupados por tipo, cada uno con su acción</span></div>
+<div style="flex: 1; border-radius: 4px; border: 1px dashed var(--border-strong); padding: 10px"><span class="mono t3" style="font-size: 10.5px">3 · Próximas y recientes</span></div>
+</div>
+</div>
+</div>
+</div>
+
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 16px">
+<h2 class="h2" style="font-size: 20px">¿Modal, panel o en línea?</h2>
+<div class="list scroll-x">
+<div class="row-head" style="min-width: 760px"><span class="col" style="width: 26%">Situación</span><span class="col" style="width: 22%">Usar</span><span class="col" style="flex: 1">Ejemplo</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 26%">Cambiar un valor visible</span><span class="col" style="width: 22%"><span class="chip c-ok">En línea</span></span><span class="col t2" style="flex: 1">Click en el título del proyecto, en la etapa, en la hora de una automatización</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 26%">Ver o editar un elemento de una lista</span><span class="col" style="width: 22%"><span class="chip c-ok">Panel lateral</span></span><span class="col t2" style="flex: 1">Configuración de un servidor MCP, una skill, un cliente</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 26%">Crear algo con 5 campos o menos</span><span class="col" style="width: 22%"><span class="chip c-info">Modal</span></span><span class="col t2" style="flex: 1">Nuevo proyecto, nueva nota, agregar servidor</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 26%">Crear algo largo o técnico</span><span class="col" style="width: 22%"><span class="chip c-info">Panel lateral</span></span><span class="col t2" style="flex: 1">Nueva skill (editor de SKILL.md), nueva colección con columnas</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 26%">Acción reversible</span><span class="col" style="width: 22%"><span class="chip c-ok">Deshacer</span></span><span class="col t2" style="flex: 1">Pausar, reanudar, ejecutar ahora, eliminar un servidor, cancelar una automatización</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 26%">Borra datos sin vuelta atrás</span><span class="col" style="width: 22%"><span class="chip c-danger">Confirmación</span></span><span class="col t2" style="flex: 1">Restaurar un respaldo, eliminar un proyecto con contenido</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 26%">Elegir entre opciones relacionadas</span><span class="col" style="width: 22%"><span class="chip c-ok">Menú</span></span><span class="col t2" style="flex: 1">«Nuevo proyecto ▾ · Unirme con invitación · Restaurar desde respaldo»</span></div>
+</div>
+</section>
+
+<section style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 20px">
+<div style="display: flex; flex-direction: column; gap: 16px">
+<h2 class="h2" style="font-size: 20px">Reglas de layout para agentes</h2>
+<ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 10px; overflow: hidden">
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L1</span><span>Toda vista usa una plantilla A–D. No se agregan zonas.</span></li>
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L2</span><span>Un botón primario por vista. Hasta dos secundarios. El resto, en «…».</span></li>
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L3</span><span>Las colecciones son listas de filas. Tarjetas solo en Inicio.</span></li>
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L4</span><span>Un solo aviso de página. Nunca un aviso dentro de una fila o tarjeta: el estado va en un chip.</span></li>
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L5</span><span>Un solo contenedor con scroll por zona. Las tablas anchas hacen scroll horizontal dentro de su caja; la página, nunca.</span></li>
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L6</span><span>Títulos de fila en una línea con elipsis y el texto completo en <span class="mono">title</span>. Descripciones: máximo dos líneas.</span></li>
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L7</span><span>Todo contenedor flexible lleva <span class="mono">min-width: 0</span>. Rutas e IDs se cortan al medio, no al final.</span></li>
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L8</span><span>Solo tokens de <span class="mono">ah.css</span>. Un hex en un componente es un error de revisión.</span></li>
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L9</span><span>Toda lista tiene estado vacío, de carga y de error, cada uno con una acción.</span></li>
+<li style="background: var(--surface); padding: 12px 16px; display: flex; gap: 12px"><span class="mono" style="color: var(--accent-text)">L10</span><span>Se prueba a 960 px y a 1440 px. Si algo se corta en alguno, no está terminado.</span></li>
+</ol>
+</div>
+<div style="display: flex; flex-direction: column; gap: 16px">
+<h2 class="h2" style="font-size: 20px">Reglas de redacción</h2>
+<div class="list">
+<div class="row" style="align-items: flex-start"><span class="mono" style="color: var(--accent-text); padding-top: 2px">R1</span><div class="row-main"><span>Voseo en toda la app.</span><span class="t3 xs">«Conectá», «Revisá», «Podés». Nunca «puedes» ni formas impersonales mezcladas.</span></div></div>
+<div class="row" style="align-items: flex-start"><span class="mono" style="color: var(--accent-text); padding-top: 2px">R2</span><div class="row-main"><span>Botones con verbo y objeto.</span><span class="t3 xs">«Autorizar cuenta», no «OK» ni «Continuar».</span></div></div>
+<div class="row" style="align-items: flex-start"><span class="mono" style="color: var(--accent-text); padding-top: 2px">R3</span><div class="row-main"><span>Nada de valores internos en pantalla.</span><span class="t3 xs">presales → Preventa · belongs_to → Pertenece a · stdio → Local.</span></div></div>
+<div class="row" style="align-items: flex-start"><span class="mono" style="color: var(--accent-text); padding-top: 2px">R4</span><div class="row-main"><span>Sin subtítulos que repiten el título.</span><span class="t3 xs">«Skills · Biblioteca de skills que el hub entrega…» se va.</span></div></div>
+<div class="row" style="align-items: flex-start"><span class="mono" style="color: var(--accent-text); padding-top: 2px">R5</span><div class="row-main"><span>Fechas relativas en listas, absolutas en el panel.</span><span class="t3 xs">«hace 12 min» en la fila · «29 oct 2026, 14:13» al pasar el cursor.</span></div></div>
+<div class="row" style="align-items: flex-start"><span class="mono" style="color: var(--accent-text); padding-top: 2px">R6</span><div class="row-main"><span>Errores que dicen qué hacer.</span><span class="t3 xs">«No se pudo conectar con Supabase. Autorizá la cuenta de nuevo.»</span></div></div>
+</div>
+<h3 class="h3" style="margin-top: 8px">Etapas de proyecto</h3>
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><span class="chip c-info">Descubrimiento</span><span class="chip c-info">Preventa</span><span class="chip c-info">Prueba de concepto</span><span class="chip c-ok">En ejecución</span><span class="chip c-ok">Soporte</span><span class="chip c-off">Pausado</span><span class="chip c-off">Completado</span></div>
+</div>
+</section>
+
+</div>
+</div>
+
+<script src="assets/viewer.js"></script>
+</body>
+</html>

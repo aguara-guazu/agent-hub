@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Principios y arquitectura · Agent Hub</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/ah.css">
+<link rel="stylesheet" href="assets/viewer.css">
+</head>
+<body>
+<div class="ah" style="min-height: 100vh; padding: 64px 40px 80px">
+<div style="max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 64px">
+
+<header style="display: flex; flex-direction: column; gap: 14px; max-width: 760px">
+<span class="eyebrow">AGENT HUB · REDISEÑO DE UX/UI · v1</span>
+<h1 style="margin: 0; font-size: 44px; font-weight: 600; letter-spacing: -.03em; line-height: 1.05">Un lugar para cada cosa, y cada cosa en su lugar.</h1>
+<p class="t2 md prose" style="line-height: 1.6">La app pasa de seis secciones con tres niveles de navegación a ocho destinos planos, una sola página de ajustes y una regla para cada decisión de interfaz. Este lienzo es la referencia para diseñar y para que los agentes que implementan el front no tengan que adivinar.</p>
+</header>
+
+<section style="display: flex; flex-direction: column; gap: 20px">
+<h2 class="h2" style="font-size: 20px">Qué cambia y por qué</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px">
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 8px">
+<span class="mono t3">ANTES</span>
+<span class="h3">Tres niveles de navegación apilados</span>
+<p class="t2">Barra lateral, pestañas de Memoria y diez pestañas de proyecto que se cortan a 1440 px.</p>
+<span class="mono" style="color: var(--accent-text)">→ Barra lateral + máximo 5 pestañas</span>
+</div>
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 8px">
+<span class="mono t3">ANTES</span>
+<span class="h3">33 modales, varios repetidos</span>
+<p class="t2">«Vincular» y «Agregar vínculo» abren el mismo diálogo. Cada entidad tiene su modal de «Editar».</p>
+<span class="mono" style="color: var(--accent-text)">→ Edición en panel lateral; modal solo para crear</span>
+</div>
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 8px">
+<span class="mono t3">ANTES</span>
+<span class="h3">Confirmaciones para todo</span>
+<p class="t2">«Ejecutar ahora», «Pausar» o «Cancelar» piden confirmación aunque se puedan revertir.</p>
+<span class="mono" style="color: var(--accent-text)">→ Acción inmediata + «Deshacer»</span>
+</div>
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 8px">
+<span class="mono t3">ANTES</span>
+<span class="h3">Ajustes en dos lugares</span>
+<p class="t2">Ajustes y «Fuentes y ajustes» de Memoria; Jira se configura en ambos.</p>
+<span class="mono" style="color: var(--accent-text)">→ Una sola página de Ajustes por secciones</span>
+</div>
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 8px">
+<span class="mono t3">ANTES</span>
+<span class="h3">El mismo aviso en cada tarjeta</span>
+<p class="t2">Cuatro bloques rojos idénticos de «Falta autorizar la cuenta» y el enlace de credenciales repetido en cada server.</p>
+<span class="mono" style="color: var(--accent-text)">→ Un aviso por página que agrupa los casos</span>
+</div>
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 8px">
+<span class="mono t3">ANTES</span>
+<span class="h3">Textos que explican la interfaz</span>
+<p class="t2">Subtítulos, notas y bloques «Cómo se organizan» que nadie lee; voseo, tuteo y valores en inglés mezclados.</p>
+<span class="mono" style="color: var(--accent-text)">→ Voseo, etiquetas traducidas, cero texto de relleno</span>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 20px">
+<h2 class="h2" style="font-size: 20px">Seis principios</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 10px; overflow: hidden">
+<div style="background: var(--surface); padding: 24px; display: flex; gap: 16px">
+<span class="mono" style="color: var(--accent-text); font-size: 14px">01</span>
+<div style="display: flex; flex-direction: column; gap: 6px"><span class="h3">Un lugar para cada cosa</span><p class="t2">Cada concepto vive en un solo destino. Si algo aparece en dos lados, uno es el dueño y el otro solo enlaza.</p></div>
+</div>
+<div style="background: var(--surface); padding: 24px; display: flex; gap: 16px">
+<span class="mono" style="color: var(--accent-text); font-size: 14px">02</span>
+<div style="display: flex; flex-direction: column; gap: 6px"><span class="h3">Dos niveles de navegación como máximo</span><p class="t2">Barra lateral y, dentro de una ficha, hasta cinco pestañas. Nunca pestañas dentro de pestañas.</p></div>
+</div>
+<div style="background: var(--surface); padding: 24px; display: flex; gap: 16px">
+<span class="mono" style="color: var(--accent-text); font-size: 14px">03</span>
+<div style="display: flex; flex-direction: column; gap: 6px"><span class="h3">Editar donde se ve</span><p class="t2">Seleccionar una fila abre su panel lateral, con los campos editables ahí mismo. El modal queda para crear algo nuevo.</p></div>
+</div>
+<div style="background: var(--surface); padding: 24px; display: flex; gap: 16px">
+<span class="mono" style="color: var(--accent-text); font-size: 14px">04</span>
+<div style="display: flex; flex-direction: column; gap: 6px"><span class="h3">Deshacer en lugar de confirmar</span><p class="t2">Si una acción se puede revertir, se ejecuta y ofrece «Deshacer». Solo se confirma lo que borra datos sin vuelta atrás.</p></div>
+</div>
+<div style="background: var(--surface); padding: 24px; display: flex; gap: 16px">
+<span class="mono" style="color: var(--accent-text); font-size: 14px">05</span>
+<div style="display: flex; flex-direction: column; gap: 6px"><span class="h3">Lo que necesita atención sube a Inicio</span><p class="t2">Autorizaciones, reinicios, propuestas y revisiones se juntan en una bandeja. Las vistas muestran estado, no alarmas.</p></div>
+</div>
+<div style="background: var(--surface); padding: 24px; display: flex; gap: 16px">
+<span class="mono" style="color: var(--accent-text); font-size: 14px">06</span>
+<div style="display: flex; flex-direction: column; gap: 6px"><span class="h3">La interfaz no se explica a sí misma</span><p class="t2">Nada de párrafos de ayuda permanentes. Si algo necesita explicación, va en el estado vacío o en un tooltip.</p></div>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 20px">
+<h2 class="h2" style="font-size: 20px">Nueva arquitectura</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px">
+<div class="card" style="display: flex; flex-direction: column">
+<div style="padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center"><span class="h3">Antes · 3 niveles, 21 destinos</span><span class="chip c-danger">Desordenado</span></div>
+<pre class="mono t2" style="margin: 0; padding: 20px; line-height: 1.75; font-size: 12px; white-space: pre-wrap">Esta computadora (tarjeta)
+BIBLIOTECA
+├ MCP servers
+├ Skills
+├ Memoria
+│  ├ Proyectos → 10 pestañas
+│  ├ Colaboración sin proyecto
+│  ├ Explorar
+│  ├ Buscar
+│  ├ Por revisar
+│  ├ Procesamiento
+│  └ Fuentes y ajustes
+├ Clientes
+├ Automatizaciones → Programaciones · Entregas
+└ Actividad
+Estado de sincronización (tarjeta)
+Ajustes
+Barra superior: atrás · migas · búsqueda · sincronizar</pre>
+</div>
+<div class="card" style="display: flex; flex-direction: column; border-color: var(--accent-border)">
+<div style="padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center"><span class="h3">Después · 2 niveles, 11 destinos</span><span class="chip c-ok">Propuesta</span></div>
+<pre class="mono" style="margin: 0; padding: 20px; line-height: 1.75; font-size: 12px; white-space: pre-wrap; color: var(--text)">Buscar o ir a…  ⌘K
+Inicio                 bandeja de lo que necesita atención
+
+TRABAJO
+├ Proyectos            → Resumen · Contenido · Tareas · Decisiones · Colaboración
+├ Memoria              explorar + buscar en un solo lugar
+├ Colaboración         canales e hilos entre agentes
+└ Automatizaciones     programadas + historial de entregas
+
+CONEXIONES
+├ Servidores MCP
+├ Skills
+├ Clientes
+└ Actividad            llamadas + procesamiento
+
+Ajustes                una página, ocho secciones
+● equipo · estado de sincronización (una línea)</pre>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 20px">
+<h2 class="h2" style="font-size: 20px">Dónde quedó cada cosa</h2>
+<div class="list scroll-x">
+<div class="row-head" style="min-width: 760px"><span class="col" style="width: 32%">Antes</span><span class="col" style="width: 32%">Ahora</span><span class="col" style="flex: 1">Por qué</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Tarjetas «Esta computadora» y «Sincronización»</span><span class="col" style="width: 32%; color: var(--accent-text)">Una línea de estado al pie de la barra</span><span class="col t2" style="flex: 1">Dos tarjetas para un dato que se mira poco</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Barra superior con migas y «Sincronizar ahora»</span><span class="col" style="width: 32%; color: var(--accent-text)">Migas en la ficha; sincronizar en la línea de estado</span><span class="col t2" style="flex: 1">Recupera 52 px y elimina migas inconsistentes</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Explorar + Buscar</span><span class="col" style="width: 32%; color: var(--accent-text)">Memoria</span><span class="col t2" style="flex: 1">Buscar es filtrar el mismo listado</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Por revisar, propuestas de entregas, fuentes sin asignar</span><span class="col" style="width: 32%; color: var(--accent-text)">Inicio · Pendientes</span><span class="col t2" style="flex: 1">Todo lo que espera una decisión, junto</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Procesamiento</span><span class="col" style="width: 32%; color: var(--accent-text)">Actividad · pestaña Procesamiento</span><span class="col t2" style="flex: 1">Es un registro, como las llamadas</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Fuentes y ajustes · Ajustes · Jira (dos veces)</span><span class="col" style="width: 32%; color: var(--accent-text)">Ajustes, con secciones</span><span class="col t2" style="flex: 1">Una sola fuente de verdad de configuración</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Programaciones + Entregas</span><span class="col" style="width: 32%; color: var(--accent-text)">Automatizaciones, con historial en el panel</span><span class="col t2" style="flex: 1">Una entrega siempre pertenece a una automatización</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Colaboración, Foro compartido, Compartir y colaborar</span><span class="col" style="width: 32%; color: var(--accent-text)">Pestaña Colaboración + botón Compartir</span><span class="col t2" style="flex: 1">Tres pestañas para un mismo tema</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Reuniones, Documentos, Colecciones (pestañas)</span><span class="col" style="width: 32%; color: var(--accent-text)">Pestaña Contenido con filtro por tipo</span><span class="col t2" style="flex: 1">Son la misma lista con distinto tipo</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Brief y cierre (pestaña)</span><span class="col" style="width: 32%; color: var(--accent-text)">Resumen · bloque Automatizaciones</span><span class="col t2" style="flex: 1">Es un interruptor, no una sección</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Unirme · Nueva empresa · Nuevo proyecto</span><span class="col" style="width: 32%; color: var(--accent-text)">«Nuevo proyecto» con menú; la empresa se crea desde el selector</span><span class="col t2" style="flex: 1">Una acción primaria por página</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">Tiles de totales (Proyectos, Reuniones…)</span><span class="col" style="width: 32%; color: var(--accent-text)">Contadores dentro de los filtros</span><span class="col t2" style="flex: 1">Números que no llevan a ninguna decisión</span></div>
+<div class="row" style="min-width: 760px"><span class="col" style="width: 32%">ZIP para claude.ai (en cada skill y en el encabezado)</span><span class="col" style="width: 32%; color: var(--accent-text)">Menú «…» de la skill</span><span class="col t2" style="flex: 1">Acción poco frecuente</span></div>
+</div>
+</section>
+
+</div>
+</div>
+
+<script src="assets/viewer.js"></script>
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ajustes · Agent Hub</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/ah.css">
+<link rel="stylesheet" href="assets/viewer.css">
+</head>
+<body>
+<div class="ah shell t-dark">
+<nav class="side" aria-label="Navegación principal">
+<div class="side-brand"><span class="side-mark"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"></circle><circle cx="18" cy="6" r="2.5"></circle><circle cx="12" cy="18" r="2.5"></circle><path d="M7.5 8 11 15.5M16.5 8 13 15.5"></path></svg></span>Agent Hub</div>
+<button class="cmdk" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><span style="flex: 1">Buscar o ir a…</span><span class="kbd">⌘K</span></button>
+<a class="nav-item" href="inicio.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h4l2 3h4l2-3h4"></path><path d="M5.5 5h13L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"></path></svg>Inicio<span class="badge attn">6</span></a>
+
+<div class="nav-group">Trabajo</div>
+<a class="nav-item" href="proyectos.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>Proyectos</a>
+<a class="nav-item" href="memoria.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"></ellipse><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"></path></svg>Memoria</a>
+<a class="nav-item" href="colaboracion.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path></svg>Colaboración</a>
+<a class="nav-item" href="automatizaciones.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>Automatizaciones</a>
+
+<div class="nav-group">Conexiones</div>
+<a class="nav-item" href="servidores.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"></path></svg>Servidores MCP<span class="badge attn">3</span></a>
+<a class="nav-item" href="skills.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h5a3 3 0 0 1 3 3v12a2 2 0 0 0-2-2H4zM20 5h-5a3 3 0 0 0-3 3v12a2 2 0 0 1 2-2h6z"></path></svg>Skills</a>
+<a class="nav-item" href="clientes.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg>Clientes</a>
+<a class="nav-item" href="actividad.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"></path></svg>Actividad</a>
+
+<div style="flex: 1; min-height: 24px"></div>
+<a class="nav-item is-active" href="ajustes.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"></path><circle cx="15" cy="7" r="2"></circle><circle cx="9" cy="17" r="2"></circle></svg>Ajustes</a>
+<div class="side-status">
+<span class="dot" aria-hidden="true"></span>
+<div style="display: flex; flex-direction: column; min-width: 0; flex: 1"><span class="trunc xs" style="color: var(--text-2)" title="MacBook-Pro-de-Luciano.local">MacBook-Pro-de-Luciano</span><span class="xs t3">Sincronizado hace 2 min</span></div>
+<button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Sincronizar ahora"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"></path></svg></button>
+</div>
+</nav>
+<main class="main">
+<div class="page" style="max-width: 1040px">
+
+<div class="ph"><div class="ph-text"><h1 class="h1">Ajustes</h1></div></div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 32px; align-items: flex-start">
+<nav aria-label="Secciones de ajustes" style="flex: 0 0 200px; display: flex; flex-direction: column; gap: 2px">
+<a class="nav-item is-active" href="#general" data-tab="general">General</a>
+<a class="nav-item" href="#fuentes" data-tab="fuentes">Fuentes</a>
+<a class="nav-item" href="#ia" data-tab="ia">IA y procesamiento</a>
+<a class="nav-item" href="#auto" data-tab="auto">Automatizaciones</a>
+<a class="nav-item" href="#red" data-tab="red">Colaboración y red</a>
+<a class="nav-item" href="#integ" data-tab="integ">Integraciones</a>
+<a class="nav-item" href="#resp" data-tab="resp">Respaldos</a>
+<a class="nav-item" href="#sis" data-tab="sis">Sistema</a>
+</nav>
+
+<div style="flex: 999 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 24px">
+
+<div data-pane="general">
+<section class="section">
+<h2 class="h2">General</h2>
+<div class="list">
+<div class="row" style="min-height: 64px"><div class="row-main"><label class="md" for="aj-name" style="font-weight: 500">Tu nombre</label><span class="row-sub">Así te ven los agentes y las personas con las que compartís proyectos</span></div><input class="input" id="aj-name" value="Luciano" style="width: 240px"></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Identidad</span><span class="row-sub mono">ah_7f3c…a91e</span></div><button class="btn btn-sm" type="button">Copiar</button></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Tema</span></div><div class="seg" role="group" aria-label="Tema"><button type="button" aria-pressed="true">Oscuro</button><button type="button" aria-pressed="false">Claro</button><button type="button" aria-pressed="false">Del sistema</button></div></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Abrir al iniciar la computadora</span></div><button class="switch" type="button" role="switch" aria-checked="true" aria-label="Abrir al iniciar la computadora"></button></div>
+</div>
+</section>
+</div>
+
+<div data-pane="fuentes" hidden>
+<section class="section">
+<div class="section-h"><h2 class="h2">Fuentes</h2><button class="btn btn-sm" type="button">Agregar fuente</button></div>
+<div class="list">
+<div class="row"><span class="av hue2">G</span><div class="row-main"><span class="row-title">Google · luciano@northwind.example</span><span class="row-sub">Calendar, Meet y Gmail · revisa cada 15 min</span></div><span class="chip c-ok">Al día</span><button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Más acciones"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></button></div>
+<div class="row"><span class="av hue4">N</span><div class="row-main"><span class="row-title">Notion · Espacio Lumen</span><span class="row-sub">3 páginas · revisa cada 60 min</span></div><span class="chip c-info">Importando</span><button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Más acciones"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></button></div>
+</div>
+</section>
+</div>
+
+<div data-pane="ia" hidden>
+<section class="section">
+<h2 class="h2">IA y procesamiento</h2>
+<div class="list">
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Modelo</span><span class="row-sub">Para extraer decisiones, tareas y personas</span></div><button class="btn select" type="button" style="min-width: 200px"><b>Claude Sonnet</b><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Esfuerzo</span></div><div class="seg" role="group" aria-label="Esfuerzo"><button type="button" aria-pressed="false">Bajo</button><button type="button" aria-pressed="true">Medio</button><button type="button" aria-pressed="false">Alto</button></div></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Permitir proveedores remotos</span><span class="row-sub">Cada proyecto puede desactivarlo</span></div><button class="switch" type="button" role="switch" aria-checked="true" aria-label="Permitir proveedores remotos"></button></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Audio, video e imágenes</span><span class="row-sub">Módulo local · 180 MB</span></div><button class="btn btn-sm" type="button">Descargar</button></div>
+</div>
+<div class="section-h"><h3 class="h3">Mantenimiento</h3></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><button class="btn" type="button">Reprocesar fuentes</button><button class="btn" type="button">Buscar personas duplicadas</button><button class="btn" type="button">Reorganizar la memoria</button></div>
+</section>
+</div>
+
+<div data-pane="auto" hidden>
+<section class="section">
+<h2 class="h2">Automatizaciones</h2>
+<div class="list">
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Ejecutar automatizaciones</span><span class="row-sub">Solo mientras Agent Hub está abierto</span></div><button class="switch" type="button" role="switch" aria-checked="true" aria-label="Ejecutar automatizaciones"></button></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Mantener la computadora despierta</span><span class="row-sub">Durante la jornada</span></div><button class="switch" type="button" role="switch" aria-checked="false" aria-label="Mantener la computadora despierta"></button></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Jornada</span></div><div style="display: flex; gap: 6px; align-items: center"><input class="input mono" value="09:00" aria-label="Desde" style="width: 76px"><span class="t3">a</span><input class="input mono" value="18:00" aria-label="Hasta" style="width: 76px"></div></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Avisos del sistema</span></div><button class="switch" type="button" role="switch" aria-checked="true" aria-label="Avisos del sistema"></button></div>
+</div>
+</section>
+</div>
+
+<div data-pane="red" hidden>
+<section class="section">
+<h2 class="h2">Colaboración y red</h2>
+<div class="list">
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Colaboración entre agentes</span><span class="row-sub">Canales e hilos entre los clientes de esta computadora</span></div><button class="switch" type="button" role="switch" aria-checked="true" aria-label="Colaboración entre agentes"></button></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Compartir proyectos con otras personas</span><span class="row-sub">Red P2P cifrada</span></div><button class="switch" type="button" role="switch" aria-checked="true" aria-label="Compartir proyectos"></button></div>
+</div>
+<details><summary style="cursor: pointer; color: var(--text-2); font-weight: 500">Opciones avanzadas de red</summary>
+<div class="list" style="margin-top: 12px"><div class="row" style="min-height: 64px"><div class="row-main"><label class="md" for="aj-port" style="font-weight: 500">Puerto</label></div><input class="input mono" id="aj-port" value="47321" style="width: 100px"></div></div>
+</details>
+</section>
+</div>
+
+<div data-pane="integ" hidden>
+<section class="section">
+<h2 class="h2">Integraciones</h2>
+<div class="list">
+<div class="row" style="min-height: 64px"><span class="av av-sm hue2">J</span><div class="row-main"><span class="md" style="font-weight: 500">Jira</span><span class="row-sub mono">northwind.atlassian.net · vía Atlassian Rovo</span></div><button class="btn btn-sm" type="button">Cambiar</button></div>
+<div class="row" style="min-height: 64px"><span class="av av-sm hue5">G</span><div class="row-main"><span class="md" style="font-weight: 500">Cliente OAuth de Google</span><span class="row-sub">Propio · necesario para Gmail</span></div><span class="chip c-ok">Configurado</span><button class="btn btn-sm" type="button">Cambiar</button></div>
+</div>
+</section>
+</div>
+
+<div data-pane="resp" hidden>
+<section class="section">
+<div class="section-h"><h2 class="h2">Respaldos</h2><button class="btn btn-sm" type="button">Crear respaldo</button></div>
+<div class="list">
+<div class="row"><div class="row-main"><span class="row-title">agent-hub-2026-10-28.ahbak</span><span class="row-sub">Ayer 18:00 · 42 MB · automático</span></div><button class="btn btn-sm btn-ghost" type="button">Descargar</button><button class="btn btn-sm btn-danger" type="button">Restaurar</button></div>
+<div class="row"><div class="row-main"><span class="row-title">agent-hub-2026-10-21.ahbak</span><span class="row-sub">21 oct 18:00 · 39 MB · automático</span></div><button class="btn btn-sm btn-ghost" type="button">Descargar</button><button class="btn btn-sm btn-danger" type="button">Restaurar</button></div>
+</div>
+</section>
+</div>
+
+<div data-pane="sis" hidden>
+<section class="section">
+<h2 class="h2">Sistema</h2>
+<div class="list">
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Servicio local</span><span class="row-sub mono">127.0.0.1:47320</span></div><span class="chip c-ok">Funcionando</span><button class="btn btn-sm" type="button">Reiniciar</button></div>
+<div class="row" style="min-height: 64px"><div class="row-main"><span class="md" style="font-weight: 500">Versión</span><span class="row-sub">0.11.7 · al día</span></div><button class="btn btn-sm btn-ghost" type="button">Notas de la versión</button></div>
+</div>
+</section>
+</div>
+
+</div>
+</div>
+
+</div>
+</main>
+</div>
+<button class="viewer-theme" type="button" data-theme-toggle aria-label="Cambiar tema">Tema claro / oscuro</button>
+<script src="assets/viewer.js"></script>
+</body>
+</html>

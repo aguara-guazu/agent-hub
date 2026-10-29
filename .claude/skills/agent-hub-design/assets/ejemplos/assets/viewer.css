@@ -1,0 +1,5 @@
+body { margin: 0; background: #0E1110; }
+body.light { background: #F4F6F5; }
+.viewer-theme { position: fixed; right: 16px; bottom: 16px; z-index: 50; height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid rgba(128,128,128,.4); background: rgba(20,24,22,.85); color: #EDF1EF; font: 500 12px 'Geist', sans-serif; cursor: pointer; }
+.viewer-theme:hover { background: rgba(40,46,44,.95); }
+@media print { .viewer-theme { display: none; } }

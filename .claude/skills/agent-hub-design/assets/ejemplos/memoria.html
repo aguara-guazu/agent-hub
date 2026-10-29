@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memoria · Agent Hub</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/ah.css">
+<link rel="stylesheet" href="assets/viewer.css">
+</head>
+<body>
+<div class="ah shell t-dark">
+<nav class="side" aria-label="Navegación principal">
+<div class="side-brand"><span class="side-mark"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"></circle><circle cx="18" cy="6" r="2.5"></circle><circle cx="12" cy="18" r="2.5"></circle><path d="M7.5 8 11 15.5M16.5 8 13 15.5"></path></svg></span>Agent Hub</div>
+<button class="cmdk" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><span style="flex: 1">Buscar o ir a…</span><span class="kbd">⌘K</span></button>
+<a class="nav-item" href="inicio.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h4l2 3h4l2-3h4"></path><path d="M5.5 5h13L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"></path></svg>Inicio<span class="badge attn">6</span></a>
+
+<div class="nav-group">Trabajo</div>
+<a class="nav-item" href="proyectos.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>Proyectos</a>
+<a class="nav-item is-active" href="memoria.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"></ellipse><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"></path></svg>Memoria</a>
+<a class="nav-item" href="colaboracion.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path></svg>Colaboración</a>
+<a class="nav-item" href="automatizaciones.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>Automatizaciones</a>
+
+<div class="nav-group">Conexiones</div>
+<a class="nav-item" href="servidores.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"></path></svg>Servidores MCP<span class="badge attn">3</span></a>
+<a class="nav-item" href="skills.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h5a3 3 0 0 1 3 3v12a2 2 0 0 0-2-2H4zM20 5h-5a3 3 0 0 0-3 3v12a2 2 0 0 1 2-2h6z"></path></svg>Skills</a>
+<a class="nav-item" href="clientes.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg>Clientes</a>
+<a class="nav-item" href="actividad.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"></path></svg>Actividad</a>
+
+<div style="flex: 1; min-height: 24px"></div>
+<a class="nav-item" href="ajustes.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"></path><circle cx="15" cy="7" r="2"></circle><circle cx="9" cy="17" r="2"></circle></svg>Ajustes</a>
+<div class="side-status">
+<span class="dot" aria-hidden="true"></span>
+<div style="display: flex; flex-direction: column; min-width: 0; flex: 1"><span class="trunc xs" style="color: var(--text-2)" title="MacBook-Pro-de-Luciano.local">MacBook-Pro-de-Luciano</span><span class="xs t3">Sincronizado hace 2 min</span></div>
+<button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Sincronizar ahora"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"></path></svg></button>
+</div>
+</nav>
+<main class="main">
+<div class="page">
+
+<div class="ph">
+<div class="ph-text"><h1 class="h1">Memoria</h1></div>
+<div class="ph-actions">
+<button class="btn btn-primary" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Nueva nota</button>
+<button class="btn btn-icon" type="button" aria-label="Más acciones"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></button>
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 10px">
+<div class="search" style="max-width: none"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><input class="input" style="height: 44px; font-size: 15px; padding-left: 34px" value="ventana de corte del ERP" aria-label="Buscar en la memoria"></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<button class="btn btn-sm select" type="button">Tipo: <b>Todos</b><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<button class="btn btn-sm select" type="button" style="border-color: var(--accent-border)">Proyecto: <b>Migración a AWS</b><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+<button class="btn btn-sm select" type="button">Persona: <b>Cualquiera</b><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<button class="btn btn-sm select" type="button">Fecha: <b>Cualquiera</b><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<span class="xs t3" style="margin-left: auto">4 resultados</span>
+</div>
+</div>
+
+<div class="list">
+<a class="row" href="reunion.html" style="align-items: flex-start; padding-top: 14px; padding-bottom: 14px">
+<span class="tag" style="width: 84px; justify-content: center; margin-top: 1px">Reunión</span>
+<div class="row-main" style="gap: 6px"><span class="row-title">Revisión de arquitectura de red</span><span class="t2 clamp2" style="font-size: 13px">«…la <mark style="background: var(--accent-weak); color: var(--text); border-radius: 3px; padding: 0 2px">ventana de corte del ERP</mark> no puede pasar de cuatro horas y tiene que ser fuera de temporada alta, o sea antes de noviembre…»</span><span class="row-sub">Carla Ibarra · minuto 23:41</span></div>
+<span class="xs t3">13 oct</span>
+</a>
+<a class="row" href="reunion.html" style="align-items: flex-start; padding-top: 14px; padding-bottom: 14px">
+<span class="tag" style="width: 84px; justify-content: center; margin-top: 1px">Decisión</span>
+<div class="row-main" style="gap: 6px"><span class="row-title">El ERP no soporta réplica en caliente</span><span class="t2 clamp2" style="font-size: 13px">El corte de la ola 2 requiere una <mark style="background: var(--accent-weak); color: var(--text); border-radius: 3px; padding: 0 2px">ventana de 4 h</mark> fuera de temporada.</span><span class="row-sub">Derivada de la reunión del 13 oct</span></div>
+<span class="xs t3">13 oct</span>
+</a>
+<a class="row" href="reunion.html" style="align-items: flex-start; padding-top: 14px; padding-bottom: 14px">
+<span class="tag" style="width: 84px; justify-content: center; margin-top: 1px">Documento</span>
+<div class="row-main" style="gap: 6px"><span class="row-title">Plan de olas de migración v2</span><span class="t2 clamp2" style="font-size: 13px">Ola 2 · ERP. <mark style="background: var(--accent-weak); color: var(--text); border-radius: 3px; padding: 0 2px">Ventana de corte</mark> propuesta: sábado 25 de octubre, 22:00 a 02:00. Rollback si la sincronización de inventario supera los 30 minutos.</span><span class="row-sub">Página 6</span></div>
+<span class="xs t3">16 oct</span>
+</a>
+<a class="row" href="reunion.html" style="align-items: flex-start; padding-top: 14px; padding-bottom: 14px">
+<span class="tag" style="width: 84px; justify-content: center; margin-top: 1px">Tarea</span>
+<div class="row-main" style="gap: 6px"><span class="row-title">Definir <mark style="background: var(--accent-weak); color: var(--text); border-radius: 3px; padding: 0 2px">ventana de corte del ERP</mark></span><span class="row-sub">En curso · Claude Code</span></div>
+<span class="xs t3">14 oct</span>
+</a>
+</div>
+
+</div>
+</main>
+</div>
+<button class="viewer-theme" type="button" data-theme-toggle aria-label="Cambiar tema">Tema claro / oscuro</button>
+<script src="assets/viewer.js"></script>
+</body>
+</html>

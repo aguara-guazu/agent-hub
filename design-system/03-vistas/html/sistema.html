@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sistema de diseño · Agent Hub</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/ah.css">
+<link rel="stylesheet" href="assets/viewer.css">
+</head>
+<body>
+<div class="ah" style="min-height: 100vh; padding: 64px 40px 80px">
+<div style="max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px">
+
+<header style="display: flex; flex-direction: column; gap: 12px; max-width: 720px">
+<span class="eyebrow">02 · SISTEMA DE DISEÑO</span>
+<h1 style="margin: 0; font-size: 36px; font-weight: 600; letter-spacing: -.025em">Tokens y componentes</h1>
+<p class="t2 md prose" style="line-height: 1.6">Todo vive en <span class="mono" style="color: var(--text)">ah.css</span>. Los componentes leen solo variables, así el mismo marcado funciona en oscuro y en claro. Un componente nuevo se arma con estas piezas o se agrega aquí primero.</p>
+</header>
+
+<section style="display: flex; flex-direction: column; gap: 16px">
+<div class="section-h"><h2 class="h2" style="font-size: 20px">Color · los mismos tokens, dos temas</h2></div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 16px">
+<div class="t-dark" style="background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 16px; color: var(--text)">
+<span class="h3">Oscuro · predeterminado</span>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px">
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--bg)"></div><span class="mono">--bg</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--surface)"></div><span class="mono">--surface</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--surface-2)"></div><span class="mono">--surface-2</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--border-strong)"></div><span class="mono">--border-strong</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--text)"></div><span class="mono">--text</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--text-2)"></div><span class="mono">--text-2</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--text-3)"></div><span class="mono">--text-3</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--accent)"></div><span class="mono">--accent</span></div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><span class="chip c-ok">Correcto</span><span class="chip c-warn">Atención</span><span class="chip c-danger">Error</span><span class="chip c-locked">Bloqueado</span><span class="chip c-info">En curso</span><span class="chip c-off">Apagado</span></div>
+</div>
+<div class="t-light" style="background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 16px; color: var(--text)">
+<span class="h3">Claro · ahora funciona de verdad</span>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px">
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--bg)"></div><span class="mono">--bg</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--surface)"></div><span class="mono">--surface</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--surface-2)"></div><span class="mono">--surface-2</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--border-strong)"></div><span class="mono">--border-strong</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--text)"></div><span class="mono">--text</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--text-2)"></div><span class="mono">--text-2</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--text-3)"></div><span class="mono">--text-3</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><div class="doc-swatch" style="background: var(--accent)"></div><span class="mono">--accent</span></div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><span class="chip c-ok">Correcto</span><span class="chip c-warn">Atención</span><span class="chip c-danger">Error</span><span class="chip c-locked">Bloqueado</span><span class="chip c-info">En curso</span><span class="chip c-off">Apagado</span></div>
+</div>
+</div>
+<div class="list">
+<div class="row-head"><span class="col" style="width: 160px">Estado</span><span class="col" style="width: 220px">Se usa para</span><span class="col" style="flex: 1">Ejemplos</span></div>
+<div class="row"><span class="col" style="width: 160px"><span class="chip c-ok">Correcto</span></span><span class="col t2" style="width: 220px">Funciona, sin acción</span><span class="col t3" style="flex: 1">Conectado · Sincronizado · Ejecutada · Entregada</span></div>
+<div class="row"><span class="col" style="width: 160px"><span class="chip c-warn">Atención</span></span><span class="col t2" style="width: 220px">Necesita algo de vos</span><span class="col t3" style="flex: 1">Requiere autorización · Reinicio pendiente · Por revisar</span></div>
+<div class="row"><span class="col" style="width: 160px"><span class="chip c-danger">Error</span></span><span class="col t2" style="width: 220px">Falló</span><span class="col t3" style="flex: 1">Sin conexión · Error de ejecución · No responde</span></div>
+<div class="row"><span class="col" style="width: 160px"><span class="chip c-locked">Bloqueado</span></span><span class="col t2" style="width: 220px">Lo detuvo una política</span><span class="col t3" style="flex: 1">Llamada bloqueada · Solo lectura</span></div>
+<div class="row"><span class="col" style="width: 160px"><span class="chip c-info">En curso</span></span><span class="col t2" style="width: 220px">Está pasando ahora</span><span class="col t3" style="flex: 1">Procesando · Sincronizando · Programada</span></div>
+<div class="row"><span class="col" style="width: 160px"><span class="chip c-off">Apagado</span></span><span class="col t2" style="width: 220px">Desactivado a propósito</span><span class="col t3" style="flex: 1">Pausado · Apagado · Archivado</span></div>
+</div>
+</section>
+
+<section style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 32px">
+<div style="display: flex; flex-direction: column; gap: 16px">
+<h2 class="h2" style="font-size: 20px">Tipografía · Geist y Geist Mono</h2>
+<div class="list">
+<div class="row" style="min-height: 64px"><span class="col mono t3" style="width: 110px">22 · 600</span><span class="h1">Migración a AWS</span><span class="row-meta" style="margin-left: auto">Título de página</span></div>
+<div class="row"><span class="col mono t3" style="width: 110px">16 · 600</span><span class="h2">Conexiones</span><span class="row-meta" style="margin-left: auto">Sección</span></div>
+<div class="row"><span class="col mono t3" style="width: 110px">14 · 500</span><span class="md" style="font-weight: 500">Revisión de arquitectura de red</span><span class="row-meta" style="margin-left: auto">Título de fila</span></div>
+<div class="row"><span class="col mono t3" style="width: 110px">13 · 400</span><span>Texto de interfaz y controles</span><span class="row-meta" style="margin-left: auto">Base</span></div>
+<div class="row"><span class="col mono t3" style="width: 110px">12 · 400</span><span class="xs t3">Hace 12 min · Claude Code</span><span class="row-meta" style="margin-left: auto">Metadatos</span></div>
+<div class="row"><span class="col mono t3" style="width: 110px">12 · mono</span><span class="mono">atlassian-rovo · stdio</span><span class="row-meta" style="margin-left: auto">Identificadores</span></div>
+</div>
+<p class="t3 xs prose">Cinco tamaños, sin intermedios. Nada por debajo de 12 px. Los identificadores, rutas y comandos siempre en mono.</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 16px">
+<h2 class="h2" style="font-size: 20px">Espacio, radios y medidas fijas</h2>
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap">
+<div style="display: flex; flex-direction: column; align-items: center; gap: 6px"><div style="width: 4px; height: 4px; background: var(--accent); border-radius: 1px"></div><span class="mono t3">4</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 6px"><div style="width: 8px; height: 8px; background: var(--accent); border-radius: 1px"></div><span class="mono t3">8</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 6px"><div style="width: 12px; height: 12px; background: var(--accent); border-radius: 1px"></div><span class="mono t3">12</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 6px"><div style="width: 16px; height: 16px; background: var(--accent); border-radius: 1px"></div><span class="mono t3">16</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 6px"><div style="width: 24px; height: 24px; background: var(--accent); border-radius: 2px"></div><span class="mono t3">24</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 6px"><div style="width: 32px; height: 32px; background: var(--accent); border-radius: 2px"></div><span class="mono t3">32</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 6px"><div style="width: 48px; height: 48px; background: var(--accent); border-radius: 2px"></div><span class="mono t3">48</span></div>
+</div>
+<hr class="divider">
+<dl class="dl">
+<dt>Radios</dt><dd><span class="mono">6</span> controles · <span class="mono">10</span> contenedores · <span class="mono">999</span> chips</dd>
+<dt>Controles</dt><dd><span class="mono">32 px</span> de alto (26 px en filas y barras compactas)</dd>
+<dt>Filas</dt><dd><span class="mono">52 px</span> mínimo, una línea de título + una de detalle</dd>
+<dt>Barra lateral</dt><dd><span class="mono">232 px</span> fija</dd>
+<dt>Panel de detalle</dt><dd><span class="mono">440 px</span>, se apila debajo en ventanas angostas</dd>
+<dt>Contenido</dt><dd>máx. <span class="mono">1240 px</span>, márgenes <span class="mono">40 px</span></dd>
+<dt>Movimiento</dt><dd><span class="mono">160 ms</span>, sin rebotes</dd>
+</dl>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 16px">
+<h2 class="h2" style="font-size: 20px">Componentes</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 16px">
+
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 14px">
+<span class="eyebrow">BOTONES</span>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<button class="btn btn-primary" type="button">Nuevo proyecto</button>
+<button class="btn" type="button">Editar</button>
+<button class="btn btn-ghost" type="button">Cancelar</button>
+<button class="btn btn-danger" type="button">Eliminar</button>
+<button class="btn btn-icon" type="button" aria-label="Más acciones"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></button>
+</div>
+<p class="t3 xs">Uno primario por vista. Hasta dos secundarios visibles. El resto, en «…».</p>
+</div>
+
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 14px">
+<span class="eyebrow">CAMPOS</span>
+<div class="field"><label class="label" for="sx-name">Nombre</label><input class="input" id="sx-name" value="Migración a AWS de Northwind"></div>
+<div style="display: flex; gap: 8px; flex-wrap: wrap">
+<div class="search" style="max-width: none"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><input class="input" placeholder="Buscar servidores" aria-label="Buscar servidores"></div>
+<button class="btn select" type="button" style="min-width: 150px">Tipo: <b>Todos</b><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+</div>
+<p class="t3 xs">Selectores propios, nunca el select nativo. Etiqueta siempre arriba del campo.</p>
+</div>
+
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 14px">
+<span class="eyebrow">FILTROS Y PESTAÑAS</span>
+<div class="seg" role="group" aria-label="Filtro"><button type="button" aria-pressed="true">Todos <span class="count">12</span></button><button type="button" aria-pressed="false">Activos <span class="count">9</span></button><button type="button" aria-pressed="false">Requieren atención <span class="count">3</span></button></div>
+<nav class="tabs" aria-label="Secciones"><a class="tab is-active" href="#">Resumen</a><a class="tab" href="#">Contenido <span class="count">24</span></a><a class="tab" href="#">Tareas <span class="count">7</span></a><a class="tab" href="#">Decisiones</a></nav>
+<p class="t3 xs">Segmentado filtra la misma lista. Pestañas cambian de contenido. Máximo 5 pestañas.</p>
+</div>
+
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 14px">
+<span class="eyebrow">ETIQUETAS, CONTADORES, ATAJOS</span>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<span class="tag">Reunión</span><span class="tag">Documento</span><span class="tag">HTTP</span><span class="badge">5</span><span class="badge attn">3</span><span class="kbd">⌘K</span>
+<span class="av av-sm hue1">MA</span><span class="av av-sm hue2">SL</span><span class="av av-sm hue3">AS</span><span class="av av-sm hue4">PL</span>
+</div>
+<p class="t3 xs">Tag = tipo de cosa. Chip = estado. Avatares con 6 tonos derivados del nombre: nunca dos iguales seguidos.</p>
+</div>
+
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 14px">
+<span class="eyebrow">INTERRUPTOR</span>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px"><div class="row-main"><span class="md" style="font-weight: 500">Brief diario</span><span class="t3 xs">Lunes a viernes, 08:00</span></div><button class="switch" type="button" role="switch" aria-checked="true" aria-label="Brief diario"></button></div>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px"><div class="row-main"><span class="md" style="font-weight: 500">Cierre del día</span><span class="t3 xs">Apagado</span></div><button class="switch" type="button" role="switch" aria-checked="false" aria-label="Cierre del día"></button></div>
+<p class="t3 xs">Aplica al instante. Sin etiqueta «Habilitado» al lado: el interruptor ya lo dice.</p>
+</div>
+
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 14px">
+<span class="eyebrow">AVISO DE PÁGINA</span>
+<div class="banner banner-warn"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg><div class="banner-body"><strong>3 servidores</strong> necesitan autorizar la cuenta.</div><button class="btn btn-sm" type="button">Revisar</button></div>
+<p class="t3 xs">Uno por vista, arriba del contenido, agrupando todos los casos. Desaparece cuando se resuelve.</p>
+</div>
+
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 14px">
+<span class="eyebrow">AVISO EMERGENTE CON DESHACER</span>
+<div class="toast"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--ok)"><path d="m5 12 5 5L20 7"></path></svg><span style="flex: 1">Automatización pausada</span><button class="btn btn-sm btn-ghost" type="button" style="color: var(--accent-text)">Deshacer</button></div>
+<p class="t3 xs">Abajo a la izquierda, 6 s. Reemplaza a los modales de confirmación.</p>
+</div>
+
+<div class="card card-pad" style="display: flex; flex-direction: column; gap: 14px">
+<span class="eyebrow">MENÚ «…»</span>
+<div class="pop menu" style="align-self: flex-start">
+<button class="menu-item" type="button">Probar conexión</button>
+<button class="menu-item" type="button">Duplicar</button>
+<button class="menu-item" type="button">Exportar para claude.ai</button>
+<div class="menu-sep"></div>
+<button class="menu-item danger" type="button">Eliminar</button>
+</div>
+<p class="t3 xs">Destructivo siempre último y separado.</p>
+</div>
+
+<div class="card" style="display: flex; flex-direction: column">
+<div style="padding: 16px 20px 0"><span class="eyebrow">ESTADO VACÍO</span></div>
+<div class="empty"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path></svg><span class="h3">Todavía no hay hilos</span><span class="t3 xs" style="max-width: 280px">Aparecen cuando un agente conectado abre una conversación.</span><button class="btn btn-sm" type="button" style="margin-top: 4px">Ver clientes</button></div>
+</div>
+
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 16px">
+<h2 class="h2" style="font-size: 20px">Fila de lista · la unidad de casi todo</h2>
+<div class="list">
+<div class="row">
+<span class="av hue2">AR</span>
+<div class="row-main"><span class="row-title">Atlassian Rovo</span><span class="row-sub">Jira y Confluence · 112 herramientas</span></div>
+<div class="row-meta"><span class="tag">HTTP</span><span class="chip c-ok">Conectado</span><button class="switch" type="button" role="switch" aria-checked="true" aria-label="Habilitar Atlassian Rovo"></button><span class="btn btn-sm btn-icon btn-ghost" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></span></div>
+</div>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px"><span class="mono" style="color: var(--accent-text)">1 · Identidad</span><span class="t2 xs">Avatar o icono de 32 px. Opcional.</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><span class="mono" style="color: var(--accent-text)">2 · Título + detalle</span><span class="t2 xs">Una línea cada uno, con elipsis. Nunca un párrafo.</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><span class="mono" style="color: var(--accent-text)">3 · Metadatos</span><span class="t2 xs">Tag de tipo y chip de estado, alineados a la derecha.</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><span class="mono" style="color: var(--accent-text)">4 · Acción</span><span class="t2 xs">Un interruptor o un «…». Click en la fila abre el panel.</span></div>
+</div>
+</section>
+
+</div>
+</div>
+
+<script src="assets/viewer.js"></script>
+</body>
+</html>
