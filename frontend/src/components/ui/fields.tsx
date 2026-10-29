@@ -4,7 +4,7 @@ import { Icon } from "../Icon"
 import { Avatar } from "./basics"
 import { cx } from "./layers"
 import { Pop } from "./Menu"
-import { uiText } from "./strings"
+import { useT } from "../../i18n/useT"
 
 interface FieldIds { id: string; hintId?: string; invalid: boolean }
 const FieldContext = createContext<FieldIds | null>(null)
@@ -112,6 +112,7 @@ export interface SelectProps<T extends string> {
 
 /** Selector propio: reemplaza al `select` nativo. Teclado: ↑↓, Inicio/Fin, ↵, Escape. */
 export function Select<T extends string>({ label, value, options, onChange, placeholder, disabled = false, bare = false }: SelectProps<T>) {
+  const { t } = useT("common")
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const anchor = useRef<HTMLButtonElement>(null)
@@ -140,7 +141,7 @@ export function Select<T extends string>({ label, value, options, onChange, plac
     else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const option = options[active]; if (option) pick(option) }
     else if (event.key === "Tab") setOpen(false)
   }
-  const text = current?.label ?? placeholder ?? uiText("select.placeholder")
+  const text = current?.label ?? placeholder ?? t("select.placeholder")
   return <>
     <button
       ref={anchor}
@@ -179,6 +180,7 @@ export interface ComboboxProps<T extends string> {
 
 /** Elegir una entidad relacionada, o crearla desde el mismo control. */
 export function Combobox<T extends string>({ value, options, onChange, onCreate, placeholder, label, disabled = false }: ComboboxProps<T>) {
+  const { t } = useT("common")
   const current = options.find(option => option.value === value)
   const [text, setText] = useState(current?.label ?? "")
   const [editing, setEditing] = useState(false)
@@ -240,7 +242,7 @@ export function Combobox<T extends string>({ value, options, onChange, onCreate,
         onPick={pick}
         onHover={setActive}
         extra={<>
-          {total === 0 && <span className="xs t3" style={{ padding: "var(--sp-2) var(--sp-3)" }}>{uiText("combobox.empty")}</span>}
+          {total === 0 && <span className="xs t3" style={{ padding: "var(--sp-2) var(--sp-3)" }}>{t("select.noMatches")}</span>}
           {canCreate && (
             <div
               id={`${listId}-${filtered.length}`}
@@ -253,7 +255,7 @@ export function Combobox<T extends string>({ value, options, onChange, onCreate,
               onClick={create}
             >
               <Icon name="add" small />
-              <span className="trunc">{uiText("combobox.create", { value: shown.trim() })}</span>
+              <span className="trunc">{t("actions.createNamed", { name: shown.trim() })}</span>
             </div>
           )}
         </>}

@@ -1,9 +1,9 @@
-/** Compatibilidad: el estado de error vive en el kit (ui/display). */
+/** Compatibilidad: el estado de error vive en el kit (ui/display), que traduce con `errorKey`. */
 
 import { ApiError } from "../lib/api"
 import { ErrorState as KitErrorState } from "./ui/display"
 
-/** Convierte cualquier cosa lanzada en un mensaje mostrable. */
+/** Mensaje de las vistas previas al rediseño (prioriza el texto del servidor); las vistas nuevas usan `errorKey`. */
 export function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 401) return "La sesión venció o el token no es válido. Volvé a iniciar sesión."

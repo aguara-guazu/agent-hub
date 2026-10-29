@@ -54,7 +54,16 @@ function themeClass(theme: Theme): string {
   return theme === "light" ? "t-light" : "t-dark"
 }
 
-/** Tema resuelto (t-dark | t-light en el shell) y la preferencia guardada. */
+/**
+ * Tema de la app y su preferencia, persistida en `localStorage` (`agenthub.theme`; sin clave = `system`).
+ *
+ * - `preference`: lo que eligió la persona (`system` | `dark` | `light`); `system` sigue `prefers-color-scheme` en caliente.
+ * - `theme`: tema efectivo; `className`: `t-dark` | `t-light` para la raíz `.ah`.
+ * - `setPreference(next)`: aplica al instante y re-renderiza a todos los consumidores (Ajustes › General la usa con un `.seg`).
+ * - `toggle()`: alterna entre oscuro y claro fijando la preferencia (lo usa ⌘K).
+ *
+ * Además escribe `data-theme` y `color-scheme` en `<html>` para las hojas previas al rediseño.
+ */
 export function useTheme() {
   const value = useSyncExternalStore(subscribe, snapshot, () => "system:dark")
   const [pref, resolved] = value.split(":") as [ThemePreference, Theme]
