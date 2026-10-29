@@ -9,7 +9,7 @@
  */
 import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
-import { deflateRawSync, inflateRawSync } from 'node:zlib'
+import { deflateRawSync, inflateRawSync } from "node:zlib"
 
 export interface ZipEntry {
   /** Ruta dentro del archivo, con `/` como separador. */

@@ -15,7 +15,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, watch, type FSWatcher } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { canonicalJson, parseFrontmatter, sha256, SKILL_FILENAME } from '@agenthub/shared'
+import { canonicalJson, parseFrontmatter, sha256, SKILL_FILENAME } from "@agenthub/shared"
 
 import { regionDigest, TREE_REGION } from './adapters/atomic.js'
 

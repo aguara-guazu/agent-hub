@@ -112,9 +112,9 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
     return { seq: existing.seq, id: existing.id, replayed: true }
   }
   async lastEvent(scheduleId: string, type: ScheduleEventType): Promise<Row | undefined> {
-    return (await this.db.query<Row>('SELECT * FROM schedule_events WHERE schedule_id=$1 AND type=$2 ORDER BY seq DESC LIMIT 1', [scheduleId, type]))[0]
+    return (await this.db.query<Row>("SELECT * FROM schedule_events WHERE schedule_id=$1 AND type=$2 ORDER BY seq DESC LIMIT 1", [scheduleId, type]))[0]
   }
-  async constraintExists(id: string): Promise<boolean> { return (await this.db.query('SELECT 1 FROM schedule_constraints WHERE id=$1', [id])).length > 0 }
+  async constraintExists(id: string): Promise<boolean> { return (await this.db.query("SELECT 1 FROM schedule_constraints WHERE id=$1", [id])).length > 0 }
   /** Runs that a cancellation at or after `since` skipped or aborted; a restore does not bring them back. */
   async runsStoppedByCancel(scheduleId: string, since: string): Promise<string[]> {
     return (await this.db.query<{ id: string }>(`SELECT id FROM schedule_runs WHERE schedule_id=$1 AND finished_at>=$2

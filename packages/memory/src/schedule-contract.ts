@@ -31,8 +31,8 @@ export type IncidentCause = 'hub_restart' | 'deadline_exceeded' | 'automations_o
 export type IncidentAction = 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' | 'none' | 'resumed' | 'resume_unsupported' | 'resume_failed'
 
 export const scheduleEventTypes = ['schedule.created', 'schedule.updated', 'schedule.paused', 'schedule.resumed', 'schedule.cancelled', 'schedule.constrained',
-  'run.started', 'run.deferred', 'decisions.revoked', 'replies.processed', 'run.persisted', 'run.delivered', 'run.finished', 'run.interrupted', 'decision.received', 'action.receipt',
-  'schedule.restored'] as const
+  "run.started", "run.deferred", "decisions.revoked", "replies.processed", "run.persisted", "run.delivered", "run.finished", "run.interrupted", "decision.received", "action.receipt",
+  "schedule.restored"] as const
 export type ScheduleEventType = typeof scheduleEventTypes[number]
 
 /** Closed error codes stored in schedule_runs.error_code and phase receipts; provider or CLI text never reaches them. */

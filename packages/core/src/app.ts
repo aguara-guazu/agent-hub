@@ -16,7 +16,7 @@ import cors from '@fastify/cors'
 import { loadSettings, type Settings } from './config.js'
 import { Database } from './db/database.js'
 import { runMigrations } from './db/migrations.js'
-import { DELETE_PURGE_INTERVAL_MS, DELETE_RETENTION_MS, Store } from './store.js'
+import { DELETE_PURGE_INTERVAL_MS, DELETE_RETENTION_MS, Store } from "./store.js"
 import { record as auditRecord, verify as auditVerify } from './audit/ledger.js'
 import { buildMatrix, hotReload } from './matrix.js'
 import { diffSnapshots, hasChanges, type PendingRestart } from './restart.js'
@@ -27,7 +27,7 @@ import { applyStarterCatalog } from './catalog/starter.js'
 import { applyFactorySkill, type FactorySkill } from './catalog/factory-skills.js'
 import { hubSkill } from './catalog/hub-skill.js'
 import { skillContentHash } from './hashing.js'
-import { buildZip, collectFiles, ZipReadError } from './zip.js'
+import { buildZip, collectFiles, ZipReadError } from "./zip.js"
 import { skillDraftFromZip, type SkillZipDraft } from "./catalog/skill-import.js"
 import { computeSnapshot, explain } from './policy/resolver.js'
 import { ensureLocalOwner } from './local.js'
@@ -256,7 +256,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   }
 
   const fastify = Fastify({ logger: false })
-  fastify.addHook('onClose', async () => { clearInterval(purgeTimer) })
+  fastify.addHook("onClose", async () => { clearInterval(purgeTimer) })
 
   // El cuerpo de las respuestas 204 no lleva contenido.
   fastify.setErrorHandler((error, _request, reply) => {
@@ -898,18 +898,18 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     return reply.code(204).send()
   })
 
-  fastify.post('/api/catalog/servers/:id/restore', async (request) => {
+  fastify.post("/api/catalog/servers/:id/restore", async (request) => {
     const user = await currentUser(request)
     const { id } = request.params as { id: string }
     const deleted = store.deletedServer(id)
     if (!deleted || deleted.user_id !== user.id) {
       const live = store.server(id)
-      if (live && live.user_id === user.id) throw new HttpError(409, 'el MCP server no está eliminado')
-      throw new HttpError(404, 'el MCP server no existe o ya venció el plazo para restaurarlo')
+      if (live && live.user_id === user.id) throw new HttpError(409, "el MCP server no está eliminado")
+      throw new HttpError(404, "el MCP server no existe o ya venció el plazo para restaurarlo")
     }
     if (store.serverBySlug(user.id, deleted.slug)) throw new HttpError(409, `ya tenes otro MCP server con el slug ${deleted.slug}`)
     store.restoreServer(deleted.id)
-    notifyAfterCommit('user', user.id)
+    notifyAfterCommit("user", user.id)
     return serverView(store.server(deleted.id)!)
   })
 
