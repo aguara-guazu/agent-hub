@@ -185,6 +185,15 @@ it('un periódico que no termina no impide lanzar un run vencido ni se solapa co
   expect(started).toBe(2); release()
 })
 
+it('el cierre no espera sin tope a un periódico colgado', async () => {
+  runtime = build({ closeWaitMs: 50 })
+  runtime.addPeriodic('colgada', () => new Promise<void>(() => undefined), 0)
+  await runtime.start()
+  const started = Date.now()
+  await runtime.close()
+  expect(Date.now() - started).toBeLessThan(2_000)
+})
+
 it('una tarea periódica corre una vez por ventana y su fallo no detiene el reloj', async () => {
   let calls = 0
   runtime.addPeriodic('lenta', async () => { calls++; throw new Error('falla') }, 60_000)

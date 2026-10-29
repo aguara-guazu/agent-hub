@@ -36,7 +36,13 @@ export function summarizeReplyTick(result: unknown): Record<string, unknown> | n
   for (const [key, value] of Object.entries(result as Record<string, unknown>)) {
     if (typeof value === 'number' && value > 0 && outcome(key)) summary[key] = value
     else if (value && typeof value === 'object') {
-      const counts = Object.fromEntries(Object.entries(value).filter(([name, count]) => outcome(name) && typeof count === 'number' && count > 0))
+      const counts: Record<string, number> = {}
+      for (const [name, count] of Object.entries(value)) {
+        if (!outcome(name)) continue
+        // `rejected` arrives as {reason: n}; its total is the count.
+        const total = typeof count === 'number' ? count : count && typeof count === 'object' ? Object.values(count).reduce<number>((sum, n) => sum + (typeof n === 'number' ? n : 0), 0) : 0
+        if (total > 0) counts[name] = total
+      }
       const error = (value as { error?: unknown }).error
       if (typeof error === 'string') errors.push(`${key}:${error.slice(0, 60)}`)
       if (Object.keys(counts).length) summary[key] = counts

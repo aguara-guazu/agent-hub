@@ -15,6 +15,7 @@ const TICK_MS = 30_000
 const LATE_TOLERANCE_MS = 90_000
 const MAX_SYNTHESIS = 2
 const MAX_FAILURES = 2
+const CLOSE_WAIT_MS = 5_000
 const SUPERSEDE_MS = 120 * MINUTE
 const QUOTA_BACKOFF_MINUTES = [30, 60, 120]
 const DECISION_TTL_MS = 36 * 60 * MINUTE
@@ -52,6 +53,8 @@ export interface ScheduleRuntimeOptions {
   now?(): Date
   zone?(): string
   tickMs?: number
+  /** Longest wait for background periodic tasks when closing. */
+  closeWaitMs?: number
 }
 
 /** Stable refusals of the decision module; matched by code or class name so the memory package does not import the core's error classes. */
@@ -93,7 +96,8 @@ export class ScheduleRuntime {
     this.stopped = true; clearInterval(this.timer); this.o.signals?.off('change', this.kick)
     for (const entry of this.inFlight.values()) entry.controller.abort()
     await Promise.allSettled([...this.inFlight.values()].map(entry => entry.done)); await this.ticking
-    await Promise.allSettled([...this.periodic.values()].map(entry => entry.running))
+    // A periodic task stuck on the network must not hold the Hub's shutdown.
+    await Promise.race([Promise.allSettled([...this.periodic.values()].map(entry => entry.running)), new Promise(resolve => setTimeout(resolve, this.o.closeWaitMs ?? CLOSE_WAIT_MS).unref())])
   }
   /** Resolves when no tick or run is in progress. */
   async idle() {
