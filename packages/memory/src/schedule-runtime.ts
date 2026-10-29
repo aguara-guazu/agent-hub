@@ -430,6 +430,27 @@ export class ScheduleRuntime {
 
   // --- orphans after a restart ---------------------------------------------------------------------------------------------------------------------
   /**
+   * Signals a process only when its recorded birth time proves it is ours, and reports `terminated` only after confirming it is gone.
+   * A birth time stored in another format, or a reused pid, never matches: that is `unverified_left_running` and nothing is signalled.
+   */
+  private async terminateOwned(identities: Array<{ pid: number | null; started: string | null; group: boolean }>, processes: ProcessControl) {
+    let action: 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' = 'already_exited'
+    for (const identity of identities) {
+      const live = await processes.inspect(identity.pid!).catch(() => undefined)
+      if (live === undefined) return 'termination_unknown' as const
+      if (live === null) continue
+      if (!identity.started || live.started !== identity.started) { action = 'unverified_left_running'; continue }
+      processes.signal(identity.pid!, 'SIGTERM', identity.group)
+      await new Promise(resolve => setTimeout(resolve, 200))
+      if (await processes.inspect(identity.pid!).catch(() => undefined)) { processes.signal(identity.pid!, 'SIGKILL', identity.group); await new Promise(resolve => setTimeout(resolve, 200)) }
+      const after = await processes.inspect(identity.pid!).catch(() => undefined)
+      if (after === null && action !== 'unverified_left_running') action = 'terminated'
+      else if (after !== null) return 'termination_unknown' as const
+    }
+    return action
+  }
+
+  /**
    * Terminates the processes a previous Hub start left behind, only when the recorded birth time proves they are ours, and records what was found.
    * An attempt that never recorded a process identity cannot have outlived the restart with effects (synthesis has no tools), so its run is retried.
    */
@@ -438,19 +459,7 @@ export class ScheduleRuntime {
     const blocked = new Set<string>()
     for (const attempt of await this.store.attemptsToReconcile(this.bootId)) {
       const identities = [{ pid: attempt.cli_pid as number | null, started: attempt.cli_started as string | null, group: true }, { pid: attempt.host_pid as number | null, started: attempt.host_started as string | null, group: false }].filter(item => item.pid)
-      let action: 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' | 'none' = identities.length ? 'already_exited' : 'none'
-      for (const identity of identities) {
-        const live = await processes.inspect(identity.pid!).catch(() => undefined)
-        if (live === undefined) { action = 'termination_unknown'; break }
-        if (live === null) continue
-        if (!identity.started || live.started !== identity.started) { action = 'unverified_left_running'; continue }
-        processes.signal(identity.pid!, 'SIGTERM', identity.group)
-        await new Promise(resolve => setTimeout(resolve, 200))
-        if (await processes.inspect(identity.pid!).catch(() => undefined)) { processes.signal(identity.pid!, 'SIGKILL', identity.group); await new Promise(resolve => setTimeout(resolve, 200)) }
-        const after = await processes.inspect(identity.pid!).catch(() => undefined)
-        if (after === null && action !== 'unverified_left_running') action = 'terminated'
-        else if (after !== null) { action = 'termination_unknown'; break }
-      }
+      const action = identities.length ? await this.terminateOwned(identities, processes) : 'none'
       const run = await this.store.run(attempt.run_id as string)
       await this.store.setAttempt(attempt.run_id as string, attempt.generation as number, { state: action === 'termination_unknown' ? 'termination_unknown' : action === 'unverified_left_running' ? 'orphan_unverified' : action === 'none' ? 'orphan_unverified' : 'orphan_terminated', ended_at: isoAt(this.now()) })
       await this.store.addIncident({ subject_kind: 'schedule_run', subject_id: attempt.run_id as string, generation: attempt.generation as number, schedule_id: run?.schedule_id ?? null, run_id: attempt.run_id as string,
@@ -466,10 +475,13 @@ export class ScheduleRuntime {
       if (blocked.has(run.id)) await this.store.setRun(run.id, run.generation, { state: 'failed', phase: 'done', error_code: 'hub_restart', finished_at: isoAt(this.now()) })
       else await this.store.setRun(run.id, run.generation, { state: 'interrupted' })
     }
-    // Fleet members have no persisted process identity yet, so nothing can be terminated here; the incident is the evidence that they ended with the restart.
-    for (const member of await this.store.fleetMembersInFlight()) {
+    // Fleet members: the identity the fleet persisted (pid and process_started, taken with inspectNativeProcess) decides what is done. A member without
+    // it (launched before it was persisted) leaves a plain restart note. A start time stored in another format never matches, so such a process
+    // stays unverified and is neither signalled nor resumed.
+    for (const member of await this.store.fleetMembersToReconcile()) {
+      const owned = member.pid ? await this.terminateOwned([{ pid: member.pid, started: member.process_started, group: true }], processes) : 'none' as const
       await this.store.addIncident({ subject_kind: 'fleet_member', subject_id: member.id, generation: member.generation, team_id: member.team_id, member_id: member.id, session_id: member.session_id,
-        cause: 'hub_restart', action: 'none', boot_id: this.bootId, detail: { reason: 'no_persisted_process_identity', last_state: member.state } })
+        cause: 'hub_restart', action: owned, pid: member.pid, process_started: member.process_started, boot_id: this.bootId, detail: { last_state: member.state, ...(member.pid ? {} : { reason: 'no_persisted_process_identity' }) } })
     }
     await this.publishActive()
   }

@@ -218,14 +218,42 @@ it('tras un reinicio termina el proceso propio, registra el incidente y deja el 
   expect((await store.run(runId))!.state).toBe('interrupted')
 })
 
-it('al arrancar registra un incidente por cada miembro de flota que quedó en estado vivo, una sola vez', async () => {
+const fleetMember = async (id: string, ordinal: number, runtime: object | null) => {
+  await db.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,role,task,prompt,state,runtime) VALUES($1,'plan',$2,$1,'claude_code','m','r','t','p','launched',$3)`, [id, ordinal, runtime ? JSON.stringify(runtime) : null])
+}
+const fleetPlan = async () => {
   await db.execute('PRAGMA foreign_keys=OFF')
   await db.query(`INSERT INTO chat_team_plans(id,master_channel_id,root_thread_id,created_by,objective,parent,base_revision,plan,digest,state) VALUES('plan','c','t','s','o','{}','r','{}','d','launched')`)
-  const member = (id: string, ordinal: number, runtime: object | null) => db.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,role,task,prompt,state,runtime) VALUES($1,'plan',$2,$1,'claude_code','m','r','t','p','launched',$3)`, [id, ordinal, runtime ? JSON.stringify(runtime) : null])
-  await member('vivo', 1, { state: 'busy', generation: 'g1' }); await member('detenido', 2, { state: 'stopped', generation: 'g1' }); await member('sin-estado', 3, null)
-  await runtime.reconcileOrphans(); await runtime.reconcileOrphans()
-  const rows = await db.query("SELECT subject_kind,subject_id,generation,cause,action,detail FROM process_incidents")
-  expect(rows).toMatchObject([{ subject_kind: 'fleet_member', subject_id: 'vivo', generation: 'g1', cause: 'hub_restart', action: 'none', detail: { reason: 'no_persisted_process_identity', last_state: 'busy' } }])
+}
+
+it('al arrancar concilia cada miembro de flota con su identidad persistida: termina el proceso propio, registra la salida y no repite', async () => {
+  await fleetPlan()
+  await fleetMember('vivo', 1, { state: 'busy', generation: 'g1', pid: 500, process_started: 'INICIO' })
+  await fleetMember('muerto', 2, { state: 'failed', generation: 'g1', pid: 501, process_started: 'INICIO' })
+  await fleetMember('reusado', 3, { state: 'idle', generation: 'g1', pid: 502, process_started: 'INICIO' })
+  await fleetMember('sin-identidad', 4, { state: 'busy', generation: 'g1' })
+  await fleetMember('detenido', 5, { state: 'stopped', generation: 'g1', pid: 503, process_started: 'INICIO' })
+  const alive = new Map<number, string>([[500, 'INICIO'], [502, 'OTRO']]), signals: string[] = []
+  processes = { inspect: async pid => alive.has(pid) ? { started: alive.get(pid)! } : null, signal: (pid, signal, group) => { signals.push(`${pid}:${signal}:${group}`); alive.delete(pid) } }
+  runtime = build({ processes }); await runtime.reconcileOrphans()
+  const byMember = Object.fromEntries((await db.query('SELECT subject_id,generation,cause,action FROM process_incidents ORDER BY subject_id')).map(row => [row.subject_id, row]))
+  expect(byMember.vivo).toMatchObject({ generation: 'g1', cause: 'hub_restart', action: 'terminated' })
+  expect(byMember.muerto).toMatchObject({ action: 'already_exited' })
+  expect(byMember.reusado).toMatchObject({ action: 'unverified_left_running' })
+  expect(byMember['sin-identidad']).toMatchObject({ action: 'none' })
+  expect(byMember.detenido).toBeUndefined()
+  expect(signals).toEqual(['500:SIGTERM:true'])
+  alive.set(500, 'INICIO'); await runtime.reconcileOrphans()
+  expect(signals).toEqual(['500:SIGTERM:true'])
+  expect(await db.query("SELECT id FROM process_incidents WHERE subject_id='vivo'")).toHaveLength(1)
+})
+
+it('un inicio de proceso en otro formato no coincide: no se señala y queda sin verificar', async () => {
+  await fleetPlan()
+  await fleetMember('antiguo', 1, { state: 'busy', generation: 'g1', pid: 600, process_started: 'Wed Oct 28 18:00:00 2026' })
+  processes = { inspect: async () => ({ started: 'mié 28 oct 18:00:00 2026' }), signal: () => { throw new Error('no debe señalar') } }
+  runtime = build({ processes }); await runtime.reconcileOrphans()
+  expect((await db.query("SELECT action FROM process_incidents"))).toEqual([{ action: 'unverified_left_running' }])
 })
 
 it('un proceso que no se puede verificar queda sin terminar y su run no se reemplaza', async () => {

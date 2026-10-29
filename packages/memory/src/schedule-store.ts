@@ -144,10 +144,15 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
     return (await this.db.query<{ id: string }>(`UPDATE schedule_runs SET state='skipped',phase='done',skip_reason=$1,finished_at=$2,updated_at=$2,next_attempt_at=NULL,generation=generation+1
       WHERE state IN ('pending','deferred','interrupted') RETURNING id`, [skipReason, now])).map(row => row.id)
   }
-  /** Fleet members the last Hub process left in a live state; their child processes are gone with it. */
-  async fleetMembersInFlight() {
-    return this.db.query<{ id: string; team_id: string; session_id: string | null; generation: string | null; state: string }>(`SELECT id,team_id,session_id,runtime->>'generation' AS generation,runtime->>'state' AS state
-      FROM chat_team_members WHERE runtime IS NOT NULL AND runtime->>'state' IN ('starting','busy','idle','waiting_input')`)
+  /**
+   * Fleet members a previous Hub process owned and nobody reconciled yet: live ones, whose child may still run, and failed ones, whose exit a resume must prove.
+   * A member already holding a restart incident for its generation is not visited again.
+   */
+  async fleetMembersToReconcile() {
+    return this.db.query<{ id: string; team_id: string; session_id: string | null; generation: string | null; state: string; pid: number | null; process_started: string | null }>(
+      `SELECT m.id,m.team_id,m.session_id,m.runtime->>'generation' AS generation,m.runtime->>'state' AS state,CAST(m.runtime->>'pid' AS INTEGER) AS pid,m.runtime->>'process_started' AS process_started
+       FROM chat_team_members m WHERE m.runtime IS NOT NULL AND m.runtime->>'state' IN ('starting','busy','idle','waiting_input','failed')
+       AND NOT EXISTS(SELECT 1 FROM process_incidents i WHERE i.subject_kind='fleet_member' AND i.subject_id=m.id AND i.generation IS m.runtime->>'generation' AND i.cause='hub_restart')`)
   }
   async failedPhaseCount(runId: string): Promise<number> {
     return Number((await this.db.query<{ n: number }>("SELECT count(DISTINCT generation) AS n FROM schedule_run_phases WHERE run_id=$1 AND state='failed'", [runId]))[0]!.n)
