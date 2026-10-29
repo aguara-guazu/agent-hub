@@ -1,6 +1,97 @@
 import type es from "../es/projects"
 import type { Messages } from "../../types"
 
-const projects = {} satisfies Messages<typeof es>
+const projects = {
+  title: "Projects",
+  actions: {
+    create: "New project",
+    moreCreate: "More ways to add a project",
+    join: "Join with an invitation",
+    restore: "Restore from a backup",
+    fromSuggestion: "Create from a suggestion",
+  },
+  filter: {
+    label: "Status",
+    active: "Active",
+    completed: "Completed",
+    all: "All",
+    search: "Search projects",
+    company: "Company",
+    allCompanies: "All",
+    noCompany: "No company",
+    sort: "Sort",
+    recent: "Recent activity",
+    name: "Name",
+  },
+  columns: {
+    project: "Project",
+    stage: "Stage",
+    content: "Content",
+    activity: "Activity",
+  },
+  row: {
+    noCompany: "No company",
+    content_one: "{{count, number}} item",
+    content_other: "{{count, number}} items",
+    noContent: "No content",
+  },
+  states: {
+    loading: "Loading projects",
+    emptyTitle: "No projects yet",
+    emptyDetail: "Create one and add meetings, documents and notes to it.",
+    emptyAction: "Create project",
+    filteredQuery: "No project matches “{{query}}”",
+    filtered: "No project matches the filters",
+    errorTitle: "Couldn't load projects",
+    truncated: "Showing the first {{count, number}} projects. Search by name to find the rest.",
+  },
+  create: {
+    title: "New project",
+    name: "Name",
+    nameHint: "Enter a name to create the project.",
+    description: "Description",
+    company: "Company",
+    companyPlaceholder: "Search or create a company",
+    stage: "Stage",
+    submit: "Create project",
+    done: "Project created",
+  },
+  join: {
+    title: "Join with an invitation",
+    invitation: "Invitation",
+    invitationHint: "Paste the full text the project admin shared with you.",
+    invalid: "The invitation isn't valid. Copy the whole text again.",
+    phrase: "Recovery phrase",
+    phraseHint: "Optional: the 24 words to join as owner.",
+    submit: "Join project",
+    done: "You joined the project",
+  },
+  restore: {
+    title: "Restore from a backup",
+    file: "Backup file",
+    choose: "Choose file",
+    change: "Change file",
+    fileHint: ".hubproject file up to 175 MB.",
+    tooLarge: "The file is larger than 175 MB. Choose another backup.",
+    unreadable: "Couldn't read the file. Try another backup.",
+    phrase: "Recovery phrase",
+    phraseHint: "Only if someone else exported the backup.",
+    submit: "Restore project",
+    done: "Project restored",
+  },
+  suggestion: {
+    title: "Create from a suggestion",
+    source: "Source",
+    sourceHint: "The source, its fragments and its facts move to the new project.",
+    name: "Name",
+    description: "Description",
+    company: "Company",
+    submit: "Create and assign",
+    done: "Project created with “{{source}}”",
+  },
+  toast: {
+    companyCreated: "Company “{{name}}” created",
+  },
+} satisfies Messages<typeof es>
 
 export default projects
