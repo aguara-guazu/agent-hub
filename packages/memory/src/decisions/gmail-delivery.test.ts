@@ -46,6 +46,17 @@ describe('GmailSelfSender', () => {
     expect(mime.match(/^To:/gm)).toHaveLength(1)
   })
 
+  it('con HTML compone multipart/alternative con la parte de texto primero y ambas en UTF-8', () => {
+    const mime = composeSelfMessage(ACCOUNT, { message_id: '<hub-1@agent-hub.invalid>', subject: 'Brief', text: 'texto ñ', html: '<p>html ñ</p>' })
+    const boundary = /Content-Type: multipart\/alternative; boundary="([^"]+)"/.exec(mime)![1]!
+    const parts = mime.split(`--${boundary}`).slice(1, -1)
+    expect(parts).toHaveLength(2)
+    expect(parts.map(part => /Content-Type: ([^;]+)/.exec(part)![1])).toEqual(['text/plain', 'text/html'])
+    expect(parts.map(part => Buffer.from(part.split('\r\n\r\n')[1]!.replace(/\r\n/g, ''), 'base64').toString('utf8'))).toEqual(['texto ñ', '<p>html ñ</p>'])
+    expect(mime.endsWith(`--${boundary}--\r\n`)).toBe(true)
+    expect(mime.split('\r\n\r\n')[0]!.match(/^Content-Type:/gm)).toHaveLength(1)
+  })
+
   it('rechaza encabezados con saltos de línea y cuentas inválidas', () => {
     expect(() => composeSelfMessage(ACCOUNT, { message_id: '<a@b>\r\nBcc: x@y.z', subject: 's', text: 't' })).toThrow()
     expect(() => composeSelfMessage('a@b.c, x@y.z', { message_id: '<a@b>', subject: 's', text: 't' })).toThrow()
@@ -108,9 +119,14 @@ describe('entrega de la solicitud de decisión por Gmail', () => {
     const receipt = await deliverDecisionByGmail(deps, input(request_id))
     expect(receipt).toMatchObject({ state: 'sent' })
     const raw = decode(sentBody(calls).raw)
-    const body = Buffer.from(raw.split('\r\n\r\n')[1]!.replace(/\r\n/g, ''), 'base64').toString('utf8')
+    const boundary = /boundary="([^"]+)"/.exec(raw)![1]!
+    const [body, html] = raw.split(`--${boundary}`).slice(1, 3).map(part => Buffer.from(part.split('\r\n\r\n')[1]!.replace(/\r\n/g, ''), 'base64').toString('utf8'))
+    const code = formatCode(normalizeCode(store.codeFor(request_id))!)
     expect(body).toContain('Resumen del día')
-    expect(body).toContain(`aprobar ${formatCode(normalizeCode(store.codeFor(request_id))!)} 1,2`)
+    expect(body).toContain(`aprobar ${code} 1,2`)
+    expect(html).toContain('Resumen del día')
+    expect(html).toContain(`aprobar ${code} 1,2`)
+    expect(html).toContain('Registrar 0.5 h en ABC-1')
     expect(exclusions).toContainEqual({ integration: 'gmail', account: ACCOUNT, kind: 'rfc_message_id', native_id: '<hub-fixed@agent-hub.invalid>' })
     expect(exclusions).toContainEqual({ integration: 'gmail', account: ACCOUNT, kind: 'message', native_id: 'gm-1' })
     expect(exclusions).toContainEqual({ integration: 'gmail', account: ACCOUNT, kind: 'thread', native_id: 'th-1' })

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { deliverDecisionByGmail, type DecisionStore, type DeliveryAdapters, type DeliveryReceipt, type ExclusionSink, type GmailSelfSender } from '@agenthub/memory'
+import { deliverDecisionByGmail, renderSelfEmail, type DecisionStore, type DeliveryAdapters, type DeliveryReceipt, type ExclusionSink, type GmailSelfSender } from '@agenthub/memory'
 import type { SlackSelfDelivery } from './slack-self.js'
 
 /** Artefacto que el runtime del scheduler persistió para un run. `decision_request_ref` es el id opaco de la solicitud de decisión, si el artefacto propone acciones. */
@@ -32,7 +32,7 @@ export function createDeliveryAdapters(deps: DeliveryDeps): DeliveryAdapters {
     if (status.state !== 'ok') return { state: 'failed', error_code: status.state }
     const messageId = `<hub-${randomUUID()}@agent-hub.invalid>`
     try { await deps.exclusions.add([{ integration: 'gmail', account: status.account, kind: 'rfc_message_id', native_id: messageId }]) } catch { return { state: 'failed', error_code: 'exclusion_not_recorded' } }
-    const outcome = await gmail.sender.send(connectorId, { message_id: messageId, subject: artifact.title, text: artifact.body_md }, status.account)
+    const outcome = await gmail.sender.send(connectorId, { message_id: messageId, subject: artifact.title, text: artifact.body_md, html: renderSelfEmail({ title: artifact.title, markdown: artifact.body_md }) }, status.account)
     if (outcome.state === 'failed') return { state: 'failed', error_code: outcome.reason }
     if (outcome.state === 'uncertain') return { state: 'uncertain', error_code: outcome.reason }
     try { await deps.exclusions.add([{ integration: 'gmail', account: status.account, kind: 'message', native_id: outcome.native_id },

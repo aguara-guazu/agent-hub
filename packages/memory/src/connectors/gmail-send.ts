@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { GMAIL_SEND_SCOPE, type GoogleAuth } from '../google-auth.js'
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
@@ -10,6 +11,8 @@ export interface SelfMessage {
   message_id: string
   subject: string
   text: string
+  /** Versión HTML del mismo contenido; con ella el mensaje sale como multipart/alternative y la parte de texto se conserva para las respuestas. */
+  html?: string
   in_reply_to?: string
   references?: string[]
   /** Hilo de Gmail al que se agrega la respuesta (solo lo conoce el outbox, nunca un agente). */
@@ -42,10 +45,14 @@ export function composeSelfMessage(account: string, message: SelfMessage): strin
     header('From', account), header('To', account), header('Subject', encodedSubject(message.subject.replace(/[\r\n]+/g, ' '))), header('Message-ID', message.message_id),
     ...(message.in_reply_to ? [header('In-Reply-To', message.in_reply_to)] : []),
     ...(message.references?.length ? [header('References', message.references.join(' '))] : []),
-    'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', 'Auto-Submitted: auto-generated', 'X-Agent-Hub-Control: 1',
+    'MIME-Version: 1.0', 'Auto-Submitted: auto-generated', 'X-Agent-Hub-Control: 1',
   ]
-  const body = Buffer.from(message.text.replace(/\r?\n/g, '\r\n'), 'utf8').toString('base64').replace(/(.{76})/g, '$1\r\n')
-  return `${lines.join('\r\n')}\r\n\r\n${body}`
+  const encoded = (value: string): string => Buffer.from(value.replace(/\r?\n/g, '\r\n'), 'utf8').toString('base64').replace(/(.{76})/g, '$1\r\n')
+  if (message.html === undefined) return `${[...lines, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64'].join('\r\n')}\r\n\r\n${encoded(message.text)}`
+  // El separador lleva '-' y '_', fuera del alfabeto base64: nunca aparece dentro de una parte codificada.
+  const boundary = `hub-alt_${randomBytes(12).toString('hex')}`
+  const part = (type: string, value: string): string => `--${boundary}\r\nContent-Type: ${type}; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${encoded(value)}\r\n`
+  return `${[...lines, `Content-Type: multipart/alternative; boundary="${boundary}"`].join('\r\n')}\r\n\r\n${part('text/plain', message.text)}${part('text/html', message.html)}--${boundary}--\r\n`
 }
 
 /**
