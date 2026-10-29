@@ -27,8 +27,8 @@ export type GracePolicy = 'minutes' | 'until_next' | 'until_local_time'
 export type ItemState = 'proposed' | 'approved' | 'rejected' | 'dispatching' | 'succeeded' | 'uncertain' | 'expired' | 'superseded' | 'unverifiable'
 export type RunTrigger = 'clock' | 'misfire' | 'run_now'
 export type AttemptState = 'starting' | 'running' | 'exited' | 'deadline_exceeded' | 'terminated' | 'orphan_terminated' | 'orphan_unverified' | 'termination_unknown' | 'spawn_failed'
-export type IncidentCause = 'hub_restart' | 'deadline_exceeded' | 'automations_off' | 'collaboration_off' | 'cancelled' | 'spawn_failed' | 'process_exited'
-export type IncidentAction = 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' | 'none'
+export type IncidentCause = 'hub_restart' | 'deadline_exceeded' | 'automations_off' | 'collaboration_off' | 'cancelled' | 'spawn_failed' | 'process_exited' | 'quota_exhausted' | 'quota_resume'
+export type IncidentAction = 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' | 'none' | 'resumed' | 'resume_unsupported' | 'resume_failed'
 
 export const scheduleEventTypes = ['schedule.created', 'schedule.updated', 'schedule.paused', 'schedule.resumed', 'schedule.cancelled', 'schedule.constrained',
   'run.started', 'run.deferred', 'decisions.revoked', 'run.persisted', 'run.delivered', 'run.finished', 'run.interrupted', 'decision.received', 'action.receipt'] as const
