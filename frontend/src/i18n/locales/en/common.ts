@@ -146,6 +146,11 @@ const common = {
     es: "Español",
     en: "English",
   },
+  markdown: {
+    truncated: "The content is too long and is shown truncated.",
+    image: "Image: {{alt}}",
+    noAlt: "no description",
+  },
   theme: {
     label: "Theme",
     system: "System",
