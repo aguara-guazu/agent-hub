@@ -510,7 +510,6 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
 .secondary { color: var(--text-secondary); }
 .row { display: flex; align-items: center; gap: var(--sp-3); }
 .row-tight { display: flex; align-items: center; gap: var(--sp-2); }
-.col { display: flex; flex-direction: column; gap: var(--sp-3); }
 .spread { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
 .grow { flex: 1; min-width: 0; }
 .wrap { white-space: normal; }

@@ -5,7 +5,7 @@ import { Navigate, useLocation, useParams, useSearchParams } from "react-router-
 
 /** Vista aún sin migrar: ocupa la zona de contenido con el ancho y los márgenes de `.page`. */
 export function LegacyPage({ children }: { children: ReactNode }) {
-  return <div className="page">{children}</div>
+  return <div className="page legacy-page">{children}</div>
 }
 
 /** Redirección que conserva la consulta (`?focus=`, `?plan=`, `?q=`) y agrega la propia. */

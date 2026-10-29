@@ -31,7 +31,7 @@ export function Panel({ label, onClose, children, wide = false, dirty = false, o
       className="panel"
       aria-label={label}
       tabIndex={-1}
-      style={wide ? { maxWidth: 520, flexBasis: 520 } : undefined}
+      style={wide ? ({ "--panel-w": "520px" } as CSSProperties) : undefined}
     >
       <CloseContext.Provider value={close}>{children}</CloseContext.Provider>
     </aside>

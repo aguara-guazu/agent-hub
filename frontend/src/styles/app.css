@@ -269,7 +269,7 @@
 .subsection-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
 .subsection-title { font-size: var(--fs-lg); font-weight: 620; letter-spacing: -0.012em; }
 
-.tabs {
+.legacy-page .tabs {
   display: inline-flex;
   gap: 2px;
   padding: 3px;
@@ -278,7 +278,7 @@
   background: var(--surface-3);
   align-self: flex-start;
 }
-.tab {
+.legacy-page .tab {
   height: 27px;
   padding: 0 13px;
   border: 0;
@@ -290,7 +290,7 @@
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.tab:hover { color: var(--text); }
+.legacy-page .tab:hover { color: var(--text); }
 .tab-active {
   background: var(--surface);
   color: var(--text);
