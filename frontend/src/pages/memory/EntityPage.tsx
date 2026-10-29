@@ -120,7 +120,7 @@ function EntityView({ detail }: { detail: EntityDetail }) {
             {isCollection
               ? <><CollectionRecords entity={entity} onOpen={record => setPanel({ type: "record", record })} /><CollectionRules entity={entity} /></>
               : <TabPanel idPrefix="entity" value={tab}>
-                {tab === "summary" && <Summary entity={entity} evidence={evidence} contentLabel={hasContent ? tabs.find(item => item.value === "content")?.label : undefined} onOpenContent={() => setTab("content")} />}
+                {tab === "summary" && <Summary entity={entity} evidence={evidence} contentLabel={tabs[1]?.label} onOpenContent={() => { if (tabs[1]) setTab(tabs[1].value) }} />}
                 {tab === "content" && <Content entity={entity} versionId={versionId} onAssign={fragment => setPanel({ type: "assign", fragment })} />}
                 {tab === "mentions" && <Mentions person={entity} />}
               </TabPanel>}
