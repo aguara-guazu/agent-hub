@@ -1,7 +1,7 @@
 import type { UsageQuotaTransition } from '@agenthub/shared'
 import type { MemoryDatabase } from './database.js'
 import type { HubResumeRequest, HubTeamStatus } from './team-hub.js'
-import type { UsageQuotas } from './usage-quotas.js'
+import { isRestored, type UsageQuotas } from './usage-quotas.js'
 
 /** Fixed instruction of a resumed member; it carries no task text so the conversation itself stays the source of truth. */
 export const QUOTA_RESUME_PROMPT = 'La cuota se restableció; continúa exactamente la tarea en curso; revisa tu inbox y tu último work_update.'
@@ -53,7 +53,7 @@ export class FleetQuotaRecovery {
 
   /** Entry point for the quota recovery event: only a pool leaving exhaustion or cooldown triggers a sweep. */
   async onTransitions(transitions: UsageQuotaTransition[]): Promise<RecoveryOutcome[]> {
-    const clis = new Set(transitions.filter(item => ['exhausted', 'cooldown'].includes(item.before) && ['available', 'low'].includes(item.after)).flatMap(item => item.clis))
+    const clis = new Set(transitions.flatMap(item => isRestored(item).clis))
     return clis.size ? this.recover([...clis]) : []
   }
 
