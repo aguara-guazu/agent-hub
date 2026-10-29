@@ -201,4 +201,21 @@ export class UsageQuotas {
       return {status,...(status==='unknown' && pools.some(pool=>pool.model_scope==='unknown')?{reason:'unknown_model_scope'}:{}),pools}
     },'read')
   }
+
+  /**
+   * Pool that was exhausted or cooling down at an instant, from the persisted transitions and not from today's state.
+   * Observations can arrive after the failure they explain, so the last transition up to windowMs after `at` counts.
+   * Ambiguous accounts and pools of unknown model scope are never evidence.
+   */
+  async exhaustedAt(cli:string,model:string,at:string,windowMs=120_000):Promise<{pool_key:string}|undefined> {
+    const limit=new Date(Date.parse(parse(timestamp,at))+windowMs).toISOString()
+    const current=await this.forCli(cli,model)
+    if(current.reason==='ambiguous_account')return undefined
+    for(const pool of current.pools){
+      if(pool.model_scope==='unknown')continue
+      const last=(await this.db.query<{after_state:string}>('SELECT after_state FROM usage_quota_transitions WHERE pool_key=$1 AND observed_at<=$2 ORDER BY observed_at DESC LIMIT 1',[pool.id,limit]))[0]
+      if(last && (last.after_state==='exhausted' || last.after_state==='cooldown'))return {pool_key:pool.id}
+    }
+    return undefined
+  }
 }

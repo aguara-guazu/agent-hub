@@ -343,3 +343,23 @@ it('correlates CLI, binding, provider and account filters on the same active bin
   expect(await quotas.forCli('other_cli',undefined,{binding_id:'profile-B',provider:'other-provider'})).toMatchObject({status:'unknown',reason:'no_observation',pools:[]})
   expect(await quotas.list({cli:'other_cli',binding_id:'profile-B',account_ref:'other-account'})).toEqual([])
 })
+
+it('reports the pool that was exhausted at an instant, tolerating a late observation and ignoring other times',async()=>{
+  const ticket=await bind()
+  await quotas.ingest(observation({observed_at:'2026-10-20T10:00:30.000Z',status:'exhausted'}),ticket)
+  now='2026-10-20T10:10:00.000Z'
+  await quotas.ingest(observation({observed_at:now,expires_at:'2026-10-20T10:25:00.000Z'}),ticket)
+  const key=(await quotas.list())[0]!.id
+  expect(await quotas.exhaustedAt('codex_cli','any-model','2026-10-20T10:01:00.000Z')).toEqual({pool_key:key})
+  expect(await quotas.exhaustedAt('codex_cli','any-model','2026-10-20T10:00:00.000Z')).toEqual({pool_key:key})
+  expect(await quotas.exhaustedAt('codex_cli','any-model','2026-10-20T09:57:00.000Z')).toBeUndefined()
+  expect(await quotas.exhaustedAt('codex_cli','any-model','2026-10-20T10:12:00.000Z')).toBeUndefined()
+  expect(await quotas.exhaustedAt('claude_code','any-model','2026-10-20T10:01:00.000Z')).toBeUndefined()
+})
+
+it('does not treat a pool of unknown model scope or an ambiguous account as exhaustion evidence',async()=>{
+  const first=await bind('first','account-a'),second=await bind('second','account-b')
+  await quotas.ingest(observation({account_ref:'account-a',observed_at:'2026-10-20T10:00:30.000Z',status:'exhausted'}),first)
+  await quotas.ingest(observation({account_ref:'account-b',observed_at:'2026-10-20T10:00:30.000Z',status:'exhausted'}),second)
+  expect(await quotas.exhaustedAt('codex_cli','any-model','2026-10-20T10:01:00.000Z')).toBeUndefined()
+})
