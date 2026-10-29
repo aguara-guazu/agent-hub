@@ -102,7 +102,8 @@ it('una delegación declarada por un agente muestra su frase y no se aprueba sin
   expect(textOf(dialog)).toContain('Duración máxima: 60 min')
   expect(textOf(dialog)).toContain('abcdef012345')
   await click(buttonByText(dialog, 'Confirmar en la app'))
-  expect(api.lastCall('/memory/projects/p1/automation', 'PUT')?.body).toMatchObject({ enabled: true, expected_version: 2, expected_digest: 'abcdef0123456789', document })
+  expect(api.lastCall('/memory/projects/p1/automation', 'PUT')?.body).not.toHaveProperty('expected_digest')
+  expect(api.lastCall('/memory/projects/p1/automation', 'PUT')?.body).toMatchObject({ enabled: true, expected_version: 2, document })
 })
 
 it('la confirmación lista los repositorios y ramas de un push y avisa que la principal queda excluida', async () => {

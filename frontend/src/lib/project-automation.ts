@@ -63,6 +63,8 @@ export const AUTOMATION_ERRORS: Record<string, string> = {
   channel_not_authorized: 'El canal elegido no está autorizado para este proyecto.',
   remote_not_allowed: 'El remoto de ese repositorio no está permitido.',
   branch_invalid: 'Algún patrón de rama no es válido.',
+  repository_in_use: 'El repositorio está en uso por la delegación vigente; quítalo de ella antes de cambiarlo.',
+  stale_repositories: 'La lista de repositorios cambió; recarga la pantalla y vuelve a intentarlo.',
 }
 
 export function automationKey(projectId: string) { return ['project-automation', projectId] as const }
@@ -75,7 +77,7 @@ export function useSaveProjectAutomation(projectId: string) {
   const cache = useQueryClient()
   const toast = useToast()
   return useMutation({
-    mutationFn: (body: { enabled: boolean; expected_version: number | null; channel_id: string | null; document: DelegationDocument; expected_digest?: string }) =>
+    mutationFn: (body: { enabled: boolean; expected_version: number | null; channel_id: string | null; document: DelegationDocument }) =>
       api.put<ProjectAutomationView>(`/memory/projects/${encodeURIComponent(projectId)}/automation`, body),
     onSuccess: async view => {
       cache.setQueryData(automationKey(projectId), view)

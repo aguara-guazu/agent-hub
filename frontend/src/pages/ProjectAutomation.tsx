@@ -141,7 +141,7 @@ export function ProjectAutomation({ project }: { project: MemoryEntity }) {
     <LastClose />
     <ConfirmDialog open={confirming} title="Confirmar la delegación" confirmLabel="Confirmar en la app" cancelLabel="Volver" busy={save.isPending} onClose={() => setConfirming(false)}
       message={<><p>Un agente declaró esta delegación{delegation.instruction ? <> con la frase «{delegation.instruction}»</> : ''}. Al confirmar queda aprobada por ti, con exactamente lo siguiente (versión {delegation.version}, digest {delegation.digest.slice(0, 12)}…):</p><DelegationSummary document={delegation.document} view={view} /></>}
-      onConfirm={() => save.mutate({ enabled: true, expected_version: delegation.version, expected_digest: delegation.digest, channel_id: view.channel?.id ?? null, document: cleanDocument(delegation.document) }, { onSuccess: () => setConfirming(false) })} />
+      onConfirm={() => save.mutate({ enabled: true, expected_version: delegation.version, channel_id: view.channel?.id ?? null, document: cleanDocument(delegation.document) }, { onSuccess: () => setConfirming(false) })} />
     <ConfirmDialog open={deactivating} title="Desactivar brief y cierre" destructive confirmLabel="Desactivar" busy={save.isPending}
       message="Se revoca la delegación y se cancelan las automatizaciones de este proyecto. Se conservan el historial y las entregas."
       onClose={() => setDeactivating(false)} onConfirm={() => save.mutate({ enabled: false, expected_version: delegation.version, channel_id: view.channel?.id ?? null, document: cleanDocument(delegation.document) }, { onSuccess: () => setDeactivating(false) })} />
