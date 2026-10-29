@@ -11,6 +11,7 @@ import { MemoryOperations } from "../src/operations.js"
 import { MemoryAI } from "../src/ai.js"
 import { Vault, defaultAI } from "../src/config.js"
 import { chatDefinitions, chatFolder } from "../src/local-chat.js"
+import { LocalChatRuntime } from "../src/local-chat-runtime.js"
 import { SESSION_LEASE_MS } from "../src/channel-authority.js"
 import { canReadChannel, READ_GRANT_LIVENESS_GRACE_MS, READ_GRANT_MAX_TTL_MS, READ_REQUEST_PENDING_TTL_MS, validateGrantPhrase } from "../src/chat-read-access.js"
 import { registerMemory } from "../src/routes.js"
@@ -229,6 +230,15 @@ describe("caducidad y revocación", () => {
     expect(await canReadChannel(db, w.member.session.id, w.outsider.channel.id)).toBe(false)
     await ops.chat.sweepReadAccess()
     expect((await db.query("SELECT revoke_reason FROM chat_read_grants WHERE id=$1", [grantId]))[0]!.revoke_reason).toBe("work_completed")
+  })
+
+  it("el ciclo del Hub revoca aunque falle otro paso del mismo ciclo", async () => {
+    const w = await world(), { grantId } = await granted(w)
+    await db.query("UPDATE chat_sessions SET closed_at=now(),lease_until=NULL WHERE id=$1", [w.member.session.id])
+    vi.spyOn(ops.chat, "processTurnAlerts").mockRejectedValue(new Error("fallo de otro paso"))
+    const runtime = new LocalChatRuntime(ops.chat, async () => undefined, () => true, async () => undefined)
+    await expect(runtime.tick()).rejects.toThrow("fallo de otro paso")
+    expect((await db.query("SELECT revoke_reason FROM chat_read_grants WHERE id=$1", [grantId]))[0]!.revoke_reason).toBe("session_closed")
   })
 
   it("la persona revoca y queda auditado", async () => {
