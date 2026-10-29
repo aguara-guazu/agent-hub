@@ -1,9 +1,8 @@
 import "./styles/fonts.css"
 import "./styles/ah.css"
-import type { ReactNode } from "react"
 import { Outlet, Route, Routes } from "react-router-dom"
 import Layout from "./components/Layout"
-import { BySearchParam, LegacyPage, Redirect } from "./components/RouteFallbacks"
+import { Redirect } from "./components/RouteFallbacks"
 import { Button } from "./components/ui/basics"
 import { Empty, Loading } from "./components/ui/display"
 import { ToastProvider } from "./components/ui/Toast"
@@ -11,13 +10,12 @@ import { useT } from "./i18n"
 import { AuthProvider, useAuth } from "./lib/auth"
 import { useTheme } from "./lib/theme"
 import AutomationsPage from "./pages/automations/AutomationsPage"
-import { HubActivity } from "./pages/Hub"
 import MemoryPage from "./pages/memory/MemoryPage"
 import MemoryEntityView from "./pages/memory/EntityPage"
 import ProjectPage from "./pages/project/ProjectPage"
 import ProjectsPage from "./pages/projects/ProjectsPage"
 import CollaborationPage from "./pages/collaboration/CollaborationPage"
-import { MemoryProcessing } from "./pages/MemoryProcessing"
+import ActivityPage from "./pages/activity/ActivityPage"
 import SettingsPage from "./pages/settings/SettingsPage"
 import SkillsPage from "./pages/skills/SkillsPage"
 import ClientsPage from "./pages/clients/ClientsPage"
@@ -38,7 +36,6 @@ function LocalSession() {
   )
 }
 
-const legacy = (element: ReactNode) => <LegacyPage>{element}</LegacyPage>
 
 /** Árbol de rutas del rediseño. Las rutas previas redirigen a su destino nuevo para no romper enlaces
  *  de notificaciones, del proceso de escritorio (`desktop/src/navigation.ts`) ni de la memoria. */
@@ -63,7 +60,7 @@ export function App() {
               <Route path="servers" element={<ServersPage />} />
               <Route path="skills" element={<SkillsPage />} />
               <Route path="clients" element={<ClientsPage />} />
-              <Route path="activity" element={legacy(<BySearchParam name="tab" cases={{ procesamiento: <MemoryProcessing /> }} fallback={<HubActivity />} />)} />
+              <Route path="activity" element={<ActivityPage />} />
               <Route path="settings" element={<SettingsPage />} />
 
               <Route path="catalog" element={<Redirect to="/servers" />} />
