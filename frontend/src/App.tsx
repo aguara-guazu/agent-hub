@@ -1,7 +1,7 @@
 import "./styles/fonts.css"
 import "./styles/ah.css"
 import type { ReactNode } from "react"
-import { Outlet, Route, Routes, useSearchParams } from "react-router-dom"
+import { Outlet, Route, Routes } from "react-router-dom"
 import Layout from "./components/Layout"
 import { BySearchParam, InterimHome, LegacyPage, Redirect } from "./components/RouteFallbacks"
 import { Button } from "./components/ui/basics"
@@ -12,7 +12,9 @@ import { AuthProvider, useAuth } from "./lib/auth"
 import { useTheme } from "./lib/theme"
 import { DeliveriesPage, DeliveryDetailPage, SchedulesPage } from "./pages/Automations"
 import { HubActivity, HubCatalog, HubClients, HubSettings, HubSkills } from "./pages/Hub"
-import { MemoryEntityPage, MemoryExplore, MemoryProjects, MemoryReview, MemorySearch } from "./pages/Memory"
+import { MemoryEntityPage, MemoryProjects, MemoryReview } from "./pages/Memory"
+import MemoryPage from "./pages/memory/MemoryPage"
+import MemoryEntityView from "./pages/memory/EntityPage"
 import { MemoryLocalCollaboration } from "./pages/MemoryLocalCollaboration"
 import { MemoryProcessing } from "./pages/MemoryProcessing"
 import { MemorySettings } from "./pages/MemorySettings"
@@ -46,8 +48,8 @@ export function App() {
 
               <Route path="projects" element={legacy(<MemoryProjects />)} />
               <Route path="projects/:id" element={legacy(<MemoryEntityPage />)} />
-              <Route path="memory" element={legacy(<MemoryHome />)} />
-              <Route path="memory/entities/:id" element={legacy(<MemoryEntityPage />)} />
+              <Route path="memory" element={<MemoryPage />} />
+              <Route path="memory/entities/:id" element={<MemoryEntityView />} />
               <Route path="collaboration" element={legacy(<MemoryLocalCollaboration />)} />
               <Route path="automations" element={legacy(<BySearchParam name="view" cases={{ history: <DeliveriesPage /> }} fallback={<SchedulesPage />} />)} />
               <Route path="automations/deliveries/:runId" element={legacy(<DeliveryDetailPage />)} />
@@ -77,12 +79,6 @@ export function App() {
       </AuthProvider>
     </ToastProvider>
   )
-}
-
-/** Memoria provisoria: con `?q=` muestra la búsqueda existente; sin consulta, el explorador. */
-function MemoryHome() {
-  const [params] = useSearchParams()
-  return params.get("q") ? <MemorySearch /> : <MemoryExplore />
 }
 
 export default App
