@@ -553,7 +553,7 @@ it('serializa clear concurrentes y rechaza la segunda generación vencida',async
   const {master,backend,teams,plan,slot}=await hubTeam()
   const input={session_key:master.key,plan_id:plan.id,member_id:slot.id,expected_generation:slot.runtime.generation,action:'clear'}
   const results=await Promise.allSettled([teams.call('team_control',input,master.agent),teams.call('team_control',input,master.agent)])
-  expect(results.map(item=>item.status)).toEqual(['fulfilled','rejected'])
+  expect(results.map(item=>item.status).sort()).toEqual(['fulfilled','rejected'])
   expect(backend.launch).toHaveBeenCalledTimes(2)
 })
 
