@@ -147,6 +147,8 @@ export interface ScheduleEffects {
   deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests
   /** One cycle of channel reply reading and request expiry; the clock calls it about once a minute. */
   replyTick?(): Promise<unknown>
+  /** Executes the approved intentions that are ready, one at a time; returns only counts. The clock calls it every 30 seconds and right after a decision is consumed. */
+  actionTick?(): Promise<unknown>
   /** Owner operations of the app on the decision request of a run; none of them returns an approval code. */
   review?: import('./decisions/review.js').DecisionReview
 }

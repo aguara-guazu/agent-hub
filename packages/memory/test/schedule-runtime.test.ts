@@ -185,6 +185,19 @@ it('un periódico que no termina no impide lanzar un run vencido ni se solapa co
   expect(started).toBe(2); release()
 })
 
+it('kickPeriodic corre la tarea ya, una sola vez, y no hace nada con las automatizaciones apagadas ni con la tarea en curso', async () => {
+  let calls = 0, release!: () => void
+  await runtime.start(); await runtime.idle()
+  runtime.addPeriodic('acciones', () => new Promise<void>(resolve => { calls++; release = resolve }), 3_600_000)
+  runtime.kickPeriodic('acciones'); runtime.kickPeriodic('acciones')
+  expect(calls).toBe(1)
+  release(); await new Promise(resolve => setTimeout(resolve, 10))
+  enabled = false; runtime.kickPeriodic('acciones')
+  expect(calls).toBe(1)
+  enabled = true; runtime.kickPeriodic('inexistente'); runtime.kickPeriodic('acciones')
+  expect(calls).toBe(2); release()
+})
+
 it('el cierre no espera sin tope a un periódico colgado', async () => {
   runtime = build({ closeWaitMs: 50 })
   runtime.addPeriodic('colgada', () => new Promise<void>(() => undefined), 0)

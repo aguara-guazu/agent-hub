@@ -29,6 +29,7 @@ import './daily-templates.js'
 import { createFleetRecovery } from './fleet-recovery.js'
 
 const REPLY_TICK_MS = 60_000
+const ACTION_TICK = 'action_tick', ACTION_TICK_MS = 30_000
 /**
  * The fleet sweep decides a resume from the restart incidents the clock writes when it starts, so it must run after them: a sweep that came first would
  * skip every member and nothing would trigger it again once the quota was already back.
@@ -38,11 +39,16 @@ export async function startClockThenRecover(runtime: { start(): Promise<void> },
   await recovery?.recover().catch(error => console.error('[fleet-recovery]', error instanceof Error ? error.message : 'falló'))
 }
 /** Counts and error names only; a cycle without activity leaves no event. */
-export function summarizeReplyTick(result: unknown): Record<string, unknown> | null {
+export function summarizeReplyTick(result: unknown): Record<string, unknown> | null { return summarizeTick(result, ['expired', 'consumed', 'rejected']) }
+/** Same rule for the action dispatcher: executions and their outcomes count, an empty cycle does not. */
+export function summarizeActionTick(result: unknown): Record<string, unknown> | null { return summarizeTick(result, ['executed', 'succeeded', 'rejected', 'uncertain']) }
+function summarizeTick(result: unknown, outcomes: string[]): Record<string, unknown> | null {
   if (!result || typeof result !== 'object') return null
   const summary: Record<string, unknown> = {}, errors: string[] = []
   // Only outcomes count: a request left open makes every cycle inspect, which is not activity.
-  const outcome = (key: string) => ['expired', 'consumed', 'rejected'].includes(key)
+  const outcome = (key: string) => outcomes.includes(key)
+  const listed = (result as { errors?: unknown }).errors
+  if (Array.isArray(listed)) for (const item of listed) if (typeof item === 'string') errors.push(item.slice(0, 60))
   for (const [key, value] of Object.entries(result as Record<string, unknown>)) {
     if (typeof value === 'number' && value > 0 && outcome(key)) summary[key] = value
     else if (value && typeof value === 'object') {
@@ -144,8 +150,15 @@ export class MemoryService {
       const summary = summarizeReplyTick(result)
       if (summary) await schedules.addEvent({ type: 'replies.processed', actor_kind: 'system', payload: summary })
     }, REPLY_TICK_MS)
+    // Approved intentions are executed by the core, never by a model; B owns the claim, the generation and the uncertain state, A owns when it runs.
+    runtime.addPeriodic(ACTION_TICK, async () => {
+      const summary = summarizeActionTick(await automation.effects?.actionTick?.())
+      if (summary) await schedules.addEvent({ type: 'action.receipt', actor_kind: 'system', payload: summary })
+    }, ACTION_TICK_MS)
     return { store: schedules, admin, runtime, attention }
   }
+  /** Runs the action dispatcher now, right after a decision was consumed, unless it is already running. */
+  async kickActions() { (await this.get()).schedules?.runtime.kickPeriodic(ACTION_TICK) }
   /** Applies an automations switch change now instead of at the next tick. */
   async kickSchedules() { (await this.get()).schedules?.runtime.kick() }
   /** Starts the clock, independent of the collaboration switch, and then looks at members that stopped on an exhausted quota while the Hub was down. */

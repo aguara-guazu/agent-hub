@@ -23,3 +23,11 @@ it('el barrido de recuperación de la flota corre después de que el reloj regis
   await startClockThenRecover({ start: async () => undefined }, undefined)
   quiet.mockRestore()
 })
+
+it('el despachador deja evento solo con ejecuciones, resultados o errores', async () => {
+  const { summarizeActionTick } = await import('../src/service.js')
+  expect(summarizeActionTick(undefined)).toBeNull()
+  expect(summarizeActionTick({ executed: 0, succeeded: 0, rejected: 0, uncertain: 0 })).toBeNull()
+  expect(summarizeActionTick({ executed: 3, succeeded: 2, uncertain: 1, ignored: 9 })).toEqual({ executed: 3, succeeded: 2, uncertain: 1 })
+  expect(summarizeActionTick({ executed: 0, errors: ['jira:TypeError', 7] })).toEqual({ errors: ['jira:TypeError'] })
+})

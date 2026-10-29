@@ -106,6 +106,13 @@ export class ScheduleRuntime {
   }
   /** Other areas hook periodic maintenance (expiry of derived plans) into the same tick. */
   addPeriodic(name: string, task: () => Promise<unknown>, everyMs = 0) { this.periodic.set(name, { task, everyMs, last: 0 }) }
+  /** Runs a periodic task now, once: nothing happens while the automations are off, the runtime is stopped or the task is already running. */
+  kickPeriodic(name: string) {
+    const entry = this.periodic.get(name)
+    if (!entry || this.stopped || entry.running || !this.o.automation.enabled()) return
+    entry.last = this.now()
+    entry.running = entry.task().then(() => undefined, () => undefined).finally(() => { entry.running = undefined })
+  }
   kick = () => { if (!this.stopped && !this.ticking) this.ticking = this.tick().catch(() => undefined).finally(() => { this.ticking = undefined }) }
   activeRuns() { return this.store.activeRuns() }
   /** Aborts the in-flight run of a schedule; the run ends as cancelled. */
