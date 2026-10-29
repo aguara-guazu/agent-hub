@@ -595,7 +595,7 @@ export class Store {
     return this.agent(id)!
   }
 
-  updateAgent(id: string, fields: Partial<Pick<AgentInstance, 'cli_version' | 'config_path' | 'enabled' | 'last_connected_at' | 'last_listed_hash' | 'drift_detected' | 'drift_detail' | 'account_skills' | 'unmanaged'>>): void {
+  updateAgent(id: string, fields: Partial<Pick<AgentInstance, "cli_version" | "config_path" | "enabled" | "last_connected_at" | "last_listed_hash" | "drift_detected" | "drift_detail" | "account_skills" | "unmanaged">>): void {
     const sets: string[] = []
     const params: (string | number | null)[] = []
     if (fields.unmanaged !== undefined) {
@@ -653,7 +653,7 @@ export class Store {
 
   // ------------------------------------------------------------- catálogo
   server(id: string): McpServerRow | undefined {
-    const row = this.db.get('SELECT * FROM mcp_servers WHERE id = ? AND deleted_at IS NULL', id)
+    const row = this.db.get("SELECT * FROM mcp_servers WHERE id = ? AND deleted_at IS NULL", id)
     return row ? toServer(row) : undefined
   }
 
@@ -678,25 +678,25 @@ export class Store {
   /** Todos los servers de todas las personas; lo usa el reintento de sondeo. */
   allServers(): McpServerRow[] {
     return this.db
-      .all('SELECT * FROM mcp_servers WHERE deleted_at IS NULL ORDER BY user_id, slug, id')
+      .all("SELECT * FROM mcp_servers WHERE deleted_at IS NULL ORDER BY user_id, slug, id")
       .map(toServer)
   }
 
   serversOfUser(userId: string): McpServerRow[] {
     return this.db
-      .all('SELECT * FROM mcp_servers WHERE user_id = ? AND deleted_at IS NULL ORDER BY slug', userId)
+      .all("SELECT * FROM mcp_servers WHERE user_id = ? AND deleted_at IS NULL ORDER BY slug", userId)
       .map(toServer)
       .sort((a, b) => cmp(a.slug, b.slug) || cmp(a.id, b.id))
   }
 
   serverBySlug(userId: string, slug: string): McpServerRow | undefined {
-    const row = this.db.get('SELECT * FROM mcp_servers WHERE user_id = ? AND slug = ? AND deleted_at IS NULL', userId, slug)
+    const row = this.db.get("SELECT * FROM mcp_servers WHERE user_id = ? AND slug = ? AND deleted_at IS NULL", userId, slug)
     return row ? toServer(row) : undefined
   }
 
   insertServer(input: Omit<McpServerRow, 'id' | 'definition_hash' | 'last_probe_error' | 'auth'> & { definition_hash?: string; auth?: McpServerRow['auth'] }): McpServerRow {
     // Un borrado suave con el mismo slug se purga antes: crear no cambia de comportamiento ni choca con UNIQUE (user_id, slug).
-    const previous = this.db.get('SELECT id FROM mcp_servers WHERE user_id = ? AND slug = ? AND deleted_at IS NOT NULL', input.user_id, input.slug)
+    const previous = this.db.get("SELECT id FROM mcp_servers WHERE user_id = ? AND slug = ? AND deleted_at IS NOT NULL", input.user_id, input.slug)
     if (previous) this.purgeServer(str(previous.id))
     const id = newId()
     const at = nowIso()
@@ -743,23 +743,23 @@ export class Store {
 
   /** Server borrado y todavía sin purgar. */
   deletedServer(id: string): (McpServerRow & { deleted_at: string }) | undefined {
-    const row = this.db.get('SELECT * FROM mcp_servers WHERE id = ? AND deleted_at IS NOT NULL', id)
+    const row = this.db.get("SELECT * FROM mcp_servers WHERE id = ? AND deleted_at IS NOT NULL", id)
     return row ? { ...toServer(row), deleted_at: str(row.deleted_at) } : undefined
   }
 
   /** Lo saca de catálogo y snapshots; tools, reglas y OAuth quedan hasta la purga para que `restoreServer` vuelva al estado exacto. */
   softDeleteServer(id: string, at = nowIso()): void {
-    this.db.run('UPDATE mcp_servers SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL', at, at, id)
+    this.db.run("UPDATE mcp_servers SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", at, at, id)
   }
 
   restoreServer(id: string): void {
-    this.db.run('UPDATE mcp_servers SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL', nowIso(), id)
+    this.db.run("UPDATE mcp_servers SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL", nowIso(), id)
   }
 
   /** Borrado duro con la limpieza del borrado inmediato anterior: reglas del server y de sus tools; las tools caen por FK. */
   purgeServer(id: string): void {
-    this.forgetResource('mcp_tool', this.db.all('SELECT id FROM mcp_tools WHERE server_id = ?', id).map((row) => str(row.id)))
-    this.forgetResource('mcp_server', [id])
+    this.forgetResource("mcp_tool", this.db.all("SELECT id FROM mcp_tools WHERE server_id = ?", id).map((row) => str(row.id)))
+    this.forgetResource("mcp_server", [id])
     this.deleteServer(id)
     this.onServerPurged?.(id)
   }
@@ -833,19 +833,19 @@ export class Store {
 
   // ------------------------------------------------------------- skills
   skill(id: string): SkillRow | undefined {
-    const row = this.db.get('SELECT * FROM skills WHERE id = ? AND deleted_at IS NULL', id)
+    const row = this.db.get("SELECT * FROM skills WHERE id = ? AND deleted_at IS NULL", id)
     return row ? toSkill(row) : undefined
   }
 
   skillsOfUser(userId: string): SkillRow[] {
     return this.db
-      .all('SELECT * FROM skills WHERE user_id = ? AND deleted_at IS NULL ORDER BY slug', userId)
+      .all("SELECT * FROM skills WHERE user_id = ? AND deleted_at IS NULL ORDER BY slug", userId)
       .map(toSkill)
       .sort((a, b) => cmp(a.slug, b.slug) || cmp(a.id, b.id))
   }
 
   skillBySlug(userId: string, slug: string): SkillRow | undefined {
-    const row = this.db.get('SELECT * FROM skills WHERE user_id = ? AND slug = ? AND deleted_at IS NULL', userId, slug)
+    const row = this.db.get("SELECT * FROM skills WHERE user_id = ? AND slug = ? AND deleted_at IS NULL", userId, slug)
     return row ? toSkill(row) : undefined
   }
 
@@ -868,7 +868,7 @@ export class Store {
     source_ref?: string
     source_machine_id?: string
   }): SkillRow {
-    const previous = this.db.get('SELECT id FROM skills WHERE user_id = ? AND slug = ? AND deleted_at IS NOT NULL', input.user_id, input.slug)
+    const previous = this.db.get("SELECT id FROM skills WHERE user_id = ? AND slug = ? AND deleted_at IS NOT NULL", input.user_id, input.slug)
     if (previous) this.purgeSkill(str(previous.id))
     const id = newId()
     const at = nowIso()
@@ -901,27 +901,27 @@ export class Store {
   }
 
   deletedSkill(id: string): (SkillRow & { deleted_at: string }) | undefined {
-    const row = this.db.get('SELECT * FROM skills WHERE id = ? AND deleted_at IS NOT NULL', id)
+    const row = this.db.get("SELECT * FROM skills WHERE id = ? AND deleted_at IS NOT NULL", id)
     return row ? { ...toSkill(row), deleted_at: str(row.deleted_at) } : undefined
   }
 
   softDeleteSkill(id: string, at = nowIso()): void {
-    this.db.run('UPDATE skills SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL', at, at, id)
+    this.db.run("UPDATE skills SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", at, at, id)
   }
 
   restoreSkill(id: string): void {
-    this.db.run('UPDATE skills SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL', nowIso(), id)
+    this.db.run("UPDATE skills SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL", nowIso(), id)
   }
 
   purgeSkill(id: string): void {
-    this.forgetResource('skill', [id])
+    this.forgetResource("skill", [id])
     this.deleteSkill(id)
   }
 
   /** Purga servers y skills borrados antes de `before` (ISO). Devuelve cuántos de cada uno. */
   purgeDeleted(before: string): { servers: number; skills: number } {
-    const servers = this.db.all('SELECT id FROM mcp_servers WHERE deleted_at IS NOT NULL AND deleted_at < ?', before).map((row) => str(row.id))
-    const skills = this.db.all('SELECT id FROM skills WHERE deleted_at IS NOT NULL AND deleted_at < ?', before).map((row) => str(row.id))
+    const servers = this.db.all("SELECT id FROM mcp_servers WHERE deleted_at IS NOT NULL AND deleted_at < ?", before).map((row) => str(row.id))
+    const skills = this.db.all("SELECT id FROM skills WHERE deleted_at IS NOT NULL AND deleted_at < ?", before).map((row) => str(row.id))
     for (const id of servers) this.purgeServer(id)
     for (const id of skills) this.purgeSkill(id)
     return { servers: servers.length, skills: skills.length }

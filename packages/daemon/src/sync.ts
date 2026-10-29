@@ -252,7 +252,7 @@ export class SyncClient {
     if (fields.driftDetail !== undefined) body['drift_detail'] = fields.driftDetail
     if (fields.syncedHash !== undefined) body['synced_hash'] = fields.syncedHash
     if (fields.accountSkills !== undefined) body['account_skills'] = fields.accountSkills
-    if (fields.unmanaged !== undefined) body['unmanaged'] = fields.unmanaged
+    if (fields.unmanaged !== undefined) body["unmanaged"] = fields.unmanaged
     await this.request('POST', '/sync/report', { json: body })
   }
 
