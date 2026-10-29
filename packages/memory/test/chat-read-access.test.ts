@@ -320,4 +320,20 @@ describe("rutas de la persona", () => {
       expect(personCall).toHaveBeenCalledWith("chat_threads", {}, "owner", undefined, expect.anything())
     } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
   })
+
+  it("con la colaboración apagada confirmar, rechazar y revocar responden 403", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "hub-read-routes-off-"))
+    const app = Fastify()
+    const { service } = registerMemory(app, { directory, baseUrl: "http://localhost", worker: false, collaborationEnabled: () => false, authorize: async () => ({ id: "owner" }) })
+    const decide = vi.fn(async () => ({}))
+    vi.spyOn(service, "get").mockResolvedValue({ operations: { chat: { confirmReadRequest: decide, rejectReadRequest: decide, revokeReadGrant: decide } } } as any)
+    const id = "11111111-1111-4111-8111-111111111111"
+    try {
+      for (const [url, payload] of [[`/api/memory/chat/read-requests/${id}/confirm`, { phrase }], [`/api/memory/chat/read-requests/${id}/reject`, {}], [`/api/memory/chat/read-grants/${id}/revoke`, {}]] as const) {
+        const response = await app.inject({ method: "POST", url, payload, headers: { authorization: "Bearer owner" } })
+        expect(response.statusCode).toBe(403)
+      }
+      expect(decide).not.toHaveBeenCalled()
+    } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+  })
 })
