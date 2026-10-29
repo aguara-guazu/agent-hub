@@ -132,3 +132,52 @@ describe('apagar las automatizaciones con una acción ya reclamada', () => {
     expect(decisions.intent(intentId)).toMatchObject({ state: 'uncertain', error_code: 'interrupted' })
   })
 })
+
+describe('ciclo de sondeo (replyTick)', () => {
+  let dir: string, db: Database, store: Store, ownerId: string, sets: unknown[]
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'effects-tick-')); db = new Database(':memory:'); runMigrations(db, ':memory:'); store = new Store(db); ownerId = ensureLocalOwner(store).id; sets = [] })
+  afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+
+  function build(over: { enabled?: () => boolean; connectors?: any[]; google?: Record<string, unknown> } = {}) {
+    const memoryDb = { query: async (sql: string) => (sql.includes('FROM connectors') ? over.connectors ?? [] : []) as any[] }
+    return createCoreScheduleEffects({ store, pool: {} as ConnectionPool, ownerId, automationsEnabled: over.enabled ?? (() => true), adapters: [],
+      host: { directory: dir, vault: new Vault(dir), google: { granted: () => true, token: async () => 'tok', ...over.google } as never,
+        load: async () => ({ db: memoryDb, schedules: { set: async (entry: unknown) => { sets.push(entry) }, artifactAuthority: async () => 'live' as const, artifactOfRun: async () => undefined } }) } })
+  }
+  const request = async (effects: ReturnType<typeof build>, expiresAt: string, runId = 'run-1') => {
+    const { decision_request_ref } = await effects.decisions.prepareDecision({ run_id: runId, artifact_id: `a-${runId}`, owner_id: ownerId, project_ids: ['p1'], expires_at: expiresAt,
+      items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p1', summary: 'uno', effect: { n: runId.length } }] })
+    return decision_request_ref
+  }
+
+  it('con las automatizaciones apagadas no hace nada', async () => {
+    const effects = build({ enabled: () => false })
+    expect(await effects.replyTick()).toEqual({ skipped: 'automations_off' })
+    expect(sets).toEqual([])
+  })
+
+  it('vence las solicitudes y publica el espejo; sin conector de Gmail ni bindings no consulta a nadie', async () => {
+    const effects = build()
+    const ref = await request(effects, '2099-01-01T00:00:00.000Z', 'run-vivo')
+    const old = await request(effects, '2000-01-01T00:00:00.000Z', 'run-viejo')
+    const result = await effects.replyTick()
+    expect(result).toMatchObject({ expired: 1, gmail: null, slack: { inspected: 0, consumed: 0 } })
+    const { store: decisions } = await effects.ready()
+    expect(decisions.publicRequest(old).state).toBe('expired')
+    expect(decisions.publicRequest(ref).state).toBe('open')
+    expect(sets.length).toBeGreaterThan(0)
+  })
+
+  it('un fallo de Gmail se informa sin detener Slack ni el vencimiento', async () => {
+    const effects = build({ connectors: [{ id: 'conn-1', config: { gmail_send_enabled: true } }], google: { token: async () => { throw new Error('token revocado') } } })
+    const ref = await request(effects, '2099-01-01T00:00:00.000Z')
+    const { store: decisions } = await effects.ready()
+    const reserved = await decisions.reserveDelivery({ request_id: ref, integration: 'gmail', account: 'me@example.com', correlation: '<h@hub>', provenance: 'test' })
+    decisions.beginSend(reserved.delivery_id)
+    await decisions.recordNative(reserved.delivery_id, { native_id: 'n1', thread_id: 't1' })
+    const result = await effects.replyTick()
+    expect(result.gmail).toEqual({ error: 'Error' })
+    expect(result.slack).toMatchObject({ inspected: 0 })
+    expect(result.expired).toBe(0)
+  })
+})

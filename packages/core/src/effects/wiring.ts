@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import type { ConnectionPool } from '@agenthub/gateway'
-import { DecisionService, DecisionStore, GmailSelfSender, MemoryExclusionSink, type DecisionAuthorityReader, type GoogleAuth, type ScheduleEffects, type Vault } from '@agenthub/memory'
+import { DecisionService, DecisionStore, GmailSelfSender, MemoryExclusionSink, pollGmailReplies, type DecisionAuthorityReader, type GoogleAuth, type ReplyPollResult, type ScheduleEffects, type Vault } from '@agenthub/memory'
 import type { Store } from '../store.js'
 import { CoreActionExecutor, type ActionAdapter } from './executor.js'
 import { createDeliveryAdapters, type DeliveryArtifacts } from './delivery.js'
 import { SlackSelfDelivery } from './slack-self.js'
+import { pollSlackReplies, type SlackPollResult } from './slack-replies.js'
 import { createEffectToolResolver } from './tools.js'
 import { createScheduleEffects } from './schedule-effects.js'
 
@@ -34,6 +35,14 @@ export interface CoreEffectsOptions {
   adapters?: readonly ActionAdapter<any>[]
 }
 
+/** Resultado de un ciclo de sondeo: cada canal informa por separado y un fallo en uno no detiene al otro. */
+export interface ReplyTickResult {
+  skipped?: 'automations_off'
+  expired?: number
+  gmail?: ReplyPollResult | { error: string } | null
+  slack?: SlackPollResult | { error: string }
+}
+
 /** Clave del verificador: vive en el Vault local, nunca en el almacén de decisiones ni en un archivo de configuración. */
 function verifierKey(vault: EffectsHost['vault']): Buffer {
   const saved = vault.read<{ key?: string }>(KEY_NAME)?.key
@@ -47,8 +56,9 @@ function verifierKey(vault: EffectsHost['vault']): Buffer {
  * Efectos del scheduler con sus dependencias resueltas de forma perezosa: el almacén de decisiones, el sink de exclusiones y los lectores de artefactos
  * necesitan la base de la memoria, que el servicio abre después de registrar las rutas. Un fallo al resolver deja cada llamada fallando cerrada.
  */
-export function createCoreScheduleEffects(options: CoreEffectsOptions): ScheduleEffects & { ready(): Promise<{ store: DecisionStore; service: DecisionService }> } {
-  let ready: Promise<{ store: DecisionStore; service: DecisionService; effects: ScheduleEffects }> | undefined
+export function createCoreScheduleEffects(options: CoreEffectsOptions): ScheduleEffects & { ready(): Promise<{ store: DecisionStore; service: DecisionService }>; replyTick(): Promise<ReplyTickResult> } {
+  type Resolved = { store: DecisionStore; service: DecisionService; effects: ScheduleEffects; tools: ReturnType<typeof createEffectToolResolver>; gmailConnector(): Promise<string | null> }
+  let ready: Promise<Resolved> | undefined
   /** Una resolución fallida no se conserva: el siguiente uso reintenta en lugar de quedar roto hasta reiniciar el core. */
   const resolve = () => ready ??= (async () => {
     const { db, schedules } = await options.host.load()
@@ -73,7 +83,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
         decisions: service,
         ownerId: options.ownerId,
       })
-      return { store, service, effects }
+      return { store, service, effects, tools, gmailConnector: gmail.connectorId }
     } catch (error) { store.close(); throw error }
   })().catch(error => { ready = undefined; throw error })
   const effects = async () => (await resolve()).effects
@@ -91,5 +101,21 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       revokeAll: async () => ((await effects()).decisions as { revokeAll(): Promise<number> }).revokeAll(),
     } as ScheduleEffects['decisions'],
     ready: async () => { const { store, service } = await resolve(); return { store, service } },
+    /**
+     * Ciclo de sondeo para el reloj del scheduler: vence solicitudes, lee las respuestas de Gmail y de Slack y publica el espejo público.
+     * Con las automatizaciones apagadas no hace nada. Un canal que falla no impide el otro ni el vencimiento.
+     */
+    async replyTick() {
+      if (!options.automationsEnabled()) return { skipped: 'automations_off' as const }
+      const { store, service, tools, gmailConnector } = await resolve()
+      const result: ReplyTickResult = { expired: store.expireDue() }
+      try {
+        const connectorId = await gmailConnector()
+        result.gmail = connectorId ? await pollGmailReplies({ store, service, google: options.host.google, connectorId }) : null
+      } catch (error) { result.gmail = { error: error instanceof Error ? error.name : 'error' } }
+      try { result.slack = await pollSlackReplies({ store, service, tools }) } catch (error) { result.slack = { error: error instanceof Error ? error.name : 'error' } }
+      await store.flushMirror().catch(() => undefined)
+      return result
+    },
   }
 }
