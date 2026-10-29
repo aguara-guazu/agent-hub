@@ -3,29 +3,31 @@ import "./styles/ah.css"
 import type { ReactNode } from "react"
 import { Outlet, Route, Routes, useSearchParams } from "react-router-dom"
 import Layout from "./components/Layout"
-import { BySearchParam, InterimHome, LegacyPage, Redirect } from "./components/RouteFallbacks"
+import { BySearchParam, LegacyPage, Redirect } from "./components/RouteFallbacks"
 import { Button } from "./components/ui/basics"
 import { Empty, Loading } from "./components/ui/display"
 import { ToastProvider } from "./components/ui/Toast"
-import { uiText } from "./components/ui/strings"
+import { useT } from "./i18n/useT"
 import { AuthProvider, useAuth } from "./lib/auth"
 import { useTheme } from "./lib/theme"
 import { DeliveriesPage, DeliveryDetailPage, SchedulesPage } from "./pages/Automations"
 import { HubActivity, HubCatalog, HubClients, HubSettings, HubSkills } from "./pages/Hub"
-import { MemoryEntityPage, MemoryExplore, MemoryProjects, MemoryReview, MemorySearch } from "./pages/Memory"
+import { MemoryEntityPage, MemoryExplore, MemoryProjects, MemorySearch } from "./pages/Memory"
 import { MemoryLocalCollaboration } from "./pages/MemoryLocalCollaboration"
 import { MemoryProcessing } from "./pages/MemoryProcessing"
 import { MemorySettings } from "./pages/MemorySettings"
+import HomePage from "./pages/home/HomePage"
 
 function LocalSession() {
   const { user, loading, reload } = useAuth()
   const theme = useTheme()
+  const { t } = useT("common")
   if (user) return <Outlet />
   return (
     <div className={`ah shell ${theme.className}`} style={{ alignItems: "center", justifyContent: "center" }}>
       {loading
-        ? <Loading label={uiText("session.connecting")} />
-        : <Empty icon="brand" title={uiText("session.title")} detail={uiText("session.detail")} action={<Button variant="primary" onClick={() => void reload()}>{uiText("action.reload")}</Button>} />}
+        ? <Loading label={t("session.connecting")} />
+        : <Empty icon="brand" title={t("session.title")} detail={t("session.detail")} action={<Button variant="primary" onClick={() => void reload()}>{t("actions.reconnect")}</Button>} />}
     </div>
   )
 }
@@ -42,7 +44,7 @@ export function App() {
           <Route element={<LocalSession />}>
             <Route element={<Layout />}>
               <Route index element={<Redirect to="/home" />} />
-              <Route path="home" element={<InterimHome review={<MemoryReview />} />} />
+              <Route path="home" element={<HomePage />} />
 
               <Route path="projects" element={legacy(<MemoryProjects />)} />
               <Route path="projects/:id" element={legacy(<MemoryEntityPage />)} />
