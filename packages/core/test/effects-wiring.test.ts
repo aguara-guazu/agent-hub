@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Vault } from '@agenthub/memory'
+import { Vault, delegatedPushPolicy } from '@agenthub/memory'
 import type { ConnectionPool } from '@agenthub/gateway'
 import { buildApp, type CoreApp } from '../src/app.js'
 import { ensureLocalOwner } from '../src/local.js'
@@ -12,6 +12,7 @@ import { runMigrations } from '../src/db/migrations.js'
 import { Store } from '../src/store.js'
 import { createCoreScheduleEffects } from '../src/effects/wiring.js'
 import { createJiraAdapters } from '../src/effects/jira.js'
+import { createGitPushAdapter } from '../src/effects/git-push-adapter.js'
 import { readJiraServerId } from '../src/effects/jira-server.js'
 import type { ActionTickResult } from '@agenthub/memory'
 import type { ActionAdapter } from '../src/effects/executor.js'
@@ -346,5 +347,62 @@ describe('adaptadores de Jira cableados con el servidor fijado por el dueño', (
     await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0))
     await effects.ready()
     expect(new Set(serverIds)).toEqual(new Set([created[1]!.id]))
+  })
+})
+
+describe('git_push cableado con la delegación vigente releída en cada intención', () => {
+  let dir: string, db: Database, store: Store, ownerId: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'effects-push-')); db = new Database(':memory:'); runMigrations(db, ':memory:'); store = new Store(db); ownerId = ensureLocalOwner(store).id })
+  afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+
+  const REPO = { repo_id: 'repo-1', repo_path: '/work/repo', canonical_remote_url: 'https://git.example.invalid/org/repo.git', remote_name: 'origin', default_branch: 'main', allowed_branches: ['feature/*'] }
+  const effect = { repo_id: 'repo-1', repo_path: '/work/repo', canonical_remote_url: REPO.canonical_remote_url, ref: 'refs/heads/feature/x', local_sha: 'a'.repeat(40), expected_remote_sha: null }
+  let delegation: Record<string, unknown> | null, gitCalls: string[][]
+
+  async function setup(extra: { toolCalls?: string[] } = {}) {
+    const memoryDb = { query: async (sql: string) => (sql.includes('project_delegations') && delegation ? [{ project_id: 'p1', document: delegation }] : []) as any[] }
+    const runner = async (args: string[]) => { gitCalls.push(args); return { code: 1, completed: true, stdout: '', stderr: 'no disponible en la prueba' } }
+    const effects = createCoreScheduleEffects({ store, pool: { callTool: async (_a: string, _s: unknown, name: string) => { extra.toolCalls?.push(name); return { is_error: false, content: [] } } } as unknown as ConnectionPool,
+      ownerId, automationsEnabled: () => true,
+      adapters: ({ db: memory }) => [createGitPushAdapter({ policy: repoId => delegatedPushPolicy(memory, repoId), git: runner })],
+      host: { directory: dir, vault: new Vault(dir), google: { granted: () => false } as never, load: async () => ({ db: memoryDb,
+        schedules: { set: async () => {}, artifactAuthority: async () => 'live' as const, artifactOfRun: async () => undefined, replaceDecisionRef: async () => true } }) } })
+    await effects.decisions.prepareDecision({ run_id: 'run-p', artifact_id: 'a-p', owner_id: ownerId, project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z',
+      items: [{ ordinal: 1, kind: 'git_push', project_id: 'p1', summary: 'Empujar feature/x', effect }] })
+    const view = await effects.review!.view('run-p')
+    await effects.review!.decide('run-p', { kind: 'approve', ordinals: [1], digest: view!.digest })
+    return effects
+  }
+  const intents = (decisions: unknown) => (decisions as { db: { prepare(sql: string): { all(): Array<{ state: string; error_code: string | null }> } } }).db.prepare('SELECT state, error_code FROM action_intents').all()
+  beforeEach(() => { gitCalls = []; delegation = null })
+
+  it('sin delegación vigente el push se rechaza antes de ejecutar git y sin llamadas MCP', async () => {
+    const toolCalls: string[] = []
+    const effects = await setup({ toolCalls })
+    const { store: decisions } = await effects.ready()
+    await vi.waitFor(() => expect(intents(decisions)).toEqual([{ state: 'rejected_before_dispatch', error_code: 'repo_not_delegated' }]))
+    expect(gitCalls).toEqual([])
+    expect(toolCalls).toEqual([])
+  })
+
+  it('con la delegación vigente la intención llega al adaptador local de git y no usa ningún servidor MCP', async () => {
+    delegation = { item_kinds: ['git_push'], repositories: [REPO] }
+    const toolCalls: string[] = []
+    const effects = await setup({ toolCalls })
+    const { store: decisions } = await effects.ready()
+    await vi.waitFor(() => expect(intents(decisions)[0]?.error_code ?? null).not.toBe(null))
+    // El repositorio de la prueba no existe en disco: el adaptador pasó la política y fue el propio push el que lo rechazó, sin tocar ningún servidor MCP.
+    expect(intents(decisions)[0]).toMatchObject({ state: 'rejected_before_dispatch' })
+    expect(intents(decisions)[0]!.error_code).not.toBe('repo_not_delegated')
+    expect(intents(decisions)[0]!.error_code).not.toBe('tool_off')
+    expect(toolCalls).toEqual([])
+  })
+
+  it('una delegación que no incluye git_push o que cambió de destino frena el push', async () => {
+    delegation = { item_kinds: ['jira_worklog'], repositories: [REPO] }
+    const first = await setup()
+    const { store: decisions } = await first.ready()
+    await vi.waitFor(() => expect(intents(decisions)).toEqual([{ state: 'rejected_before_dispatch', error_code: 'repo_not_delegated' }]))
+    expect(gitCalls).toEqual([])
   })
 })

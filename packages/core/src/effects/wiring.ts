@@ -15,6 +15,9 @@ const KEY_NAME = 'decision-verifier'
 const STORE_FILE = 'decisions.sqlite'
 
 /** Lo que el core necesita del servicio de memoria; se resuelve la primera vez que algo lo usa, cuando la base ya está abierta. */
+/** Lectura de la base de la memoria que los adaptadores pueden necesitar. */
+export type EffectsMemoryDb = { query<T = Record<string, any>>(sql: string, params?: unknown[]): Promise<T[]> }
+
 export interface EffectsHost {
   directory: string
   vault: Pick<Vault, 'read' | 'save'>
@@ -35,10 +38,10 @@ export interface CoreEffectsOptions {
   host: EffectsHost
   automationsEnabled: () => boolean
   /**
-   * Adaptadores de acción registrados por las áreas dueñas de cada tipo (Jira, push). Una función se evalúa al resolver los efectos, de modo que
-   * pueden leer del core (p. ej. `readJiraServerId`) sin que el cableado conozca su forma.
+   * Adaptadores de acción registrados por las áreas dueñas de cada tipo (Jira, push). Una función se evalúa una vez al resolver los efectos y recibe la
+   * base de la memoria ya abierta, de modo que pueden leer del core (p. ej. `readJiraServerId`) y de la delegación vigente sin que el cableado conozca su forma.
    */
-  adapters?: readonly ActionAdapter<any>[] | (() => readonly ActionAdapter<any>[])
+  adapters?: readonly ActionAdapter<any>[] | ((deps: { db: EffectsMemoryDb }) => readonly ActionAdapter<any>[])
 }
 
 /** Resultado de un ciclo de sondeo: cada canal informa por separado y un fallo en uno no detiene al otro. */
@@ -115,7 +118,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       } }
       const effects = createScheduleEffects({
         deliveries: createDeliveryAdapters({ store, artifacts, exclusions, gmail, slack: new SlackSelfDelivery({ store, tools, exclusions }) }),
-        actions: new CoreActionExecutor({ decisions: service, adapters: typeof options.adapters === 'function' ? options.adapters() : options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
+        actions: new CoreActionExecutor({ decisions: service, adapters: typeof options.adapters === 'function' ? options.adapters({ db }) : options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
         decisions: service,
         ownerId: options.ownerId,
         review: createDecisionReview({ store, service, schedules, onApproved: () => { void runActionTick().catch(() => undefined) } }),

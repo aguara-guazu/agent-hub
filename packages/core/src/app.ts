@@ -68,11 +68,12 @@ import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRo
 import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
-import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError } from '@agenthub/memory'
+import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
 import { createJiraTaskReader } from './memory-jira.js'
 import { createPoolCallAudit } from './effects/call-audit.js'
 import { createCoreScheduleEffects } from './effects/wiring.js'
 import { createJiraAdapters } from './effects/jira.js'
+import { createGitPushAdapter } from './effects/git-push-adapter.js'
 import { readJiraServerId } from './effects/jira-server.js'
 
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
@@ -284,7 +285,9 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const memoryRef: { service?: { vault: any; google: any; get(): Promise<any> } } = {}
     const scheduleEffects = createCoreScheduleEffects({ store, pool: jiraPool, ownerId: owner.id, automationsEnabled: () => automationsEnabled(store),
       // El servidor de Jira se relee en cada intención desde `jira.server_id`: sin ese setting (o con un servidor que ya no es del dueño) la escritura falla cerrada.
-      adapters: () => [...createJiraAdapters({ serverId: () => readJiraServerId(store, owner.id) })],
+      adapters: ({ db }) => [...createJiraAdapters({ serverId: () => readJiraServerId(store, owner.id) }),
+        // Los límites del push (ramas, destino canónico) salen de la delegación vigente y se releen en cada intención: revocarla frena un push ya aprobado.
+        createGitPushAdapter({ policy: repoId => delegatedPushPolicy(db, repoId) })],
       host: { directory: memoryDirectory, get vault() { return memoryRef.service!.vault }, get google() { return memoryRef.service!.google },
         load: async () => { const current = await memoryRef.service!.get(); return { db: current.db, schedules: current.schedules.store } } } })
     const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
