@@ -27,7 +27,7 @@ export * from './daily-templates.js'
 
 export * from './collaboration.js'
 
-export type { ScheduleEffects, ScheduleAutomation, DeliveryAdapters, DeliveryReceipt, ActionExecutor, ActionReceipt, ActionTickResult, DecisionRequests } from './schedule-contract.js'
+export type { ScheduleEffects, ScheduleAutomation, DeliveryAdapters, DeliveryReceipt, ActionExecutor, ActionReceipt, ActionTickResult, DecisionRequests, JiraGuard, AttentionLine, AttentionReaders } from './schedule-contract.js'
 export { DecisionStore, DecisionService } from './decisions/index.js'
 export { createDerivedPorts, DerivedDispatcher, type DerivedTick, type DerivedTeams } from './derived-automation.js'
 export { delegatedPushPolicy, type DelegatedPushPolicy } from './project-push-policy.js'

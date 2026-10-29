@@ -10,6 +10,9 @@ import { pollSlackReplies, type SlackPollResult } from './slack-replies.js'
 import { createEffectToolResolver } from './tools.js'
 import { createScheduleEffects } from './schedule-effects.js'
 import { createDecisionReview } from './decision-review.js'
+import { createJiraGuard } from './jira-guard.js'
+import { createDecisionAttention } from './attention.js'
+import { readJiraServerId } from './jira-server.js'
 
 const KEY_NAME = 'decision-verifier'
 const STORE_FILE = 'decisions.sqlite'
@@ -72,7 +75,8 @@ function verifierKey(vault: EffectsHost['vault']): Buffer {
  * necesitan la base de la memoria, que el servicio abre después de registrar las rutas. Un fallo al resolver deja cada llamada fallando cerrada.
  */
 export function createCoreScheduleEffects(options: CoreEffectsOptions): ScheduleEffects & { ready(): Promise<{ store: DecisionStore; service: DecisionService }>; replyTick(): Promise<ReplyTickResult>; actionTick(): Promise<ActionTickResult> } {
-  type Resolved = { store: DecisionStore; service: DecisionService; effects: ScheduleEffects; tools: ReturnType<typeof createEffectToolResolver>; gmailConnector(): Promise<string | null>; derived?: DerivedDispatcher }
+  type Resolved = { store: DecisionStore; service: DecisionService; db: EffectsMemoryDb; effects: ScheduleEffects; tools: ReturnType<typeof createEffectToolResolver>; gmailConnector(): Promise<string | null>; derived?: DerivedDispatcher }
+  const tools = createEffectToolResolver(options.store, options.pool, options.ownerId)
   let ready: Promise<Resolved> | undefined
   let dispatching = false
   /**
@@ -106,7 +110,6 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       store.recover()
       store.resyncMirror()
       const service = new DecisionService(store, query => schedules.artifactAuthority(query))
-      const tools = createEffectToolResolver(options.store, options.pool, options.ownerId)
       const exclusions = new MemoryExclusionSink(db)
       const artifacts: DeliveryArtifacts = { load: async ({ run_id, artifact_id }) => {
         const artifact = await schedules.artifactOfRun(run_id)
@@ -129,7 +132,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
         teams.attachAutomation(createDerivedPorts({ decisions: service, ownerId: () => options.ownerId, automationsEnabled: options.automationsEnabled }))
         derived = new DerivedDispatcher({ db, teams, decisions: service })
       }
-      return { store, service, effects, tools, gmailConnector: gmail.connectorId, ...(derived ? { derived } : {}) }
+      return { store, service, db, effects, tools, gmailConnector: gmail.connectorId, ...(derived ? { derived } : {}) }
     } catch (error) { store.close(); throw error }
   })().catch(error => { ready = undefined; throw error })
   const effects = async () => (await resolve()).effects
@@ -154,6 +157,8 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       repropose: async runId => (await review()).repropose(runId),
       releaseDelivery: async (runId, integration) => (await review()).releaseDelivery(runId, integration),
     },
+    jira: createJiraGuard({ serverId: () => readJiraServerId(options.store, options.ownerId), tools: serverId => tools.forServer(serverId) }),
+    attention: createDecisionAttention({ resolve }),
     ready: async () => { const { store, service } = await resolve(); return { store, service } },
     /**
      * Ciclo de sondeo para el reloj del scheduler: vence solicitudes, lee las respuestas de Gmail y de Slack y publica el espejo público.

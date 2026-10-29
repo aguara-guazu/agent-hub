@@ -154,6 +154,10 @@ export interface ScheduleEffects {
   actionTick?(): Promise<ActionTickResult>
   /** Owner operations of the app on the decision request of a run; none of them returns an approval code. */
   review?: import('./decisions/review.js').DecisionReview
+  /** Jira identity of the owner for the close templates; read on every run, never cached across runs. */
+  jira?: JiraGuard
+  /** Readers over the decision store that the brief and the close consume: replies awaiting and approved items that never reached the executor. */
+  attention?: Pick<AttentionReaders, 'pending_responses' | 'carryover_items'>
 }
 
 /** Switch and effects injected by the core; the memory package never reads the core database. */

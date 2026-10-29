@@ -1,7 +1,7 @@
 import { resultText, type CallResult } from '@agenthub/gateway'
 import type { ActionReceipt, JiraEffect } from '@agenthub/memory'
 import { EffectRejected, type ActionAdapter, type ActionContext } from './executor.js'
-import { EffectToolDenied } from './tools.js'
+import { EffectToolDenied, type EffectTools } from './tools.js'
 
 type Receipt = Omit<ActionReceipt, 'intent_id'>
 type WorklogEffect = Extract<JiraEffect, { kind: 'jira_worklog' }>
@@ -77,7 +77,7 @@ function payload(result: CallResult): Record<string, any> | undefined {
 }
 
 /** Lectura previa a una escritura. Todo fallo, también uno de red, significa que nada se escribió y sale como rechazo. */
-async function read(ctx: ActionContext, tool: string, args: Record<string, unknown>): Promise<Record<string, any>> {
+async function read(ctx: { tools: EffectTools }, tool: string, args: Record<string, unknown>): Promise<Record<string, any>> {
   let result: CallResult
   try { result = await ctx.tools.call(tool, args) } catch (error) { throw new EffectRejected(error instanceof EffectToolDenied ? 'tool_off' : 'read_failed') }
   const data = result.is_error ? undefined : payload(result)
@@ -105,7 +105,7 @@ function history(container: unknown, list: 'worklogs' | 'comments'): { items: Re
  * Sitio donde se escribe. El del efecto manda; sin él, solo vale el único recurso accesible con scope de Jira y dominio `*.atlassian.net`.
  * Con cero o varios candidatos no se adivina: `site_unknown`.
  */
-async function resolveSite(ctx: ActionContext, effect: JiraEffect): Promise<string> {
+async function resolveSite(ctx: { tools: EffectTools }, effect: { site: string | null }): Promise<string> {
   if (effect.site) return effect.site
   const data = await read(ctx, RESOURCES, {})
   const resources: unknown[] = Array.isArray(data) ? data : Array.isArray(data['resources']) ? data['resources'] : []
@@ -320,6 +320,9 @@ function transitionAdapter(options: JiraAdapterOptions): ActionAdapter<Transitio
     },
   } as ActionAdapter<TransitionEffect>
 }
+
+/** Lecturas y validaciones que comparten los adaptadores y el guard de identidad del cierre. */
+export { read as jiraRead, resolveSite as resolveJiraSite, ISSUE_KEY as JIRA_ISSUE_KEY, ACCOUNT_ID as JIRA_ACCOUNT_ID, USER_INFO as JIRA_USER_INFO_TOOL, GET_ISSUE as JIRA_GET_ISSUE_TOOL }
 
 /** Los tres adaptadores de Jira para la lista cerrada del ejecutor. Escriben solo por el MCP de Atlassian del servidor fijado por el efecto. */
 export function createJiraAdapters(options: JiraAdapterOptions = {}): ActionAdapter<any>[] {
