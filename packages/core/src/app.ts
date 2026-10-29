@@ -16,7 +16,7 @@ import cors from '@fastify/cors'
 import { loadSettings, type Settings } from './config.js'
 import { Database } from './db/database.js'
 import { runMigrations } from './db/migrations.js'
-import { Store } from './store.js'
+import { DELETE_PURGE_INTERVAL_MS, DELETE_RETENTION_MS, Store } from './store.js'
 import { record as auditRecord, verify as auditVerify } from './audit/ledger.js'
 import { buildMatrix, hotReload } from './matrix.js'
 import { diffSnapshots, hasChanges, type PendingRestart } from './restart.js'
@@ -233,6 +233,15 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   // Credenciales OAuth de los MCP servers: archivos 0600 fuera de la base.
   const oauthStore = new OAuthStore(settings.oauthDir)
   const probeOptions = { oauthStore, redirectUrl: settings.oauthRedirectUrl }
+  // El archivo OAuth de un server borrado vive solo durante la ventana de Deshacer.
+  store.onServerPurged = (serverId) => oauthStore.delete(serverId)
+  const purgeDeleted = (): void => {
+    const purged = store.purgeDeleted(new Date(Date.now() - DELETE_RETENTION_MS).toISOString())
+    if (purged.servers || purged.skills) console.error(`[catalog] purga de borrados: ${purged.servers} servers, ${purged.skills} skills`)
+  }
+  purgeDeleted()
+  const purgeTimer = setInterval(purgeDeleted, DELETE_PURGE_INTERVAL_MS)
+  purgeTimer.unref()
 
   if (options.ensureOwner ?? settings.localMode) {
     const owner = ensureLocalOwner(store)
@@ -247,6 +256,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   }
 
   const fastify = Fastify({ logger: false })
+  fastify.addHook('onClose', async () => { clearInterval(purgeTimer) })
 
   // El cuerpo de las respuestas 204 no lleva contenido.
   fastify.setErrorHandler((error, _request, reply) => {
@@ -878,17 +888,29 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     return serverView(fresh)
   })
 
+  // Borrado suave: sale de catálogo, snapshots y daemon igual que antes; `restore` lo devuelve dentro de DELETE_RETENTION_MS.
   fastify.delete('/api/catalog/servers/:id', async (request, reply) => {
     const user = await currentUser(request)
     const { id } = request.params as { id: string }
     const server = serverOr404(user, id)
-    const toolIds = store.toolsOfServer(server.id).map((t) => t.id)
-    store.forgetResource('mcp_tool', toolIds)
-    store.forgetResource('mcp_server', [server.id])
-    store.deleteServer(server.id)
-    oauthStore.delete(server.id)
+    store.softDeleteServer(server.id)
     notifyAfterCommit('user', user.id)
     return reply.code(204).send()
+  })
+
+  fastify.post('/api/catalog/servers/:id/restore', async (request) => {
+    const user = await currentUser(request)
+    const { id } = request.params as { id: string }
+    const deleted = store.deletedServer(id)
+    if (!deleted || deleted.user_id !== user.id) {
+      const live = store.server(id)
+      if (live && live.user_id === user.id) throw new HttpError(409, 'el MCP server no está eliminado')
+      throw new HttpError(404, 'el MCP server no existe o ya venció el plazo para restaurarlo')
+    }
+    if (store.serverBySlug(user.id, deleted.slug)) throw new HttpError(409, `ya tenes otro MCP server con el slug ${deleted.slug}`)
+    store.restoreServer(deleted.id)
+    notifyAfterCommit('user', user.id)
+    return serverView(store.server(deleted.id)!)
   })
 
   fastify.post('/api/catalog/servers/:id/probe', async (request) => {
@@ -1182,10 +1204,25 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const { id } = request.params as { id: string }
     const skill = skillOr404(user, id)
     rejectExternal(skill, 'se quita')
-    store.forgetResource('skill', [skill.id])
-    store.deleteSkill(skill.id)
+    store.softDeleteSkill(skill.id)
     notifyAfterCommit('user', user.id)
     return reply.code(204).send()
+  })
+
+  fastify.post('/api/catalog/skills/:id/restore', async (request) => {
+    const user = await currentUser(request)
+    const { id } = request.params as { id: string }
+    const deleted = store.deletedSkill(id)
+    if (!deleted || deleted.user_id !== user.id) {
+      const live = store.skill(id)
+      if (live && live.user_id === user.id) throw new HttpError(409, 'la skill no está eliminada')
+      throw new HttpError(404, 'la skill no existe o ya venció el plazo para restaurarla')
+    }
+    rejectExternal(deleted, 'se restaura')
+    if (store.skillBySlug(user.id, deleted.slug)) throw new HttpError(409, `ya tenes otra skill con el slug ${deleted.slug}`)
+    store.restoreSkill(deleted.id)
+    notifyAfterCommit('user', user.id)
+    return skillView(user, store.skill(deleted.id)!)
   })
 
   // ============================================================ policy
