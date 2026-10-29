@@ -6,7 +6,7 @@ import { codeHmac, deriveCode, formatCode, sameHmac } from './codes.js'
 import { MAX_FOLLOW_UP_CHARS } from './verifier.js'
 import {
   DecisionError, canonicalJson, sha256,
-  type ApprovedItem, type ConsumeResult, type FollowUp, type FollowUpClaim, type OutboxState, type DecisionItemKind, type DecisionRequestInput, type Exclusion, type ExclusionSink, type Integration,
+  type ApprovedItem, type ConsumeResult, type FollowUp, type FollowUpClaim, type FollowUpText, type OutboxState, type DecisionItemKind, type DecisionRequestInput, type Exclusion, type ExclusionSink, type Integration,
   type IntentState, type ItemState, type ParsedReply, type PublicDecisionRequest, type PublicItemState, type PublicStateSink, type RequestState,
 } from './contract.js'
 
@@ -556,6 +556,55 @@ export class DecisionStore {
    * La solicitud sale del binding: una respuesta a un mensaje de una revisión anterior no aprueba la vigente.
    * Dos aprobaciones concurrentes del mismo mensaje no crean dos intenciones; un duplicado devuelve el resultado previo.
    */
+  /** Aprobación o rechazo ya autenticados (por código en un canal o por digest en la app): selecciona ítems pendientes, crea concesiones e intenciones y devuelve el resultado. */
+  private decide(request: RequestRow, items: ItemRow[], parsed: { kind: 'approve' | 'reject'; items: number[] | 'all'; follow_ups?: FollowUpText[] },
+    origin: { integration: string; account: string; native_message_id: string }): ConsumeResult | null {
+    const selection = (wanted: number[] | 'all'): ItemRow[] | null => {
+      const pending = items.filter(item => item.state === 'pending')
+      if (wanted === 'all') return pending
+      const chosen = wanted.map(ordinal => items.find(item => item.ordinal === ordinal))
+      return chosen.every(item => item?.state === 'pending') ? chosen as ItemRow[] : null
+    }
+    const chosen = selection(parsed.items)
+    if (!chosen || chosen.length === 0) return null
+    let outcome: ConsumeResult
+    if (parsed.kind === 'reject') {
+      for (const item of chosen) this.setItemState(item, 'rejected')
+      outcome = { outcome: 'rejected', request_id: request.request_id, rejected: chosen.map(item => item.ordinal) }
+    } else {
+      const approved: NonNullable<ConsumeResult['approved']> = [], blocked: number[] = []
+      for (const item of chosen) {
+        if (this.get(`SELECT 1 FROM action_intents WHERE (effect_digest = ? OR operation_key = ?) AND state IN ${LIVE_INTENT}`, item.effect_digest, item.operation_key)) {
+          this.setItemState(item, 'blocked_uncertain'); blocked.push(item.ordinal); continue
+        }
+        const intent_id = randomUUID(), at = this.iso()
+        this.setItemState(item, 'approved')
+        this.run('INSERT INTO grants(request_id, item_id, integration, account, native_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          item.request_id, item.item_id, origin.integration, origin.account, origin.native_message_id, at)
+        this.run(`INSERT INTO action_intents(intent_id, request_id, item_id, kind, effect, effect_digest, operation_key, generation, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?)`,
+          intent_id, item.request_id, item.item_id, item.kind, item.exact_effect, item.effect_digest, item.operation_key, at, at)
+        approved.push({ item_id: item.item_id, ordinal: item.ordinal, intent_id })
+      }
+      let recorded = 0, ambiguous = 0, ignored = 0
+      const byProject = new Map<string, Array<{ item: ItemRow; text: string }>>()
+      for (const follow of parsed.follow_ups ?? []) {
+        const item = chosen.find(candidate => candidate.ordinal === follow.ordinal)
+        if (!item || !approved.some(entry => entry.item_id === item.item_id) || follow.text.length > MAX_FOLLOW_UP_CHARS) continue
+        byProject.set(item.project_id, [...byProject.get(item.project_id) ?? [], { item, text: follow.text }])
+      }
+      for (const entries of byProject.values()) {
+        if (entries.length > 1) { ambiguous++; continue }
+        const { item, text } = entries[0]!
+        if (this.run('INSERT OR IGNORE INTO follow_ups(request_id, ordinal, project_id, text, integration, account, native_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          item.request_id, item.ordinal, item.project_id, text, origin.integration, origin.account, origin.native_message_id, this.iso()) === 1) recorded++
+        else ignored++
+      }
+      outcome = { outcome: 'approved', request_id: request.request_id, approved, ...(blocked.length ? { blocked_uncertain: blocked } : {}), ...(recorded ? { follow_ups_recorded: recorded } : {}), ...(ambiguous ? { follow_ups_ambiguous: ambiguous } : {}), ...(ignored ? { follow_ups_ignored: ignored } : {}) }
+    }
+  return outcome
+  }
+
+
   consumeReply(input: { integration: Integration; account: string; native_message_id: string; binding_id: string; parsed: ParsedReply }): ConsumeResult {
     return this.tx((): ConsumeResult => {
       const seen = this.get<{ request_id: string | null; outcome: string }>('SELECT request_id, outcome FROM inbound WHERE integration = ? AND account = ? AND native_message_id = ?',
@@ -588,53 +637,14 @@ export class DecisionStore {
         }
       }
       const items = this.all<ItemRow>('SELECT * FROM decision_items WHERE request_id = ? ORDER BY ordinal', request.request_id)
-      const selection = (wanted: number[] | 'all'): ItemRow[] | null => {
-        const pending = items.filter(item => item.state === 'pending')
-        if (wanted === 'all') return pending
-        const chosen = wanted.map(ordinal => items.find(item => item.ordinal === ordinal))
-        return chosen.every(item => item?.state === 'pending') ? chosen as ItemRow[] : null
-      }
       if (parsed.kind === 'revise') {
         const target = items.find(item => item.ordinal === parsed.ordinal)
         if (!target || target.state !== 'pending') return done('bad_selection', {}, request.request_id)
         return done('revision_requested', { revision: { ordinal: parsed.ordinal, value: parsed.value } }, request.request_id)
       }
-      const chosen = selection(parsed.items)
-      if (!chosen || chosen.length === 0) return done('bad_selection', {}, request.request_id)
-      let outcome: ConsumeResult
-      if (parsed.kind === 'reject') {
-        for (const item of chosen) this.setItemState(item, 'rejected')
-        outcome = { outcome: 'rejected', request_id: request.request_id, rejected: chosen.map(item => item.ordinal) }
-      } else {
-        const approved: NonNullable<ConsumeResult['approved']> = [], blocked: number[] = []
-        for (const item of chosen) {
-          if (this.get(`SELECT 1 FROM action_intents WHERE (effect_digest = ? OR operation_key = ?) AND state IN ${LIVE_INTENT}`, item.effect_digest, item.operation_key)) {
-            this.setItemState(item, 'blocked_uncertain'); blocked.push(item.ordinal); continue
-          }
-          const intent_id = randomUUID(), at = this.iso()
-          this.setItemState(item, 'approved')
-          this.run('INSERT INTO grants(request_id, item_id, integration, account, native_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-            item.request_id, item.item_id, input.integration, input.account, input.native_message_id, at)
-          this.run(`INSERT INTO action_intents(intent_id, request_id, item_id, kind, effect, effect_digest, operation_key, generation, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?)`,
-            intent_id, item.request_id, item.item_id, item.kind, item.exact_effect, item.effect_digest, item.operation_key, at, at)
-          approved.push({ item_id: item.item_id, ordinal: item.ordinal, intent_id })
-        }
-        let recorded = 0, ambiguous = 0, ignored = 0
-        const byProject = new Map<string, Array<{ item: ItemRow; text: string }>>()
-        for (const follow of parsed.follow_ups ?? []) {
-          const item = chosen.find(candidate => candidate.ordinal === follow.ordinal)
-          if (!item || !approved.some(entry => entry.item_id === item.item_id) || follow.text.length > MAX_FOLLOW_UP_CHARS) continue
-          byProject.set(item.project_id, [...byProject.get(item.project_id) ?? [], { item, text: follow.text }])
-        }
-        for (const entries of byProject.values()) {
-          if (entries.length > 1) { ambiguous++; continue }
-          const { item, text } = entries[0]!
-          if (this.run('INSERT OR IGNORE INTO follow_ups(request_id, ordinal, project_id, text, integration, account, native_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            item.request_id, item.ordinal, item.project_id, text, input.integration, input.account, input.native_message_id, this.iso()) === 1) recorded++
-          else ignored++
-        }
-        outcome = { outcome: 'approved', request_id: request.request_id, approved, ...(blocked.length ? { blocked_uncertain: blocked } : {}), ...(recorded ? { follow_ups_recorded: recorded } : {}), ...(ambiguous ? { follow_ups_ambiguous: ambiguous } : {}), ...(ignored ? { follow_ups_ignored: ignored } : {}) }
-      }
+      const decided = this.decide(request, items, parsed, { integration: input.integration, account: input.account, native_message_id: input.native_message_id })
+      if (!decided) return done('bad_selection', {}, request.request_id)
+      const outcome = decided
       if (!this.get('SELECT 1 FROM decision_items WHERE request_id = ? AND state = \'pending\'', request.request_id)) {
         this.run('UPDATE decision_requests SET state = \'closed\', updated_at = ? WHERE request_id = ? AND state = \'open\'', this.iso(), request.request_id)
       }
