@@ -148,7 +148,8 @@ export interface ReserveDeliveryInput {
 }
 export interface Reservation { delivery_id: string; binding_id: string; correlation: string; state: 'reserved' | 'sending' }
 
-export type NativeReceipt = { native_id: string; thread_id?: string; delivery_ref?: string }
+/** `conversation`: canal o conversación donde quedó el mensaje (en Slack, el id del DM). Se excluye de la ingesta y pasa a ser la del binding. */
+export type NativeReceipt = { native_id: string; thread_id?: string; delivery_ref?: string; conversation?: string }
 
 const PUBLIC_STATE: Record<ItemState, PublicItemState> = {
   pending: 'proposed', approved: 'approved', rejected: 'rejected', expired: 'expired', revoked: 'expired', superseded: 'superseded', blocked_uncertain: 'uncertain',
@@ -456,6 +457,7 @@ export class DecisionStore {
     const row = this.outbox(deliveryId)
     const entries: Exclusion[] = [{ integration: row.integration, account: row.account, kind: 'message', native_id: native.native_id }]
     if (native.thread_id) entries.push({ integration: row.integration, account: row.account, kind: 'thread', native_id: native.thread_id })
+    if (native.conversation) entries.push({ integration: row.integration, account: row.account, kind: 'conversation', native_id: native.conversation })
     await this.exclusions.add(entries)
     this.tx(() => {
       const at = this.iso()
@@ -464,7 +466,7 @@ export class DecisionStore {
         throw new DecisionError('bad_transition', 'La entrega no está en un estado que admita este recibo')
       }
       this.run('UPDATE channel_bindings SET state = \'active\', conversation = COALESCE(?, conversation), delivery_ref = ?, updated_at = ? WHERE id = ?',
-        native.thread_id ?? null, native.delivery_ref ?? native.native_id, at, row.binding_id)
+        native.conversation ?? native.thread_id ?? null, native.delivery_ref ?? native.native_id, at, row.binding_id)
     })
   }
 

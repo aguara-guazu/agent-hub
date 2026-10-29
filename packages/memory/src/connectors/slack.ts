@@ -14,6 +14,14 @@ export async function syncSlack(connector: Connector, ctx: ConnectorContext): Pr
     if (!result.ok) throw new MemoryError(409, `Slack no pudo leer ${method}: ${['missing_scope', 'not_in_channel', 'invalid_auth', 'token_revoked', 'channel_not_found'].includes(result.error) ? result.error : 'revisá permisos y límites de la cuenta'}`)
     return result
   }
+  let own: string | undefined
+  /** El mensaje directo del propio usuario es el canal de las solicitudes de decisión: nunca se ingiere, aunque falte el tombstone. */
+  async function isOwnDirectMessage(channel: string): Promise<boolean> {
+    if (!channel.startsWith('D')) return false
+    own ??= String((await call('auth.test', {})).user_id ?? '')
+    const info = (await call('conversations.info', { channel })).channel ?? {}
+    return info.is_im === true && Boolean(own) && info.user === own
+  }
   const users = new Map<string, any>()
   async function participant(userId: string): Promise<ImportInput['participants'][number]> {
     if (!users.has(userId)) {
@@ -29,6 +37,7 @@ export async function syncSlack(connector: Connector, ctx: ConnectorContext): Pr
   for (const channel of channels) {
     // La conversación de la solicitud de decisión no se lee: ni su historial, ni sus hilos, ni los que ya estaban importados.
     if (await isExcludedAny(ctx.store.db, 'slack', null, [{ kind: 'conversation', native_id: channel }])) continue
+    if (await isOwnDirectMessage(channel)) continue
     // Recent history discovers roots. Revisit every previously imported root, including roots that had no replies.
     const since = connector.config.since ? Date.parse(connector.config.since) / 1000 : Date.now() / 1000 - 30 * 86400
     const oldest = String(Math.max(since, Number(cursor[channel] ?? since) - 7 * 86400))

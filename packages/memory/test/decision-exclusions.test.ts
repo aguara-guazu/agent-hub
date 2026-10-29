@@ -83,6 +83,17 @@ describe('gate de exclusión de mensajes de control en la ingesta', () => {
     expect(f.requests.some(request => request.includes('channel=C1'))).toBe(true)
   })
 
+  it('Slack no ingiere el DM del propio usuario aunque falte el tombstone, y sí los de otras personas', async () => {
+    const f = fixture('slack', { channel_ids: ['D0SELF0001', 'D0OTHER001'] }, url => {
+      if (url.pathname.endsWith('auth.test')) return { ok: true, user_id: 'U0OWNER001' }
+      if (url.pathname.endsWith('conversations.info')) return { ok: true, channel: { is_im: true, user: url.searchParams.get('channel') === 'D0SELF0001' ? 'U0OWNER001' : 'U0PERSON002' } }
+      return url.pathname.endsWith('conversations.history') ? { ok: true, messages: [] } : { ok: true }
+    })
+    await syncSlack(f.connector, f.ctx)
+    expect(f.requests.some(request => request.includes('conversations.history') && request.includes('channel=D0SELF0001'))).toBe(false)
+    expect(f.requests.some(request => request.includes('conversations.history') && request.includes('channel=D0OTHER001'))).toBe(true)
+  })
+
   it('si la consulta falla, la ingesta se detiene en lugar de importar sin clasificar', async () => {
     const f = fixture('google', {}, url => url.pathname.endsWith('/profile') ? { emailAddress: MAILBOX, historyId: '10' } : { messages: [{ id: 'm-ok' }] })
     const broken = { ...f.ctx, store: { ...f.ctx.store, db: { query: async (sql: string, params?: unknown[]) => { if (sql.includes('decision_exclusions')) throw new Error('db down'); return db.query(sql, params) } } } } as unknown as ConnectorContext

@@ -8,7 +8,9 @@ export type SlackSelfAvailability = { available: true; user_id: string } | { ava
 const SEND = 'slack_send_message'
 const PROFILE = 'slack_read_user_profile'
 const USER_ID = /^U[A-Z0-9]{8,}$/
-const TS = /\b\d{10}\.\d{6}\b/
+const CHANNEL_ID = /^[CDG][A-Z0-9]{8,}$/
+const TS = /^\d{10}\.\d{6}$/
+const PERMALINK = /\/archives\/([CDG][A-Z0-9]{8,})\/p(\d{16})\b/g
 
 function structured(result: CallResult): Record<string, any> | undefined {
   if (result.structured_content) return result.structured_content
@@ -16,29 +18,36 @@ function structured(result: CallResult): Record<string, any> | undefined {
 }
 
 /**
- * Identidad humana del usuario conectado según el MCP de Slack del dueño. Devuelve `null` cuando la respuesta no permite acreditarla.
+ * Identidad humana del usuario conectado según el MCP de Slack del dueño. Solo cuenta un campo estructurado (`user.id`, `user_id` o `profile.user_id`):
+ * un id que aparezca en texto libre puede ser el de otra persona. Devuelve `null` cuando la respuesta no permite acreditarla.
  * La forma exacta de la respuesta de `slack_read_user_profile` no está verificada contra un MCP real: ante cualquier duda, no hay identidad.
  */
 export function parseSlackIdentity(result: CallResult): { user_id: string; is_bot: boolean; team: string | null } | null {
   if (result.is_error) return null
   const data = structured(result)
-  const user = data?.['user'] ?? data?.['profile'] ?? data
-  const candidate = user?.['user_id'] ?? user?.['id'] ?? data?.['user_id'] ?? (resultText(result).match(/\b(U[A-Z0-9]{8,})\b/)?.[1])
+  if (!data) return null
+  const user = data['user'] ?? data['profile'] ?? data
+  const candidate = user?.['user_id'] ?? user?.['id'] ?? data['user_id']
   if (typeof candidate !== 'string' || !USER_ID.test(candidate)) return null
-  const bot = user?.['is_bot'] ?? data?.['is_bot'] ?? user?.['is_app_user'] ?? false
-  const team = user?.['team_id'] ?? data?.['team_id']
+  const bot = user?.['is_bot'] ?? data['is_bot'] ?? user?.['is_app_user'] ?? false
+  const team = user?.['team_id'] ?? data['team_id']
   return { user_id: candidate, is_bot: bot === true, team: typeof team === 'string' ? team : null }
 }
 
-/** Marca de tiempo del mensaje enviado: campo `ts`/`message_ts`, o el permalink `/p<16 dígitos>`, o un `ts` literal. `null` si no hay. */
-export function parseSlackTs(result: CallResult): string | null {
+/**
+ * Recibo del mensaje enviado: `ts` y canal juntos, desde campos estructurados o desde el ÚNICO permalink `/archives/<canal>/p<16 dígitos>` de la respuesta.
+ * Un ts suelto en el texto no sirve (puede ser el de un mensaje citado); si falta cualquiera de los dos, no hay recibo.
+ */
+export function parseSlackSent(result: CallResult): { ts: string; channel: string } | null {
   if (result.is_error) return null
   const data = structured(result)
-  for (const value of [data?.['ts'], data?.['message_ts'], data?.['message']?.['ts']]) if (typeof value === 'string' && TS.test(value)) return value
-  const text = resultText(result)
-  const permalink = text.match(/\/p(\d{16})\b/)
-  if (permalink) return `${permalink[1]!.slice(0, 10)}.${permalink[1]!.slice(10)}`
-  return text.match(TS)?.[0] ?? null
+  const ts = [data?.['ts'], data?.['message_ts'], data?.['message']?.['ts']].find((value): value is string => typeof value === 'string' && TS.test(value))
+  const channel = [data?.['channel'], data?.['channel_id'], data?.['message']?.['channel']].find((value): value is string => typeof value === 'string' && CHANNEL_ID.test(value))
+  if (ts && channel) return { ts, channel }
+  const links = new Map([...resultText(result).matchAll(PERMALINK)].map(match => [`${match[1]}:${match[2]}`, { channel: match[1]!, digits: match[2]! }]))
+  if (links.size !== 1) return null
+  const { channel: linked, digits } = [...links.values()][0]!
+  return { ts: `${digits.slice(0, 10)}.${digits.slice(10)}`, channel: linked }
 }
 
 /**
@@ -98,12 +107,12 @@ export class SlackSelfDelivery {
       store.markDeliveryUncertain(reservation.delivery_id)
       return { state: 'uncertain', error_code: 'send_threw', outbox_ref: reservation.delivery_id }
     }
-    const ts = parseSlackTs(result)
-    if (!ts) {
+    const sent = parseSlackSent(result)
+    if (!sent) {
       store.markDeliveryUncertain(reservation.delivery_id)
       return { state: 'uncertain', error_code: result.is_error ? 'tool_error' : 'receipt_unparsed', outbox_ref: reservation.delivery_id }
     }
-    try { await store.recordNative(reservation.delivery_id, { native_id: ts, delivery_ref: ts }) } catch { return { state: 'uncertain', error_code: 'receipt_not_recorded', outbox_ref: reservation.delivery_id } }
+    try { await store.recordNative(reservation.delivery_id, { native_id: sent.ts, delivery_ref: sent.ts, conversation: sent.channel }) } catch { return { state: 'uncertain', error_code: 'receipt_not_recorded', outbox_ref: reservation.delivery_id } }
     return { state: 'sent', outbox_ref: reservation.delivery_id }
   }
 }
