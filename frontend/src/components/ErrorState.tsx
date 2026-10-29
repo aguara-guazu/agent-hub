@@ -18,11 +18,6 @@ export function errorMessage(error: unknown): string {
   return "Error desconocido."
 }
 
-/** Código HTTP cuando el error viene de la API, o null. */
-export function errorStatus(error: unknown): number | null {
-  return error instanceof ApiError ? error.status : null
-}
-
 export interface ErrorStateProps {
   error: unknown
   title?: string
