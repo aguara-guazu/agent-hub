@@ -294,6 +294,11 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS ix_call_run ON tool_call_logs (run_id, created_at)`,
     ],
   },
+  {
+    // Inventario de servers MCP y skills que cada cliente carga por fuera del hub (solo nombres y rutas). Vacío = sin reporte.
+    id: "0007_agent_unmanaged",
+    statements: [addColumnIfMissing("agent_instances", "unmanaged", "TEXT NOT NULL DEFAULT ''")],
+  },
 ]
 
 const SCHEMA_MIGRATIONS_DDL = `CREATE TABLE IF NOT EXISTS schema_migrations (

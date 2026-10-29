@@ -4,6 +4,7 @@
  * parseo de JSON y la conversión de enteros SQLite (0/1) a booleanos en un solo lugar.
  */
 import { newId, nowIso, RUN_PROFILE_CLI_KINDS, type RunProfileKind, type SkillSource } from '@agenthub/shared'
+import type { UnmanagedInventory } from "@agenthub/shared"
 import type { Database, Row } from './db/database.js'
 import type {
   AccountSkillsReport,
@@ -121,6 +122,18 @@ function toAgent(row: Row): AgentInstance {
     drift_detected: bool(row.drift_detected),
     drift_detail: str(row.drift_detail),
     account_skills: parseAccountSkills(row.account_skills),
+    unmanaged: parseUnmanaged(row.unmanaged),
+  }
+}
+
+/** Igual que `account_skills`: JSON validado al recibirlo, o vacío. */
+function parseUnmanaged(raw: unknown): UnmanagedInventory | null {
+  const text = str(raw)
+  if (!text) return null
+  try {
+    return JSON.parse(text) as UnmanagedInventory
+  } catch {
+    return null
   }
 }
 
@@ -577,9 +590,13 @@ export class Store {
     return this.agent(id)!
   }
 
-  updateAgent(id: string, fields: Partial<Pick<AgentInstance, 'cli_version' | 'config_path' | 'enabled' | 'last_connected_at' | 'last_listed_hash' | 'drift_detected' | 'drift_detail' | 'account_skills'>>): void {
+  updateAgent(id: string, fields: Partial<Pick<AgentInstance, 'cli_version' | 'config_path' | 'enabled' | 'last_connected_at' | 'last_listed_hash' | 'drift_detected' | 'drift_detail' | 'account_skills' | 'unmanaged'>>): void {
     const sets: string[] = []
     const params: (string | number | null)[] = []
+    if (fields.unmanaged !== undefined) {
+      sets.push("unmanaged = ?")
+      params.push(fields.unmanaged === null ? "" : JSON.stringify(fields.unmanaged))
+    }
     if (fields.account_skills !== undefined) {
       sets.push('account_skills = ?')
       params.push(fields.account_skills === null ? '' : JSON.stringify(fields.account_skills))

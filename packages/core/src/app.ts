@@ -67,7 +67,7 @@ import {
 } from './security.js'
 import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, SkillRow, User } from './types.js'
 import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
-import { SKILL_ZIP_MAX_BYTES, type SkillZipImportExtras } from "@agenthub/shared"
+import { SKILL_ZIP_MAX_BYTES, UNMANAGED_MAX_ITEMS, UNMANAGED_MAX_NAME, UNMANAGED_MAX_PATH, type LocalUnmanaged, type SkillZipImportExtras, type UnmanagedInventory } from "@agenthub/shared"
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
 import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
@@ -177,6 +177,35 @@ function optionalString(body: Record<string, unknown>, field: string, fallback =
   if (value === undefined || value === null) return fallback
   if (typeof value !== 'string') throw new HttpError(422, `el campo ${field} debe ser texto`)
   return value
+}
+
+/** Inventario `unmanaged` de `POST /api/sync/report`, validado estricto: un campo de más o fuera de tope rechaza el reporte entero. */
+function readUnmanagedReport(raw: unknown): UnmanagedInventory {
+  const fail = (detail: string): never => { throw new HttpError(422, `unmanaged: ${detail}`) }
+  if (!isObject(raw)) fail("debe ser un objeto")
+  const body = raw as Record<string, unknown>
+  for (const key of Object.keys(body)) if (!["checked_at", "servers", "skills", "errors", "truncated"].includes(key)) fail(`campo desconocido: ${key}`)
+  const text = (value: unknown, field: string, max: number): string => {
+    if (typeof value !== "string" || value.length === 0 || value.length > max) fail(`${field} debe ser texto de 1 a ${max} caracteres`)
+    return value as string
+  }
+  const list = (value: unknown, field: string, keys: string[]): Record<string, unknown>[] => {
+    if (value === undefined) return []
+    if (!Array.isArray(value) || value.length > UNMANAGED_MAX_ITEMS || !value.every(isObject)) fail(`${field} debe ser una lista de hasta ${UNMANAGED_MAX_ITEMS} objetos`)
+    for (const item of value as Record<string, unknown>[]) for (const key of Object.keys(item)) if (!keys.includes(key)) fail(`${field}[]: campo desconocido: ${key}`)
+    return value as Record<string, unknown>[]
+  }
+  const checkedAt = text(body.checked_at, "checked_at", 40)
+  if (Number.isNaN(Date.parse(checkedAt))) fail("checked_at no es una fecha ISO")
+  if (body.truncated !== undefined && typeof body.truncated !== "boolean") fail("truncated debe ser booleano")
+  const servers = list(body.servers, "servers", ["name", "path"]).map((item) => ({ name: text(item.name, "servers[].name", UNMANAGED_MAX_NAME), path: text(item.path, "servers[].path", UNMANAGED_MAX_PATH) }))
+  const skills = list(body.skills, "skills", ["slug", "path", "linked"]).map((item) => {
+    if (typeof item.linked !== "boolean") fail("skills[].linked debe ser booleano")
+    return { slug: text(item.slug, "skills[].slug", UNMANAGED_MAX_NAME), path: text(item.path, "skills[].path", UNMANAGED_MAX_PATH), linked: item.linked as boolean }
+  })
+  const errors = list(body.errors, "errors", ["path", "reason"]).map((item) => ({ path: text(item.path, "errors[].path", UNMANAGED_MAX_PATH), reason: text(item.reason, "errors[].reason", 300) }))
+  if (servers.length + skills.length > UNMANAGED_MAX_ITEMS) fail(`servers y skills suman más de ${UNMANAGED_MAX_ITEMS}`)
+  return { checked_at: new Date(checkedAt).toISOString(), servers, skills, errors, truncated: body.truncated === true }
 }
 
 export interface CoreApp {
@@ -694,6 +723,21 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     }
   }
 
+  /** Inventario del cliente cruzado con el catálogo por slug; `null` si su daemon no lo reportó. */
+  function unmanagedView(user: User, agent: AgentInstance): LocalUnmanaged | null {
+    const report = agent.unmanaged
+    if (report === null) return null
+    const servers = new Map(store.serversOfUser(user.id).map((server) => [server.slug, server.id]))
+    const skills = new Map(store.skillsOfUser(user.id).map((skill) => [skill.slug, skill.id]))
+    return {
+      checked_at: report.checked_at,
+      servers: report.servers.map((item) => ({ ...item, catalog_server_id: servers.get(item.name) ?? null })),
+      skills: report.skills.map((item) => ({ ...item, catalog_skill_id: skills.get(item.slug) ?? null })),
+      errors: report.errors,
+      truncated: report.truncated,
+    }
+  }
+
   fastify.get('/api/local/overview', async (request) => {
     const user = await currentUser(request)
     const matrix = buildMatrix(store, user)
@@ -707,6 +751,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
         server_count: snapshot.servers.length, skill_count: snapshot.skills.length,
         restart_pending: pending !== null,
         pending: pending?.changes ?? null,
+        unmanaged: unmanagedView(user, agent),
       }
     })
     return { hostname: hostname(), clients, rows: matrix.rows }
@@ -1435,6 +1480,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
           .filter((item) => item.slug !== ''),
       }
     }
+    if (body.unmanaged !== undefined) fields.unmanaged = readUnmanagedReport(body.unmanaged)
     store.updateAgent(agent.id, fields)
     if (typeof body.synced_hash === 'string') {
       db.run(`INSERT INTO local_client_sync (agent_id, snapshot_hash, synced_at) VALUES (?, ?, ?)
