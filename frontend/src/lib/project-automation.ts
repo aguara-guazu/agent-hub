@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from './api'
-import { memoryCall, useMemory } from './memory'
+import { useMemory } from './memory'
 import { useToast } from '../components/Toast'
 
 /**
@@ -112,9 +112,8 @@ export function pickGoogleSource<T extends { provider: string; account_email?: s
 }
 
 /**
- * Guarda `gmail_send_enabled` en la fuente y abre la autorización completa (lectura y envío). El backend arma los scopes desde la
- * configuración guardada, así que la opción se guarda antes de abrir Google; si la persona no completa el consentimiento, la fuente queda
- * como «Falta autorizar el envío» y se puede reintentar o desactivar en Fuentes.
+ * Abre la autorización completa (lectura y envío) de la fuente. `start` recibe `{ gmail_send: true }` para pedir el scope de envío en el mismo
+ * consentimiento y el callback guarda `gmail_send_enabled` solo si Google lo concede: cancelar no deja la fuente a medio configurar.
  */
 export function useAuthorizeGmailSend(destination?: string) {
   const toast = useToast()
@@ -125,8 +124,7 @@ export function useAuthorizeGmailSend(destination?: string) {
   const authorize = useMutation({
     mutationFn: async () => {
       if (!google) throw new Error('No se pudo determinar la fuente de Google de esa cuenta')
-      await memoryCall('save_connector', { id: google.id, provider: 'google', name: google.name, config: { ...google.config, gmail_send_enabled: true }, project_ids: google.project_ids, interval_minutes: google.interval_minutes, enabled: google.enabled })
-      const started = await api.post<{ authorization_url: string }>(`/memory/connectors/${encodeURIComponent(google.id)}/google/start`)
+      const started = await api.post<{ authorization_url: string; gmail_send: boolean }>(`/memory/connectors/${encodeURIComponent(google.id)}/google/start`, { gmail_send: true })
       window.open(started.authorization_url, '_blank', 'noopener,noreferrer')
     },
     onSuccess: async () => { await Promise.all([cache.invalidateQueries({ queryKey: ['memory'] }), cache.invalidateQueries({ queryKey: ['delivery-channels'] })]) },

@@ -19,7 +19,7 @@ function mock(view: ProjectAutomationView) {
   return installFetch({ user, handle: call => {
     if (call.path === '/memory/projects/p1/automation') return jsonResponse(call.method === 'PUT' ? view : view)
     if (call.path === '/memory/schedules/delivery-channels') return jsonResponse({ items: [{ channel: 'app', available: true }, { channel: 'gmail', available: false, reason: 'scope_missing', destination: 'ana@example.com' }] })
-    if (call.path === '/memory/call') return jsonResponse((call.body as { operation: string }).operation === 'list_connectors' ? [{ id: 'g1', provider: 'google', name: 'Google trabajo', config: { gmail_enabled: true }, project_ids: [], interval_minutes: 30, enabled: true }] : {})
+    if (call.path === '/memory/call') return jsonResponse((call.body as { operation: string }).operation === 'list_connectors' ? [{ id: 'g1', provider: 'google', name: 'Google trabajo', config: { gmail_enabled: true }, project_ids: [], interval_minutes: 30, enabled: true, account_email: null }] : {})
     if (call.path === '/memory/connectors/g1/google/start') return jsonResponse({ authorization_url: 'https://accounts.google.com/o/oauth2/auth?x=1' })
     if (call.path === '/memory/schedules') return jsonResponse({ items: [], total: 0, limit: 200, offset: 0 })
     if (call.path === '/memory/schedules/runs') return jsonResponse({ items: [], total: 0, limit: 1, offset: 0 })
@@ -157,9 +157,8 @@ it('con varias cuentas autoriza la fuente cuya cuenta es el destino del envío',
   await flush(3)
   await click(buttonByText(container, 'Autorizar'))
   await click(buttonByText(globalThis.document.body, 'Continuar con Google'))
-  const saved = api.calls.find(call => call.path === '/memory/call' && (call.body as { operation: string }).operation === 'save_connector')?.body as { input: { id: string } }
-  expect(saved.input.id).toBe('g/2')
-  expect(api.calls.some(call => call.url.includes('/memory/connectors/g%2F2/google/start'))).toBe(true)
+  expect(api.calls.some(call => call.path === '/memory/call' && (call.body as { operation: string }).operation === 'save_connector')).toBe(false)
+  expect(api.lastCall('/memory/connectors/g%2F2/google/start', 'POST')?.body).toEqual({ gmail_send: true })
 })
 
 it('un documento con un campo retirado (max_members) se envía sin él', async () => {
@@ -194,7 +193,7 @@ it('agregar un repositorio usa POST con un solo elemento, nunca el PUT de la col
 
 function document_body(): HTMLElement { return globalThis.document.body }
 
-it('Autorizar guarda gmail_send_enabled en la fuente y abre la autorización de Google tras el aviso', async () => {
+it('Autorizar pide el envío en el mismo consentimiento sin guardar nada antes y abre Google tras el aviso', async () => {
   const api = mock(off)
   const open = vi.fn()
   vi.stubGlobal('open', open)
@@ -205,9 +204,8 @@ it('Autorizar guarda gmail_send_enabled en la fuente y abre la autorización de 
   expect(textOf(globalThis.document.body)).toContain('Google mostrará una pantalla de advertencia')
   expect(textOf(globalThis.document.body)).toContain('Agent Hub solo enviará correos a ana@example.com; nunca a terceros')
   await click(buttonByText(globalThis.document.body, 'Continuar con Google'))
-  const saved = api.calls.find(call => call.path === '/memory/call' && (call.body as { operation: string }).operation === 'save_connector')?.body as { input: { id: string; config: Record<string, unknown> } }
-  expect(saved.input.id).toBe('g1')
-  expect(saved.input.config).toEqual({ gmail_enabled: true, gmail_send_enabled: true })
+  expect(api.calls.some(call => call.path === '/memory/call' && (call.body as { operation: string }).operation === 'save_connector')).toBe(false)
   expect(api.callsTo('/memory/connectors/g1/google/start', 'POST')).toHaveLength(1)
+  expect(api.lastCall('/memory/connectors/g1/google/start', 'POST')?.body).toEqual({ gmail_send: true })
   expect(open).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/auth?x=1', '_blank', 'noopener,noreferrer')
 })
