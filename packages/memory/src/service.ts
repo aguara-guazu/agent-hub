@@ -40,10 +40,10 @@ export async function startClockThenRecover(runtime: { start(): Promise<void> },
 }
 /** Counts and error names only; a cycle without activity leaves no event. */
 export function summarizeReplyTick(result: unknown): Record<string, unknown> | null { return summarizeTick(result, ['expired', 'consumed', 'rejected']) }
-/** The action dispatcher leaves an event only when it attempted something; a skipped or empty cycle leaves none. */
+/** The action dispatcher leaves an event only when it attempted something or failed; a skipped or empty cycle leaves none. */
 export function summarizeActionTick(result: ActionTickResult | undefined): Record<string, unknown> | null {
-  if (!result || 'skipped' in result || !(result.attempted > 0)) return null
-  return { attempted: result.attempted, succeeded: result.succeeded, rejected: result.rejected, uncertain: result.uncertain }
+  if (!result || 'skipped' in result || !(result.attempted > 0 || (result.errors ?? 0) > 0)) return null
+  return { attempted: result.attempted, succeeded: result.succeeded, rejected: result.rejected, uncertain: result.uncertain, ...(result.errors ? { errors: result.errors } : {}) }
 }
 function summarizeTick(result: unknown, outcomes: string[]): Record<string, unknown> | null {
   if (!result || typeof result !== 'object') return null

@@ -33,6 +33,8 @@ it('el despachador deja evento solo cuando intentó algo y nunca al saltearse, c
     [{ skipped: 'in_flight' }, null],
     [{ skipped: 'automations_off' }, null],
     [{ attempted: 3, succeeded: 2, rejected: 0, uncertain: 1 }, { attempted: 3, succeeded: 2, rejected: 0, uncertain: 1 }],
+    [{ attempted: 0, succeeded: 0, rejected: 0, uncertain: 0, errors: 1 }, { attempted: 0, succeeded: 0, rejected: 0, uncertain: 0, errors: 1 }],
+    [{ attempted: 2, succeeded: 2, rejected: 0, uncertain: 0, errors: 0 }, { attempted: 2, succeeded: 2, rejected: 0, uncertain: 0 }],
   ]
   for (const [result, expected] of cycles) expect(summarizeActionTick(result)).toEqual(expected)
 })

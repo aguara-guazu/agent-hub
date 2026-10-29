@@ -143,8 +143,8 @@ export interface ArtifactAuthorityReader {
   /** 'unavailable' on every artifact after a restore, even without a reference; 'unknown' when no artifact matches. */
   artifactAuthority(input: { run_id: string; decision_request_ref?: string }): Promise<'live' | 'unavailable' | 'unknown'>
 }
-/** `skipped` means nothing ran: the automations are off or a previous cycle is still in flight. */
-export type ActionTickResult = { attempted: number; succeeded: number; rejected: number; uncertain: number } | { skipped: 'automations_off' | 'in_flight' }
+/** `skipped` means nothing ran: the automations are off or a previous cycle is still in flight; `errors` counts cycles or intentions that failed without a receipt. */
+export type ActionTickResult = { attempted: number; succeeded: number; rejected: number; uncertain: number; errors?: number } | { skipped: 'automations_off' | 'in_flight' }
 export interface ScheduleEffects {
   deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests
   /** One cycle of channel reply reading and request expiry; the clock calls it about once a minute. */
