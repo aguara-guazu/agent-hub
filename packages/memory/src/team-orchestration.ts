@@ -780,6 +780,11 @@ export class TeamOrchestration {
     return this.closeDerived(plans.filter(plan=>Date.parse(asObject(plan.plan).expires_at)<=now),'Se cumplió el tiempo máximo de la delegación.')
   }
 
+  /** Every derived plan that is open or still holds a process, whatever its project: what the automations switch must stop. */
+  async closeAllDerived(reason:string) {
+    return this.closeDerived(await this.db.query(`SELECT * FROM chat_team_plans WHERE ${OPEN_DERIVED}`),reason)
+  }
+
   /** Called when a delegation is revoked, replaced or its project deactivated: running plans and their handles must not outlive it. */
   async closeDerivedForProject(projectId:string,reason:string) {
     const plans=await this.db.query(`SELECT * FROM chat_team_plans WHERE delegation_project_id=$1 AND (state NOT IN ('paused','cancelled','completed') OR ${HOLDS_PROCESS})`,[projectId])

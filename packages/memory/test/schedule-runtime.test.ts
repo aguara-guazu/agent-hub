@@ -171,6 +171,26 @@ it('al apagar el interruptor revoca las solicitudes de decisión antes de cancel
   expect(await runsOf(s.id)).toEqual([])
 })
 
+it('al apagar el interruptor cierra los planes derivados sin pasar por el reply_tick, aunque el cierre falle, y reintenta mientras siga apagado', async () => {
+  const closeAll = vi.fn(async (_reason: string) => ({ closed: [] as string[], failed: ['plan-1'] }))
+  const calls: string[] = []
+  runtime = build({ derivedPlans: { closeAll }, automation: { enabled: () => enabled, effects: { deliveries: undefined as never, actions: undefined as never, decisions: { prepareDecision: async () => ({ decision_request_ref: 'r' }), revokeAll: async () => { calls.push('revoke'); return 1 } } } } })
+  const s = await schedule(); enabled = false
+  await runtime.start(); await runtime.idle(); await runtime.tick(); await runtime.idle()
+  expect(closeAll).toHaveBeenCalledTimes(1)
+  expect(closeAll).toHaveBeenCalledWith('Automatizaciones desactivadas.')
+  expect(calls).toEqual(['revoke'])
+  expect(await runsOf(s.id)).toEqual([])
+  now = at('2026-10-28T08:00:50.000Z'); await runtime.tick()
+  expect(closeAll).toHaveBeenCalledTimes(1)
+  now = at('2026-10-28T08:01:40.000Z'); await runtime.tick()
+  expect(closeAll).toHaveBeenCalledTimes(2)
+  closeAll.mockRejectedValue(new Error('boom'))
+  now = at('2026-10-28T08:03:00.000Z'); await expect(runtime.tick()).resolves.toBeUndefined()
+  enabled = true; now = at('2026-10-28T08:05:00.000Z'); await runtime.tick()
+  expect(closeAll).toHaveBeenCalledTimes(3)
+})
+
 it('un periódico que no termina no impide lanzar un run vencido ni se solapa consigo mismo', async () => {
   let started = 0, release!: () => void
   runtime.addPeriodic('colgada', () => new Promise<void>(resolve => { started++; release = resolve }), 0)

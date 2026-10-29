@@ -56,6 +56,8 @@ export interface ScheduleRuntimeOptions {
   tickMs?: number
   /** Longest wait for background periodic tasks when closing. */
   closeWaitMs?: number
+  /** Derived plans run agents outside any schedule: switching the automations off closes them, and the close is retried while the switch stays off. */
+  derivedPlans?: { closeAll(reason: string): Promise<{ closed: string[]; failed: string[] }> }
 }
 
 /** Stable refusals of the decision module; matched by code or class name so the memory package does not import the core's error classes. */
@@ -128,7 +130,7 @@ export class ScheduleRuntime {
   /** One pass: switch handling, time zone, expiry, due occurrences, runnable runs and the durable delivery scan. */
   async tick() {
     const enabled = this.o.automation.enabled()
-    if (!enabled) { await this.suspend(); return }
+    if (!enabled) { await this.suspend(); await this.sweepDerivedPlans(); return }
     this.automationsWere = true
     await this.checkZone()
     const now = this.now()
@@ -154,6 +156,8 @@ export class ScheduleRuntime {
     // Revoke first: an action already preparing must find its request revoked at the dispatch gate.
     const revoked = await this.o.automation.effects?.decisions.revokeAll?.().catch(() => -1)
     if (revoked !== undefined) await this.store.addEvent({ type: 'decisions.revoked', actor_kind: 'system', payload: { count: revoked, cause: 'automations_off' } })
+    // A failed close never stops the rest of the suspension: the runs are still cancelled and the sweep keeps retrying while the switch is off.
+    await this.sweepDerivedPlans(true)
     await this.store.cancelAllLiveRuns('automations_off')
     for (const [runId, entry] of this.inFlight) {
       const run = await this.store.run(runId)
@@ -162,6 +166,17 @@ export class ScheduleRuntime {
     }
     await Promise.allSettled([...this.inFlight.values()].map(entry => entry.done))
     await this.publishActive()
+  }
+
+  private lastDerivedSweep = 0
+  /** Closes every open derived plan with a confirmed stop; plans whose stop stayed uncertain are offered again at most once a minute. */
+  private async sweepDerivedPlans(force = false) {
+    const plans = this.o.derivedPlans
+    if (!plans || this.stopped) return
+    const now = this.now()
+    if (!force && now - this.lastDerivedSweep < 60_000) return
+    this.lastDerivedSweep = now
+    await plans.closeAll('Automatizaciones desactivadas.').catch(() => undefined)
   }
 
   // --- time zone ---------------------------------------------------------------------------------------------------------------------------------

@@ -142,7 +142,8 @@ export class MemoryService {
       overdue_close: async () => (await schedules.overdueCloses()).map(row => ({ ref: String(row.id), summary: 'Cierre del día no ejecutado', at: String(row.scheduled_for) })),
     }
     const runtime = new ScheduleRuntime({ store: schedules, db, memory: store, automation, usage: operations.usage, signals: operations.chat.events, deps: () => ({ attention }),
-      synthesizer: new EngineSynthesizer({ settings: () => this.aiSettings(), cli: this.cliExtraction, ai }) })
+      synthesizer: new EngineSynthesizer({ settings: () => this.aiSettings(), cli: this.cliExtraction, ai }),
+      ...(operations.teams ? { derivedPlans: { closeAll: (reason: string) => operations.teams!.closeAllDerived(reason) } } : {}) })
     const unavailable = { available: false, reason: 'not_connected' }
     const admin = new ScheduleAdmin({ store: schedules, db, automationsEnabled: () => automation.enabled(), wake: () => runtime.kick(), stopRun: id => runtime.stopRun(id),
       deliveryAvailability: async () => automation.effects ? await automation.effects.deliveries.available().catch(() => ({ gmail_self: unavailable, slack_self: unavailable })) : { gmail_self: unavailable, slack_self: unavailable } })

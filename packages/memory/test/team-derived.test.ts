@@ -498,3 +498,12 @@ it('retires the project leader when asked and builds a new channel and system se
   expect((await sessionRow(second)).channel_id).not.toBe(oldChannel)
   expect(await teams.launchDerived(input())).toMatchObject({ state: 'launched', created_by: second })
 })
+
+it('closeAllDerived closes every open derived plan of every project, with a confirmed stop, so the automations switch stops them all', async () => {
+  await activate()
+  const plan = await teams.launchDerived(input())
+  expect(await teams.closeAllDerived('Automatizaciones desactivadas.')).toEqual({ closed: [plan.id], failed: [] })
+  expect((await db.query('SELECT state,close_reason FROM chat_team_plans WHERE id=$1', [plan.id]))[0]).toMatchObject({ state: 'cancelled', close_reason: 'Automatizaciones desactivadas.' })
+  expect(vi.mocked(backend.stop).mock.calls.length).toBe(2)
+  expect(await teams.closeAllDerived('otra vez')).toEqual({ closed: [], failed: [] })
+})
