@@ -31,6 +31,7 @@ export type { ScheduleEffects, ScheduleAutomation, DeliveryAdapters, DeliveryRec
 export { DecisionStore, DecisionService } from './decisions/index.js'
 export { createDerivedPorts, DerivedDispatcher, type DerivedTick, type DerivedTeams } from './derived-automation.js'
 export { delegatedPushPolicy, type DelegatedPushPolicy } from './project-push-policy.js'
+export { ProjectAutomationService } from './project-automation-service.js'
 export type { IntentRow, ArtifactAuthorityReader as DecisionAuthorityReader, DecisionItemKind, ExclusionSink, Exclusion } from './decisions/index.js'
 export { renderDecisionFooter, deliverDecisionByGmail, MemoryExclusionSink, isExcludedAny } from './decisions/index.js'
 export { GmailSelfSender } from './connectors/gmail-send.js'
