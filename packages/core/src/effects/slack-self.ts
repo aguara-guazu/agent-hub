@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { resultText, type CallResult } from '@agenthub/gateway'
-import { renderDecisionFooter, type DecisionStore, type DeliveryReceipt } from '@agenthub/memory'
+import { renderDecisionFooter, type DecisionStore, type DeliveryReceipt, type ExclusionSink } from '@agenthub/memory'
 import { EffectToolDenied, type EffectToolResolver, type EffectTools } from './tools.js'
 
 export type SlackSelfAvailability = { available: true; user_id: string } | { available: false; reason: 'not_connected' | 'identity_unverified' | 'identity_is_bot' | 'tool_off' }
@@ -55,7 +55,7 @@ export function parseSlackSent(result: CallResult): { ts: string; channel: strin
  * El destino es siempre el user ID acreditado por el mismo servidor; un servidor que devuelva identidad de bot o ninguna deja el canal no disponible.
  */
 export class SlackSelfDelivery {
-  constructor(private readonly options: { store: DecisionStore; tools: EffectToolResolver }) {}
+  constructor(private readonly options: { store: DecisionStore; tools: EffectToolResolver; exclusions?: ExclusionSink }) {}
 
   private server(): { tools: EffectTools } | 'not_connected' | 'ambiguous' {
     const candidates = this.options.tools.candidates([SEND, PROFILE])
@@ -74,6 +74,30 @@ export class SlackSelfDelivery {
     }
     if (!identity) return { available: false, reason: 'identity_unverified' }
     return identity.is_bot ? { available: false, reason: 'identity_is_bot' } : { available: true, user_id: identity.user_id }
+  }
+
+  /**
+   * Mensaje directo sin solicitud de decisión (avisos y resúmenes sin acciones). No hay binding ni código; el canal devuelto por el envío
+   * se excluye de la ingesta para que el resumen no vuelva a la memoria. Un resultado sin recibo interpretable queda incierto.
+   */
+  async deliverPlain(input: { text: string }): Promise<DeliveryReceipt> {
+    const server = this.server()
+    if (typeof server === 'string') return { state: 'failed', error_code: server === 'ambiguous' ? 'ambiguous_server' : 'tool_off' }
+    let identity
+    try { identity = parseSlackIdentity(await server.tools.call(PROFILE, {})) } catch { return { state: 'failed', error_code: 'identity_unverified' } }
+    if (!identity) return { state: 'failed', error_code: 'identity_unverified' }
+    if (identity.is_bot) return { state: 'failed', error_code: 'identity_is_bot' }
+    let result: CallResult
+    try { result = await server.tools.call(SEND, { channel_id: identity.user_id, message: input.text }) } catch (error) {
+      return error instanceof EffectToolDenied ? { state: 'failed', error_code: 'tool_off' } : { state: 'uncertain', error_code: 'send_threw' }
+    }
+    const sent = parseSlackSent(result)
+    if (!sent) return { state: 'uncertain', error_code: result.is_error ? 'tool_error' : 'receipt_unparsed' }
+    try {
+      await this.options.exclusions?.add([{ integration: 'slack', account: identity.user_id, kind: 'conversation', native_id: sent.channel },
+        { integration: 'slack', account: identity.user_id, kind: 'message', native_id: sent.ts }])
+    } catch { return { state: 'sent', error_code: 'exclusion_not_recorded' } }
+    return { state: 'sent' }
   }
 
   async deliver(input: { request_id: string; text: string }): Promise<DeliveryReceipt> {

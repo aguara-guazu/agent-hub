@@ -61,6 +61,13 @@ export class GmailSelfSender {
     try { return { headers: { authorization: `Bearer ${await this.google.token(connectorId)}` } } } catch { return 'auth' }
   }
 
+  /** Estado del canal sin enviar nada: scope concedido y cuenta acreditada por el perfil de Gmail. */
+  async status(connectorId: string): Promise<{ state: 'ok'; account: string } | { state: 'scope_missing' | 'identity_unverified' }> {
+    if (!this.google.granted(connectorId, GMAIL_SEND_SCOPE)) return { state: 'scope_missing' }
+    const account = await this.account(connectorId)
+    return account ? { state: 'ok', account } : { state: 'identity_unverified' }
+  }
+
   /** Dirección de la cuenta conectada según Gmail, o `null` si no se pudo comprobar. */
   async account(connectorId: string): Promise<string | null> {
     const auth = await this.authorized(connectorId)
