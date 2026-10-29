@@ -70,6 +70,8 @@ export interface CollectDeps {
 export interface JiraGuard {
   ownerAccountId(): Promise<string | null>
   assigneeOf(issueKey: string): Promise<{ account_id: string | null; verified: boolean }>
+  /** A Jira effects server is selected; then a `null` ownerAccountId means unreadable, not absent. Missing method = unknown, treated as configured. */
+  configured?(): boolean
 }
 /** `kind` travels beside `effect` for effects whose strict parser admits no extra key (git_push); Jira effects still carry it inside. */
 export interface AttentionLine { ref: string; summary: string; at: string; project_id?: string; effect?: unknown; kind?: PublicItem['kind'] }
