@@ -11,7 +11,7 @@ import { useT } from "./i18n"
 import { AuthProvider, useAuth } from "./lib/auth"
 import { useTheme } from "./lib/theme"
 import { DeliveriesPage, DeliveryDetailPage, SchedulesPage } from "./pages/Automations"
-import { HubActivity, HubCatalog, HubClients, HubSettings, HubSkills } from "./pages/Hub"
+import { HubActivity, HubClients, HubSettings, HubSkills } from "./pages/Hub"
 import MemoryPage from "./pages/memory/MemoryPage"
 import MemoryEntityView from "./pages/memory/EntityPage"
 import ProjectPage from "./pages/project/ProjectPage"
@@ -19,6 +19,7 @@ import ProjectsPage from "./pages/projects/ProjectsPage"
 import { MemoryLocalCollaboration } from "./pages/MemoryLocalCollaboration"
 import { MemoryProcessing } from "./pages/MemoryProcessing"
 import { MemorySettings } from "./pages/MemorySettings"
+import ServersPage from "./pages/servers/ServersPage"
 import HomePage from "./pages/home/HomePage"
 
 function LocalSession() {
@@ -57,7 +58,7 @@ export function App() {
               <Route path="automations" element={legacy(<BySearchParam name="view" cases={{ history: <DeliveriesPage /> }} fallback={<SchedulesPage />} />)} />
               <Route path="automations/deliveries/:runId" element={legacy(<DeliveryDetailPage />)} />
 
-              <Route path="servers" element={legacy(<HubCatalog />)} />
+              <Route path="servers" element={<ServersPage />} />
               <Route path="skills" element={legacy(<HubSkills />)} />
               <Route path="clients" element={legacy(<HubClients />)} />
               <Route path="activity" element={legacy(<BySearchParam name="tab" cases={{ procesamiento: <MemoryProcessing /> }} fallback={<HubActivity />} />)} />
