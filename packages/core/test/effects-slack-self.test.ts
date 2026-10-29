@@ -71,6 +71,9 @@ describe('Slack a uno mismo', () => {
     servers = new Map()
     expect(await delivery().available()).toEqual({ available: false, reason: 'not_connected' })
     expect(await new SlackSelfDelivery({ store, tools: { ...resolver, published: () => true } }).available()).toEqual({ available: false, reason: 'tool_off' })
+    servers = new Map([['srv-slack', new Set(['slack_send_message', 'slack_read_user_profile'])]])
+    handlers.profile = () => { throw new Error('oauth vencido') }
+    expect(await delivery().available()).toEqual({ available: false, reason: 'identity_unverified' })
     servers = new Map([['a', new Set(['slack_send_message', 'slack_read_user_profile'])], ['b', new Set(['slack_send_message', 'slack_read_user_profile'])]])
     expect(await delivery().available()).toEqual({ available: false, reason: 'identity_unverified' })
   })

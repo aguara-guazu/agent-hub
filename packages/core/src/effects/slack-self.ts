@@ -70,7 +70,7 @@ export class SlackSelfDelivery {
     if (server === 'ambiguous') return { available: false, reason: 'identity_unverified' }
     let identity
     try { identity = parseSlackIdentity(await server.tools.call(PROFILE, {})) } catch (error) {
-      return { available: false, reason: error instanceof EffectToolDenied ? 'tool_off' : 'not_connected' }
+      return { available: false, reason: error instanceof EffectToolDenied ? 'tool_off' : 'identity_unverified' }
     }
     if (!identity) return { available: false, reason: 'identity_unverified' }
     return identity.is_bot ? { available: false, reason: 'identity_is_bot' } : { available: true, user_id: identity.user_id }

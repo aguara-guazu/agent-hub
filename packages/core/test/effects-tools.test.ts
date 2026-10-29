@@ -95,6 +95,8 @@ it('published distingue una herramienta apagada por el dueño de un servidor aus
   off(toolOf(slack.id, 'slack_send_message').id)
   expect(resolver.candidates(names)).toEqual([])
   expect(resolver.published!(names)).toBe(true)
+  db.run('UPDATE mcp_tools SET quarantined = 1 WHERE id = ?', toolOf(slack.id, 'slack_read_user_profile').id)
+  expect(resolver.published!(names)).toBe(false)
 })
 
 it('una herramienta de Slack en un host de Atlassian (y al revés) no entra en la cota', async () => {

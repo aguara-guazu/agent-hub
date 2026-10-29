@@ -196,8 +196,9 @@ function notify(title: string, body: string): void {
 const navigation = new NavigationRelay(route => mainWindow?.webContents.send(IPC.navigate, route))
 
 /**
- * Notificaciones con acción de clic retenidas hasta el clic, el cierre o el fallo. Sin una referencia viva el recolector puede reclamar
- * el objeto `Notification` y con él el manejador: el clic sólo activa la app. macOS no siempre emite `close` al descartarlas, de ahí el tope.
+ * Notificaciones con acción de clic retenidas hasta el clic o el fallo. Sin una referencia viva el recolector puede reclamar el objeto
+ * `Notification` y con él el manejador: el clic sólo activa la app. `close` no libera: Electron no garantiza cuándo lo emite y una
+ * notificación que sigue en el Centro de notificaciones todavía recibe clics. El tope acota las descartadas.
  */
 const liveNotifications: Notification[] = []
 const LIVE_NOTIFICATIONS_LIMIT = 20
@@ -207,7 +208,6 @@ function showRetained(notification: Notification): void {
     if (index >= 0) liveNotifications.splice(index, 1)
   }
   notification.once('click', release)
-  notification.once('close', release)
   notification.once('failed', release)
   liveNotifications.push(notification)
   if (liveNotifications.length > LIVE_NOTIFICATIONS_LIMIT) liveNotifications.shift()

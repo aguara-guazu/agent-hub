@@ -46,7 +46,7 @@ export function createEffectToolResolver(store: Store, pool: ConnectionPool, own
     published(toolNames) {
       return store.serversOfUser(ownerId).some(server => {
         const endpoint = { transport: server.transport, url: server.url }
-        const published = { tools: store.toolsOfServer(server.id).filter(tool => profileAllowsTool('hub_effects', { memory: false, tool: tool.name, endpoint })) }
+        const published = { tools: store.toolsOfServer(server.id).filter(tool => !tool.quarantined && profileAllowsTool('hub_effects', { memory: false, tool: tool.name, endpoint })) }
         return toolNames.every(name => has(published, name))
       })
     },
