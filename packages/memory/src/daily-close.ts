@@ -1,7 +1,7 @@
 import { hash } from './store.js'
 import type { PublicItem } from './schedule-contract.js'
 import type { DailyDeps, ProposedEffect, ProposedItem } from './daily-types.js'
-import { DEFAULT_WORKDAY_HOURS, clip, dayLabel, endOfLocalDay, localTime, plural, startOfLocalDay } from './daily-types.js'
+import { DEFAULT_WORKDAY_HOURS, clip, dayLabel, endOfLocalDay, localTime, operationKeyOf, plural, startOfLocalDay } from './daily-types.js'
 import { HOURS_SYSTEM, collectHoursInputs, estimateWriter, formatHours, hoursPayload, hoursSynthesisSchema, estimateId, finishEstimates, type HourEstimateDraft, type HoursInputs, type HoursSynthesis } from './hours-estimate.js'
 
 export const closeSynthesisSchema = hoursSynthesisSchema
@@ -116,7 +116,8 @@ export function renderClose(pkg: ClosePackage, synthesis: HoursSynthesis | null,
   let totalSeconds = 0, hourTasks = 0
   const push = (project: CloseProject | { project_id: string }, kind: PublicItem['kind'], summary: string, effect: Record<string, unknown>, estimateRef?: string) => {
     const ordinal = items.length + 1
-    items.push({ ordinal, kind, project_id: project.project_id, summary, effect_digest: digestOf(effect), ...(estimateRef ? { estimate_id: estimateRef } : {}) } as PublicItem)
+    const operation_key = operationKeyOf(effect)
+    items.push({ ordinal, kind, project_id: project.project_id, summary, effect_digest: digestOf(effect), ...(operation_key ? { operation_key } : {}), ...(estimateRef ? { estimate_id: estimateRef } : {}) } as PublicItem)
     effects.push({ ordinal, effect })
     return ordinal
   }

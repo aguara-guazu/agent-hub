@@ -50,3 +50,18 @@ export const dayLabel = (value: string | Date) => { const d = new Date(value); r
 export const localDate = (value: string | Date) => { const d = new Date(value); return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}` }
 export const startOfLocalDay = (value: string | Date) => { const d = new Date(value); return new Date(d.getFullYear(), d.getMonth(), d.getDate()) }
 export const endOfLocalDay = (value: string | Date) => { const d = new Date(value); return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1) }
+
+/**
+ * Semantic identity of a Jira write, independent of the estimated value: a second close of the same window proposes the same worklog with other seconds,
+ * and the decision store must see one operation. Pushes and unknown kinds carry no key here (their owner defines it).
+ */
+export function operationKeyOf(effect: Record<string, unknown>): string | undefined {
+  const site = typeof effect['site'] === 'string' ? effect['site'] : 'null', issue = effect['issue_key']
+  if (typeof issue !== 'string') return undefined
+  switch (effect['kind']) {
+    case 'jira_worklog': return typeof effect['started'] === 'string' ? `jira_worklog:${site}:${issue}:${effect['started']}` : undefined
+    case 'jira_transition': return `jira_transition:${site}:${issue}:done`
+    case 'jira_comment': return typeof effect['evidence_ref'] === 'string' ? `jira_comment:${site}:${issue}:${effect['evidence_ref']}` : undefined
+    default: return undefined
+  }
+}

@@ -1,7 +1,7 @@
 import { hash } from './store.js'
 import type { PublicItem } from './schedule-contract.js'
 import type { DailyDeps, ProposedEffect, ProposedItem } from './daily-types.js'
-import { clip, dayLabel, endOfLocalDay, localDate, localTime, plural, startOfLocalDay } from './daily-types.js'
+import { clip, dayLabel, endOfLocalDay, localDate, localTime, operationKeyOf, plural, startOfLocalDay } from './daily-types.js'
 import type { SnapshotCoverage, StatusDeterministic, StatusPending, StatusSynthesis, Freshness, SourceWatermark, StatusSource } from './project-status.js'
 
 const MAX_ATTENTION_LINES = 10
@@ -170,7 +170,8 @@ export function renderBrief(pkg: BriefPackage, runId: string): BriefDraft {
   if (pkg.carryover.length) {
     for (const item of pkg.carryover) {
       const ordinal = items.length + 1
-      items.push({ ordinal, kind: item.kind, project_id: item.project_id, summary: item.summary, effect_digest: item.effect_digest, ...(item.estimate_id ? { estimate_id: item.estimate_id } : {}) } as PublicItem)
+      const operation_key = operationKeyOf(item.effect)
+      items.push({ ordinal, kind: item.kind, project_id: item.project_id, summary: item.summary, effect_digest: item.effect_digest, ...(operation_key ? { operation_key } : {}), ...(item.estimate_id ? { estimate_id: item.estimate_id } : {}) } as PublicItem)
       effects.push({ ordinal, effect: item.effect })
     }
     sections.push(['## Pendientes de ayer', ...items.map(item => `${item.ordinal}. ${item.summary}`)].join('\n'))
