@@ -180,8 +180,9 @@ function ProjectRow({ project, company, showContent, showPeople }: { project: Pr
   )
 }
 
-/** Tipos con etiqueta plural propia; el resto suma en «N más». */
-const CONTENT_KINDS = ["meeting", "document", "note", "collection", "message", "issue", "event", "fact", "person"] as const
+/** Tipos con etiqueta plural propia; el resto suma en «N más». Personas y empresas tienen su propia columna o su ficha. */
+const CONTENT_KINDS = ["meeting", "document", "note", "collection", "message", "issue", "event", "fact"] as const
+const NOT_CONTENT = new Set(["person", "company"])
 type ContentKind = typeof CONTENT_KINDS[number]
 const isContentKind = (kind: string): kind is ContentKind => (CONTENT_KINDS as readonly string[]).includes(kind)
 
@@ -189,8 +190,8 @@ const isContentKind = (kind: string): kind is ContentKind => (CONTENT_KINDS as r
 function ContentCount({ summary }: { summary?: NonNullable<ProjectWithSummary["summary"]>["project"] }) {
   const { t, plural } = useT("projects")
   if (!summary) return <span>—</span>
-  if (summary.content_total === 0) return <span>{t("row.noContent")}</span>
-  const parts = Object.entries(summary.content_by_kind).filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1])
+  const parts = Object.entries(summary.content_by_kind).filter(([kind, count]) => count > 0 && !NOT_CONTENT.has(kind)).sort((a, b) => b[1] - a[1])
+  if (parts.length === 0) return <span>{t("row.noContent")}</span>
   const label = ([kind, count]: [string, number]) => isContentKind(kind) ? plural(`row.kinds.${kind}`, count) : plural("row.content", count)
   const shown = parts.slice(0, 2)
   const rest = parts.slice(2).reduce((total, [, count]) => total + count, 0)

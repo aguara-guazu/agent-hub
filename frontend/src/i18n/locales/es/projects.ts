@@ -56,8 +56,6 @@ const projects = {
       event_other: "{{count, number}} eventos",
       fact_one: "{{count, number}} decisión",
       fact_other: "{{count, number}} decisiones",
-      person_one: "{{count, number}} persona",
-      person_other: "{{count, number}} personas",
     },
   },
   states: {
