@@ -265,6 +265,26 @@ describe("caducidad y revocación", () => {
     expect((await db.query("SELECT revoke_reason FROM chat_read_grants WHERE id=$1", [grantId]))[0]!.revoke_reason).toBe("session_closed")
   })
 
+  it("el cierre de sesión por el hook revoca en el mismo cambio, sin esperar al ciclo", async () => {
+    const w = await world(), { grantId } = await granted(w)
+    await ops.chat.lifecycle(w.member.a, { session_key: w.member.k, native_id: w.member.name, event: "SessionEnd", at: new Date().toISOString() })
+    expect((await db.query("SELECT revoke_reason FROM chat_read_grants WHERE id=$1", [grantId]))[0]!.revoke_reason).toBe("session_closed")
+  })
+
+  it("una sesión cerrada que se reabre, o que vuelve tras perder liveness, no recupera el permiso", async () => {
+    const w = await world(), first = await granted(w)
+    await db.query("UPDATE chat_sessions SET closed_at=now(),state='offline' WHERE id=$1", [w.member.session.id])
+    await ops.chat.lifecycle(w.member.a, { session_key: w.member.k, native_id: w.member.name, event: "SessionStart", at: new Date().toISOString() })
+    expect((await db.query("SELECT closed_at FROM chat_sessions WHERE id=$1", [w.member.session.id]))[0]!.closed_at).toBeNull()
+    expect((await db.query("SELECT revoke_reason FROM chat_read_grants WHERE id=$1", [first.grantId]))[0]!.revoke_reason).toBe("session_closed")
+    expect(await canReadChannel(db, w.member.session.id, w.outsider.channel.id)).toBe(false)
+    const second = await granted(w)
+    await db.query("UPDATE chat_sessions SET lease_until=$2 WHERE id=$1", [w.member.session.id, iso(Date.now() - READ_GRANT_LIVENESS_GRACE_MS - 60_000)])
+    await ops.chat.lifecycle(w.member.a, { session_key: w.member.k, native_id: w.member.name, event: "Heartbeat", at: new Date().toISOString() })
+    expect((await db.query("SELECT revoke_reason FROM chat_read_grants WHERE id=$1", [second.grantId]))[0]!.revoke_reason).toBe("liveness_lost")
+    expect(await canReadChannel(db, w.member.session.id, w.outsider.channel.id)).toBe(false)
+  })
+
   it("la persona revoca y queda auditado", async () => {
     const w = await world(), { grantId } = await granted(w)
     expect(await ops.chat.revokeReadGrant(grantId, "owner", "Ya no")).toMatchObject({ revoked: true })

@@ -14,7 +14,7 @@ import type { MemoryStore } from './store.js'
 import type { Sql } from './database.js'
 import { teamGuidance, teamGuidanceVersion } from './local-chat-team.js'
 import { canReadChannel, readAccessDefinitions, readDenied, readElevate, readInterest, readNoticeValid, readRequest, readScope, sweepReadAccess,
-  confirmReadRequest, rejectReadRequest, revokeReadGrant, personReadGrants, personReadRequests, type ReadScope } from './chat-read-access.js'
+  READ_GRANT_LIVENESS_GRACE_MS, confirmReadRequest, rejectReadRequest, revokeReadGrant, personReadGrants, personReadRequests, type ReadScope } from './chat-read-access.js'
 import { channelProjectId, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
 import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
@@ -512,6 +512,8 @@ export class LocalChat {
     await this.assertNotRemoved(agent,input.session_key)
     const known = (await this.db.query('SELECT * FROM chat_sessions WHERE key_hash=$1 AND agent_id=$2',[hash(input.session_key),agent.agent_id]))[0]
     if(known)await this.joinableChannel((await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[known.channel_id]))[0]!)
+    // Revoke before this event reopens the session or renews its lease: grants must not outlive a close or a silence.
+    if(known && (known.closed_at || !(Date.parse(known.lease_until)>Date.now()-READ_GRANT_LIVENESS_GRACE_MS)))await sweepReadAccess(this.db)
     const registration = !known || input.event==='SessionStart' ? await this.register(agent,input.session_key,input.native_id,false)
       : { session:publicSession(known),channel:(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[known.channel_id]))[0],session_key:input.session_key }
     const sid = registration.session.id
@@ -529,6 +531,7 @@ export class LocalChat {
         capability=CASE WHEN $7 IS NOT NULL THEN $7 WHEN cli_kind='codex_cli' AND capability NOT IN ('codex_appserver','tui_prompt') THEN 'codex_queue' ELSE capability END
         WHERE id=$1 AND event_at<=$3`, [sid, state, input.at, new Date(Date.now()+90000).toISOString(), input.process_id ?? null, input.process_started ?? null, input.transport ?? null])
       await this.captureNative(sid,agent,input)
+      if(state==='offline')await sweepReadAccess(this.db)
     } else if(input.event==='PostModelSwitch') {
       if(known && !known.closed_at && input.model)await this.db.query(`UPDATE chat_sessions SET model=$2,model_observed_at=$3
         WHERE id=$1 AND native_id=$4 AND (model_observed_at IS NULL OR model_observed_at<=$3)`,[sid,input.model,input.at,input.native_id])
