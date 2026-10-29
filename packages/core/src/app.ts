@@ -72,6 +72,8 @@ import { registerMemory, memoryTools, memorySkill, collaborationSkill, localColl
 import { createJiraTaskReader } from './memory-jira.js'
 import { createPoolCallAudit } from './effects/call-audit.js'
 import { createCoreScheduleEffects } from './effects/wiring.js'
+import { createJiraAdapters } from './effects/jira.js'
+import { readJiraServerId } from './effects/jira-server.js'
 
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
 const ORG_ROLES = ['owner', 'admin', 'member']
@@ -281,6 +283,8 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     fastify.addHook('onClose', async () => { await jiraPool.close() })
     const memoryRef: { service?: { vault: any; google: any; get(): Promise<any> } } = {}
     const scheduleEffects = createCoreScheduleEffects({ store, pool: jiraPool, ownerId: owner.id, automationsEnabled: () => automationsEnabled(store),
+      // El servidor de Jira se relee en cada intención desde `jira.server_id`: sin ese setting (o con un servidor que ya no es del dueño) la escritura falla cerrada.
+      adapters: () => [...createJiraAdapters({ serverId: () => readJiraServerId(store, owner.id) })],
       host: { directory: memoryDirectory, get vault() { return memoryRef.service!.vault }, get google() { return memoryRef.service!.google },
         load: async () => { const current = await memoryRef.service!.get(); return { db: current.db, schedules: current.schedules.store } } } })
     const memory = registerMemory(fastify, { directory: memoryDirectory, baseUrl,
