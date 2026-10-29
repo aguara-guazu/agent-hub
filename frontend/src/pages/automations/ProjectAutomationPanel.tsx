@@ -35,8 +35,8 @@ function draftOf(project: MemoryEntity, view: ProjectAutomationView): Draft {
 
 function Check({ checked, disabled, onChange, children }: { checked: boolean; disabled?: boolean; onChange: () => void; children: ReactNode }) {
   return (
-    <label style={{ display: "flex", alignItems: "flex-start", gap: "var(--sp-3)", cursor: disabled ? "default" : "pointer" }}>
-      <input type="checkbox" style={{ accentColor: "var(--accent)", marginTop: "var(--sp-1)" }} checked={checked} disabled={disabled} onChange={onChange} />
+    <label style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)", cursor: disabled ? "default" : "pointer" }}>
+      <input type="checkbox" style={{ accentColor: "var(--accent)", margin: 0 }} checked={checked} disabled={disabled} onChange={onChange} />
       <span className="row-main">{children}</span>
     </label>
   )

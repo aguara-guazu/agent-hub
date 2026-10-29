@@ -216,7 +216,7 @@ export default function AutomationsPage() {
       <List className="scroll-x">
         <RowHead style={{ minWidth: ROW_MIN }}>
           <span style={{ flex: 1 }}>{t("columns.delivery")}</span>
-          <span className="col" style={{ width: 110 }}>{t("columns.status")}</span>
+          <span className="col" style={{ width: 160 }}>{t("columns.status")}</span>
         </RowHead>
         {items.map((run: RunListItem) => {
           const name = projectName(run.project_id)
@@ -232,7 +232,7 @@ export default function AutomationsPage() {
               title={<>{run.read_at ? null : <span className="dot" role="img" aria-label={t("row.unread")} style={{ display: "inline-block", marginRight: "var(--sp-2)", background: "var(--info)" }} />}{run.title}</>}
               titleText={run.title}
               sub={detail}
-              meta={<span className="col" style={{ width: 110, display: "flex" }}>
+              meta={<span className="col" style={{ width: 160, display: "flex" }}>
                 {decision ? <Chip tone="warn">{ts("chip.awaitingDecision")}</Chip> : <Chip tone={RUN_TONES[run.state]}>{ts(`delivery.${run.state}`)}</Chip>}
               </span>}
             />

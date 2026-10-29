@@ -182,7 +182,7 @@ const automations = {
       uncertain: "Sin confirmar",
       skipped: "Omitida",
     },
-    retry: "Reintentar {{channel}}",
+    retry: "Reintentar envío",
     retryUncertainTitle: "¿Reenviar por {{channel}}?",
     retryUncertain: "No se pudo confirmar si llegó: puede llegar dos veces. Reenviá solo si no lo recibiste.",
     retryConfirm: "Reenviar",

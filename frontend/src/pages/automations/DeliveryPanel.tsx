@@ -114,7 +114,7 @@ function ItemsBlock({ run }: { run: RunDetail }) {
           ].filter(Boolean).join(" · ") : null
           const revisable = mutable && item.kind === "jira_worklog"
           return (
-            <div className="row" key={item.ordinal} style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
+            <div className="row" key={item.ordinal} style={{ alignItems: "flex-start" }}>
               <input
                 type="checkbox"
                 aria-label={t("decision.select", { ordinal: item.ordinal })}
@@ -229,7 +229,7 @@ function Channels({ run }: { run: RunDetail }) {
             <Chip tone={CHANNEL_TONES[item.state]} title={item.error_code ?? undefined}>{t(`delivery.channelState.${item.state}`)}</Chip>
             {retryable && (
               <Button small variant="ghost" disabled={retry.isPending} onClick={() => (item.state === "uncertain" ? setAsking(item) : send(item))}>
-                {t("delivery.retry", { channel: label })}
+                {t("delivery.retry")}
               </Button>
             )}
           </div>

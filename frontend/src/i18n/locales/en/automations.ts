@@ -185,7 +185,7 @@ const automations = {
       uncertain: "Unconfirmed",
       skipped: "Skipped",
     },
-    retry: "Retry {{channel}}",
+    retry: "Retry sending",
     retryUncertainTitle: "Resend by {{channel}}?",
     retryUncertain: "Delivery couldn't be confirmed, so it may arrive twice. Resend only if you didn't get it.",
     retryConfirm: "Resend",
