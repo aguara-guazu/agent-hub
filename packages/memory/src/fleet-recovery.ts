@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { UsageQuotaTransition } from '@agenthub/shared'
 import type { MemoryDatabase } from './database.js'
 import type { HubResumeRequest, HubTeamStatus } from './team-hub.js'
@@ -127,4 +127,28 @@ function parseRuntime(raw: unknown): HubTeamStatus | undefined {
     if (value && typeof value === 'object' && (value as { provider?: unknown }).provider === 'hub' && typeof (value as { generation?: unknown }).generation === 'string') return value as HubTeamStatus
   } catch { /* A runtime that cannot be read establishes nothing. */ }
   return undefined
+}
+
+/** Durable attempt log over process_incidents: the unique (subject, generation, cause) index is what bounds the attempts. */
+export class SqlRecoveryIncidentLog implements RecoveryIncidentLog {
+  constructor(private readonly db: Pick<MemoryDatabase, 'query'>) {}
+  async claim(input: Parameters<RecoveryIncidentLog['claim']>[0]): Promise<boolean> {
+    const rows = await this.db.query(`INSERT INTO process_incidents(id,subject_kind,subject_id,generation,team_id,member_id,session_id,cause,action,observed_at,detail)
+      VALUES($1,'fleet_member',$2,$3,$4,$2,$5,$6,'none',$7,$8) ON CONFLICT DO NOTHING RETURNING id`,
+    [randomUUID(), input.member_id, input.generation, input.team_id, input.session_id, input.cause, new Date().toISOString(), JSON.stringify(input.detail)])
+    return rows.length > 0
+  }
+  async settle(input: Parameters<RecoveryIncidentLog['settle']>[0]): Promise<void> {
+    await this.db.query(`UPDATE process_incidents SET action=$3,detail=json_patch(detail,$4)
+      WHERE subject_kind='fleet_member' AND subject_id=$1 AND generation=$2 AND cause='quota_resume'`,
+    [input.member_id, input.generation, input.action, JSON.stringify(input.detail ?? {})])
+  }
+}
+
+/** Builds the recovery over the Hub's own fleet runtime; absent when the runtime cannot resume members (another backend or no fleet). */
+export function createFleetRecovery(db: Pick<MemoryDatabase, 'query'>, usage: Pick<UsageQuotas, 'exhaustedAt' | 'forCli'>,
+  fleet: unknown, notices?: { publishResumption(event: ResumptionEvent): Promise<boolean> }): FleetQuotaRecovery | undefined {
+  const runtime = fleet as { resumeMember?: unknown } | undefined
+  if (!runtime || typeof runtime.resumeMember !== 'function') return undefined
+  return new FleetQuotaRecovery(db, usage, runtime as { resumeMember(handle: string, request: HubResumeRequest): Promise<unknown> }, new SqlRecoveryIncidentLog(db), notices)
 }
