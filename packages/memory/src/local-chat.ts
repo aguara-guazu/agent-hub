@@ -280,12 +280,17 @@ export class LocalChat {
     if(notify)this.events.emit('change',input.participant_id)
     return result
   }
-  /** Attempts (accepted or refused) bound per session and per channel, so refusals cannot flood the audit. */
-  private async leadershipAttemptsLeft(sql:Sql,sessionId:string,channelId:string,now=Date.now()) {
-    const counts=(await sql.query(`SELECT COALESCE(SUM(CASE WHEN actor_session_id=$2 THEN 1 ELSE 0 END),0) AS mine,count(*) AS total FROM chat_authority_events
+  /**
+   * Attempts (accepted or refused) bound per session and per channel, so refusals cannot flood the audit. Refusals of sessions
+   * outside the channel's project never count against the channel, and a reclaim only spends its own budget: other sessions
+   * must not be able to lock the displaced leader out of its channel.
+   */
+  private async leadershipAttemptsLeft(sql:Sql,sessionId:string,channelId:string,now=Date.now(),reclaim=false) {
+    const counts=(await sql.query(`SELECT COALESCE(SUM(CASE WHEN actor_session_id=$2 THEN 1 ELSE 0 END),0) AS mine,
+      COALESCE(SUM(CASE WHEN kind='leadership_rejected' AND json_extract(evidence,'$.code')='project_mismatch' THEN 0 ELSE 1 END),0) AS total FROM chat_authority_events
       WHERE channel_id=$1 AND kind IN ('leadership_takeover','leadership_reclaim','leadership_rejected') AND created_at>$3`,
     [channelId,sessionId,new Date(now-LEADERSHIP_ATTEMPT_WINDOW_MS).toISOString()]))[0]!
-    return Number(counts.mine)<LEADERSHIP_ATTEMPTS_PER_SESSION && Number(counts.total)<LEADERSHIP_ATTEMPTS_PER_CHANNEL
+    return Number(counts.mine)<LEADERSHIP_ATTEMPTS_PER_SESSION && (reclaim || Number(counts.total)<LEADERSHIP_ATTEMPTS_PER_CHANNEL)
   }
   /**
    * Takeover and reclaim are one compare-and-set on leader_id inside the writer transaction: two candidates, or a candidate
@@ -298,7 +303,9 @@ export class LocalChat {
       const channel=(await sql.query('SELECT * FROM chat_channels WHERE id=$1',[input.channel_id]))[0]
       check(channel && !channel.deleted_at,'Canal inexistente.',404)
       const projectId=await channelProjectId(sql,channel.id)
-      check(await this.leadershipAttemptsLeft(sql,who.id,channel.id,now),
+      // Identity is the authenticated session row (session_key hash + gateway agent), compared by id; a nickname proves nothing.
+      const reclaim=channel.displaced_leader_id===who.id
+      check(await this.leadershipAttemptsLeft(sql,who.id,channel.id,now,reclaim),
         'Demasiados intentos de liderazgo sobre este canal. Esperá unos minutos o pedí a la persona que designe el coordinador desde la UI.',429)
       const refuse=(status:number,code:string,message:string,evidence:Record<string,unknown>={}):never=>{
         const audit:AuthorityEvent={kind:"leadership_rejected",channel_id:channel.id,project_id:projectId,actor_session_id:who.id,
@@ -306,17 +313,16 @@ export class LocalChat {
         throw Object.assign(new MemoryError(status,message,false,code),{leadershipAudit:audit})
       }
       if(channel.leader_id===who.id)return {channel_id:channel.id,leader_id:who.id,mode:'unchanged' as const,previous_leader_id:who.id,affected_plans:[] as string[],team:await this.team(channel.id)}
+      // First refusal for any session outside the project, so they learn nothing else about the channel and spend no channel budget.
+      const sessionProject=await sessionProjectId(sql,who.id)
+      if(!projectId || sessionProject!==projectId)
+        refuse(403,'project_mismatch','Sólo un agente del mismo proyecto del canal, según el Hub, puede tomar su liderazgo.',{session_project_id:sessionProject})
       if(channel.closed_at)refuse(409,'channel_closed','El canal está cerrado.')
       if(channel.kind==='virtual' && !channel.activated_at)refuse(409,'channel_inactive','El canal no está activo.')
       if((await sql.query('SELECT 1 FROM chat_team_members WHERE channel_id=$1 LIMIT 1',[channel.id])).length)
         refuse(409,'worker_channel','Es el canal de un worker de equipo; su coordinador lo reemplaza con memory_team_control.')
       if(channel.leader_id!==input.expected_leader_id)
         refuse(409,'leader_changed','El líder del canal cambió. Volvé a consultar team.leader_id antes de reintentar.',{current_leader_id:channel.leader_id})
-      const sessionProject=await sessionProjectId(sql,who.id)
-      if(!projectId || sessionProject!==projectId)
-        refuse(403,'project_mismatch','Sólo un agente del mismo proyecto del canal, según el Hub, puede tomar su liderazgo.',{session_project_id:sessionProject})
-      // Identity is the authenticated session row (session_key hash + gateway agent), compared by id; a nickname proves nothing.
-      const reclaim=channel.displaced_leader_id===who.id
       let evidence:Record<string,unknown>
       if(reclaim) {
         // The authenticated call of the exact displaced session is its connection proof; it renews the lease below.

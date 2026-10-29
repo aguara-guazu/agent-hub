@@ -10,7 +10,7 @@ import { MemoryOperations } from "../src/operations.js"
 import { MemoryAI } from "../src/ai.js"
 import { Vault, defaultAI } from "../src/config.js"
 import { chatFolder } from "../src/local-chat.js"
-import { LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "../src/channel-authority.js"
+import { LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "../src/channel-authority.js"
 import type { AgentContext } from "../src/agents.js"
 import { existingChannel } from "./helpers/chat-channel.js"
 
@@ -182,6 +182,28 @@ describe("reclamo y enfriamiento", () => {
     expect(await events(leader.channel.id, "leadership_rejected")).toHaveLength(LEADERSHIP_ATTEMPTS_PER_SESSION)
   })
 
+  it("el reclamo sigue disponible aunque otros agentes agoten el cupo del canal", async () => {
+    const leader = await register("leader"), candidate = await register("candidate")
+    await silence(leader, silentMinutes)
+    await take(candidate, leader.channel.id, leader.session.id)
+    const flooders = Math.ceil(LEADERSHIP_ATTEMPTS_PER_CHANNEL / LEADERSHIP_ATTEMPTS_PER_SESSION)
+    for (let n = 0; n < flooders; n++) {
+      const outsider = await register(`flood${n}`, other)
+      for (let i = 0; i < LEADERSHIP_ATTEMPTS_PER_SESSION; i++) await take(outsider, leader.channel.id, candidate.session.id).catch(() => undefined)
+    }
+    expect(await take(leader, leader.channel.id, candidate.session.id, "Volví")).toMatchObject({ mode: "reclaim" })
+  })
+
+  it("las negativas a sesiones de otro proyecto no consumen el cupo del canal", async () => {
+    const leader = await register("leader"), candidate = await register("candidate")
+    await silence(leader, silentMinutes)
+    const flooders = Math.ceil(LEADERSHIP_ATTEMPTS_PER_CHANNEL / LEADERSHIP_ATTEMPTS_PER_SESSION)
+    for (let n = 0; n < flooders; n++) {
+      const outsider = await register(`flood${n}`, other)
+      for (let i = 0; i < LEADERSHIP_ATTEMPTS_PER_SESSION; i++) await rejected(take(outsider, leader.channel.id, leader.session.id), 403, "project_mismatch")
+    }
+    expect(await take(candidate, leader.channel.id, leader.session.id)).toMatchObject({ mode: "takeover" })
+  })
 })
 
 describe("multi-canal y expulsión", () => {
