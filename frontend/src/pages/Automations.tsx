@@ -121,7 +121,8 @@ function ChannelsModal({ schedule, onClose }: { schedule: ScheduleView; onClose:
   </>}>
     <div className="automations-form">
       <label><input type="checkbox" checked disabled /> App de Agent Hub (siempre)</label>
-      {CHANNEL_TARGETS.map(([channel, target, label]) => { const info = channels.data?.items.find(item => item.channel === channel); const available = info?.available === true
+      {!CHANNEL_TARGETS.some(([, target]) => schedule.delivery_allowed?.includes(target) ?? true) && <p className="automations-muted">Este tipo de automatización se entrega solo en la app.</p>}
+      {CHANNEL_TARGETS.filter(([, target]) => schedule.delivery_allowed?.includes(target) ?? true).map(([channel, target, label]) => { const info = channels.data?.items.find(item => item.channel === channel); const available = info?.available === true
         return <label key={target}><input type="checkbox" disabled={!available && !selected.includes(target)} checked={selected.includes(target)} onChange={() => toggle(target)} /> {label}{info?.destination ? ` (${info.destination})` : ''}{!available && info && <small className="automations-muted"> {CHANNEL_REASONS[info.reason ?? ''] ?? 'no disponible'}</small>}{channel === 'gmail' && info?.reason === 'scope_missing' && <GmailAuthorize destination={info.destination} />}{channel === 'slack' && info?.reason === 'not_connected' && <small className="automations-muted"> · Agrega el servidor MCP de Slack en el <Link to="/catalog">Catálogo</Link>.</small>}</label> })}
       <p className="automations-muted">Un canal se puede elegir cuando está listo para enviar. Los correos y mensajes van solo a tu propia cuenta.</p>
     </div>

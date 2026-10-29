@@ -174,10 +174,10 @@ export interface DecisionSummary { state: 'none' | 'pending' | 'dispatching' | '
 /** Fields of a schedule a person changed from the app; an agent cannot change them afterwards. */
 export type HumanOverrideField = 'recurrence' | 'delivery'
 
-/** `next_run_local` carries the system offset; `delivery_unavailable` lists requested targets whose adapter reports unavailable. */
+/** `next_run_local` carries the system offset; `delivery_unavailable` lists requested targets whose adapter reports unavailable; `delivery_allowed` are the targets the template admits. */
 export interface ScheduleView {
   id: string; scope: ScheduleScope; project_id: string | null; template: ScheduleTemplate; template_version: number; kind: ScheduleKind; title: string; recurrence: Recurrence
-  timezone: string; next_run_at: string | null; next_run_local: string | null; delivery: DeliveryTarget[]; delivery_unavailable: DeliveryTarget[]
+  timezone: string; next_run_at: string | null; next_run_local: string | null; delivery: DeliveryTarget[]; delivery_unavailable: DeliveryTarget[]; delivery_allowed: DeliveryTarget[]
   state: ScheduleState; paused_by: Actor | null; revision: number; human_override: HumanOverrideField[]; created_by: { kind: Actor; agent_id: string | null; label: string }; admission_note: string
   last_run?: { id: string; state: RunState; scheduled_for: string; trigger: RunTrigger; skip_reason?: string; deferred_reason?: string }
   /** Present while a run waits for quota or for the machine to wake. */

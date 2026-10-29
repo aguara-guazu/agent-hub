@@ -161,17 +161,29 @@ describe('Programaciones', () => {
 
   it('con Gmail listo y sin usar, el asistente agrega Gmail a las automatizaciones elegidas conservando sus otros canales', async () => {
     const api = mockGmailSetup([schedule({ delivery: ['hub_inbox', 'app_window'], delivery_unavailable: [] }),
-      schedule({ id: 's2', title: 'Cierre del día', template: 'daily_close', revision: 5, delivery: ['hub_inbox', 'app_window', 'slack_self'], delivery_unavailable: [] })], { available: true, destination: 'ana@example.com' })
+      schedule({ id: 's2', title: 'Cierre del día', template: 'daily_close', revision: 5, delivery: ['hub_inbox', 'app_window', 'slack_self'], delivery_unavailable: [] }),
+      schedule({ id: 's3', title: 'Estado · Proyecto', template: 'project_status', delivery: ['hub_inbox', 'app_window'], delivery_unavailable: [], delivery_allowed: ['hub_inbox', 'app_window'] })], { available: true, destination: 'ana@example.com' })
     const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
     await flush(3)
     await click(buttonByText(container, 'Elegir automatizaciones'))
     await flush(2)
     const boxes = qa<HTMLInputElement>(document.body, '[role="dialog"] input[type="checkbox"]')
     expect(boxes.map(box => box.checked)).toEqual([true, true])
+    expect(textOf(document.querySelector('[role="dialog"]')!)).not.toContain('Estado · Proyecto')
     await click(buttonByText(document.body, 'Agregar Gmail'))
     await flush(4)
     expect(api.lastCall('/memory/schedules/s1/delivery', 'PUT')?.body).toEqual({ expected_revision: 3, delivery: ['hub_inbox', 'app_window', 'gmail_self'] })
     expect(api.lastCall('/memory/schedules/s2/delivery', 'PUT')?.body).toEqual({ expected_revision: 5, delivery: ['hub_inbox', 'app_window', 'slack_self', 'gmail_self'] })
+    expect(api.callsTo('/memory/schedules/s3/delivery', 'PUT')).toHaveLength(0)
+  })
+
+  it('Canales de una plantilla que solo admite la app no ofrece Gmail ni Slack y lo explica', async () => {
+    mockSchedules([schedule({ title: 'Estado · Proyecto', template: 'project_status', delivery: ['hub_inbox', 'app_window'], delivery_unavailable: [], delivery_allowed: ['hub_inbox', 'app_window'] })])
+    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
+    await click(buttonByText(container, 'Canales'))
+    await flush(3)
+    expect(qa<HTMLInputElement>(document.body, '[role="dialog"] input[type="checkbox"]')).toHaveLength(1)
+    expect(textOf(document.body)).toContain('Este tipo de automatización se entrega solo en la app')
   })
 
   it('«Ahora no» oculta el aviso de Gmail y no llama a nada', async () => {

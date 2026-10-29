@@ -31,6 +31,7 @@
 .automations-steps { display: flex; flex-wrap: wrap; gap: 6px 16px; list-style: none; padding: 0; margin: 0; font-size: 11px; color: var(--text-faint); }
 .automations-steps li.current { color: var(--text-primary); font-weight: 600; }
 .automations-gmail-notice strong { color: var(--text-primary); }
+.automations-form label.automations-choice { flex-direction: row; align-items: center; gap: 8px; }
 
 /* Markdown de un artefacto: tipografía sobria, sin heredar estilos de contenido externo. */
 .md { display: flex; flex-direction: column; gap: 10px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }

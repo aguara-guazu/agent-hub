@@ -18,7 +18,8 @@ function writeDismissed(): void {
   try { localStorage.setItem(DISMISS_KEY, '1') } catch { /* sin almacenamiento el aviso vuelve a mostrarse en la próxima carga */ }
 }
 
-const withoutGmail = (schedules: readonly ScheduleView[]): ScheduleView[] => schedules.filter(schedule => !schedule.delivery.includes('gmail_self'))
+const admitsGmail = (schedule: ScheduleView): boolean => schedule.delivery_allowed?.includes('gmail_self') ?? true
+const withoutGmail = (schedules: readonly ScheduleView[]): ScheduleView[] => schedules.filter(schedule => admitsGmail(schedule) && !schedule.delivery.includes('gmail_self'))
 
 /**
  * Aviso de Automatizaciones para recibir las entregas por Gmail. Con el envío sin autorizar abre el asistente desde el permiso; con Gmail
@@ -29,7 +30,7 @@ export function GmailSetupNotice({ schedules, availability }: { schedules: reado
   const [open, setOpen] = useState<Step | null>(null)
   const gmail = availability?.gmail_self
   const missing = gmail?.reason === 'scope_missing'
-  const unused = gmail?.available === true && schedules.length > 0 && !schedules.some(schedule => schedule.delivery.includes('gmail_self'))
+  const unused = gmail?.available === true && schedules.some(admitsGmail) && !schedules.some(schedule => schedule.delivery.includes('gmail_self'))
   const destination = gmail?.destination
   return <>
     {!hidden && (missing || unused) && <div className="memory-callout automations-callout automations-gmail-notice">
@@ -97,7 +98,7 @@ export function GmailSetupModal({ initial, schedules, availability, onClose }: {
       {step === 'choose' && (pending.length === 0 ? <p>Todas tus automatizaciones ya se envían por Gmail.</p> : <>
         <p>{ready ? `Gmail quedó listo${destination ? ` para ${destination}` : ''}.` : 'Gmail todavía no está listo.'} Elige qué automatizaciones se envían también por correo; la app sigue recibiéndolas.</p>
         <fieldset><legend>Automatizaciones</legend>
-          {pending.map(schedule => <label key={schedule.id} className="automations-check"><input type="checkbox" checked={selected.includes(schedule.id)} onChange={() => toggle(schedule.id)} disabled={busy} /> {schedule.title}</label>)}
+          {pending.map(schedule => <label key={schedule.id} className="automations-choice"><input type="checkbox" checked={selected.includes(schedule.id)} onChange={() => toggle(schedule.id)} disabled={busy} /> {schedule.title}</label>)}
         </fieldset>
         <p className="automations-muted">Cada una se puede cambiar después con la acción «Canales».</p>
       </>)}

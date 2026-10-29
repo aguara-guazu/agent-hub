@@ -45,6 +45,8 @@ export interface ScheduleView {
   delivery: DeliveryTarget[]
   /** Destinos pedidos cuyo adaptador reporta no disponible; el motivo sale de `delivery_available` en la lista. */
   delivery_unavailable: DeliveryTarget[]
+  /** Destinos que admite la plantilla; sin el campo (core anterior) se asumen todos. */
+  delivery_allowed?: DeliveryTarget[]
   state: ScheduleState
   paused_by: Actor | null
   revision: number
