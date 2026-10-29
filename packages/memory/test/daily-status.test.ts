@@ -144,6 +144,11 @@ describe('cierre', () => {
       expect(proposedItems([{ ref: 'r', summary: 's', at: SCHEDULED, project_id: 'p1', effect }])).toEqual([])
       expect(proposedItems([{ ref: 'r', summary: 's', at: SCHEDULED, project_id: 'p1', kind: 'info', effect }])).toEqual([])
     })
+    it('si el kind de la línea y el del efecto difieren, la línea se descarta', () => {
+      const jira = { kind: 'jira_comment', site: null, issue_key: 'APP-1', evidence_ref: 'n1' }
+      expect(proposedItems([{ ref: 'r', summary: 's', at: SCHEDULED, project_id: 'p1', kind: 'git_push', effect: jira }])).toEqual([])
+      expect(proposedItems([{ ref: 'r', summary: 's', at: SCHEDULED, project_id: 'p1', kind: 'jira_comment', effect: jira }])).toHaveLength(1)
+    })
     it('un efecto de Jira que trae su kind adentro sigue admitido', () => {
       const jira = { kind: 'jira_comment', site: null, issue_key: 'APP-1', evidence_ref: 'n1' }
       expect(proposedItems([{ ref: 'r', summary: 's', at: SCHEDULED, project_id: 'p1', effect: jira }])).toMatchObject([{ kind: 'jira_comment', effect: jira }])

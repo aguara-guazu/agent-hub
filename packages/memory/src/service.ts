@@ -23,6 +23,7 @@ import { ScheduleStore } from './schedule-store.js'
 import { ScheduleAdmin } from './schedule-admin.js'
 import { ScheduleRuntime } from './schedule-runtime.js'
 import { EngineSynthesizer } from './schedule-synthesizer.js'
+import { scheduleDeps } from './schedule-deps.js'
 import type { ActionTickResult, AttentionReaders, ScheduleAutomation } from './schedule-contract.js'
 import './schedule-templates.js'
 import './daily-templates.js'
@@ -95,7 +96,7 @@ export class MemoryService {
   readonly google: GoogleAuth
   readonly openCode: OpenCodeRuntime
   readonly cliExtraction: CliExtractionRuntime
-  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: AttentionReaders } } | null = null
+  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: () => AttentionReaders } } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true,
@@ -136,12 +137,12 @@ export class MemoryService {
   /** Clock and admission of schedules; they live only where the orchestration owner runs, never in the worker process. */
   private createSchedules(db: MemoryDatabase, store: MemoryStore, ai: MemoryAI, operations: MemoryOperations) {
     const schedules = new ScheduleStore(db), automation = this.automation
-    // Readers of this area; the others (replies awaiting, liveness, push candidates, activated projects) are added by their owners through `attention`.
-    const attention: AttentionReaders = {
+    // Readers of this area; the decision store readers come through `automation.effects` and those of the project automation from its service, both resolved on each run.
+    const own: AttentionReaders = {
       uncertain_deliveries: async () => (await schedules.uncertainDeliveries()).map(row => ({ ref: String(row.id), summary: `Entrega ${row.target} incierta`, at: String(row.updated_at), ...(row.project_id ? { project_id: String(row.project_id) } : {}) })),
       overdue_close: async () => (await schedules.overdueCloses()).map(row => ({ ref: String(row.id), summary: 'Cierre del día no ejecutado', at: String(row.scheduled_for) })),
     }
-    const runtime = new ScheduleRuntime({ store: schedules, db, memory: store, automation, usage: operations.usage, signals: operations.chat.events, deps: () => ({ attention }),
+    const runtime = new ScheduleRuntime({ store: schedules, db, memory: store, automation, usage: operations.usage, signals: operations.chat.events, deps: () => scheduleDeps(own, operations.projectAutomation, automation),
       synthesizer: new EngineSynthesizer({ settings: () => this.aiSettings(), cli: this.cliExtraction, ai }),
       ...(operations.teams ? { derivedPlans: { closeAll: (reason: string) => operations.teams!.closeAllDerived(reason) } } : {}) })
     const unavailable = { available: false, reason: 'not_connected' }
@@ -159,7 +160,7 @@ export class MemoryService {
       const summary = summarizeActionTick(await automation.effects?.actionTick?.())
       if (summary) await schedules.addEvent({ type: 'action.receipt', actor_kind: 'system', payload: summary })
     }, ACTION_TICK_MS)
-    return { store: schedules, admin, runtime, attention }
+    return { store: schedules, admin, runtime, attention: () => scheduleDeps(own, operations.projectAutomation, automation).attention! }
   }
   /** Runs the action dispatcher now, right after a decision was consumed, unless it is already running. */
   async kickActions() { (await this.get()).schedules?.runtime.kickPeriodic(ACTION_TICK) }

@@ -35,12 +35,12 @@ export interface CloseDraft {
 }
 
 /** Keeps candidates the mirror assigns to the owner and confirms them against Jira; one reassigned elsewhere drops out. */
-async function confirmAssignment(deps: DailyDeps, account: string | null, keys: string[]): Promise<Map<string, Assignment>> {
+export async function confirmAssignment(deps: DailyDeps, account: string | null, keys: string[]): Promise<Map<string, Assignment>> {
   const out = new Map<string, Assignment>()
   for (const key of keys) {
     if (!account || !deps.jira) { out.set(key, 'unverified'); continue }
     const seen = await deps.jira.assigneeOf(key).catch(() => ({ account_id: null, verified: false }))
-    if (seen.verified && seen.account_id && seen.account_id !== account) continue
+    if (seen.verified && seen.account_id !== account) continue
     out.set(key, seen.verified && seen.account_id === account ? 'verified' : 'unverified')
   }
   return out

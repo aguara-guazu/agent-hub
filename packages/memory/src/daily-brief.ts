@@ -101,7 +101,7 @@ export async function collectBrief(deps: DailyDeps, input: { scheduledFor: strin
     ...overdue.map(line('e', 'cierre vencido sin respuesta: no se escribió nada en Jira — ')),
     ...mirror.entries.filter(entry => entry.rank === 'f'),
   ].sort((a, b) => a.rank.localeCompare(b.rank))
-  const carryover = deps.attention?.carryover_items ? await deps.attention.carryover_items().catch(() => []) : []
+  const carryover = deps.attention?.carryover_items ? await deps.attention.carryover_items().catch(() => { gaps.push('pendientes arrastrados'); return [] as ProposedItem[] }) : []
   return { scheduled_for: input.scheduledFor, generated_at: deps.now().toISOString(), covered_since: input.coveredSince,
     context: { trigger: input.trigger ?? 'clock', deferred_until: input.deferredUntil ?? null }, due_today: mirror.dueToday,
     projects: rows.map(row => ({ project_id: row.id, title: row.title, snapshot: snapshots.get(row.id) ?? null })), attention, agenda: await agenda(deps, input.scheduledFor), carryover, gaps }

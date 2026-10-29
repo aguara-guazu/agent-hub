@@ -22,7 +22,7 @@ const ACTION_KINDS = ['jira_worklog', 'jira_transition', 'jira_comment', 'git_pu
 export const proposedItems = (lines: AttentionLine[]): ProposedItem[] => lines.flatMap(line => {
   const effect = line.effect as Record<string, unknown> | undefined
   const kind = line.kind ?? effect?.['kind']
-  if (!line.project_id || !effect || typeof effect !== 'object' || !ACTION_KINDS.includes(String(kind))) return []
+  if (!line.project_id || !effect || typeof effect !== 'object' || !ACTION_KINDS.includes(String(kind)) || (line.kind && effect['kind'] && line.kind !== effect['kind'])) return []
   return [{ project_id: line.project_id, kind: kind as ProposedItem['kind'], summary: line.summary, effect, effect_digest: hash(effect),
     ...(typeof effect['estimate_id'] === 'string' ? { estimate_id: effect['estimate_id'] } : {}) }]
 })
