@@ -155,3 +155,13 @@ it('reenvía model y source del payload nativo sólo cuando tienen la forma espe
   await localChatHook(state,'agent','codex_cli',{session_id:'session',cwd:'/worktree',hook_event_name:'Stop'})
   expect(sent()).not.toHaveProperty('model')
 })
+
+it('reporta to_model de PostModelSwitch como el modelo observado y no confunde el campo model de otros eventos',async()=>{
+  const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({})}))
+  const sent=()=>JSON.parse(vi.mocked(fetch).mock.calls.at(-1)![1]!.body as string)
+  await localChatHook(state,'agent','claude_code',{session_id:'session',cwd:'/worktree',hook_event_name:'PostModelSwitch',from_model:'claude-a',to_model:'claude-b'})
+  expect(sent()).toMatchObject({event:'PostModelSwitch',model:'claude-b'})
+  await localChatHook(state,'agent','claude_code',{session_id:'session',cwd:'/worktree',hook_event_name:'PostModelSwitch',from_model:'claude-a',model:'ignored'})
+  expect(sent()).not.toHaveProperty('model')
+})

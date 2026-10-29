@@ -108,6 +108,7 @@ export function planMemoryHooks(snapshot: Snapshot, endpoint: GatewayEndpoint, h
     ...(chat && kind === 'claude_code' ? {
       PostToolUse: [{ matcher: '.*', hooks: [handler(timeout)] }],
       PostToolUseFailure: [{ matcher: '.*', hooks: [handler(timeout)] }],
+      PostModelSwitch: [{ hooks: [handler(timeout)] }],
     } : {}),
   } : {}
   const [change, drift] = planJsonHooks({ home, path, keyPath: ['hooks'], value: hooks, manifest, cliKind: kind })

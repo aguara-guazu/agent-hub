@@ -73,7 +73,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   if (options.authorizeChatAgent) app.post('/api/memory/chat/native', { bodyLimit: 16384 }, async (request, reply) => {
     const input = parse(z.object({ agent_id: z.string().min(1).max(200), native_id: z.string().min(1).max(300),
       orca_workspace_id: orcaWorkspaceSchema.optional(), session_key: z.string().min(32).max(200), cwd: z.string().min(1).max(4000), at: z.iso.datetime(),
-      event: z.enum(['SessionStart','HubPromptSubmit','UserPromptSubmit','BeforeAgent','PreToolUse','BeforeTool','PostToolUse','PostToolUseFailure','Stop','AfterAgent','SessionEnd','Interrupt','StopFailure','Heartbeat','Watch']),
+      event: z.enum(['SessionStart','HubPromptSubmit','UserPromptSubmit','BeforeAgent','PreToolUse','BeforeTool','PostToolUse','PostToolUseFailure','Stop','AfterAgent','SessionEnd','Interrupt','StopFailure','Heartbeat','Watch','PostModelSwitch']),
       turn_id:z.string().min(1).max(300).optional(),
       model:z.string().min(1).max(200).optional(), source:z.string().regex(/^[a-z_]{1,40}$/).optional(),
       process_id: z.number().int().min(1).optional(), process_started: z.string().max(100).optional(), watch_started:z.iso.datetime().optional(),

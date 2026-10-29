@@ -67,3 +67,27 @@ it('does not mark a session resumable before any hook captured its ID', async ()
   const created = (await db.query('SELECT resumable,id_captured_by,model FROM chat_sessions WHERE id=$1', [registered.session.id]))[0]!
   expect(created).toMatchObject({ resumable: 0, id_captured_by: null, model: null })
 })
+
+it('follows the model across a mid-session switch without touching the session state', async () => {
+  await send('SessionStart', { model: 'model-a' })
+  const started = await row()
+  expect(started).toMatchObject({ model: 'model-a', state: 'idle' })
+  expect(started.model_observed_at).toEqual(expect.stringMatching(/^\d{4}-/))
+  const later = new Date(Date.now() + 5000).toISOString()
+  await send('PostModelSwitch', { model: 'model-b' }, dir, later)
+  expect(await row()).toMatchObject({ model: 'model-b', model_observed_at: later, state: 'idle', event_at: started.event_at })
+  await send('PostModelSwitch', { model: 'stale' }, dir, new Date(Date.now() - 60_000).toISOString())
+  expect((await row()).model).toBe('model-b')
+  await send('PostModelSwitch', {}, dir, new Date(Date.now() + 9000).toISOString())
+  expect((await row()).model).toBe('model-b')
+})
+
+it('ignores a model switch reported by an unknown or closed session', async () => {
+  await send('PostModelSwitch', { model: 'model-x' })
+  expect(await db.query('SELECT 1 FROM chat_sessions WHERE agent_id=$1', ['capture-client'])).toHaveLength(1)
+  expect((await row()).model).toBeNull()
+  await send('SessionStart', { model: 'model-a' })
+  await send('SessionEnd')
+  await send('PostModelSwitch', { model: 'model-y' }, dir, new Date(Date.now() + 5000).toISOString())
+  expect((await row()).model).toBe('model-a')
+})

@@ -104,9 +104,13 @@ it('entrega avisos Claude tras cualquier herramienta, preserva hooks personales 
     expect(hub.hooks[0]).not.toHaveProperty('async')
     expect(hub.hooks[0]).not.toHaveProperty('asyncRewake')
   }
+  expect(hooks.PostModelSwitch).toHaveLength(1)
+  expect(hooks.PostModelSwitch[0].hooks[0].command).toContain('--agenthub-memory-hook')
+  expect(hooks.PostModelSwitch[0]).not.toHaveProperty('matcher')
   expect(planMemoryHooks(snapshot,endpoint,home)[0]).toHaveLength(0)
   applyChanges(planMemoryHooks({...snapshot,servers:[]},endpoint,home)[0])
   const removed=JSON.parse(readFileSync(path,'utf8')).hooks
+  expect(removed.PostModelSwitch ?? []).toEqual([])
   expect(removed.PostToolUse).toEqual([personal])
   expect(removed.PostToolUseFailure ?? []).toEqual([])
 })

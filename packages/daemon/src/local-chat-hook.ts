@@ -47,8 +47,10 @@ export async function localChatHook(state: DaemonState, agentId: string, kind: s
   const base = { agent_id:agentId, native_id:nativeId, cwd, orca_workspace_id:orcaWorkspaceId(), session_key:sessionKey,
     ...(event==='Watch' ? {watch_started:observedAt}: {}) }
   // Optional native metadata, bounded and shape-checked; never copied from anything but the hook's own payload.
+  // Claude reports a mid-session switch as to_model; only SessionStart carries model.
+  const reportedModel = event==='PostModelSwitch' ? raw.to_model : raw.model
   const capture = {
-    ...(typeof raw.model==='string' && raw.model.length>0 && raw.model.length<=200 ? {model:raw.model} : {}),
+    ...(typeof reportedModel==='string' && reportedModel.length>0 && reportedModel.length<=200 ? {model:reportedModel} : {}),
     ...(typeof raw.source==='string' && /^[a-z_]{1,40}$/.test(raw.source) ? {source:raw.source} : {}),
   }
   const processInfo = ['SessionStart','UserPromptSubmit','Stop','Watch'].includes(event) ? await cliProcess(kind) : undefined

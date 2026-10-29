@@ -361,7 +361,8 @@ export class LocalChat {
     const terminal=['Stop','AfterAgent','SessionEnd','StopFailure','Interrupt'].includes(input.event)
     const repeatedClosedStart=input.turn_id && ['HubPromptSubmit','UserPromptSubmit','BeforeAgent'].includes(input.event) &&
       (await this.db.query('SELECT 1 FROM chat_turns WHERE session_id=$1 AND turn_id=$2 AND terminal_at IS NOT NULL',[sid,input.turn_id])).length>0
-    const accepted=(!known?.closed_at || input.event==='SessionStart') && known?.capability!=='hub_fleet' && (!known || known.event_at<=input.at) && !repeatedClosedStart && !(terminal && input.turn_id && latest?.turn_id!==input.turn_id)
+    // PostModelSwitch only reports the model in use; it is never a turn event and must not change the session state.
+    const accepted=input.event!=='PostModelSwitch' && (!known?.closed_at || input.event==='SessionStart') && known?.capability!=='hub_fleet' && (!known || known.event_at<=input.at) && !repeatedClosedStart && !(terminal && input.turn_id && latest?.turn_id!==input.turn_id)
     if(accepted && ['UserPromptSubmit','BeforeAgent'].includes(input.event))await this.activate(sid)
     const state = ['SessionStart','Stop','AfterAgent'].includes(input.event) ? 'idle' : ['Interrupt','StopFailure'].includes(input.event) ? 'blocked' : input.event === 'SessionEnd' ? 'offline' : 'busy'
     if (accepted && input.event !== 'Heartbeat' && input.event !== 'Watch') {
@@ -370,6 +371,9 @@ export class LocalChat {
         capability=CASE WHEN $7 IS NOT NULL THEN $7 WHEN cli_kind='codex_cli' AND capability NOT IN ('codex_appserver','tui_prompt') THEN 'codex_queue' ELSE capability END
         WHERE id=$1 AND event_at<=$3`, [sid, state, input.at, new Date(Date.now()+90000).toISOString(), input.process_id ?? null, input.process_started ?? null, input.transport ?? null])
       await this.captureNative(sid,agent,input)
+    } else if(input.event==='PostModelSwitch') {
+      if(known && !known.closed_at && input.model)await this.db.query(`UPDATE chat_sessions SET model=$2,model_observed_at=$3
+        WHERE id=$1 AND native_id=$4 AND (model_observed_at IS NULL OR model_observed_at<=$3)`,[sid,input.model,input.at,input.native_id])
     } else if(input.event==='Heartbeat' || input.event==='Watch') {
       await this.db.query(`UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2,
         capability=CASE WHEN capability='hub_fleet' THEN capability WHEN $3='Watch' AND $4 IS NOT NULL THEN $4 WHEN $3='Watch' AND cli_kind='claude_code' THEN 'claude_rewake' ELSE capability END WHERE id=$1 AND closed_at IS NULL`,
@@ -393,7 +397,7 @@ export class LocalChat {
    * directory is kept unless a new SessionStart reports another, and nothing is inferred or completed from a catalog.
    */
   private async captureNative(sid:string,agent:AgentContext,input:{native_id:string;event:string;at:string;model?:string | undefined;source?:string | undefined}) {
-    await this.db.query(`UPDATE chat_sessions SET model=COALESCE($2,model),
+    await this.db.query(`UPDATE chat_sessions SET model=COALESCE($2,model),model_observed_at=CASE WHEN $2 IS NOT NULL THEN $6 ELSE model_observed_at END,
       start_source=CASE WHEN $3 IS NOT NULL AND ($4='SessionStart' OR start_source IS NULL) THEN $3 ELSE start_source END,
       native_cwd=CASE WHEN $5 IS NOT NULL AND ($4='SessionStart' OR native_cwd IS NULL) THEN $5 ELSE native_cwd END,
       surface=COALESCE(surface,'interactive'),id_captured_by=COALESCE(id_captured_by,'hook'),id_captured_at=COALESCE(id_captured_at,$6),resumable=1
