@@ -11,6 +11,7 @@ import { Database } from '../src/db/database.js'
 import { runMigrations } from '../src/db/migrations.js'
 import { Store } from '../src/store.js'
 import { createCoreScheduleEffects } from '../src/effects/wiring.js'
+import type { ActionTickResult } from '@agenthub/memory'
 import type { ActionAdapter } from '../src/effects/executor.js'
 
 describe('efectos del scheduler cableados en el core', () => {
@@ -61,14 +62,14 @@ describe('apagar las automatizaciones con una acción ya reclamada', () => {
       execute: async () => { state.executed++; return { state: 'succeeded' as const } }, ...over })
     return Object.defineProperty(base, 'executed', { get: () => state.executed }) as ActionAdapter<any> & { readonly executed: number }
   }
-  async function approved(effects: ReturnType<typeof build>) {
-    const prepared = await effects.decisions.prepareDecision({ run_id: 'run-1', artifact_id: 'art-1', owner_id: ownerId, project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z',
-      items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p1', summary: 'uno', effect: { n: 1 } }] })
+  async function approved(effects: ReturnType<typeof build>, runId = 'run-1') {
+    const prepared = await effects.decisions.prepareDecision({ run_id: runId, artifact_id: `art-${runId}`, owner_id: ownerId, project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z',
+      items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p1', summary: 'uno', effect: { run: runId } }] })
     const { store: decisions } = await effects.ready()
-    const reserved = await decisions.reserveDelivery({ request_id: prepared.decision_request_ref, integration: 'gmail', account: 'me@example.com', correlation: '<h@hub>', provenance: 'test' })
+    const reserved = await decisions.reserveDelivery({ request_id: prepared.decision_request_ref, integration: 'gmail', account: 'me@example.com', correlation: `<h-${runId}@hub>`, provenance: 'test' })
     decisions.beginSend(reserved.delivery_id)
-    await decisions.recordNative(reserved.delivery_id, { native_id: 'n1', thread_id: 't1' })
-    const outcome = decisions.consumeReply({ integration: 'gmail', account: 'me@example.com', native_message_id: 'm1', binding_id: reserved.binding_id,
+    await decisions.recordNative(reserved.delivery_id, { native_id: `n-${runId}`, thread_id: `t-${runId}` })
+    const outcome = decisions.consumeReply({ integration: 'gmail', account: 'me@example.com', native_message_id: `m-${runId}`, binding_id: reserved.binding_id,
       parsed: { kind: 'approve', code: decisions.codeFor(prepared.decision_request_ref).replace(/-/g, ''), items: 'all' } })
     return { decisions, intentId: outcome.approved![0]!.intent_id }
   }
@@ -111,6 +112,59 @@ describe('apagar las automatizaciones con una acción ya reclamada', () => {
     const { store: decisions } = await effects.ready()
     const row = (decisions as unknown as { db: { prepare(sql: string): { get(id: string): { owner_id: string } } } }).db.prepare('SELECT owner_id FROM decision_requests WHERE request_id = ?').get(decision_request_ref)
     expect(row.owner_id).toBe(ownerId)
+  })
+
+  it('actionTick despacha lo aprobado una sola vez, sin repetirlo en el ciclo siguiente', async () => {
+    const wl = adapter()
+    const effects = build([wl])
+    const { intentId, decisions } = await approved(effects)
+    const result: ActionTickResult = await effects.actionTick()
+    expect(result).toEqual({ attempted: 1, succeeded: 1, rejected: 0, uncertain: 0 })
+    expect(wl.executed).toBe(1)
+    expect(decisions.intent(intentId)).toMatchObject({ state: 'succeeded' })
+    expect(await effects.actionTick()).toEqual({ attempted: 0, succeeded: 0, rejected: 0, uncertain: 0 })
+    expect(wl.executed).toBe(1)
+  })
+
+  it('actionTick con las automatizaciones apagadas no toca nada', async () => {
+    const off = build([adapter()], () => false)
+    const first = await approved(off)
+    expect(await off.actionTick()).toEqual({ skipped: 'automations_off' })
+    expect(first.decisions.intent(first.intentId)).toMatchObject({ state: 'pending', generation: 0 })
+  })
+
+  it('actionTick no reintenta solo un resultado incierto', async () => {
+    const execute = vi.fn(async () => { throw new Error('timeout') })
+    const flaky = build([adapter({ execute })])
+    const second = await approved(flaky, 'run-2')
+    expect(await flaky.actionTick()).toMatchObject({ attempted: 1, uncertain: 1 })
+    expect(second.decisions.intent(second.intentId)).toMatchObject({ state: 'uncertain' })
+    expect(await flaky.actionTick()).toMatchObject({ attempted: 0 })
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('dos ciclos simultáneos no se solapan', async () => {
+    let release!: () => void
+    const wl = adapter({ execute: () => new Promise(resolve => { release = () => resolve({ state: 'succeeded' }) }) })
+    const effects = build([wl])
+    await approved(effects)
+    const first = effects.actionTick()
+    await vi.waitFor(() => expect(typeof release).toBe('function'))
+    expect(await effects.actionTick()).toEqual({ skipped: 'in_flight' })
+    release()
+    expect(await first).toMatchObject({ attempted: 1, succeeded: 1 })
+  })
+
+  it('aprobar desde la app despacha enseguida, sin esperar al reloj', async () => {
+    const wl = adapter()
+    const effects = build([wl])
+    const prepared = await effects.decisions.prepareDecision({ run_id: 'run-app', artifact_id: 'a-app', owner_id: ownerId, project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z',
+      items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p1', summary: 'uno', effect: { n: 1 } }] })
+    const view = await effects.review!.view('run-app')
+    await effects.review!.decide('run-app', { kind: 'approve', ordinals: [1], digest: view!.digest })
+    await vi.waitFor(() => expect(wl.executed).toBe(1))
+    const { store: decisions } = await effects.ready()
+    expect(decisions.getApprovedItems(prepared.decision_request_ref)[0]).toMatchObject({ state: 'succeeded' })
   })
 
   it('con el interruptor apagado ni siquiera se reclama la intención', async () => {

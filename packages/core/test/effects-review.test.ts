@@ -110,9 +110,14 @@ describe('revisión del dueño desde la app', () => {
     expect(await refusal(review.revise('run-1', { ordinal: 2, seconds: 3600 }))).toMatchObject({ code: 'authority_unavailable' })
   })
 
-  it('si el artefacto ya no apunta a la solicitud anterior, corregir falla cerrado', async () => {
-    open()
-    const stale = createDecisionReview({ store, service: new DecisionService(store, async () => 'live'), schedules: { replaceDecisionRef: async () => false } })
-    expect(await refusal(stale.revise('run-1', { ordinal: 2, seconds: 3600 }))).toMatchObject({ code: 'authority_unavailable' })
+  it('con un artefacto desalineado, corregir falla ANTES de tocar el almacén y la solicitud original sigue abierta', async () => {
+    const { request_id } = open()
+    const reads: Array<{ run_id: string; decision_request_ref?: string }> = []
+    const service = new DecisionService(store, async query => { reads.push(query); return query.decision_request_ref === 'otra-referencia' ? 'live' : 'unknown' })
+    const misaligned = createDecisionReview({ store, service, schedules: { replaceDecisionRef: async () => { throw new Error('no debe llamarse') } } })
+    expect(await refusal(misaligned.revise('run-1', { ordinal: 2, seconds: 3600 }))).toMatchObject({ status: 409, code: 'authority_unavailable' })
+    expect(reads.at(-1)).toEqual({ run_id: 'run-1', decision_request_ref: request_id })
+    expect(store.publicRequest(request_id).state).toBe('open')
+    expect(store.requestsOfRun('run-1')).toHaveLength(1)
   })
 })

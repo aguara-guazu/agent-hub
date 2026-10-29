@@ -8,6 +8,8 @@ export interface DecisionReviewDeps {
   service: DecisionService
   /** El artefacto pasa a apuntar a la solicitud corregida; `false` si ya no apuntaba a la anterior. */
   schedules: { replaceDecisionRef(runId: string, oldRef: string, newRef: string): Promise<boolean> }
+  /** Se llama tras aprobar ítems para que su despacho no espere al siguiente ciclo del reloj. */
+  onApproved?: () => void
 }
 
 const REFUSALS: Partial<Record<ConsumeResult['outcome'], string>> = {
@@ -48,6 +50,7 @@ export function createDecisionReview(deps: DecisionReviewDeps): DecisionReview {
       if (outcome.gated) throw new DecisionReviewError(409, 'authority_unavailable')
       const result = outcome.value
       if (result.outcome !== 'approved' && result.outcome !== 'rejected') throw new DecisionReviewError(409, REFUSALS[result.outcome] ?? 'bad_selection')
+      if (result.approved?.length) deps.onApproved?.()
       return mutation(request.request_id, {
         ...(result.approved ? { approved: result.approved.map(item => item.ordinal) } : {}),
         ...(result.rejected ? { rejected: result.rejected } : {}),

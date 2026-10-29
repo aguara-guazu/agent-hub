@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import type { ConnectionPool } from '@agenthub/gateway'
-import { DecisionService, DecisionStore, GmailSelfSender, MemoryExclusionSink, pollGmailReplies, type DecisionAuthorityReader, type GoogleAuth, type ReplyPollResult, type ScheduleEffects, type Vault } from '@agenthub/memory'
+import { type ActionTickResult, DecisionService, DecisionStore, GmailSelfSender, MemoryExclusionSink, pollGmailReplies, type DecisionAuthorityReader, type GoogleAuth, type ReplyPollResult, type ScheduleEffects, type Vault } from '@agenthub/memory'
 import type { Store } from '../store.js'
 import { CoreActionExecutor, type ActionAdapter } from './executor.js'
 import { createDeliveryAdapters, type DeliveryArtifacts } from './delivery.js'
@@ -45,7 +45,12 @@ export interface ReplyTickResult {
   expired?: number
   gmail?: ReplyPollResult | { error: string } | null
   slack?: SlackPollResult | { error: string }
+  /** Despacho inmediato de lo recién aprobado por canal. */
+  actions?: ActionTickResult
 }
+
+/** Resultado de un ciclo de despacho: solo conteos, nunca efectos ni contenido. */
+export type { ActionTickResult } from '@agenthub/memory'
 
 /** Clave del verificador: vive en el Vault local, nunca en el almacén de decisiones ni en un archivo de configuración. */
 function verifierKey(vault: EffectsHost['vault']): Buffer {
@@ -60,9 +65,33 @@ function verifierKey(vault: EffectsHost['vault']): Buffer {
  * Efectos del scheduler con sus dependencias resueltas de forma perezosa: el almacén de decisiones, el sink de exclusiones y los lectores de artefactos
  * necesitan la base de la memoria, que el servicio abre después de registrar las rutas. Un fallo al resolver deja cada llamada fallando cerrada.
  */
-export function createCoreScheduleEffects(options: CoreEffectsOptions): ScheduleEffects & { ready(): Promise<{ store: DecisionStore; service: DecisionService }>; replyTick(): Promise<ReplyTickResult> } {
+export function createCoreScheduleEffects(options: CoreEffectsOptions): ScheduleEffects & { ready(): Promise<{ store: DecisionStore; service: DecisionService }>; replyTick(): Promise<ReplyTickResult>; actionTick(): Promise<ActionTickResult> } {
   type Resolved = { store: DecisionStore; service: DecisionService; effects: ScheduleEffects; tools: ReturnType<typeof createEffectToolResolver>; gmailConnector(): Promise<string | null> }
   let ready: Promise<Resolved> | undefined
+  let dispatching = false
+  /**
+   * Despacha las intenciones aprobadas y sin despachar, de a una y en secuencia, con la generación que acaba de leer. Lo incierto nunca vuelve a esta lista
+   * (`dispatchable()` solo devuelve `pending` con autoridad vigente), así que un resultado ambiguo no se reintenta solo. Un ciclo en curso no se solapa.
+   */
+  const runActionTick = async (): Promise<ActionTickResult> => {
+    if (!options.automationsEnabled()) return { skipped: 'automations_off' }
+    if (dispatching) return { skipped: 'in_flight' }
+    dispatching = true
+    try {
+      const { service, effects } = await resolve()
+      const result: { attempted: number; succeeded: number; rejected: number; uncertain: number; errors?: number } = { attempted: 0, succeeded: 0, rejected: 0, uncertain: 0 }
+      for (const intent of await service.dispatchable()) {
+        if (!options.automationsEnabled()) break
+        const receipt = await effects.actions.executeApprovedAction({ intent_id: intent.intent_id, expected_generation: intent.generation }).catch(() => null)
+        result.attempted++
+        if (!receipt) result.errors = (result.errors ?? 0) + 1
+        else if (receipt.state === 'succeeded') result.succeeded++
+        else if (receipt.state === 'rejected_before_dispatch') result.rejected++
+        else result.uncertain++
+      }
+      return result
+    } finally { dispatching = false }
+  }
   /** Una resolución fallida no se conserva: el siguiente uso reintenta en lugar de quedar roto hasta reiniciar el core. */
   const resolve = () => ready ??= (async () => {
     const { db, schedules } = await options.host.load()
@@ -86,7 +115,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
         actions: new CoreActionExecutor({ decisions: service, adapters: typeof options.adapters === 'function' ? options.adapters() : options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
         decisions: service,
         ownerId: options.ownerId,
-        review: createDecisionReview({ store, service, schedules }),
+        review: createDecisionReview({ store, service, schedules, onApproved: () => { void runActionTick().catch(() => undefined) } }),
       })
       return { store, service, effects, tools, gmailConnector: gmail.connectorId }
     } catch (error) { store.close(); throw error }
@@ -117,6 +146,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
      * Ciclo de sondeo para el reloj del scheduler: vence solicitudes, lee las respuestas de Gmail y de Slack y publica el espejo público.
      * Con las automatizaciones apagadas no hace nada. Un canal que falla no impide el otro ni el vencimiento.
      */
+    actionTick: runActionTick,
     async replyTick() {
       if (!options.automationsEnabled()) return { skipped: 'automations_off' as const }
       const { store, service, tools, gmailConnector } = await resolve()
@@ -126,6 +156,8 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
         result.gmail = connectorId ? await pollGmailReplies({ store, service, google: options.host.google, connectorId }) : null
       } catch (error) { result.gmail = { error: error instanceof Error ? error.name : 'error' } }
       try { result.slack = await pollSlackReplies({ store, service, tools }) } catch (error) { result.slack = { error: error instanceof Error ? error.name : 'error' } }
+      const consumed = (result.gmail && 'consumed' in result.gmail ? result.gmail.consumed : 0) + (result.slack && 'consumed' in result.slack ? result.slack.consumed : 0)
+      if (consumed > 0) result.actions = await runActionTick().catch((): ActionTickResult => ({ attempted: 0, succeeded: 0, rejected: 0, uncertain: 0, errors: 1 }))
       await store.flushMirror().catch(() => undefined)
       return result
     },
