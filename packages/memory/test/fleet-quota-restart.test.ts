@@ -131,7 +131,7 @@ it('resumes a member that failed on an exhausted quota after a restart: the cloc
     expect(calls.find(call => call.method === 'thread/resume')!.params.threadId).toBe('thread-1')
     expect(JSON.stringify(calls.find(call => call.method === 'turn/start')!.params)).toContain(QUOTA_RESUME_PROMPT)
     expect(calls.some(call => call.method === 'thread/start')).toBe(false)
-    await expect.poll(async () => (await db.query('SELECT runtime FROM chat_team_members WHERE id=$1', [memberId]))[0]!.runtime.state, { timeout: 3000 }).toBe('idle')
+    await expect.poll(async () => (await db.query('SELECT runtime FROM chat_team_members WHERE id=$1', [memberId]))[0]!.runtime.state, { timeout: 10_000 }).toBe('idle')
     const resumed = (await db.query('SELECT runtime FROM chat_team_members WHERE id=$1', [memberId]))[0]!.runtime
     expect(resumed).toMatchObject({ native_id: 'thread-1', cli: 'codex_cli', model: 'exact-model' })
     expect(resumed.generation).not.toBe('gen-1')

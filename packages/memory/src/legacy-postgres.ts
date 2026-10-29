@@ -18,6 +18,8 @@ const TABLES = ['entities', 'connectors', 'sources', 'versions', 'identities', '
   'embeddings', 'entity_embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'jobs', 'settings', 'changes',
   'tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes'] as const
 const BATCH = 2000
+/** Columnas agregadas en SQLite después de retirar PostgreSQL: el origen nunca las tuvo y quedan en NULL. */
+const SQLITE_ONLY_COLUMNS: Readonly<Record<string, readonly string[]>> = { tasks: ['assignee_account_id', 'due_at'] }
 const introducedIn = (table: string) => table === 'entity_embeddings' ? 2
   : ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes'].includes(table) ? 3 : 1
 
@@ -117,7 +119,7 @@ export async function migrateLegacyMemory(directory: string, vault: Vault, signa
     for (const table of tables) {
       signal?.throwIfAborted()
       const expected = (await target.query<{ name: string; type: string }>(`SELECT name,type FROM pragma_table_info('${table}') WHERE name<>'rid'`))
-        .filter(column => !(table === 'tasks' && column.name === 'external_site' && schemaVersion < 4))
+        .filter(column => !(table === 'tasks' && column.name === 'external_site' && schemaVersion < 4) && !SQLITE_ONLY_COLUMNS[table]?.includes(column.name))
       const actual = sourceColumns.filter(column => column.table_name === table).map(column => column.column_name)
       const missingColumns = expected.filter(column => !actual.includes(column.name))
       const extraColumns = actual.filter(name => !expected.some(column => column.name === name))
