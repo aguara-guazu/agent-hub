@@ -1,8 +1,7 @@
 import type { LocalUnmanaged } from "@agenthub/shared"
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from "@tanstack/react-query"
 import { api } from './api'
-import type { AgentInstance, MatrixRow, ResourceType } from './types'
-import { useToast } from '../components/Toast'
+import type { AgentInstance, MatrixRow } from "./types"
 
 /** Qué difiere entre lo que el cliente listó al abrirse y el snapshot vigente. */
 export interface PendingChanges {
@@ -25,17 +24,6 @@ export interface LocalOverview { hostname: string; clients: LocalClient[]; rows:
 export const LOCAL_KEY = ['local-overview'] as const
 export function useOverview() {
   return useQuery({ queryKey: LOCAL_KEY, queryFn: () => api.get<LocalOverview>('/local/overview'), refetchInterval: 1500 })
-}
-export function useLocalRule() {
-  const cache = useQueryClient()
-  const toast = useToast()
-  return useMutation({
-    mutationFn: ({ type, id, enabled, client }: { type: ResourceType; id: string; enabled: boolean; client?: string }) =>
-      api.put('/policy/rules', { scope: client ? 'client' : 'user', scope_id: client ?? '', resource_type: type,
-        resource_id: id, state: enabled ? 'on' : 'off', reset_clients: !client }),
-    onSuccess: () => cache.invalidateQueries({ queryKey: LOCAL_KEY }),
-    onError: error => toast.error('No se guardó el cambio', error.message),
-  })
 }
 export function resourceEnabled(row?: MatrixRow): boolean {
   if (!row) return true
