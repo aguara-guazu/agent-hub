@@ -22,6 +22,7 @@ const repo = (path: string) => {
   git(path, "init", "-q", "-b", "main")
   git(path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgSign=false", "commit", "--allow-empty", "-qm", "seed")
 }
+const worktree = (name: string) => { const path = join(dir, name); git(dir, "worktree", "add", "-qb", name, path); return path }
 const iso = (ms: number) => new Date(ms).toISOString()
 
 beforeEach(async () => {
@@ -207,6 +208,18 @@ describe("multi-canal y expulsión", () => {
     await rejected(call(candidate, "chat_kick", { channel_id: leader.channel.id, participant_id: leader.session.id, reason: "fuera" }), 403)
     expect((await db.query("SELECT removed_at FROM chat_sessions WHERE id=$1", [leader.session.id]))[0]!.removed_at).toBeNull()
     expect(await take(leader, leader.channel.id, candidate.session.id, "Volví")).toMatchObject({ mode: "reclaim" })
+  })
+
+  it("un líder no puede expulsar a un miembro que lidera otro canal; la persona sí", async () => {
+    const lead = await register("lead"), member = await register("member")
+    const sideLeader = await register("side", worktree("side"))
+    expect(sideLeader.channel.id).not.toBe(lead.channel.id)
+    await silence(sideLeader, silentMinutes)
+    await take(member, sideLeader.channel.id, sideLeader.session.id)
+    await rejected(call(lead, "chat_kick", { channel_id: lead.channel.id, participant_id: member.session.id, reason: "fuera" }), 403)
+    expect((await channel(sideLeader.channel.id)).leader_id).toBe(member.session.id)
+    await ops.chat.kick({ channel_id: lead.channel.id, participant_id: member.session.id, reason: "orden de la persona" }, { user_id: "owner" })
+    expect((await channel(sideLeader.channel.id)).leader_id).toBeNull()
   })
 
   it("un líder sigue expulsando a un miembro común de su canal", async () => {

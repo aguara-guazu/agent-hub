@@ -257,6 +257,9 @@ export class LocalChat {
       check(target,'El agente no pertenece a este canal',404)
       // A removal drops the reclaim right, so a leader that took the channel could otherwise make its takeover permanent.
       if('agent' in actor)check(target.id!==channel.displaced_leader_id,'Esa sesión puede reclamar este canal; sólo la persona puede expulsarla desde la UI.',403)
+      // A removal also releases every channel the target leads; only the takeover rules or the person may end those leaderships.
+      if('agent' in actor)check(!(await sql.query('SELECT 1 FROM chat_channels WHERE leader_id=$1 AND id<>$2 AND closed_at IS NULL AND deleted_at IS NULL LIMIT 1',[target.id,channel.id])).length,
+        'Esa sesión lidera otros canales; sólo la persona puede expulsarla desde la UI.',403)
       if(target.channel_id!==channel.id) {
         await sql.query('UPDATE chat_channels SET leader_id=NULL,leader_changed_at=now(),updated_at=now() WHERE id=$1 AND leader_id=$2',[channel.id,target.id])
         await recordAuthorityEvent(sql,{kind:"leadership_kick",channel_id:channel.id,project_id:await channelProjectId(sql,channel.id),actor_user_id:removedBy.slice(5),
