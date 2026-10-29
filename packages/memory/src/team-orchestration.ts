@@ -965,7 +965,12 @@ export class TeamOrchestration {
           check(this.orca.stop,'El backend no permite detener el worker',409)
           let stopped:unknown
           try {stopped=await this.orca.stop(item.launch_handle)} catch {
-            check(false,'El Hub no pudo confirmar la detención de este runtime. Conservá el estado desconocido; no se lanzará un reemplazo ni se adoptarán procesos ajenos.',409)
+            // After a Hub restart the handle is unknown to the runtime; the exit the restart reconciliation recorded for this generation is the evidence instead.
+            const generation=item.runtime?.generation ?? null
+            const recorded=generation!==null && Boolean((await this.db.query(`SELECT 1 FROM process_incidents WHERE subject_kind='fleet_member' AND subject_id=$1 AND generation=$2
+              AND action IN ('terminated','already_exited') LIMIT 1`,[item.id,generation]))[0])
+            check(recorded,'El Hub no pudo confirmar la detención de este runtime. Conservá el estado desconocido; no se lanzará un reemplazo ni se adoptarán procesos ajenos.',409)
+            stopped={state:'stopped'}
           }
           check(stopped && typeof stopped==='object' && ['stopped','failed'].includes(String((stopped as {state?:unknown}).state)),
             'El Hub no confirmó la detención del worker. Su estado sigue desconocido; no se lanzará un reemplazo.',409)

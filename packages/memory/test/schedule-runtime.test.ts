@@ -281,6 +281,23 @@ it('al arrancar concilia cada miembro de flota con su identidad persistida: term
   expect(await db.query("SELECT id FROM process_incidents WHERE subject_id='vivo'")).toHaveLength(1)
 })
 
+it('sin identidad persistida decide por el worktree: libre da salida registrada, ocupado queda sin verificar y sin listado deja una nota', async () => {
+  await fleetPlan()
+  await fleetMember('libre', 1, { state: 'unknown', generation: 'g1', cwd: '/fleet/libre' })
+  await fleetMember('ocupado', 2, { state: 'idle', generation: 'g1', cwd: '/fleet/ocupado' })
+  await fleetMember('sin-listado', 3, { state: 'unknown', generation: 'g1', cwd: '/fleet/sin-listado' })
+  const asked: string[] = []
+  processes = { inspect: async () => null, signal: () => { throw new Error('no debe señalar') },
+    cwdHolders: async dir => { asked.push(dir); return dir === '/fleet/ocupado' ? [77] : dir === '/fleet/libre' ? [] : undefined } }
+  runtime = build({ processes }); await runtime.reconcileOrphans()
+  const byMember = Object.fromEntries((await db.query('SELECT subject_id,action,detail FROM process_incidents')).map(row => [row.subject_id, row]))
+  expect(byMember.libre).toMatchObject({ action: 'already_exited' })
+  expect(byMember.libre.detail).toMatchObject({ last_state: 'unknown', reason: 'no_persisted_process_identity', evidence: 'worktree_cwd_scan', holders: 0 })
+  expect(byMember.ocupado).toMatchObject({ action: 'unverified_left_running' })
+  expect(byMember['sin-listado']).toMatchObject({ action: 'none' })
+  expect(asked.sort()).toEqual(['/fleet/libre', '/fleet/ocupado', '/fleet/sin-listado'])
+})
+
 it('un inicio de proceso en otro formato no coincide: no se señala y queda sin verificar', async () => {
   await fleetPlan()
   await fleetMember('antiguo', 1, { state: 'busy', generation: 'g1', pid: 600, process_started: 'Wed Oct 28 18:00:00 2026' })

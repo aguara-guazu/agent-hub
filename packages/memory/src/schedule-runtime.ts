@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { inspectNativeProcess } from '@agenthub/gateway'
 import type { UsageQuotaAvailability, UsageQuotaState } from '@agenthub/shared'
@@ -32,10 +33,33 @@ export interface ProcessControl {
   inspect(pid: number): Promise<{ started: string } | null | undefined>
   /** Signals the process group when `group` is set; resolves once the signal was sent. */
   signal(pid: number, signal: NodeJS.Signals, group: boolean): void
+  /** Pids whose working directory is `dir` or lies inside it; undefined when the platform cannot list working directories. */
+  cwdHolders?(dir: string): Promise<number[] | undefined>
 }
 const defaultProcesses: ProcessControl = {
   inspect: pid => inspectNativeProcess(pid) as Promise<{ started: string } | null | undefined>,
   signal: (pid, signal, group) => { try { process.kill(group && process.platform !== 'win32' ? -pid : pid, signal) } catch { /* already gone */ } },
+  cwdHolders: dir => listCwdHolders(dir),
+}
+
+/**
+ * `lsof -d cwd` lists the working directory of every process the user can see. It exits non-zero when some process is unreadable, so a
+ * non-empty listing is used as is; an empty or failed one is undefined, never "no holders".
+ */
+function listCwdHolders(dir: string): Promise<number[] | undefined> {
+  if (process.platform === 'win32') return Promise.resolve(undefined)
+  return new Promise(resolve => {
+    execFile('lsof', ['-nP', '-d', 'cwd', '-F', 'pn'], { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 }, (_error, stdout) => {
+      if (!stdout) return resolve(undefined)
+      const root = dir.replace(/\/+$/, ''), holders = new Set<number>()
+      let pid: number | null = null
+      for (const line of stdout.split('\n')) {
+        if (line.startsWith('p')) pid = Number(line.slice(1))
+        else if (line.startsWith('n') && pid !== null && (line.slice(1) === root || line.slice(1).startsWith(`${root}/`))) holders.add(pid)
+      }
+      resolve([...holders])
+    })
+  })
 }
 
 /** What `launch` knows about the run before claiming it, which the claim itself erases. */
@@ -498,13 +522,20 @@ export class ScheduleRuntime {
       if (blocked.has(run.id)) await this.store.setRun(run.id, run.generation, { state: 'failed', phase: 'done', error_code: 'hub_restart', finished_at: isoAt(this.now()) })
       else await this.store.setRun(run.id, run.generation, { state: 'interrupted' })
     }
-    // Fleet members: the identity the fleet persisted (pid and process_started, taken with inspectNativeProcess) decides what is done. A member without
-    // it (launched before it was persisted) leaves a plain restart note. A start time stored in another format never matches, so such a process
-    // stays unverified and is neither signalled nor resumed.
+    // Fleet members: the identity the fleet persisted (pid and process_started, taken with inspectNativeProcess) decides what is done. A start time
+    // stored in another format never matches, so such a process stays unverified and is neither signalled nor resumed. A member without that
+    // identity (launched before it was persisted) is judged by its worktree: no process working inside it is recorded as already exited, any
+    // process there leaves it unverified, and a platform that cannot list working directories leaves a plain restart note.
     for (const member of await this.store.fleetMembersToReconcile()) {
-      const owned = member.pid ? await this.terminateOwned([{ pid: member.pid, started: member.process_started, group: true }], processes) : 'none' as const
+      let owned: 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' | 'none' = 'none', holders: number[] | undefined
+      if (member.pid) owned = await this.terminateOwned([{ pid: member.pid, started: member.process_started, group: true }], processes)
+      else if (member.cwd && processes.cwdHolders) {
+        holders = await processes.cwdHolders(member.cwd).catch(() => undefined)
+        if (holders) owned = holders.length ? 'unverified_left_running' : 'already_exited'
+      }
+      const evidence = member.pid ? {} : { reason: 'no_persisted_process_identity', ...(holders ? { evidence: 'worktree_cwd_scan', holders: holders.length } : {}) }
       await this.store.addIncident({ subject_kind: 'fleet_member', subject_id: member.id, generation: member.generation, team_id: member.team_id, member_id: member.id, session_id: member.session_id,
-        cause: 'hub_restart', action: owned, pid: member.pid, process_started: member.process_started, boot_id: this.bootId, detail: { last_state: member.state, ...(member.pid ? {} : { reason: 'no_persisted_process_identity' }) } })
+        cause: 'hub_restart', action: owned, pid: member.pid, process_started: member.process_started, boot_id: this.bootId, detail: { last_state: member.state, ...evidence } })
     }
     await this.publishActive()
   }

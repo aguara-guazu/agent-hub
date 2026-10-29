@@ -591,6 +591,22 @@ it('el reinicio de Hub conserva generación pero marca runtime desconocido sin r
   expect(backend.launch).toHaveBeenCalledTimes(1)
 })
 
+it('tras un reinicio sólo relanza un runtime desconocido con la salida registrada para su generación',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  await teams.initialize()
+  backend.stop.mockImplementation(async()=>{throw new Error('fleet_unknown_id')})
+  const input={session_key:master.key,plan_id:plan.id,member_id:slot.id,expected_generation:slot.runtime.generation}
+  await expect(teams.call('team_control',{...input,action:'start'},master.agent)).rejects.toThrow('no pudo confirmar la detención')
+  expect(backend.launch).toHaveBeenCalledTimes(1)
+  await db.query(`INSERT INTO process_incidents(id,subject_kind,subject_id,generation,cause,action,observed_at,detail) VALUES('i1','fleet_member',$1,$2,'hub_restart','unverified_left_running',$3,'{}')`,
+    [slot.id,slot.runtime.generation,new Date().toISOString()])
+  await expect(teams.call('team_control',{...input,action:'start'},master.agent)).rejects.toThrow('no pudo confirmar la detención')
+  await db.query(`UPDATE process_incidents SET action='already_exited' WHERE id='i1'`)
+  const restarted=await teams.call('team_control',{...input,action:'start'},master.agent)
+  expect(restarted.members[0].runtime.generation).not.toBe(slot.runtime.generation)
+  expect(backend.launch).toHaveBeenCalledTimes(2)
+})
+
 it('rechaza controles de participantes y cambios de modelo fuera de otro plan confirmado',async()=>{
   const {master,backend,teams,plan,slot}=await hubTeam()
   const child=await hubSession('unprivileged-worker',slot.workspace_path)
