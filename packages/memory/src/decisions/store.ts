@@ -638,6 +638,11 @@ export class DecisionStore {
     })
   }
 
+  /** Una intención viva, incierta o ya exitosa con el mismo digest u `operation_key`: lo que nunca debe proponerse de nuevo porque pudo haber ocurrido. */
+  private operationLive(item: { effect_digest: string; operation_key: string }): boolean {
+    return !!this.get(`SELECT 1 FROM action_intents WHERE (effect_digest = ? OR operation_key = ?) AND state IN ${LIVE_INTENT}`, item.effect_digest, item.operation_key)
+  }
+
   /**
    * Nueva revisión con los ítems VENCIDOS que nunca llegaron al ejecutor. Quedan fuera los aprobados, rechazados, los que tienen intención y los cuya operación
    * sigue viva o incierta en otra solicitud: reproponer nunca duplica un efecto que pudo haber ocurrido. La anterior queda `superseded`; la nueva tiene código propio.
@@ -649,7 +654,7 @@ export class DecisionStore {
       const items = this.all<ItemRow>('SELECT * FROM decision_items WHERE request_id = ? ORDER BY ordinal', requestId)
       const eligible = items.filter(item => item.state === 'expired'
         && !this.get('SELECT 1 FROM action_intents WHERE request_id = ? AND item_id = ?', requestId, item.item_id)
-        && !this.get(`SELECT 1 FROM action_intents WHERE (effect_digest = ? OR operation_key = ?) AND state IN ${LIVE_INTENT}`, item.effect_digest, item.operation_key))
+        && !this.operationLive(item))
       if (!eligible.length) throw new DecisionError('not_reproposable')
       const next = eligible.map(item => ({ item_id: randomUUID(), ordinal: item.ordinal, kind: item.kind, project_id: item.project_id, summary: item.summary, exact: item.exact_effect, digest: item.effect_digest, operation_key: item.operation_key }))
       const revision = (this.get<{ r: number }>('SELECT MAX(revision) AS r FROM decision_requests WHERE run_id = ?', old.run_id)?.r ?? old.revision) + 1, request_id = randomUUID()
@@ -659,6 +664,43 @@ export class DecisionStore {
         canonical_digest: this.requestDigest(old.owner_id, old.run_id, old.artifact_id, revision, expiresAt, next), project_ids: JSON.parse(old.project_ids) as string[], expires_at: expiresAt, items: next })
       return { request_id, revision, items: next.length }
     })
+  }
+
+  /**
+   * Solicitudes abiertas que esperan a la persona: con ítems pendientes y sin vencer. Solo identificadores, conteo y fechas; nunca el código, el digest ni el texto de un canal.
+   */
+  awaitingReply(): Array<{ request_id: string; run_id: string; project_ids: string[]; created_at: string; expires_at: string; pending: number }> {
+    return this.all<{ request_id: string; run_id: string; project_ids: string; created_at: string; expires_at: string; pending: number }>(
+      `SELECT r.request_id, r.run_id, r.project_ids, r.created_at, r.expires_at, COUNT(i.item_id) AS pending
+       FROM decision_requests r JOIN decision_items i ON i.request_id = r.request_id AND i.state = 'pending'
+       WHERE r.state = 'open' AND r.expires_at > ? GROUP BY r.request_id ORDER BY r.created_at`, this.iso())
+      .map(row => ({ ...row, project_ids: JSON.parse(row.project_ids) as string[] }))
+  }
+
+  /**
+   * Ítems que una solicitud vencida dejó sin despachar desde `since`: los vencidos sin intención y los aprobados cuya intención venció antes de salir.
+   * Mismo predicado que `reproposeRequest` (nunca una operación con intención viva o incierta, por digest u `operation_key`) y, además, nada que otra solicitud más nueva
+   * ya haya retomado o decidido. De varias copias de una misma operación queda la más reciente. El efecto es la copia aprobada, sin reinterpretar.
+   */
+  carryoverItems(since: string, limit: number): Array<{ request_id: string; run_id: string; ordinal: number; kind: DecisionItemKind; project_id: string; summary: string; effect: unknown; operation_key: string; expires_at: string }> {
+    const rows = this.all<ItemRow & { run_id: string; request_created_at: string; expires_at: string }>(
+      `SELECT i.*, r.run_id, r.created_at AS request_created_at, r.expires_at
+       FROM decision_items i JOIN decision_requests r ON r.request_id = i.request_id LEFT JOIN action_intents a ON a.request_id = i.request_id AND a.item_id = i.item_id
+       WHERE r.expires_at >= ? AND r.expires_at <= ?
+         AND ((i.state = 'expired' AND a.intent_id IS NULL) OR (i.state = 'approved' AND a.state = 'rejected_before_dispatch' AND a.error_code = 'expired'))
+       ORDER BY r.created_at DESC, i.ordinal`, since, this.iso())
+    const seen = new Set<string>()
+    const out: ReturnType<DecisionStore['carryoverItems']> = []
+    for (const item of rows) {
+      if (seen.has(item.operation_key)) continue
+      seen.add(item.operation_key)
+      if (this.operationLive(item)) continue
+      if (this.get(`SELECT 1 FROM decision_items o JOIN decision_requests q ON q.request_id = o.request_id
+        WHERE o.operation_key = ? AND q.created_at > ? AND o.state IN ('pending','approved','rejected','blocked_uncertain')`, item.operation_key, item.request_created_at)) continue
+      out.push({ request_id: item.request_id, run_id: item.run_id, ordinal: item.ordinal, kind: item.kind, project_id: item.project_id, summary: item.summary, effect: JSON.parse(item.exact_effect), operation_key: item.operation_key, expires_at: item.expires_at })
+      if (out.length >= limit) break
+    }
+    return out
   }
 
   /**
