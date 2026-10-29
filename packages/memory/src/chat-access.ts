@@ -24,7 +24,7 @@ export async function teamChannelIds(sql: Sql, sessionId: string): Promise<strin
   const rows = await sql.query(`SELECT p.master_channel_id AS channel_id FROM chat_team_plans p
       WHERE p.state IN (${activeStates}) AND (p.created_by=$1 OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=p.id AND m.session_id=$1 AND m.state='joined'))
     UNION SELECT m2.channel_id FROM chat_team_members m2 JOIN chat_team_plans p ON p.id=m2.team_id
-      WHERE m2.channel_id IS NOT NULL AND p.state IN (${activeStates}) AND (p.created_by=$1 OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=p.id AND m.session_id=$1 AND m.state='joined'))`, [sessionId])
+      WHERE m2.channel_id IS NOT NULL AND m2.state='joined' AND p.state IN (${activeStates}) AND (p.created_by=$1 OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=p.id AND m.session_id=$1 AND m.state='joined'))`, [sessionId])
   return rows.map(row => String(row.channel_id))
 }
 
