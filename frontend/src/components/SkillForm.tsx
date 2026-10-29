@@ -10,46 +10,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 
+import { SKILL_SLUG_RE as SLUG_RE, extractBodyFrontmatter, renderFrontmatter } from "../lib/skills"
 import type { Skill } from '../lib/types'
 import { Modal } from './Modal'
 import { Spinner } from './Spinner'
 
-/** Escalar YAML entre comillas dobles. Igual que `_yaml_scalar` del daemon. */
-export function yamlScalar(value: string): string {
-  const escaped = value
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\r\n/g, ' ')
-    .replace(/\n/g, ' ')
-    .replace(/\t/g, ' ')
-  return `"${escaped.trim()}"`
-}
-
-/** Frontmatter que va a quedar en el SKILL.md materializado. */
-export function renderFrontmatter(slug: string, description: string, displayName: string): string {
-  const text = description.trim() || displayName.trim() || slug
-  return ['---', `name: ${yamlScalar(slug)}`, `description: ${yamlScalar(text)}`, '---'].join('\n')
-}
-
-export interface BodyFrontmatter {
-  /** Valor de `name:` dentro del bloque, sin comillas, o cadena vacia si no está. */
-  name: string
-  /** Cuerpo sin el bloque. */
-  rest: string
-}
-
-/** Detecta un frontmatter pegado dentro del cuerpo.
- *
- *  Es el error mas comun al pegar un SKILL.md entero: el daemon antepone el suyo y
- *  el archivo termina con dos bloques, que ningun CLI parsea. */
-export function extractBodyFrontmatter(body: string): BodyFrontmatter | null {
-  const match = /^\s*---\n([\s\S]*?)\n---\n?/.exec(body)
-  if (match === null) return null
-  const nameLine = /^name:\s*(.*)$/m.exec(match[1])
-  const raw = (nameLine?.[1] ?? '').trim()
-  const name = raw.replace(/^["']/, '').replace(/["']$/, '')
-  return { name, rest: body.slice(match[0].length) }
-}
+export { extractBodyFrontmatter, renderFrontmatter, yamlScalar } from "../lib/skills"
+export type { BodyFrontmatter } from "../lib/skills"
 
 export interface SkillFormPayload {
   slug?: string
@@ -66,8 +33,6 @@ export interface SkillFormProps {
   onSubmit: (payload: SkillFormPayload) => void
   onClose: () => void
 }
-
-const SLUG_RE = /^[a-z][a-z0-9_-]{1,47}$/
 
 interface FormState {
   slug: string
