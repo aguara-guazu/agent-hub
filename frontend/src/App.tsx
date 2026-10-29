@@ -16,7 +16,7 @@ import MemoryPage from "./pages/memory/MemoryPage"
 import MemoryEntityView from "./pages/memory/EntityPage"
 import ProjectPage from "./pages/project/ProjectPage"
 import ProjectsPage from "./pages/projects/ProjectsPage"
-import { MemoryLocalCollaboration } from "./pages/MemoryLocalCollaboration"
+import CollaborationPage from "./pages/collaboration/CollaborationPage"
 import { MemoryProcessing } from "./pages/MemoryProcessing"
 import SettingsPage from "./pages/settings/SettingsPage"
 import SkillsPage from "./pages/skills/SkillsPage"
@@ -56,7 +56,7 @@ export function App() {
               <Route path="projects/:id" element={<ProjectPage />} />
               <Route path="memory" element={<MemoryPage />} />
               <Route path="memory/entities/:id" element={<MemoryEntityView />} />
-              <Route path="collaboration" element={legacy(<MemoryLocalCollaboration />)} />
+              <Route path="collaboration" element={<CollaborationPage />} />
               <Route path="automations" element={<AutomationsPage />} />
               <Route path="automations/deliveries/:runId" element={<AutomationsPage />} />
 
