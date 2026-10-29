@@ -9,15 +9,6 @@ let dir: string, db: MemoryDatabase, log: SqlRecoveryIncidentLog
 const base = { member_id: 'member-1', team_id: 'team-1', session_id: null, generation: 'gen-1', detail: { evidence: 'protocol', pool_key: 'pool-a' } }
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'hub-recovery-incidents-')); db = new MemoryDatabase(join(dir, 'memory.sqlite')); await db.migrate()
-  // The shared migration adds these values to the CHECK lists; the table is rebuilt the same way so the log is exercised against them.
-  await db.query('DROP TABLE process_incidents')
-  await db.query(`CREATE TABLE process_incidents (
-    id TEXT PRIMARY KEY, subject_kind TEXT NOT NULL CHECK(subject_kind IN ('schedule_run','fleet_member')), subject_id TEXT NOT NULL, generation TEXT,
-    schedule_id TEXT, run_id TEXT, team_id TEXT, member_id TEXT, session_id TEXT, project_id TEXT,
-    cause TEXT NOT NULL CHECK(cause IN ('hub_restart','deadline_exceeded','automations_off','collaboration_off','cancelled','spawn_failed','process_exited','quota_exhausted','quota_resume')),
-    action TEXT NOT NULL CHECK(action IN ('terminated','already_exited','unverified_left_running','termination_unknown','none','resumed','resume_unsupported','resume_failed')),
-    pid INTEGER, process_started TEXT, boot_id TEXT, observed_at TIMESTAMP NOT NULL, detail JSON NOT NULL DEFAULT '{}')`)
-  await db.query("CREATE UNIQUE INDEX process_incidents_subject ON process_incidents(subject_kind,subject_id,COALESCE(generation,''),cause)")
   log = new SqlRecoveryIncidentLog(db)
 })
 afterEach(async () => { await db.close(); await rm(dir, { recursive: true, force: true }) })
