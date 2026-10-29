@@ -11,7 +11,11 @@ export interface DeliveryDeps {
   artifacts: DeliveryArtifacts
   exclusions: ExclusionSink
   slack: SlackSelfDelivery
-  gmail: { sender: GmailSelfSender; connectorId(): Promise<string | null> }
+  /**
+   * `connectorId` es la fuente de Google con el envío habilitado; `sendPending` describe una fuente que lee Gmail sin el envío habilitado,
+   * con la cuenta que reportó la última sincronización, o null si no la hay o si ya existe una fuente con envío.
+   */
+  gmail: { sender: GmailSelfSender; connectorId(): Promise<string | null>; sendPending(): Promise<{ account: string | null } | null> }
 }
 
 const ROUTE: Record<'gmail_self' | 'slack_self', true> = { gmail_self: true, slack_self: true }
@@ -40,9 +44,11 @@ export function createDeliveryAdapters(deps: DeliveryDeps): DeliveryAdapters {
     async available() {
       const connectorId = await gmail.connectorId()
       const mail = connectorId ? await gmail.sender.status(connectorId) : null
+      const pending = connectorId ? null : await gmail.sendPending()
       const chat = await slack.available()
       return {
-        gmail_self: !connectorId ? { available: false, reason: 'not_connected' } : mail?.state === 'ok' ? { available: true } : { available: false, reason: mail?.state ?? 'identity_unverified' },
+        gmail_self: mail ? mail.state === 'ok' ? { available: true, destination: mail.account } : { available: false, reason: mail.state }
+          : pending ? { available: false, reason: 'scope_missing', ...(pending.account ? { destination: pending.account } : {}) } : { available: false, reason: 'not_connected' },
         slack_self: chat.available ? { available: true } : { available: false, reason: chat.reason },
       }
     },

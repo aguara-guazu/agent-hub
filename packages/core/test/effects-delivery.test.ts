@@ -10,7 +10,7 @@ const ACCOUNT = 'me@example.com', USER = 'U0TESTUSER1', DM = 'D0TESTDM001'
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
 const text = (value: unknown): CallResult => ({ is_error: false, content: [{ type: 'text', text: JSON.stringify(value) }] })
 
-let store: DecisionStore, exclusions: Exclusion[], artifact: DeliveryArtifact | null, granted: boolean, connector: string | null
+let store: DecisionStore, exclusions: Exclusion[], artifact: DeliveryArtifact | null, granted: boolean, connector: string | null, pending: { account: string | null } | null
 let gmailCalls: Array<{ url: string; method?: string | undefined }>, slackCalls: Array<{ name: string; args: Record<string, unknown> }>, slackServers: Map<string, Set<string>>
 
 const fetcher = (async (url: string, init?: RequestInit) => {
@@ -28,13 +28,13 @@ const tools: EffectToolResolver = {
 const adapters = () => {
   const sink = { async add(entries: Exclusion[]) { exclusions.push(...entries) } }
   return createDeliveryAdapters({ store, exclusions: sink, artifacts: { load: async () => artifact }, slack: new SlackSelfDelivery({ store, tools, exclusions: sink }),
-    gmail: { sender: sender(), connectorId: async () => connector } })
+    gmail: { sender: sender(), connectorId: async () => connector, sendPending: async () => pending } })
 }
 const sends = () => gmailCalls.filter(call => call.method === 'POST')
 const input = (target: 'gmail_self' | 'slack_self') => ({ delivery_id: 'd1', run_id: 'run-1', artifact_id: 'art-1', target, expected_generation: 0 })
 
 beforeEach(() => {
-  exclusions = []; gmailCalls = []; slackCalls = []; granted = true; connector = 'conn-1'
+  exclusions = []; gmailCalls = []; slackCalls = []; granted = true; connector = 'conn-1'; pending = null
   slackServers = new Map([['srv', new Set(['slack_send_message', 'slack_read_user_profile'])]])
   store = new DecisionStore(':memory:', { key: randomBytes(32), exclusions: { async add(entries) { exclusions.push(...entries) } } })
   artifact = { title: 'Brief 08:00', body_md: 'Resumen', decision_request_ref: null }
@@ -42,11 +42,20 @@ beforeEach(() => {
 
 describe('entregas por canal propio', () => {
   it('available refleja conexión, scope, identidad y herramientas', async () => {
-    expect(await adapters().available()).toEqual({ gmail_self: { available: true }, slack_self: { available: true } })
+    expect(await adapters().available()).toEqual({ gmail_self: { available: true, destination: ACCOUNT }, slack_self: { available: true } })
     granted = false; slackServers = new Map()
-    expect(await adapters().available()).toEqual({ gmail_self: { available: false, reason: 'scope_missing' }, slack_self: { available: false, reason: 'tool_off' } })
+    expect(await adapters().available()).toEqual({ gmail_self: { available: false, reason: 'scope_missing' }, slack_self: { available: false, reason: 'not_connected' } })
     connector = null
     expect((await adapters().available()).gmail_self).toEqual({ available: false, reason: 'not_connected' })
+  })
+
+  it('una fuente que lee Gmail sin el envío habilitado ofrece autorizarlo, con la cuenta como destino si se conoce, y no envía', async () => {
+    connector = null; pending = { account: ACCOUNT }
+    expect((await adapters().available()).gmail_self).toEqual({ available: false, reason: 'scope_missing', destination: ACCOUNT })
+    pending = { account: null }
+    expect((await adapters().available()).gmail_self).toEqual({ available: false, reason: 'scope_missing' })
+    expect(await adapters().executeDelivery(input('gmail_self'))).toEqual({ state: 'failed', error_code: 'not_connected' })
+    expect(gmailCalls).toHaveLength(0)
   })
 
   it('un resumen sin acciones sale por Gmail como mensaje de control excluido de la ingesta', async () => {

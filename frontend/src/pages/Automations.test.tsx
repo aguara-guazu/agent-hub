@@ -103,9 +103,29 @@ describe('Programaciones', () => {
     expect(boxes[0]!.disabled).toBe(true)
     expect(boxes[2]!.disabled).toBe(true)
     expect(textOf(document.body)).toContain('No está conectado')
+    expect(document.body.querySelector('.automations-form a[href$="/catalog"]')).not.toBeNull()
     await click(boxes[1])
     await click(buttonByText(document.body, 'Guardar'))
     expect(api.lastCall('/memory/schedules/s1/delivery', 'PUT')?.body).toEqual({ expected_revision: 3, delivery: ['hub_inbox', 'app_window', 'gmail_self'] })
+  })
+
+  it('Gmail sin el envío autorizado ofrece Autorizar en Canales y no deja marcarlo', async () => {
+    installFetch({ user, handle: call => {
+      if (call.path === '/memory/schedules') return jsonResponse({ items: [schedule({ delivery: ['hub_inbox', 'app_window'] })], total: 1, limit: 200, offset: 0 })
+      if (call.path === '/memory/schedule-constraints') return jsonResponse({ items: [] })
+      if (call.path === '/memory/schedules/delivery-channels') return jsonResponse({ items: [{ channel: 'app', available: true }, { channel: 'gmail', available: false, reason: 'scope_missing', destination: 'ana@example.com' }, { channel: 'slack', available: false, reason: 'not_connected' }] })
+      if (call.path === '/memory/call') return jsonResponse((call.body as { operation: string }).operation === 'list_connectors' ? [{ id: 'g1', provider: 'google', name: 'A', config: {}, project_ids: [], interval_minutes: 30, enabled: true, account_email: 'ana@example.com' }] : {})
+      if (call.path === '/automations') return jsonResponse({ automations_enabled: true, notify_schedule_created: true, notify_delivery: true, workday_hours: 9, keep_awake: true })
+      return undefined
+    } })
+    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
+    await click(buttonByText(container, 'Canales'))
+    await flush(3)
+    const boxes = qa<HTMLInputElement>(document.body, '.automations-form input[type="checkbox"]')
+    expect(boxes[1]!.disabled).toBe(true)
+    expect(textOf(document.body)).toContain('Gmail a mi propia cuenta (ana@example.com)')
+    expect(textOf(document.body)).toContain('Falta autorizar el envío')
+    expect(buttonByText(document.body, 'Autorizar')).toBeTruthy()
   })
 
   it('avisa si las automatizaciones están apagadas y explica el estado vacío', async () => {

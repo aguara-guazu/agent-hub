@@ -120,7 +120,8 @@ export type RunEvents = {
 
 export interface DeliveryReceipt { state: 'sent' | 'failed' | 'uncertain' | 'skipped'; outbox_ref?: string; error_code?: string }
 export interface DeliveryAdapters {
-  available(): Promise<Record<'gmail_self' | 'slack_self', { available: boolean; reason?: 'not_connected' | 'scope_missing' | 'identity_unverified' | 'identity_is_bot' | 'tool_off' }>>
+  /** `destination` es la cuenta propia a la que iría la entrega, cuando se conoce; guía la autorización si falta el envío. */
+  available(): Promise<Record<'gmail_self' | 'slack_self', { available: boolean; reason?: 'not_connected' | 'scope_missing' | 'identity_unverified' | 'identity_is_bot' | 'tool_off'; destination?: string }>>
   executeDelivery(input: { delivery_id: string; run_id: string; artifact_id: string; target: 'gmail_self' | 'slack_self'; expected_generation: number }): Promise<DeliveryReceipt>
 }
 export interface ActionReceipt { intent_id: string; state: 'succeeded' | 'rejected_before_dispatch' | 'uncertain'; remote_ref?: string; result_digest?: string; error_code?: string }

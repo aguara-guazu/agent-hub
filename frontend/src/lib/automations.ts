@@ -327,7 +327,8 @@ export const CHANNEL_REASONS: Record<string, string> = {
   tool_off: 'La herramienta de envío está apagada',
 }
 export function useDeliveryChannels() {
-  return useQuery({ queryKey: ['delivery-channels'], queryFn: () => api.get<{ items: DeliveryChannel[] }>('/memory/schedules/delivery-channels') })
+  // La autorización de Gmail termina en el navegador externo: al volver a la app se relee la disponibilidad.
+  return useQuery({ queryKey: ['delivery-channels'], queryFn: () => api.get<{ items: DeliveryChannel[] }>('/memory/schedules/delivery-channels'), refetchOnWindowFocus: true })
 }
 
 export interface RetryResult { delivery_id: string; state: DeliveryView['state']; error_code?: string; may_duplicate: boolean }

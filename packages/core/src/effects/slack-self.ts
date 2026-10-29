@@ -66,7 +66,7 @@ export class SlackSelfDelivery {
 
   async available(): Promise<SlackSelfAvailability> {
     const server = this.server()
-    if (server === 'not_connected') return { available: false, reason: 'tool_off' }
+    if (server === 'not_connected') return { available: false, reason: this.options.tools.published?.([SEND, PROFILE]) ? 'tool_off' : 'not_connected' }
     if (server === 'ambiguous') return { available: false, reason: 'identity_unverified' }
     let identity
     try { identity = parseSlackIdentity(await server.tools.call(PROFILE, {})) } catch (error) {

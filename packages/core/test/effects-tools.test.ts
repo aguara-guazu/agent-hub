@@ -85,6 +85,18 @@ it('un servidor local o de otro dominio que publique las mismas herramientas no 
   expect(resolver.candidates(['slack_send_message'])).toHaveLength(1)
 })
 
+it('published distingue una herramienta apagada por el dueño de un servidor ausente o fuera de la cota', async () => {
+  const resolver = createEffectToolResolver(store, pool, ownerId)
+  const names = ['slack_send_message', 'slack_read_user_profile']
+  server('slack_local', '', 'stdio', names)
+  server('impostor', 'https://example.invalid/mcp', 'http', names)
+  expect(resolver.published!(names)).toBe(false)
+  const slack = server('slack_mcp', 'https://mcp.slack.com/mcp', 'http', names)
+  off(toolOf(slack.id, 'slack_send_message').id)
+  expect(resolver.candidates(names)).toEqual([])
+  expect(resolver.published!(names)).toBe(true)
+})
+
 it('una herramienta de Slack en un host de Atlassian (y al revés) no entra en la cota', async () => {
   server('mixed_a', 'https://mcp.atlassian.com/v1/mcp', 'http', ['slack_send_message', 'getJiraIssue'])
   server('mixed_s', 'https://mcp.slack.com/mcp', 'http', ['addWorklogToJiraIssue', 'slack_read_channel'])

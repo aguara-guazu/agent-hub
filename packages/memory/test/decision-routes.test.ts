@@ -22,7 +22,7 @@ beforeEach(async () => {
   executeDelivery = vi.fn(async () => ({ state: 'sent', outbox_ref: 'out-1' }))
   setDelivery = vi.fn(async () => undefined)
   reconcile = vi.fn(async (intent_id: string) => ({ intent_id, state: 'uncertain', error_code: 'no_conclusive_evidence' }))
-  available = vi.fn(async () => ({ gmail_self: { available: true }, slack_self: { available: false, reason: 'tool_off' } }))
+  available = vi.fn(async () => ({ gmail_self: { available: true, destination: 'me@example.com' }, slack_self: { available: false, reason: 'tool_off' } }))
   const effects = { review, actions: { reconcile }, deliveries: { available, executeDelivery } } as unknown as ScheduleEffects
   const service = { get: async () => ({ db: { query: async (sql: string, params: unknown[]) => deliveries.filter(row => (sql.includes('d.id = $1') ? row.id === params[0] : row.run_id === params[0])) }, schedules: { store: { setDelivery } } }) } as never
   app = Fastify()
@@ -84,7 +84,7 @@ describe('rutas humanas de decisión', () => {
 
   it('los canales reflejan la disponibilidad real y la app siempre está', async () => {
     expect((await app.inject({ method: 'GET', url: '/api/memory/schedules/delivery-channels' })).json()).toEqual({ items: [
-      { channel: 'app', available: true }, { channel: 'gmail', available: true }, { channel: 'slack', available: false, reason: 'tool_off' }] })
+      { channel: 'app', available: true }, { channel: 'gmail', available: true, destination: 'me@example.com' }, { channel: 'slack', available: false, reason: 'tool_off' }] })
   })
 
   it('ninguna respuesta de estas rutas contiene un código ni una línea de respuesta', async () => {

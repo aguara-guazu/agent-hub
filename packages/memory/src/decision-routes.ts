@@ -109,7 +109,8 @@ export function registerDecisionRoutes(app: FastifyInstance, effects: ScheduleEf
 
   app.get(`${BASE}/delivery-channels`, { preHandler: auth }, async () => {
     const available = effects ? await effects.deliveries.available() : null
-    const entry = (key: 'gmail_self' | 'slack_self') => ({ available: available?.[key].available ?? false, ...(available?.[key].reason ? { reason: available[key].reason } : { ...(available ? {} : { reason: 'not_connected' as const }) }) })
+    const entry = (key: 'gmail_self' | 'slack_self') => ({ available: available?.[key].available ?? false, ...(available?.[key].reason ? { reason: available[key].reason } : { ...(available ? {} : { reason: 'not_connected' as const }) }),
+      ...(available?.[key].destination ? { destination: available[key].destination } : {}) })
     return { items: [{ channel: 'app', available: true }, { channel: 'gmail', ...entry('gmail_self') }, { channel: 'slack', ...entry('slack_self') }] }
   })
 }

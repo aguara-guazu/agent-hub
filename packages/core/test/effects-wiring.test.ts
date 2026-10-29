@@ -31,7 +31,7 @@ describe('efectos del scheduler cableados en el core', () => {
   it('las rutas de schedules consultan los adaptadores reales: sin Gmail ni Slack conectados no hay canales y el almacén de decisiones queda creado con su clave en el Vault', async () => {
     const list = await app.fastify.inject({ method: 'GET', url: '/api/memory/schedules', headers })
     expect(list.statusCode).toBe(200)
-    expect(list.json().delivery_available).toEqual({ gmail_self: { available: false, reason: 'not_connected' }, slack_self: { available: false, reason: 'tool_off' } })
+    expect(list.json().delivery_available).toEqual({ gmail_self: { available: false, reason: 'not_connected' }, slack_self: { available: false, reason: 'not_connected' } })
     const memory = join(directory, 'memory')
     expect(existsSync(join(memory, 'decisions.sqlite'))).toBe(true)
     const key = join(memory, 'secrets', 'decision-verifier.json')
@@ -231,6 +231,15 @@ describe('ciclo de sondeo (replyTick)', () => {
     expect(second.derived).toMatchObject({ skipped: 'unavailable' })
     expect(teams.expireDerived).toHaveBeenCalledTimes(2)
     expect(teams.launchDerived).not.toHaveBeenCalled()
+  })
+
+  it('Gmail sin envío habilitado se ofrece para autorizar con la cuenta sincronizada; con una fuente que ya envía, rige esa', async () => {
+    const reading = { id: 'conn-lee', config: { gmail_enabled: true }, mailbox: 'me@example.com' }
+    expect((await build({ connectors: [reading] }).deliveries.available()).gmail_self).toEqual({ available: false, reason: 'scope_missing', destination: 'me@example.com' })
+    expect((await build({ connectors: [{ ...reading, mailbox: null }] }).deliveries.available()).gmail_self).toEqual({ available: false, reason: 'scope_missing' })
+    expect((await build({ connectors: [{ ...reading, config: { gmail_enabled: false } }] }).deliveries.available()).gmail_self).toEqual({ available: false, reason: 'not_connected' })
+    const sending = build({ connectors: [reading, { id: 'conn-envia', config: { gmail_send_enabled: true } }], google: { granted: () => false } })
+    expect((await sending.deliveries.available()).gmail_self).toEqual({ available: false, reason: 'scope_missing' })
   })
 
   it('sin orquestación en el host no hay despachador y el resultado no lo menciona', async () => {

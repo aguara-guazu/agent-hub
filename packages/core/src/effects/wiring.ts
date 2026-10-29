@@ -115,10 +115,16 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
         const artifact = await schedules.artifactOfRun(run_id)
         return artifact && artifact.id === artifact_id ? { title: artifact.title, body_md: artifact.body_md, decision_request_ref: artifact.decision_request_ref } : null
       } }
-      const gmail = { sender: new GmailSelfSender(options.host.google), connectorId: async () => {
-        const rows = await db.query<{ id: string; config: Record<string, any> }>("SELECT id, config FROM connectors WHERE provider = 'google' AND enabled = 1 ORDER BY created_at")
-        return rows.find(row => row.config?.['gmail_send_enabled'] === true && row.config?.['gmail_enabled'] !== false)?.id ?? null
-      } }
+      const googleSources = () => db.query<{ id: string; config: Record<string, any>; mailbox: unknown }>("SELECT id, config, json_extract(cursor,'$.gmail.mailbox') AS mailbox FROM connectors WHERE provider = 'google' AND enabled = 1 ORDER BY created_at")
+      const reads = (row: { config: Record<string, any> }) => row.config?.['gmail_enabled'] !== false
+      const sends = (row: { config: Record<string, any> }) => row.config?.['gmail_send_enabled'] === true && reads(row)
+      const gmail = { sender: new GmailSelfSender(options.host.google),
+        connectorId: async () => (await googleSources()).find(sends)?.id ?? null,
+        sendPending: async () => {
+          const rows = await googleSources()
+          const source = rows.some(sends) ? undefined : rows.find(reads)
+          return source ? { account: typeof source.mailbox === 'string' && source.mailbox ? source.mailbox : null } : null
+        } }
       const effects = createScheduleEffects({
         deliveries: createDeliveryAdapters({ store, artifacts, exclusions, gmail, slack: new SlackSelfDelivery({ store, tools, exclusions }) }),
         actions: new CoreActionExecutor({ decisions: service, adapters: typeof options.adapters === 'function' ? options.adapters({ db }) : options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),

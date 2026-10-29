@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { UpstreamSpec, type CallResult, type CallTrace, type ConnectionPool } from '@agenthub/gateway'
-import { argsDigest } from '@agenthub/shared'
+import { argsDigest, profileAllowsTool } from '@agenthub/shared'
 import { computeSnapshot } from '../policy/resolver.js'
 import type { Store } from '../store.js'
 import { ensureRunProfileAgent } from './identities.js'
@@ -22,6 +22,8 @@ export interface EffectTools {
 export interface EffectToolResolver {
   /** Ids de los servidores que publican TODAS estas herramientas habilitadas para `hub_effects` ahora mismo. */
   candidates(toolNames: readonly string[]): string[]
+  /** Si algún servidor del dueño que la cota de `hub_effects` admite publica todas estas herramientas, aunque las reglas del dueño las tengan apagadas. */
+  published?(toolNames: readonly string[]): boolean
   forServer(serverId: string, trace?: CallTrace): EffectTools
 }
 
@@ -40,6 +42,13 @@ export function createEffectToolResolver(store: Store, pool: ConnectionPool, own
     candidates(toolNames) {
       const snapshot = snapshotServers()
       return snapshot ? snapshot.servers.filter(server => toolNames.every(name => has(server, name))).map(server => server.id) : []
+    },
+    published(toolNames) {
+      return store.serversOfUser(ownerId).some(server => {
+        const endpoint = { transport: server.transport, url: server.url }
+        const published = { tools: store.toolsOfServer(server.id).filter(tool => profileAllowsTool('hub_effects', { memory: false, tool: tool.name, endpoint })) }
+        return toolNames.every(name => has(published, name))
+      })
     },
     forServer(serverId, trace = {}) {
       const denyRow = (name: string, args: Record<string, unknown>, reason: string, agentId: string | null, slug: string) => {
