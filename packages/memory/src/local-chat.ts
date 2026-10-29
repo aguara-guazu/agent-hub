@@ -14,7 +14,7 @@ import type { MemoryStore } from './store.js'
 import type { Sql } from './database.js'
 import { teamGuidance, teamGuidanceVersion } from './local-chat-team.js'
 import { canReadChannel, readAccessDefinitions, readDenied, readElevate, readInterest, readNoticeValid, readRequest, readScope, sweepReadAccess,
-  confirmReadRequest, rejectReadRequest, revokeReadGrant, personReadGrants, personReadRequests, type ReadScope } from './chat-read-access.js'
+  READ_GRANT_LIVENESS_GRACE_MS, confirmReadRequest, rejectReadRequest, revokeReadGrant, personReadGrants, personReadRequests, type ReadScope } from './chat-read-access.js'
 import { channelProjectId, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
 import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
@@ -44,7 +44,7 @@ export const chatDefinitions = {
   chat_read: ['Read thread messages. With session_key: by default only messages pending for it (not its own), marking only those returned as read; page pending with offset: 0. unread_only=false: history. Without session_key: read-only history that marks nothing. Only threads of channels you can read (same scope as chat_threads); another project needs memory_chat_read_request.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
   chat_send: ['Create a task thread (channel_id,title), a short linked-team thread (team_root_thread_id,title), or reply (thread_id). Only in channels you belong to: your own, or the root and threads bound to a current team; mentions only its members. Read access never grants writing. A stable request_id makes retries duplicate-free. Linked-worker new topics auto-post to the team channel. Report in your assigned work_thread_id. To request an action/decision: response_required=true plus recipients. Reply via reply_to: notifies the author, handles only your request. Requires collaboration authorization.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), response_required: z.boolean().optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Read your pending mentions and private notices. Private notices have no thread; ask the agent for status via work_thread_id. Read is not handled; unhandled items stay visible. No model polling: the Hub notifies.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
-  chat_kick: ['Kick a session from the channel when the person orders it. Only the current leader of that channel (also if you lead it from another channel); give the reason. Keeps history, cancels notices, blocks rejoin. Does not close its terminal or stop running work. Taking over a silent leader is memory_chat_take_leadership, not a kick.', chatKickInput.extend(session).strict()],
+  chat_kick: ['Kick a session from the channel when the person orders it. Only the current leader of that channel (also if you lead it from another channel); give the reason. Not the session that may reclaim the channel nor one that leads other channels: only the person removes those. Keeps history, cancels notices, blocks rejoin. Does not close its terminal or stop running work. Taking over a silent leader is memory_chat_take_leadership, not a kick.', chatKickInput.extend(session).strict()],
   chat_take_leadership: [`Take over or reclaim a channel's leadership; pass the leader_id you read (expected_leader_id) and a reason. Takeover: only a session outside Hub teams, from the channel's project as the Hub derives it, when the leader has had no Hub-verified liveness for over ${LEADER_LIVENESS_TIMEOUT_MS/60000} minutes; it displaces that leader only, who keeps the right to reclaim. Reclaim: the exact displaced session (same session_key) recovers the channel even if the new leader is online. Never on a guess about the leader; check team.leader_offline and leader_last_liveness_at first. Audited and rate limited; the person can always correct it in the UI.`, chatTakeLeadershipInput.extend(session).strict()],
   chat_ack: ['Mark your own mention/private notice handled (message_id=item id) after resolving or answering. Reading alone is not acceptance.', z.object({ ...session, message_id: id }).strict()],
   ...readAccessDefinitions,
@@ -255,6 +255,11 @@ export class LocalChat {
       // The person may also remove a leader that lives in another channel: that revokes this leadership only.
       const target=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1 AND (channel_id=$2 OR id=$3)',[input.participant_id,channel.id,'agent' in actor?null:channel.leader_id]))[0]
       check(target,'El agente no pertenece a este canal',404)
+      // A removal drops the reclaim right, so a leader that took the channel could otherwise make its takeover permanent.
+      if('agent' in actor)check(target.id!==channel.displaced_leader_id,'Esa sesión puede reclamar este canal; sólo la persona puede expulsarla desde la UI.',403)
+      // A removal also releases every channel the target leads; only the takeover rules or the person may end those leaderships.
+      if('agent' in actor)check(!(await sql.query('SELECT 1 FROM chat_channels WHERE leader_id=$1 AND id<>$2 AND closed_at IS NULL AND deleted_at IS NULL LIMIT 1',[target.id,channel.id])).length,
+        'Esa sesión lidera otros canales; sólo la persona puede expulsarla desde la UI.',403)
       if(target.channel_id!==channel.id) {
         await sql.query('UPDATE chat_channels SET leader_id=NULL,leader_changed_at=now(),updated_at=now() WHERE id=$1 AND leader_id=$2',[channel.id,target.id])
         await recordAuthorityEvent(sql,{kind:"leadership_kick",channel_id:channel.id,project_id:await channelProjectId(sql,channel.id),actor_user_id:removedBy.slice(5),
@@ -263,11 +268,16 @@ export class LocalChat {
         return {session:publicSession(target),team:await this.team(channel.id)}
       }
       if(!target.removed_at) {
+        const led=(await sql.query('SELECT id FROM chat_channels WHERE leader_id=$1',[target.id])).map(row=>String(row.id))
+        const reclaims=(await sql.query('SELECT id FROM chat_channels WHERE displaced_leader_id=$1',[target.id])).map(row=>String(row.id))
         await sql.query(`UPDATE chat_sessions SET removed_at=now(),removed_by=$2,removal_reason=$3,state='offline',closed_at=now(),lease_until=NULL,wake_error=NULL WHERE id=$1`,[target.id,removedBy,input.reason])
         await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Destinatario expulsado del canal' WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL`,[target.id])
         // A removed session can never act again, so it releases every channel it led and any reclaim right.
         await sql.query('UPDATE chat_channels SET leader_id=NULL,leader_changed_at=now(),updated_at=now() WHERE leader_id=$1',[target.id])
         await sql.query('UPDATE chat_channels SET displaced_leader_id=NULL,displaced_at=NULL WHERE displaced_leader_id=$1',[target.id])
+        await recordAuthorityEvent(sql,{kind:"session_kicked",channel_id:channel.id,project_id:await channelProjectId(sql,channel.id),
+          actor_session_id:'agent' in actor?removedBy.slice(6):null,actor_user_id:'agent' in actor?null:removedBy.slice(5),target_session_id:target.id,
+          reason:input.reason,evidence:{released_leaderships:led,released_reclaims:reclaims}})
         await this.cancelInvalidTurnAlerts()
       }
       return {session:publicSession((await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[target.id]))[0]!),team:await this.team(channel.id)}
@@ -275,12 +285,17 @@ export class LocalChat {
     if(notify)this.events.emit('change',input.participant_id)
     return result
   }
-  /** Attempts (accepted or refused) bound per session and per channel, so refusals cannot flood the audit. */
-  private async leadershipAttemptsLeft(sql:Sql,sessionId:string,channelId:string,now=Date.now()) {
-    const counts=(await sql.query(`SELECT COALESCE(SUM(CASE WHEN actor_session_id=$2 THEN 1 ELSE 0 END),0) AS mine,count(*) AS total FROM chat_authority_events
+  /**
+   * Attempts (accepted or refused) bound per session and per channel, so refusals cannot flood the audit. Refusals of sessions
+   * outside the channel's project never count against the channel, and a reclaim only spends its own budget: other sessions
+   * must not be able to lock the displaced leader out of its channel.
+   */
+  private async leadershipAttemptsLeft(sql:Sql,sessionId:string,channelId:string,now=Date.now(),reclaim=false) {
+    const counts=(await sql.query(`SELECT COALESCE(SUM(CASE WHEN actor_session_id=$2 THEN 1 ELSE 0 END),0) AS mine,
+      COALESCE(SUM(CASE WHEN kind='leadership_rejected' AND json_extract(evidence,'$.code')='project_mismatch' THEN 0 ELSE 1 END),0) AS total FROM chat_authority_events
       WHERE channel_id=$1 AND kind IN ('leadership_takeover','leadership_reclaim','leadership_rejected') AND created_at>$3`,
     [channelId,sessionId,new Date(now-LEADERSHIP_ATTEMPT_WINDOW_MS).toISOString()]))[0]!
-    return Number(counts.mine)<LEADERSHIP_ATTEMPTS_PER_SESSION && Number(counts.total)<LEADERSHIP_ATTEMPTS_PER_CHANNEL
+    return Number(counts.mine)<LEADERSHIP_ATTEMPTS_PER_SESSION && (reclaim || Number(counts.total)<LEADERSHIP_ATTEMPTS_PER_CHANNEL)
   }
   /**
    * Takeover and reclaim are one compare-and-set on leader_id inside the writer transaction: two candidates, or a candidate
@@ -293,7 +308,9 @@ export class LocalChat {
       const channel=(await sql.query('SELECT * FROM chat_channels WHERE id=$1',[input.channel_id]))[0]
       check(channel && !channel.deleted_at,'Canal inexistente.',404)
       const projectId=await channelProjectId(sql,channel.id)
-      check(await this.leadershipAttemptsLeft(sql,who.id,channel.id,now),
+      // Identity is the authenticated session row (session_key hash + gateway agent), compared by id; a nickname proves nothing.
+      const reclaim=channel.displaced_leader_id===who.id
+      check(await this.leadershipAttemptsLeft(sql,who.id,channel.id,now,reclaim),
         'Demasiados intentos de liderazgo sobre este canal. Esperá unos minutos o pedí a la persona que designe el coordinador desde la UI.',429)
       const refuse=(status:number,code:string,message:string,evidence:Record<string,unknown>={}):never=>{
         const audit:AuthorityEvent={kind:"leadership_rejected",channel_id:channel.id,project_id:projectId,actor_session_id:who.id,
@@ -301,17 +318,16 @@ export class LocalChat {
         throw Object.assign(new MemoryError(status,message,false,code),{leadershipAudit:audit})
       }
       if(channel.leader_id===who.id)return {channel_id:channel.id,leader_id:who.id,mode:'unchanged' as const,previous_leader_id:who.id,affected_plans:[] as string[],team:await this.team(channel.id)}
+      // First refusal for any session outside the project, so they learn nothing else about the channel and spend no channel budget.
+      const sessionProject=await sessionProjectId(sql,who.id)
+      if(!projectId || sessionProject!==projectId)
+        refuse(403,'project_mismatch','Sólo un agente del mismo proyecto del canal, según el Hub, puede tomar su liderazgo.',{session_project_id:sessionProject})
       if(channel.closed_at)refuse(409,'channel_closed','El canal está cerrado.')
       if(channel.kind==='virtual' && !channel.activated_at)refuse(409,'channel_inactive','El canal no está activo.')
       if((await sql.query('SELECT 1 FROM chat_team_members WHERE channel_id=$1 LIMIT 1',[channel.id])).length)
         refuse(409,'worker_channel','Es el canal de un worker de equipo; su coordinador lo reemplaza con memory_team_control.')
       if(channel.leader_id!==input.expected_leader_id)
         refuse(409,'leader_changed','El líder del canal cambió. Volvé a consultar team.leader_id antes de reintentar.',{current_leader_id:channel.leader_id})
-      const sessionProject=await sessionProjectId(sql,who.id)
-      if(!projectId || sessionProject!==projectId)
-        refuse(403,'project_mismatch','Sólo un agente del mismo proyecto del canal, según el Hub, puede tomar su liderazgo.',{session_project_id:sessionProject})
-      // Identity is the authenticated session row (session_key hash + gateway agent), compared by id; a nickname proves nothing.
-      const reclaim=channel.displaced_leader_id===who.id
       let evidence:Record<string,unknown>
       if(reclaim) {
         // The authenticated call of the exact displaced session is its connection proof; it renews the lease below.
@@ -381,8 +397,12 @@ export class LocalChat {
     // Registration and inbox bootstrap are available before choosing a nickname.
     if(!(await this.db.query(`SELECT 1 FROM chat_sessions WHERE id=$1 AND nickname IS NOT NULL AND trim(nickname)<>''`,[sid])).length)return
     // A displaced leader recovers a channel only through an explicit, audited reclaim.
-    await this.db.query(`UPDATE chat_channels SET leader_id=$1 WHERE leader_id IS NULL AND closed_at IS NULL AND displaced_leader_id IS NOT $1
-      AND (kind<>'virtual' OR activated_at IS NOT NULL) AND id=(SELECT channel_id FROM chat_sessions WHERE id=$1 AND closed_at IS NULL)`,[sid])
+    await this.db.transaction(async sql=>{
+      const assigned=await sql.query(`UPDATE chat_channels SET leader_id=$1 WHERE leader_id IS NULL AND closed_at IS NULL AND displaced_leader_id IS NOT $1
+        AND (kind<>'virtual' OR activated_at IS NOT NULL) AND id=(SELECT channel_id FROM chat_sessions WHERE id=$1 AND closed_at IS NULL) RETURNING id`,[sid])
+      for(const row of assigned)await recordAuthorityEvent(sql,{kind:"leadership_assigned",channel_id:String(row.id),project_id:await channelProjectId(sql,String(row.id)),
+        target_session_id:sid,reason:"Asignado automáticamente al primer participante activo de un canal sin líder",evidence:{mode:"auto"}})
+    })
     await this.db.query(`UPDATE chat_sessions SET team_seen=1 WHERE id=$1 AND EXISTS(
       SELECT 1 FROM chat_channels c WHERE c.id=chat_sessions.channel_id AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL))`,[sid])
   }
@@ -492,6 +512,8 @@ export class LocalChat {
     await this.assertNotRemoved(agent,input.session_key)
     const known = (await this.db.query('SELECT * FROM chat_sessions WHERE key_hash=$1 AND agent_id=$2',[hash(input.session_key),agent.agent_id]))[0]
     if(known)await this.joinableChannel((await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[known.channel_id]))[0]!)
+    // Revoke before this event reopens the session or renews its lease: grants must not outlive a close or a silence.
+    if(known && (known.closed_at || !(Date.parse(known.lease_until)>Date.now()-READ_GRANT_LIVENESS_GRACE_MS)))await sweepReadAccess(this.db)
     const registration = !known || input.event==='SessionStart' ? await this.register(agent,input.session_key,input.native_id,false)
       : { session:publicSession(known),channel:(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[known.channel_id]))[0],session_key:input.session_key }
     const sid = registration.session.id
@@ -509,6 +531,7 @@ export class LocalChat {
         capability=CASE WHEN $7 IS NOT NULL THEN $7 WHEN cli_kind='codex_cli' AND capability NOT IN ('codex_appserver','tui_prompt') THEN 'codex_queue' ELSE capability END
         WHERE id=$1 AND event_at<=$3`, [sid, state, input.at, new Date(Date.now()+90000).toISOString(), input.process_id ?? null, input.process_started ?? null, input.transport ?? null])
       await this.captureNative(sid,agent,input)
+      if(state==='offline')await sweepReadAccess(this.db)
     } else if(input.event==='PostModelSwitch') {
       if(known && !known.closed_at && input.model)await this.db.query(`UPDATE chat_sessions SET model=$2,model_observed_at=$3
         WHERE id=$1 AND native_id=$4 AND (model_observed_at IS NULL OR model_observed_at<=$3)`,[sid,input.model,input.at,input.native_id])

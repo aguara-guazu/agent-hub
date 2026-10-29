@@ -143,6 +143,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   })
   app.post('/api/memory/chat/read-requests/:requestId/reject', {bodyLimit:4096}, async request=>{
     const user=await options.authorize(request)
+    requireCollaboration()
     const {requestId}=parse(z.object({requestId:id}),request.params)
     const {note}=parse(z.object({note:z.string().trim().min(1).max(1000).optional()}).strict(),request.body ?? {})
     const {operations}=await service.get()
@@ -156,6 +157,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   })
   app.post('/api/memory/chat/read-grants/:grantId/revoke', {bodyLimit:4096}, async request=>{
     const user=await options.authorize(request)
+    requireCollaboration()
     const {grantId}=parse(z.object({grantId:id}),request.params)
     const {reason}=parse(z.object({reason:z.string().trim().min(1).max(1000).optional()}).strict(),request.body ?? {})
     const {operations}=await service.get()

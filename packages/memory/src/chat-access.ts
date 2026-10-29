@@ -46,7 +46,7 @@ export async function channelProjectId(sql: Sql, channelId: string): Promise<str
   return row?.project_id ?? null
 }
 
-export type AuthorityEventKind = "leadership_takeover" | "leadership_kick" | "leadership_reclaim" | "leadership_rejected" | "leadership_designated" |
+export type AuthorityEventKind = "leadership_takeover" | "leadership_kick" | "leadership_reclaim" | "leadership_rejected" | "leadership_designated" | "leadership_assigned" | "session_kicked" |
   "read_interest" | "read_request" | "read_elevated" | "read_granted" | "read_rejected" | "read_revoked" | "read_cancelled"
 
 export interface AuthorityEvent {

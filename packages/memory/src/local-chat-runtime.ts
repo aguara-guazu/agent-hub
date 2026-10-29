@@ -47,6 +47,9 @@ export class LocalChatRuntime {
   }
   async tick() {
     if (!this.collaborationEnabled()) return
+    // Grants are re-checked on every read, but a session that closes or goes silent and then reconnects before a sweep would
+    // regain one; a failure in any later step of the tick must not postpone revocation.
+    await this.chat.sweepReadAccess().catch(() => undefined)
     if(this.fleet)for(const session of await this.chat.db.query("SELECT id FROM chat_sessions WHERE capability='hub_fleet' AND closed_at IS NULL")) {
       if(await this.fleet.connected(String(session.id)))await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[session.id,new Date(Date.now()+90000).toISOString()])
     }

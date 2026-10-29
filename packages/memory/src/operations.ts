@@ -175,6 +175,9 @@ export class MemoryOperations {
     if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
       check(this.collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
     if (operation.startsWith('chat_')) {
+      // The MCP endpoint only serves agents through the gateway, which always attaches their identity. A call without it
+      // would run unscoped like the person's authenticated /api/memory/call, so it is refused.
+      check(actor !== 'mcp' || agent, 'La colaboración por MCP requiere la identidad de agente que agrega el gateway.', 403)
       const result=await this.chat.call(operation,raw,agent)
       if(operation==='chat_delete_channel')return {...result,...await this.teams?.stopTransferredPlans(result.affected_plans)}
       if(operation==='chat_take_leadership' && result.affected_plans?.length)return {...result,...await this.teams?.stopTransferredPlans(result.affected_plans)}
