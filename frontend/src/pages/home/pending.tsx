@@ -13,6 +13,8 @@ import { errorKey } from "../../i18n/errors"
 import { useFormat, useT } from "../../i18n"
 import type { PendingInbox, ProjectSuggestion } from "../../lib/home"
 import { memoryCall, type MemoryEntity } from "../../lib/memory"
+import type { ReadRequest } from "../../lib/read-grants"
+import { readRequestAgent } from "../../components/ReadGrantConfirm"
 
 export type PendingGroup = "connections" | "agents" | "memory"
 
@@ -96,8 +98,9 @@ function useQueueJob() {
  * Filas de Pendientes con su grupo. Cada fila: identidad, título que dice qué pasa, detalle con la consecuencia, chip y una acción.
  * `dialog` es la confirmación de las unificaciones; se monta una vez junto a la lista.
  */
-export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, string>): { rows: PendingRow[]; dialog: ReactNode } {
+export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, string>, onReviewRead: (request: ReadRequest) => void, reviewing: string | null): { rows: PendingRow[]; dialog: ReactNode } {
   const { t, plural } = useT("home")
+  const { t: ta } = useT("access")
   const { t: tc } = useT("common")
   const { t: ts } = useT("status")
   const format = useFormat()
@@ -181,6 +184,21 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
         sub={expires ? t("decision.detailExpires", { when, expires: relativeTime(expires) }) : t("decision.detail", { when })}
         meta={<Chip tone="warn">{ts("chip.awaitingDecision")}</Chip>}
         action={<LinkAction to={`/automations/deliveries/${encodeURIComponent(run.run_id)}`}>{tc("actions.review")}</LinkAction>}
+      />
+    ) })
+  }
+
+  for (const request of a.readRequests) {
+    const agent = readRequestAgent(request)
+    rows.push({ id: `read-${request.id}`, group: "agents", node: (
+      <Row
+        key={`read-${request.id}`}
+        selected={reviewing === request.id}
+        lead={<Avatar name={agent} small />}
+        title={ta("row.title", { agent, target: request.target_project_title })}
+        sub={[ta("row.kind"), request.elevated_by_label ? ta("row.elevated", { leader: request.elevated_by_label }) : null, relativeTime(request.elevated_at ?? request.created_at)].filter(Boolean).join(" · ")}
+        meta={<Chip tone="warn">{ts("chip.awaitingDecision")}</Chip>}
+        action={<Button small onClick={() => onReviewRead(request)}>{tc("actions.review")}</Button>}
       />
     ) })
   }
