@@ -25,11 +25,13 @@ export const readAccessDefinitions = {
 
 const graceCutoff = (now = Date.now()) => new Date(now - READ_GRANT_LIVENESS_GRACE_MS).toISOString()
 
-/** Shared by reads and the sweep: a grant counts only while every condition holds, even before the sweep revokes it. */
+/**
+ * Shared by reads and the sweep: a grant counts only while every condition holds, even before the sweep revokes it.
+ * Any work completed after the grant ends it: otherwise starting another work item right after completing one would keep it.
+ */
+const workDone = "EXISTS(SELECT 1 FROM chat_work_state w WHERE w.session_id=g.session_id AND w.status='completed' AND w.updated_at>g.granted_at)"
 const grantValid = `g.revoked_at IS NULL AND g.expires_at>now() AND s.closed_at IS NULL AND s.removed_at IS NULL
-  AND s.lease_until IS NOT NULL AND s.lease_until>$CUTOFF
-  AND NOT (EXISTS(SELECT 1 FROM chat_work_state w WHERE w.session_id=g.session_id AND w.status='completed' AND w.updated_at>g.granted_at)
-    AND NOT EXISTS(SELECT 1 FROM chat_work_state w WHERE w.session_id=g.session_id AND w.status<>'completed'))`
+  AND s.lease_until IS NOT NULL AND s.lease_until>$CUTOFF AND NOT ${workDone}`
 
 export interface ReadScope { projects: string[]; channels: string[] }
 
@@ -250,9 +252,7 @@ export async function revokeReadGrant(sql: Sql, grantId: string, reason: string,
 /** Revokes every grant whose validity condition no longer holds and cancels stale requests, each with an audit entry. */
 export async function sweepReadAccess(sql: Sql, now = Date.now()) {
   const cutoff = graceCutoff(now)
-  const stale = await sql.query(`SELECT g.id,g.expires_at,g.granted_at,s.closed_at,s.removed_at,s.lease_until,s.last_seen_at,
-      EXISTS(SELECT 1 FROM chat_work_state w WHERE w.session_id=g.session_id AND w.status='completed' AND w.updated_at>g.granted_at)
-        AND NOT EXISTS(SELECT 1 FROM chat_work_state w WHERE w.session_id=g.session_id AND w.status<>'completed') AS work_done
+  const stale = await sql.query(`SELECT g.id,g.expires_at,g.granted_at,s.closed_at,s.removed_at,s.lease_until,s.last_seen_at,${workDone} AS work_done
     FROM chat_read_grants g JOIN chat_sessions s ON s.id=g.session_id
     WHERE g.revoked_at IS NULL AND NOT (${grantValid.replace("$CUTOFF", "$1").replace("g.expires_at>now()", "g.expires_at>$2")})`, [cutoff, new Date(now).toISOString()])
   for (const grant of stale) {

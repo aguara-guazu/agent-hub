@@ -219,6 +219,18 @@ describe("caducidad y revocación", () => {
     expect((await db.query("SELECT revoke_reason FROM chat_read_grants WHERE id=$1", [grantId]))[0]!.revoke_reason).toBe("work_completed")
   })
 
+  it("no lo recupera abriendo otro trabajo después de completar uno", async () => {
+    const w = await world(), { grantId } = await granted(w)
+    const own = await thread(w.member, "Trabajo")
+    await call(w.member, "chat_work_update", { thread_id: own, work_id: "w1", request_id: "s1", expected_version: 0, event: "started", summary: "empiezo" })
+    const report = await reply(w.member, own)
+    await call(w.member, "chat_work_update", { thread_id: own, work_id: "w1", request_id: "s2", expected_version: 1, event: "completed", summary: "listo", report_message_id: report.id })
+    await call(w.member, "chat_work_update", { thread_id: own, work_id: "w2", request_id: "s3", expected_version: 0, event: "started", summary: "otra cosa" })
+    expect(await canReadChannel(db, w.member.session.id, w.outsider.channel.id)).toBe(false)
+    await ops.chat.sweepReadAccess()
+    expect((await db.query("SELECT revoke_reason FROM chat_read_grants WHERE id=$1", [grantId]))[0]!.revoke_reason).toBe("work_completed")
+  })
+
   it("la persona revoca y queda auditado", async () => {
     const w = await world(), { grantId } = await granted(w)
     expect(await ops.chat.revokeReadGrant(grantId, "owner", "Ya no")).toMatchObject({ revoked: true })
