@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import type { EntitySummary } from "@agenthub/shared"
 import type status from "../i18n/locales/es/status"
 import type { ChipTone } from "../components/ui"
 import { memoryCall, type MemoryEntity, type Page } from "./memory"
@@ -44,15 +45,18 @@ export function projectActivity(project: MemoryEntity): string {
 const PROJECT_PAGE = 200
 const PROJECT_CAP = 2000
 
-/** Todos los proyectos (hasta 2000): el filtrado, los contadores y el orden se hacen en el cliente. */
+export type ProjectWithSummary = MemoryEntity & { summary?: EntitySummary }
+
+/** Todos los proyectos (hasta 2000) con su resumen (empresa, contenido por tipo, personas) calculado en lote por página.
+ *  El filtrado, los contadores y el orden se hacen en el cliente. */
 export function useAllProjects() {
   return useQuery({
     queryKey: ["memory", "projects-all"],
     queryFn: async () => {
-      const items: MemoryEntity[] = []
+      const items: ProjectWithSummary[] = []
       let total = 0
       do {
-        const page = await memoryCall<Page<MemoryEntity>>("list_entities", { kind: "project", limit: PROJECT_PAGE, offset: items.length })
+        const page = await memoryCall<Page<ProjectWithSummary>>("list_entities", { kind: "project", include: ["summary"], limit: PROJECT_PAGE, offset: items.length })
         items.push(...page.items)
         total = page.total
         if (page.items.length === 0) break

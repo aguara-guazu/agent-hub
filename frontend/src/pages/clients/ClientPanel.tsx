@@ -7,6 +7,7 @@ import type { LocalClient } from "../../lib/local"
 import { CLI_FILE_SKILLS } from "../../lib/types"
 import type { Machine } from "../../lib/types"
 import { useCopy } from "./EnrollDialog"
+import { UnmanagedSection } from "./UnmanagedSection"
 import { UsageSection } from "./UsageSection"
 import { ClientChip, shortenPath } from "./state"
 
@@ -66,6 +67,7 @@ export function ClientPanel({ client, machine, showPerson, onClose, onRevoke }: 
           { label: t("panel.lastConnection"), value: client.last_connected_at ? format.date(client.last_connected_at) : t("panel.never") },
           { label: t("panel.lastSync"), value: client.synced_at ? format.date(client.synced_at) : null },
         ]} />
+        <UnmanagedSection client={client} />
         <hr className="divider" />
         <UsageSection client={client} />
         <hr className="divider" />

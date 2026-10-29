@@ -170,6 +170,9 @@ const servers = {
     actionFailed: "Couldn't complete the action",
     ruleFailed: "The change wasn't applied",
     deleteFailed: "Couldn't delete “{{name}}”",
+    restoreFailed: "Couldn't restore “{{name}}”",
+    restoreExpired: "More than 30 minutes passed and it was permanently deleted.",
+    restoreConflict: "Another server now uses that identifier. Delete or rename it and try again.",
     importFailed: "Couldn't import “{{name}}”",
   },
 } satisfies Messages<typeof es>

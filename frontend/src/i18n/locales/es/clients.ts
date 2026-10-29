@@ -31,6 +31,17 @@ const clients = {
     drift: "Atención",
     paused: "Pausado",
   },
+  unmanaged: {
+    title: "Instalado sin conectar",
+    server: "Servidor",
+    skill: "Skill",
+    linkedSkill: "Skill enlazada",
+    notConnected: "sin conectar",
+    openInHub: "Abrir «{{name}}» en el hub",
+    truncated: "Se muestran los primeros 200.",
+    errors_one: "No se pudo leer {{count}} ruta; la lista puede estar incompleta.",
+    errors_other: "No se pudieron leer {{count}} rutas; la lista puede estar incompleta.",
+  },
   compatible: {
     title: "También compatibles",
     missing: "No detectado",

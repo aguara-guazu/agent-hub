@@ -1,4 +1,5 @@
 import { useInfiniteQuery } from "@tanstack/react-query"
+import type { EntitySummary } from "@agenthub/shared"
 import { Link, useNavigate } from "react-router-dom"
 import {
   Button, Chip, Dl, Empty, EmptyFiltered, ErrorState, List, Loading, MoreMenu, Panel, PanelBody, PanelHeader, Row, RowLink, Seg, SkeletonRows,
@@ -21,7 +22,11 @@ const PAGE = 200
 const categoryOf = (fact: MemoryEntity): Category | null => (CATEGORIES as readonly string[]).includes(fact.data?.category) ? fact.data.category as Category : null
 /** Un hecho descartado en la revisión no se muestra como decisión vigente. */
 const visible = (fact: MemoryEntity) => categoryOf(fact) !== null && fact.data?.review_state !== "rejected"
+const ENTITY_KINDS = ["company", "project", "person", "meeting", "event", "document", "message", "issue", "note", "collection", "fact"] as const
+const isEntityKind = (kind: string): kind is typeof ENTITY_KINDS[number] => (ENTITY_KINDS as readonly string[]).includes(kind)
 const factText = (fact: MemoryEntity) => typeof fact.data?.text === "string" && fact.data.text.trim() ? fact.data.text.trim() : fact.title
+
+type FactRow = MemoryEntity & { summary?: EntitySummary }
 
 interface FactDetail { entity: MemoryEntity; links: EntityLink[]; evidence: { id: string; text: string; version_id: string; entity_id: string }[] }
 
@@ -35,7 +40,7 @@ export function DecisionsTab({ project }: { project: MemoryEntity }) {
   const facts = useInfiniteQuery({
     queryKey: ["memory", "project-decisions", project.id],
     initialPageParam: 0,
-    queryFn: ({ pageParam }) => memoryCall<Page<MemoryEntity>>("list_entities", { project_id: project.id, kind: "fact", limit: PAGE, offset: pageParam }),
+    queryFn: ({ pageParam }) => memoryCall<Page<FactRow>>("list_entities", { project_id: project.id, kind: "fact", include: ["summary"], limit: PAGE, offset: pageParam }),
     getNextPageParam: last => last.offset + last.items.length < last.total ? last.offset + last.items.length : undefined,
     refetchInterval: 10_000,
     refetchIntervalInBackground: false,
@@ -75,15 +80,22 @@ function CategoryChip({ fact }: { fact: MemoryEntity }) {
   return <Chip tone={TONE[category]}>{t(`decisions.category.${category}`)}</Chip>
 }
 
-function DecisionRow({ fact, selected, onOpen }: { fact: MemoryEntity; selected: boolean; onOpen: () => void }) {
+function DecisionRow({ fact, selected, onOpen }: { fact: FactRow; selected: boolean; onOpen: () => void }) {
   const { t } = useT("project")
+  const status = useT("status").t
+  const source = fact.summary?.fact?.source
+  const kind = source && isEntityKind(source.kind) ? source.kind : "other"
+  const sub = [
+    fact.data?.review_state === "pending" ? t("decisions.pendingReview") : null,
+    source ? t("decisions.source", { kind: status(`entity.${kind}`), title: source.title }) : null,
+  ].filter(Boolean).join(" · ")
   return (
     <Row
       onOpen={onOpen}
       selected={selected}
       lead={<span style={{ width: 104, display: "flex", flex: "none" }}><CategoryChip fact={fact} /></span>}
       title={factText(fact)}
-      sub={fact.data?.review_state === "pending" ? t("decisions.pendingReview") : undefined}
+      sub={sub || undefined}
       meta={<ListDate value={entityDate(fact)} />}
     />
   )

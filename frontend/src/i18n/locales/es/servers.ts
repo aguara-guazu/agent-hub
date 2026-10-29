@@ -167,6 +167,9 @@ const servers = {
     actionFailed: "No se pudo completar la acción",
     ruleFailed: "No se aplicó el cambio",
     deleteFailed: "No se pudo eliminar «{{name}}»",
+    restoreFailed: "No se pudo restaurar «{{name}}»",
+    restoreExpired: "Pasaron más de 30 minutos y ya se eliminó del todo.",
+    restoreConflict: "Otro servidor usa ahora ese identificador. Eliminalo o renombralo y volvé a intentar.",
     importFailed: "No se pudo importar «{{name}}»",
   },
 }

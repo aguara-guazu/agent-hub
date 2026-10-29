@@ -95,6 +95,10 @@ const automations = {
     failed: "Couldn't complete that",
     stale: "The automation changed while you were editing it. Check the current value.",
     deleteFailed: "Couldn't delete “{{name}}”",
+    restored: "Restored “{{name}}”",
+    abortedRuns_one: "The delivery the cancellation stopped won't resume; wait for the next one or run it now.",
+    abortedRuns_other: "The {{count}} deliveries the cancellation stopped won't resume; wait for the next one or run it now.",
+    restoreFailed: "Couldn't restore “{{name}}”",
     runFailed: "Couldn't run “{{name}}”",
   },
   panel: {
@@ -342,6 +346,16 @@ const automations = {
       repository_in_use: "The current delegation uses that repository. Remove it from the delegation before changing it.",
       stale_repositories: "The repository list changed. Close the panel and try again.",
     },
+  },
+  restoreErrors: {
+    restore_human_only: "You can only undo a cancellation from the app.",
+    schedule_not_cancelled: "It's no longer cancelled. Reload to see its state.",
+    stale_revision: "It changed in the meantime. Reload and try again.",
+    schedule_not_restorable: "This cancellation can't be undone. Ask the agent to create it again.",
+    restore_window_expired: "More than 10 minutes passed and it can no longer be undone.",
+    schedule_target_taken: "Another identical automation is already active for the same project.",
+    automations_disabled: "Automations are turned off. Turn them on in Settings and try again.",
+    schedule_not_found: "It no longer exists. It may have been deleted from another client.",
   },
 } satisfies Messages<typeof es>
 

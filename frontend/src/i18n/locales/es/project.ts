@@ -360,6 +360,7 @@ const project = {
       risk: "Riesgo",
     },
     pendingReview: "Por revisar",
+    source: "{{kind}} «{{title}}»",
     loading: "Cargando decisiones",
     errorTitle: "No se pudieron cargar las decisiones",
     emptyTitle: "Todavía no hay decisiones",

@@ -11,6 +11,9 @@ import { useAuth } from "../../lib/auth"
 import { usePendingInbox, useRecentProjects, useToday, type PendingInbox } from "../../lib/home"
 import { useMemoryStatus } from "../../lib/memory"
 import { PendingSection, usePendingRows, type PendingGroup } from "./pending"
+import { Panel, PanelBody, PanelHeader } from "../../components/ui/Panel"
+import { ReadGrantConfirm, readRequestAgent } from "../../components/ReadGrantConfirm"
+import type { ReadRequest } from "../../lib/read-grants"
 
 type Filter = "all" | PendingGroup
 
@@ -68,9 +71,9 @@ function PageBanner() {
   return null
 }
 
-function Pending({ inbox, projectNames }: { inbox: PendingInbox; projectNames: Map<string, string> }) {
+function Pending({ inbox, projectNames, reviewing, onReviewRead }: { inbox: PendingInbox; projectNames: Map<string, string>; reviewing: string | null; onReviewRead: (request: ReadRequest) => void }) {
   const { t } = useT("home")
-  const { rows, dialog } = usePendingRows(inbox, projectNames)
+  const { rows, dialog } = usePendingRows(inbox, projectNames, onReviewRead, reviewing)
   const [filter, setFilter] = useState<Filter>("all")
   const groups = GROUPS.filter(group => rows.some(row => row.group === group))
   const options: SegOption<Filter>[] = [
@@ -163,17 +166,38 @@ export default function HomePage() {
   const now = useNow()
   const inbox = usePendingInbox()
   const recent = useRecentProjects()
+  const [reviewingId, setReviewingId] = useState<string | null>(null)
+  // El pedido sale de la bandeja al resolverse (o al vencer en el servidor): el panel se cierra con él.
+  const reviewing = inbox.agents.readRequests.find(request => request.id === reviewingId) ?? null
   return (
-    <div className="page">
-      <Greeting now={now} count={inbox.count} />
-      <PageBanner />
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-5)", alignItems: "flex-start" }}>
-        <Pending inbox={inbox} projectNames={recent.names} />
-        <aside style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
-          <Today now={now} projectNames={recent.names} />
-          <Recent recent={recent} />
-        </aside>
+    <div className="split">
+      <div className="page">
+        <Greeting now={now} count={inbox.count} />
+        <PageBanner />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-5)", alignItems: "flex-start" }}>
+          <Pending inbox={inbox} projectNames={recent.names} reviewing={reviewing?.id ?? null} onReviewRead={request => setReviewingId(request.id)} />
+          {!reviewing && (
+            <aside style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
+              <Today now={now} projectNames={recent.names} />
+              <Recent recent={recent} />
+            </aside>
+          )}
+        </div>
       </div>
+      {reviewing && <ReadRequestPanel key={reviewing.id} request={reviewing} onClose={() => setReviewingId(null)} />}
     </div>
+  )
+}
+
+function ReadRequestPanel({ request, onClose }: { request: ReadRequest; onClose: () => void }) {
+  const { t } = useT("access")
+  const ts = useT("status").t
+  return (
+    <Panel label={t("panelTitle")} onClose={onClose}>
+      <PanelHeader lead={<Avatar name={readRequestAgent(request)} />} title={t("panelTitle")} status={<Chip tone="warn">{ts("chip.awaitingDecision")}</Chip>} />
+      <PanelBody>
+        <ReadGrantConfirm request={request} onDone={onClose} />
+      </PanelBody>
+    </Panel>
   )
 }

@@ -1,3 +1,4 @@
+import type { LocalUnmanaged } from "@agenthub/shared"
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
 import type { AgentInstance, MatrixRow, ResourceType } from './types'
@@ -17,6 +18,8 @@ export interface LocalClient extends AgentInstance {
   /** El cliente no recarga en caliente y sigue con una lista vieja: hace falta reiniciarlo. */
   restart_pending: boolean
   pending: PendingChanges | null
+  /** Instalado por fuera del hub; `null` o ausente con un daemon que todavía no reporta inventario. */
+  unmanaged?: LocalUnmanaged | null
 }
 export interface LocalOverview { hostname: string; clients: LocalClient[]; rows: MatrixRow[] }
 export const LOCAL_KEY = ['local-overview'] as const

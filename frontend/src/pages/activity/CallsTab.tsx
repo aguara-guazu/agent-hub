@@ -11,9 +11,10 @@ import { useOverview } from "../../lib/local"
 import type { LocalClient } from "../../lib/local"
 import { useAuditEvents, useServers, useToolCalls } from "../../lib/queries"
 import type { AuditEvent } from "../../lib/types"
+import AuthorityRegistry from "./AuthorityRegistry"
 import { Bar, CodeBox, Col, useDuration, useListTime } from "./shared"
 
-type Registry = "calls" | "changes"
+type Registry = "calls" | "changes" | "authority"
 type Filter = "all" | "error" | "blocked"
 
 const ALL = "all"
@@ -55,9 +56,10 @@ export default function CallsTab({ header }: { header: ReactNode }) {
       label={t("registry.label")}
       value={registry}
       onChange={value => { setRegistry(value); setSelected(null) }}
-      options={[{ value: "calls", label: t("registry.calls") }, { value: "changes", label: t("registry.changes") }]}
+      options={[{ value: "calls", label: t("registry.calls") }, { value: "changes", label: t("registry.changes") }, { value: "authority", label: t("registry.authority") }]}
     />
   )
+  if (registry === "authority") return <AuthorityRegistry header={header} registrySelect={registrySelect} />
   return registry === "calls"
     ? <Calls header={header} registrySelect={registrySelect} selected={selected} onSelect={setSelected} />
     : <Changes header={header} registrySelect={registrySelect} selected={selected} onSelect={setSelected} />

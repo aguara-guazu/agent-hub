@@ -38,13 +38,16 @@ async function request<T>(method: string, path: string, body?: unknown, retry = 
   const headers: Record<string, string> = {}
   const token = getToken()
   if (token) headers.Authorization = `Bearer ${token}`
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  // Un Blob viaja tal cual con su tipo; el resto de los cuerpos es JSON.
+  const binary = body instanceof Blob
+  if (binary) headers["Content-Type"] = body.type || "application/octet-stream"
+  else if (body !== undefined) headers['Content-Type'] = 'application/json'
 
   const res = await fetch(`/api${path}`, {
     method,
     headers,
     ...(signal ? { signal } : {}),
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: binary ? body : body === undefined ? undefined : JSON.stringify(body),
   })
 
   if (res.status === 401) {
@@ -80,6 +83,8 @@ export const api = {
   download: (path: string) => request<Blob>('GET', path, undefined, true, true),
   get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, true, false, signal),
   post: <T>(path: string, body?: unknown, signal?: AbortSignal) => request<T>('POST', path, body, true, false, signal),
+  /** Cuerpo binario; sin `type` en el Blob sale como application/octet-stream. */
+  upload: <T>(path: string, file: Blob) => request<T>("POST", path, file),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
   delete: <T>(path: string) => request<T>('DELETE', path),

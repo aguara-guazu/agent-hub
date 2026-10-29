@@ -1,11 +1,20 @@
 /** Pedidos de lectura entre proyectos que la persona confirma con una frase. */
 const access = {
-  list: "Pedidos de lectura",
+  panelTitle: "Acceso de lectura entre proyectos",
   row: {
+    kind: "Acceso de lectura entre proyectos",
     title: "{{agent}} pide ver «{{target}}»",
     elevated: "Elevado por {{leader}}",
   },
-  pending: "Espera tu confirmación",
+  detail: {
+    agent: "Agente",
+    from: "Proyecto del agente",
+    target: "Proyecto pedido",
+    reason: "Motivo",
+    elevatedBy: "Elevado por",
+    note: "Nota del líder",
+    when: "Pedido",
+  },
   field: {
     label: "Frase de confirmación",
     hint: "Escribila vos. El acceso es de solo lectura y termina en 8 h o cuando el agente termine su tarea.",
@@ -22,7 +31,6 @@ const access = {
     granted: "Acceso otorgado a {{agent}}",
     rejected: "Pedido rechazado",
   },
-  empty: "No hay pedidos de lectura",
   errors: {
     phrase_structure: "Escribí la frase con la forma del ejemplo.",
     phrase_target: "La frase tiene que nombrar el proyecto «{{target}}» tal como figura.",

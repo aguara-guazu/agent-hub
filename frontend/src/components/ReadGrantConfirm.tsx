@@ -1,53 +1,40 @@
 import { useState, type FormEvent } from "react"
-import { Button, Chip, Empty, ErrorState, Field, Input, List, Row, SkeletonRows, useToast } from "./ui"
+import { Button, Dl, ErrorState, Field, Input, useToast } from "./ui"
 import { useFormat, useT } from "../i18n/useT"
-import { readGrantErrorCode, useConfirmReadRequest, usePendingReadRequests, useRejectReadRequest, type ReadRequest } from "../lib/read-grants"
+import { readGrantErrorCode, useConfirmReadRequest, useRejectReadRequest, type ReadRequest } from "../lib/read-grants"
 
-const agentName = (request: ReadRequest) => request.requester_nickname ?? request.requester_label
+export const readRequestAgent = (request: ReadRequest) => request.requester_nickname ?? request.requester_label
 
 /**
- * Pedidos de lectura entre proyectos que esperan a la persona. La frase se escribe acá y solo acá:
- * el servidor la valida y es la única forma de otorgar el permiso. Pensado para la bandeja de Inicio.
+ * Revisión de un pedido de lectura entre proyectos que espera a la persona. La frase se escribe acá y solo acá:
+ * el servidor la valida y es la única forma de otorgar el permiso. Se monta en el panel de Inicio › Pendientes.
  */
-export function ReadGrantConfirm() {
+export function ReadGrantConfirm({ request, onDone }: { request: ReadRequest; onDone: () => void }) {
   const { t } = useT("access")
-  const { relative } = useFormat()
-  const query = usePendingReadRequests()
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-
-  if (query.isPending) return <SkeletonRows count={2} label={t("list")} />
-  if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
-  const items = query.data.items
-  if (!items.length) return <Empty icon="collaboration" title={t("empty")} />
-  const selected = items.find(item => item.id === selectedId) ?? items[0]!
-
+  const format = useFormat()
   return (
-    <section aria-label={t("list")} style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)", minWidth: 0 }}>
-      <List>
-        {items.map(request => (
-          <Row
-            key={request.id}
-            title={t("row.title", { agent: agentName(request), target: request.target_project_title })}
-            sub={[request.reason, request.elevated_by_label && t("row.elevated", { leader: request.elevated_by_label }),
-              relative(request.elevated_at ?? request.created_at)].filter(Boolean).join(" · ")}
-            meta={<Chip tone="warn">{t("pending")}</Chip>}
-            selected={items.length > 1 && request.id === selected.id}
-            {...(items.length > 1 ? { onOpen: () => setSelectedId(request.id) } : {})}
-          />
-        ))}
-      </List>
-      <ConfirmForm key={selected.id} request={selected} />
-    </section>
+    <>
+      <Dl items={[
+        { label: t("detail.agent"), value: readRequestAgent(request) },
+        { label: t("detail.from"), value: request.requester_project_title },
+        { label: t("detail.target"), value: request.target_project_title },
+        { label: t("detail.reason"), value: request.reason ? <span style={{ overflowWrap: "anywhere" }}>{request.reason}</span> : null },
+        { label: t("detail.elevatedBy"), value: request.elevated_by_label },
+        { label: t("detail.note"), value: request.elevation_note },
+        { label: t("detail.when"), value: format.date(request.elevated_at ?? request.created_at, "datetime") },
+      ]} />
+      <ConfirmForm key={request.id} request={request} onDone={onDone} />
+    </>
   )
 }
 
-function ConfirmForm({ request }: { request: ReadRequest }) {
+function ConfirmForm({ request, onDone }: { request: ReadRequest; onDone: () => void }) {
   const { t } = useT("access")
   const toast = useToast()
   const confirm = useConfirmReadRequest()
   const reject = useRejectReadRequest()
   const [phrase, setPhrase] = useState("")
-  const agent = agentName(request)
+  const agent = readRequestAgent(request)
   const busy = confirm.isPending || reject.isPending
   const example = request.requester_project_title
     ? t("example.withProject", { agent, source: request.requester_project_title, target: request.target_project_title })
@@ -60,7 +47,7 @@ function ConfirmForm({ request }: { request: ReadRequest }) {
     event.preventDefault()
     if (!phrase.trim() || busy) return
     reject.reset()
-    confirm.mutate({ id: request.id, phrase: phrase.trim() }, { onSuccess: () => { setPhrase(""); toast.success(t("toast.granted", { agent })) } })
+    confirm.mutate({ id: request.id, phrase: phrase.trim() }, { onSuccess: () => { setPhrase(""); toast.success(t("toast.granted", { agent })); onDone() } })
   }
 
   return (
@@ -72,7 +59,7 @@ function ConfirmForm({ request }: { request: ReadRequest }) {
       {failure && !code && <ErrorState error={failure} />}
       <div style={{ display: "flex", gap: "var(--sp-2)", justifyContent: "flex-end", flexWrap: "wrap" }}>
         <Button variant="ghost" disabled={busy}
-          onClick={() => { confirm.reset(); reject.mutate({ id: request.id }, { onSuccess: () => toast.success(t("toast.rejected")) }) }}>
+          onClick={() => { confirm.reset(); reject.mutate({ id: request.id }, { onSuccess: () => { toast.success(t("toast.rejected")); onDone() } }) }}>
           {t("actions.reject")}
         </Button>
         <Button variant="primary" type="submit" disabled={busy || !phrase.trim()}>{t("actions.grant")}</Button>
