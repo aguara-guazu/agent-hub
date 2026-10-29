@@ -761,4 +761,10 @@ CREATE TABLE chat_read_grants (
  revoked_at TIMESTAMP, revoke_reason TEXT
 );
 CREATE INDEX chat_read_grants_session ON chat_read_grants(session_id,revoked_at);
+`, String.raw`
+-- Leadership taken over from a silent leader stays reclaimable by that exact session; leader_changed_at dates the last change.
+ALTER TABLE chat_channels ADD COLUMN displaced_leader_id TEXT REFERENCES chat_sessions(id);
+ALTER TABLE chat_channels ADD COLUMN displaced_at TIMESTAMP;
+ALTER TABLE chat_channels ADD COLUMN leader_changed_at TIMESTAMP;
+CREATE INDEX chat_channels_leader ON chat_channels(leader_id);
 `]
