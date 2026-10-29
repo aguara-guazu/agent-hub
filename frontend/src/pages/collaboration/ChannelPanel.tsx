@@ -7,7 +7,7 @@ import {
 import { useT } from "../../i18n"
 import { api } from "../../lib/api"
 import { useMemory, type Page } from "../../lib/memory"
-import { AGENT_PAGE, AGENT_TONE, Pager, SCOPE, agentState, useCliLabel, visibleAgents } from "./shared"
+import { AGENT_PAGE, AGENT_TONE, Pager, SCOPE, agentState, capabilityKey, useCliLabel, visibleAgents } from "./shared"
 import type { Channel, Participant } from "./types"
 
 // Motivos que el Hub guarda en el historial; son datos de la API, no texto de la interfaz.
@@ -24,9 +24,6 @@ export function channelKind(channel: Channel): ChannelKind {
   if (channel.orca_workspace_id) return "orca"
   return channel.branch ? "branch" : "detached"
 }
-
-const CAPABILITIES = ["hub_fleet", "codex_queue", "claude_rewake", "tui_prompt", "codex_appserver", "next_turn", "opencode_prompt", "acp_prompt", "antigravity_stream"] as const
-type Capability = typeof CAPABILITIES[number]
 
 type Uncertain = { uncertain_members?: string[] }
 
@@ -100,7 +97,7 @@ export function ChannelPanel(props: ChannelPanelProps) {
   function agentTooltip(agent: Participant): string {
     return [
       agent.label,
-      CAPABILITIES.includes(agent.capability as Capability) ? t(`capability.${agent.capability as Capability}`) : agent.capability,
+      capabilityKey(agent.capability) ? t(`capability.${capabilityKey(agent.capability)!}`) : agent.capability,
       t("agent.lastSeen", { date: absoluteTime(agent.last_seen_at) }),
       agent.state_observed_at ? t("agent.lastObserved", { date: absoluteTime(agent.state_observed_at) }) : null,
       agent.state_reason === "activity_stale" ? t("agent.staleNote") : null,

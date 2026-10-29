@@ -111,6 +111,14 @@ export function useCliLabel() {
   return useCallback((cli: string) => (CLIS.includes(cli as Cli) ? status(`client.${cli as Cli}`) : cli), [status])
 }
 
+const CAPABILITIES = ["hub_fleet", "codex_queue", "claude_rewake", "tui_prompt", "codex_appserver", "next_turn", "opencode_prompt", "acp_prompt", "antigravity_stream"] as const
+export type Capability = typeof CAPABILITIES[number]
+
+/** Cómo recibe avisos la sesión; `null` si la API devuelve una capacidad que la app no conoce. */
+export function capabilityKey(value: string): Capability | null {
+  return CAPABILITIES.find(item => item === value) ?? null
+}
+
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const
 export type Effort = typeof EFFORTS[number]
 

@@ -176,7 +176,8 @@ export default function CollaborationPage() {
   else if (inspect) {
     panel = <AgentPanel
       key={inspect}
-      agent={{ id: inspect, label: inspected?.label ?? t("agent.unknown") }}
+      agentId={inspect}
+      agent={inspected}
       onClose={() => patch({ inspect: null })}
       onThreads={() => showThreads(inspected?.master_channel_id ?? inspected?.channel_id ?? "", inspect)}
     />
