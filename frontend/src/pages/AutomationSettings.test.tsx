@@ -9,8 +9,17 @@ const settings = { automations_enabled: true, notify_schedule_created: true, not
 beforeEach(setupDom)
 afterEach(() => { vi.unstubAllGlobals(); teardownDom() })
 
-function mock() {
-  return installFetch({ user, handle: call => call.path === '/automations' ? jsonResponse(call.method === 'PUT' ? { ...settings, ...(call.body as object) } : settings) : undefined })
+const jiraServers = { selected: null as string | null, servers: [{ id: 'jira-a', name: 'Jira Craftech', usable: true }, { id: 'jira-b', name: 'Jira viejo', usable: false }, { id: 'jira-c', name: 'Jira cliente', usable: true }] }
+const JIRA_SELECT = 'select[aria-label="Servidor de Jira para escribir horas, transiciones y comentarios"]'
+
+function mock(jira: typeof jiraServers = jiraServers) {
+  return installFetch({
+    user,
+    handle: call => {
+      if (call.path === '/automations/jira-server') return jsonResponse(call.method === 'PUT' ? { ...jira, selected: (call.body as { server_id: string | null }).server_id } : jira)
+      return call.path === '/automations' ? jsonResponse(call.method === 'PUT' ? { ...settings, ...(call.body as object) } : settings) : undefined
+    },
+  })
 }
 const toggle = (container: HTMLElement, label: string): HTMLButtonElement => need<HTMLButtonElement>(container, `button[aria-label="${label}"]`)
 
@@ -31,7 +40,7 @@ it('muestra la zona horaria del sistema sin selector y dice qué detiene cada in
   const { container } = await renderWithProviders(<AutomationSettings />, { route: '/settings' })
   expect(textOf(container)).toContain(`la del sistema (${Intl.DateTimeFormat().resolvedOptions().timeZone})`)
   expect(textOf(container)).toContain('Colaboración apagada: se detienen equipos y flota. Automatizaciones apagadas: se detienen brief, cierre y entregas.')
-  expect(qa(container, 'select')).toHaveLength(0)
+  expect(qa(container, 'select[aria-label*="Zona"]')).toHaveLength(0)
 })
 
 it('la jornada se guarda al salir del campo y sólo si es válida', async () => {
@@ -59,4 +68,42 @@ it('mantener despierta sólo aparece dentro de la app de escritorio y avisa del 
   const again = await renderWithProviders(<AutomationSettings />, { route: '/settings' })
   await click(toggle(again.container, 'Mantener la computadora despierta hasta completar y enviar el brief'))
   expect(api.lastCall('/automations', 'PUT')?.body).toEqual({ keep_awake: false })
+})
+
+it('el selector de Jira lista sólo los servidores utilizables y «Ninguno», y explica qué pasa sin servidor', async () => {
+  mock()
+  const { container } = await renderWithProviders(<AutomationSettings />, { route: '/settings' })
+  const select = need<HTMLSelectElement>(container, JIRA_SELECT)
+  expect(Array.from(select.options).map(option => [option.value, option.textContent])).toEqual([['', 'Ninguno'], ['jira-a', 'Jira Craftech'], ['jira-c', 'Jira cliente']])
+  expect(select.value).toBe('')
+  expect(textOf(container)).toContain('Sin servidor, el cierre propone igual, pero no escribe en Jira.')
+})
+
+it('elegir un servidor de Jira lo guarda con PUT y «Ninguno» envía null', async () => {
+  const api = mock({ ...jiraServers, selected: 'jira-a' })
+  const { container } = await renderWithProviders(<AutomationSettings />, { route: '/settings' })
+  const select = need<HTMLSelectElement>(container, JIRA_SELECT)
+  expect(select.value).toBe('jira-a')
+  await setValue(select, 'jira-c')
+  expect(api.lastCall('/automations/jira-server', 'PUT')?.body).toEqual({ server_id: 'jira-c' })
+  await setValue(select, '')
+  expect(api.lastCall('/automations/jira-server', 'PUT')?.body).toEqual({ server_id: null })
+  expect(api.callsTo('/automations', 'PUT')).toHaveLength(0)
+})
+
+it('un servidor elegido que ya no es utilizable se muestra como no disponible y avisa', async () => {
+  mock({ ...jiraServers, selected: 'jira-b' })
+  const { container } = await renderWithProviders(<AutomationSettings />, { route: '/settings' })
+  const select = need<HTMLSelectElement>(container, JIRA_SELECT)
+  expect(select.value).toBe('jira-b')
+  expect(Array.from(select.options).map(option => option.textContent)).toContain('Jira viejo (no disponible)')
+  expect(textOf(container)).toContain('El servidor elegido ya no está disponible')
+})
+
+it('sin servidores utilizables lo dice y deja sólo «Ninguno»', async () => {
+  mock({ selected: null, servers: [{ id: 'jira-b', name: 'Jira viejo', usable: false }] })
+  const { container } = await renderWithProviders(<AutomationSettings />, { route: '/settings' })
+  const select = need<HTMLSelectElement>(container, JIRA_SELECT)
+  expect(Array.from(select.options).map(option => option.textContent)).toEqual(['Ninguno'])
+  expect(textOf(container)).toContain('No hay servidores de Jira utilizables en el Hub.')
 })

@@ -179,8 +179,20 @@ export interface AutomationSettings {
   keep_awake: boolean
 }
 
+export interface JiraServerOption {
+  id: string
+  name: string
+  usable: boolean
+}
+
+export interface JiraServerSetting {
+  selected: string | null
+  servers: JiraServerOption[]
+}
+
 export const automationKeys = {
   settings: ['automations'] as const,
+  jiraServer: ['automations', 'jira-server'] as const,
   schedules: ['schedules'] as const,
   constraints: ['schedule-constraints'] as const,
   runs: (filters: Record<string, string | undefined> = {}) => ['schedule-runs', filters] as const,
@@ -337,5 +349,20 @@ export function useRetryDelivery(runId: string) {
       else toast.info('El reintento no terminó', `Estado: ${result.state}${result.error_code ? ` (${result.error_code})` : ''}.`)
     },
     onError: error => { toast.error('No se pudo reintentar', error instanceof ApiError && error.code && RETRY_ERRORS[error.code] ? RETRY_ERRORS[error.code]! : error.message) },
+  })
+}
+
+/** Servidor de Jira (`jira.server_id`) con el que el cierre escribe horas, transiciones y comentarios. */
+export function useJiraServer() {
+  return useQuery({ queryKey: automationKeys.jiraServer, queryFn: () => api.get<JiraServerSetting>('/automations/jira-server') })
+}
+
+export function useSaveJiraServer() {
+  const cache = useQueryClient()
+  const toast = useToast()
+  return useMutation({
+    mutationFn: (serverId: string | null) => api.put<unknown>('/automations/jira-server', { server_id: serverId }),
+    onSuccess: async () => { await cache.invalidateQueries({ queryKey: automationKeys.jiraServer }) },
+    onError: error => toast.error('No se pudo guardar', error.message),
   })
 }

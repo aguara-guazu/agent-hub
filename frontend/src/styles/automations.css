@@ -49,6 +49,7 @@
 .automation-settings { margin-bottom: 20px; }
 .automation-hours { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; }
 .automation-hours input { width: 72px; }
+.automation-hours select { max-width: 260px; }
 
 .project-automation, .project-automation-form { display: flex; flex-direction: column; gap: 16px; }
 .project-automation-card, .project-automation-form section { border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
