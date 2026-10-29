@@ -8,7 +8,7 @@ import { useErrorText } from "../project/shared"
 
 export type SharedMode = "join" | "restore"
 
-/** Mismo contrato que `SharedProjectImport` (pages/MemorySharing): `/memory/sharing/call` con `join` o `restore`. */
+/** `/memory/sharing/call` con `join` (invitación) o `restore` (respaldo cifrado). */
 export function SharedProjectDialog({ mode, onClose }: { mode: SharedMode | null; onClose: () => void }) {
   const { t } = useT("projects")
   const common = useT("common").t
