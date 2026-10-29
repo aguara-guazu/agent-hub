@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS follow_ups (
   PRIMARY KEY(request_id, ordinal)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS follow_ups_project ON follow_ups(request_id, project_id);
+CREATE TABLE IF NOT EXISTS delivery_releases (delivery_id TEXT PRIMARY KEY, released_at TEXT NOT NULL, reason TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS follow_up_claims (request_id TEXT NOT NULL, project_id TEXT NOT NULL, consumer_ref TEXT NOT NULL, claimed_at TEXT NOT NULL, PRIMARY KEY(request_id, project_id));
 CREATE TABLE IF NOT EXISTS reply_failures (integration TEXT NOT NULL, account TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS reply_failures_account ON reply_failures(integration, account, at);
@@ -508,12 +509,13 @@ export class DecisionStore {
   }
 
   /** Bindings de una solicitud, uno por destino. */
-  bindingsOf(requestId: string): Array<{ id: string; integration: Integration; account: string; conversation: string | null; team: string | null; remote_user: string | null; delivery_ref: string | null; state: BindingState; delivery_state: OutboxState; correlations: string[]; native_ids: string[] }> {
+  bindingsOf(requestId: string): Array<{ id: string; integration: Integration; account: string; conversation: string | null; team: string | null; remote_user: string | null; delivery_ref: string | null; state: BindingState; delivery_state: OutboxState; correlations: string[]; native_ids: string[]; released_by_owner: boolean }> {
     return this.all<BindingRow>('SELECT * FROM channel_bindings WHERE request_id = ? ORDER BY created_at', requestId).map(binding => {
       const sent = this.all<OutboxRow>('SELECT * FROM outbox WHERE binding_id = ?', binding.id)
       return { id: binding.id, integration: binding.integration, account: binding.account, conversation: binding.conversation, team: binding.team, remote_user: binding.remote_user,
         delivery_ref: binding.delivery_ref, state: binding.state, delivery_state: sent.at(-1)?.state ?? 'reserved', correlations: sent.map(row => row.correlation),
-        native_ids: sent.flatMap(row => row.native_id ? [row.native_id] : []) }
+        native_ids: sent.flatMap(row => row.native_id ? [row.native_id] : []),
+        released_by_owner: sent.some(row => !!this.get('SELECT 1 FROM delivery_releases WHERE delivery_id = ?', row.delivery_id)) }
     })
   }
 
@@ -669,6 +671,7 @@ export class DecisionStore {
       for (const row of rows) {
         this.run('UPDATE outbox SET state = \'failed\', updated_at = ? WHERE delivery_id = ?', this.iso(), row.delivery_id)
         this.run('UPDATE channel_bindings SET state = \'closed\', updated_at = ? WHERE id = ?', this.iso(), row.binding_id)
+        this.run('INSERT OR IGNORE INTO delivery_releases(delivery_id, released_at, reason) VALUES (?, ?, \'released_by_owner\')', row.delivery_id, this.iso())
       }
       return rows.length
     })
