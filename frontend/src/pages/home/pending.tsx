@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Icon } from "../../components/Icon"
 import { Avatar, Button, Chip } from "../../components/ui/basics"
+import { ConfirmDialog } from "../../components/ui/Dialog"
 import { Row, RowHead } from "../../components/ui/display"
 import { Menu, type MenuItem } from "../../components/ui/Menu"
 import { useToast } from "../../components/ui/Toast"
@@ -16,6 +17,9 @@ import { memoryCall, type MemoryEntity } from "../../lib/memory"
 export type PendingGroup = "connections" | "agents" | "memory"
 
 export interface PendingRow { id: string; group: PendingGroup; node: ReactNode }
+
+/** Unificar personas no se puede deshacer: se confirma antes de enviar la decisión. */
+interface MergeConfirm { title: string; message: string; confirmLabel: string; run: () => void }
 
 const BLOCKED_REASONS = ["different_verified_emails", "shared_transcript", "auto_merge_disabled"] as const
 const FACT_CATEGORIES = ["summary", "decision", "commitment", "finding", "risk"] as const
@@ -88,8 +92,11 @@ function useQueueJob() {
   })
 }
 
-/** Filas de Pendientes con su grupo. Cada fila: identidad, título que dice qué pasa, detalle con la consecuencia, chip y una acción. */
-export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, string>): PendingRow[] {
+/**
+ * Filas de Pendientes con su grupo. Cada fila: identidad, título que dice qué pasa, detalle con la consecuencia, chip y una acción.
+ * `dialog` es la confirmación de las unificaciones; se monta una vez junto a la lista.
+ */
+export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, string>): { rows: PendingRow[]; dialog: ReactNode } {
   const { t, plural } = useT("home")
   const { t: tc } = useT("common")
   const { t: ts } = useT("status")
@@ -98,6 +105,7 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
   const restart = useRestartClient()
   const queue = useQueueJob()
   const navigate = useNavigate()
+  const [confirm, setConfirm] = useState<MergeConfirm | null>(null)
   const rows: PendingRow[] = []
   const { connections: c, agents: a, memory: m } = inbox
   const busy = decide.isPending
@@ -221,7 +229,18 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
     ) })
   }
 
-  return rows
+  const dialog = (
+    <ConfirmDialog
+      open={confirm !== null}
+      title={confirm?.title ?? ""}
+      message={confirm?.message ?? ""}
+      confirmLabel={confirm?.confirmLabel ?? ""}
+      busy={busy}
+      onClose={() => setConfirm(null)}
+      onConfirm={() => { confirm?.run(); setConfirm(null) }}
+    />
+  )
+  return { rows, dialog }
 
   function duplicateRow(proposal: MemoryEntity) {
     const p = proposal.data
@@ -236,7 +255,12 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
         sub={detail}
         meta={<Chip tone="warn">{p.verdict === "conflict" ? ts("chip.emailConflict") : ts("chip.possibleDuplicate")}</Chip>}
         action={<DecideMenu label={tc("actions.compare")} items={[
-          { label: t("duplicate.merge", { name: p.into_name }), disabled: busy, onSelect: () => decide.mutate({ operation: "review_duplicate", input: { id: proposal.id, decision: "accepted" }, done: t("duplicate.merged", { name: p.into_name }) }) },
+          { label: t("duplicate.merge", { name: p.into_name }), disabled: busy, onSelect: () => setConfirm({
+            title: t("duplicate.confirmTitle", { from: p.from_name, into: p.into_name }),
+            message: t("duplicate.confirmBody", { from: p.from_name, into: p.into_name }),
+            confirmLabel: t("duplicate.merge", { name: p.into_name }),
+            run: () => decide.mutate({ operation: "review_duplicate", input: { id: proposal.id, decision: "accepted" }, done: t("duplicate.merged", { name: p.into_name }) }),
+          }) },
           { label: t("duplicate.distinct"), disabled: busy, onSelect: () => decide.mutate({ operation: "review_duplicate", input: { id: proposal.id, decision: "rejected" }, done: t("duplicate.kept") }) },
           { label: t("identity.viewEvidence"), onSelect: () => navigate(`/memory/entities/${proposal.id}`) },
           { label: t("duplicate.viewPerson", { name: p.from_name }), onSelect: () => navigate(`/memory/entities/${p.from_id}`) },
@@ -258,7 +282,16 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
         sub={p.stale ? t("identity.staleHint") : confidence ? ts(`confidence.${confidence}`) : undefined}
         meta={<Chip tone="warn">{p.stale ? ts("chip.sourceChanged") : ts("chip.inferred")}</Chip>}
         action={<DecideMenu label={tc("actions.review")} items={[
-          { label: known ? t("identity.confirmMerge") : t("identity.confirmEmail"), disabled: busy || Boolean(p.stale), hint: p.stale ? t("identity.staleHint") : undefined, onSelect: () => decide.mutate({ operation: "review_identity", input: { id: proposal.id, decision: "accepted" }, done: t("identity.confirmed", { name: p.speaker_name }) }) },
+          { label: known ? t("identity.confirmMerge") : t("identity.confirmEmail"), disabled: busy || Boolean(p.stale), hint: p.stale ? t("identity.staleHint") : undefined, onSelect: () => {
+            const accept = () => decide.mutate({ operation: "review_identity", input: { id: proposal.id, decision: "accepted" }, done: t("identity.confirmed", { name: p.speaker_name }) })
+            if (!known) { accept(); return }
+            setConfirm({
+              title: t("identity.confirmMergeTitle", { name: p.speaker_name, email: p.candidate?.email }),
+              message: t("identity.confirmMergeBody", { name: p.speaker_name }),
+              confirmLabel: t("identity.confirmMerge"),
+              run: accept,
+            })
+          } },
           { label: t("identity.discard"), disabled: busy, onSelect: () => decide.mutate({ operation: "review_identity", input: { id: proposal.id, decision: "rejected" }, done: t("identity.discarded") }) },
           { label: t("identity.viewEvidence"), onSelect: () => navigate(`/memory/entities/${proposal.id}`) },
           { label: t("identity.viewSpeaker"), onSelect: () => navigate(`/memory/entities/${p.speaker_id}`) },

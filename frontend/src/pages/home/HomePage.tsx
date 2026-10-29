@@ -70,7 +70,7 @@ function PageBanner() {
 
 function Pending({ inbox, projectNames }: { inbox: PendingInbox; projectNames: Map<string, string> }) {
   const { t } = useT("home")
-  const rows = usePendingRows(inbox, projectNames)
+  const { rows, dialog } = usePendingRows(inbox, projectNames)
   const [filter, setFilter] = useState<Filter>("all")
   const groups = GROUPS.filter(group => rows.some(row => row.group === group))
   const options: SegOption<Filter>[] = [
@@ -97,6 +97,7 @@ function Pending({ inbox, projectNames }: { inbox: PendingInbox; projectNames: M
         {groups.length > 1 && <Seg label={t("pending.filterLabel")} options={options} value={filter} onChange={setFilter} />}
       </div>
       {body}
+      {dialog}
     </section>
   )
 }
