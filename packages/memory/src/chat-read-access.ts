@@ -66,12 +66,19 @@ async function requesterLeader(sql: Sql, session: Record<string, any>) {
   return { id: String(leader.id), label: String(leader.label), team_id: team?.id ? String(team.id) : null }
 }
 
-/** Private Hub notice. Best effort: one pending notice per sender/recipient pair is a schema invariant. */
+/**
+ * Private Hub notice. The schema allows one pending notice per sender/recipient pair: a newer read notice replaces an
+ * informational one (interest, decision), but never a pending request or a turn alert, which keep their own meaning.
+ */
 async function notify(sql: Sql, input: { source: Record<string, any>; recipient: string; cause: string; turn: string; team_id: string | null; text: string }) {
-  const rows = await sql.query(`INSERT OR IGNORE INTO chat_status_notices(id,session_id,turn_id,cause,channel_id,team_id,recipient_id,text)
+  const insert = () => sql.query(`INSERT OR IGNORE INTO chat_status_notices(id,session_id,turn_id,cause,channel_id,team_id,recipient_id,text)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [randomUUID(), input.source.id, input.turn, input.cause, input.source.channel_id, input.team_id, input.recipient, input.text.slice(0, 4000)])
-  return rows.length > 0
+  if ((await insert()).length) return true
+  const replaced = await sql.query(`UPDATE chat_status_notices SET cancelled_at=now(),error='Reemplazado por un aviso de lectura más reciente'
+    WHERE session_id=$1 AND recipient_id=$2 AND handled_at IS NULL AND cancelled_at IS NULL AND cause IN ('read_interest','read_decision') RETURNING id`, [input.source.id, input.recipient])
+  return replaced.length > 0 && (await insert()).length > 0
 }
+const notNotified = "El Hub no pudo dejarle un aviso nuevo a tu líder (ya tiene otro pendiente tuyo). Mencionalo en tu hilo de trabajo con este request_id."
 
 /** Read notices stay valid while their request still needs that recipient. Called from cancelInvalidTurnAlerts. */
 export async function readNoticeValid(sql: Sql, notice: Record<string, any>) {
@@ -118,7 +125,7 @@ export async function readRequest(sql: Sql, who: Record<string, any>, input: { p
     target_session_id: leader.id, evidence: { request_id: requestId, requester_project_id: own } })
   const notified = leader.id !== who.id && await notify(sql, { source: who, recipient: leader.id, cause: "read_request", turn: `read_request:${requestId}`, team_id: leader.team_id,
     text: `${who.label} asks to read the channels of project «${target.title}». Reason: ${input.reason}\nIf the task needs it, forward it to the person with memory_chat_read_elevate request_id=${requestId}; only the person can grant it in the Hub. Otherwise tell the agent why not.` })
-  return { request_id: requestId, state: "pending_leader", project_id: target.id, leader_id: leader.id, notified }
+  return { request_id: requestId, state: "pending_leader", project_id: target.id, leader_id: leader.id, notified, ...(notified || leader.id === who.id ? {} : { next_action: notNotified }) }
 }
 
 export async function readElevate(sql: Sql, who: Record<string, any>, input: { request_id: string; note?: string | undefined }) {
@@ -251,8 +258,11 @@ export async function sweepReadAccess(sql: Sql, now = Date.now()) {
   for (const grant of stale) {
     const reason = grant.removed_at ? "session_removed" : grant.closed_at ? "session_closed" : grant.expires_at <= new Date(now).toISOString() ? "max_ttl"
       : grant.work_done ? "work_completed" : "liveness_lost"
-    const offline = grant.lease_until ? now - Date.parse(grant.lease_until) : null
-    await revokeReadGrant(sql, grant.id, reason, null, { lease_until: grant.lease_until, last_seen_at: grant.last_seen_at, offline_ms: offline, threshold_ms: READ_GRANT_LIVENESS_GRACE_MS })
+    const evidence = reason === "liveness_lost"
+      ? { lease_until: grant.lease_until, last_seen_at: grant.last_seen_at, offline_ms: grant.lease_until ? now - Date.parse(grant.lease_until) : null, threshold_ms: READ_GRANT_LIVENESS_GRACE_MS }
+      : reason === "max_ttl" ? { expires_at: grant.expires_at, granted_at: grant.granted_at, max_ttl_ms: READ_GRANT_MAX_TTL_MS }
+        : reason === "work_completed" ? { granted_at: grant.granted_at } : { closed_at: grant.closed_at, removed_at: grant.removed_at }
+    await revokeReadGrant(sql, grant.id, reason, null, evidence)
   }
   const requests = await sql.query(`SELECT r.id,r.requester_channel_id,r.target_project_id,r.requester_session_id,s.closed_at,s.removed_at,r.created_at
     FROM chat_read_requests r JOIN chat_sessions s ON s.id=r.requester_session_id
