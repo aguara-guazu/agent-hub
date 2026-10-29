@@ -171,6 +171,15 @@ it('al apagar el interruptor revoca las solicitudes de decisión antes de cancel
   expect(await runsOf(s.id)).toEqual([])
 })
 
+it('una tarea periódica corre una vez por ventana y su fallo no detiene el reloj', async () => {
+  let calls = 0
+  runtime.addPeriodic('lenta', async () => { calls++; throw new Error('falla') }, 60_000)
+  await run(); await runtime.tick()
+  expect(calls).toBe(1)
+  now = at('2026-10-28T08:01:30.000Z'); await runtime.tick(); await runtime.idle()
+  expect(calls).toBe(2)
+})
+
 it('tras un reinicio termina el proceso propio, registra el incidente y deja el run para reintentar', async () => {
   const s = await schedule({ template: 'custom_synthesis', kind: 'synthesis', params: { topic: 'estado' } })
   const runId = (await store.insertRun({ schedule_id: s.id, scheduled_for: '2026-10-28T08:00:00.000Z', schedule_revision: 1, definition: snapshotOf(s), trigger: 'clock', state: 'running' }))!
@@ -184,6 +193,16 @@ it('tras un reinicio termina el proceso propio, registra el incidente y deja el 
   expect((await store.attemptsOf(runId))[0]).toMatchObject({ state: 'orphan_terminated' })
   expect((await store.incidents({ run_id: runId }))[0]).toMatchObject({ cause: 'hub_restart', action: 'terminated' })
   expect((await store.run(runId))!.state).toBe('interrupted')
+})
+
+it('al arrancar registra un incidente por cada miembro de flota que quedó en estado vivo, una sola vez', async () => {
+  await db.execute('PRAGMA foreign_keys=OFF')
+  await db.query(`INSERT INTO chat_team_plans(id,master_channel_id,root_thread_id,created_by,objective,parent,base_revision,plan,digest,state) VALUES('plan','c','t','s','o','{}','r','{}','d','launched')`)
+  const member = (id: string, ordinal: number, runtime: object | null) => db.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,role,task,prompt,state,runtime) VALUES($1,'plan',$2,$1,'claude_code','m','r','t','p','launched',$3)`, [id, ordinal, runtime ? JSON.stringify(runtime) : null])
+  await member('vivo', 1, { state: 'busy', generation: 'g1' }); await member('detenido', 2, { state: 'stopped', generation: 'g1' }); await member('sin-estado', 3, null)
+  await runtime.reconcileOrphans(); await runtime.reconcileOrphans()
+  const rows = await db.query("SELECT subject_kind,subject_id,generation,cause,action,detail FROM process_incidents")
+  expect(rows).toMatchObject([{ subject_kind: 'fleet_member', subject_id: 'vivo', generation: 'g1', cause: 'hub_restart', action: 'none', detail: { reason: 'no_persisted_process_identity', last_state: 'busy' } }])
 })
 
 it('un proceso que no se puede verificar queda sin terminar y su run no se reemplaza', async () => {

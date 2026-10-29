@@ -73,7 +73,7 @@ export class ScheduleRuntime {
   private stopped = true
   private automationsWere: boolean | undefined
   private inFlight = new Map<string, { controller: AbortController; done: Promise<void> }>()
-  private periodic = new Map<string, () => Promise<unknown>>()
+  private periodic = new Map<string, { task: () => Promise<unknown>; everyMs: number; last: number }>()
   private lastActive = ''
   constructor(private o: ScheduleRuntimeOptions) {}
 
@@ -99,7 +99,7 @@ export class ScheduleRuntime {
     for (let i = 0; i < 20 && (this.ticking || this.inFlight.size); i++) { await this.ticking; await Promise.allSettled([...this.inFlight.values()].map(entry => entry.done)) }
   }
   /** Other areas hook periodic maintenance (expiry of derived plans) into the same tick. */
-  addPeriodic(name: string, task: () => Promise<unknown>) { this.periodic.set(name, task) }
+  addPeriodic(name: string, task: () => Promise<unknown>, everyMs = 0) { this.periodic.set(name, { task, everyMs, last: 0 }) }
   kick = () => { if (!this.stopped && !this.ticking) this.ticking = this.tick().catch(() => undefined).finally(() => { this.ticking = undefined }) }
   activeRuns() { return this.store.activeRuns() }
   /** Aborts the in-flight run of a schedule; the run ends as cancelled. */
@@ -121,7 +121,11 @@ export class ScheduleRuntime {
     const now = this.now()
     for (const schedule of await this.store.expiredSchedules(isoAt(now))) { await this.store.touchSchedule(schedule.id, { state: 'expired', next_run_at: null }); this.events.emit('schedule.changed', { schedule_id: schedule.id, type: 'schedule.cancelled' }) }
     for (const schedule of await this.store.dueSchedules(isoAt(now))) await this.fire(schedule, now)
-    for (const [name, task] of this.periodic) await task().catch(() => { void name })
+    for (const entry of this.periodic.values()) {
+      if (now - entry.last < entry.everyMs) continue
+      entry.last = now
+      await entry.task().catch(() => undefined)
+    }
     await this.wakeDeferred(now)
     for (const run of await this.store.runnable(isoAt(now))) this.launch(run)
     for (const run of await this.store.runningRuns()) if (!this.inFlight.has(run.id) && run.artifact_id) this.launch(run, true)
@@ -454,6 +458,11 @@ export class ScheduleRuntime {
       // A process that may still be alive keeps its run from being replaced automatically.
       if (blocked.has(run.id)) await this.store.setRun(run.id, run.generation, { state: 'failed', phase: 'done', error_code: 'hub_restart', finished_at: isoAt(this.now()) })
       else await this.store.setRun(run.id, run.generation, { state: 'interrupted' })
+    }
+    // Fleet members have no persisted process identity yet, so nothing can be terminated here; the incident is the evidence that they ended with the restart.
+    for (const member of await this.store.fleetMembersInFlight()) {
+      await this.store.addIncident({ subject_kind: 'fleet_member', subject_id: member.id, generation: member.generation, team_id: member.team_id, member_id: member.id, session_id: member.session_id,
+        cause: 'hub_restart', action: 'none', boot_id: this.bootId, detail: { reason: 'no_persisted_process_identity', last_state: member.state } })
     }
     await this.publishActive()
   }

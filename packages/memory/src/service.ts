@@ -26,6 +26,24 @@ import { EngineSynthesizer } from './schedule-synthesizer.js'
 import type { AttentionReaders, ScheduleAutomation } from './schedule-contract.js'
 import './schedule-templates.js'
 
+const REPLY_TICK_MS = 60_000
+/** Counts and error names only; a cycle without activity leaves no event. */
+export function summarizeReplyTick(result: unknown): Record<string, unknown> | null {
+  if (!result || typeof result !== 'object') return null
+  const summary: Record<string, unknown> = {}, errors: string[] = []
+  for (const [key, value] of Object.entries(result as Record<string, unknown>)) {
+    if (typeof value === 'number' && value > 0) summary[key] = value
+    else if (value && typeof value === 'object') {
+      const counts = Object.fromEntries(Object.entries(value).filter(([, count]) => typeof count === 'number' && count > 0))
+      const error = (value as { error?: unknown }).error
+      if (typeof error === 'string') errors.push(`${key}:${error.slice(0, 60)}`)
+      if (Object.keys(counts).length) summary[key] = counts
+    }
+  }
+  if (errors.length) summary.errors = errors
+  return Object.keys(summary).length ? summary : null
+}
+
 export const aiConfigSchema = z.object({ extraction: z.enum(['disabled','deepseek','ollama','opencode', ...extractionClis]), extraction_model: z.string().max(200),
   extraction_reasoning_effort: reasoningEffortSchema,
   embeddings_enabled: z.boolean(), embedding_model: z.string().min(1).max(200), ollama_url: z.url(), remote_processing_enabled: z.boolean(),
@@ -102,6 +120,12 @@ export class MemoryService {
     const admin = new ScheduleAdmin({ store: schedules, db, automationsEnabled: () => automation.enabled(), wake: () => runtime.kick(), stopRun: id => runtime.stopRun(id),
       deliveryAvailability: async () => automation.effects ? await automation.effects.deliveries.available().catch(() => ({ gmail_self: unavailable, slack_self: unavailable })) : { gmail_self: unavailable, slack_self: unavailable } })
     operations.schedules = admin
+    // Reading channel replies and expiring requests ride the scheduler clock; the effects are injected later by the core, so they are read at each call.
+    runtime.addPeriodic('reply_tick', async () => {
+      const result = await automation.effects?.replyTick?.()
+      const summary = summarizeReplyTick(result)
+      if (summary) await schedules.addEvent({ type: 'replies.processed', actor_kind: 'system', payload: summary })
+    }, REPLY_TICK_MS)
     return { store: schedules, admin, runtime, attention }
   }
   /** Applies an automations switch change now instead of at the next tick. */
