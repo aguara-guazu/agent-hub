@@ -238,8 +238,10 @@ export function listZip(archive: Buffer, limits: { maxEntries: number; maxTotalB
     if (compressedSize === 0xffffffff || size === 0xffffffff || localOffset === 0xffffffff) throw new ZipReadError(422, "ZIP64 no está soportado")
     if (localOffset >= centralOffset) throw new ZipReadError(422, "el directorio central del ZIP está dañado")
     const key = name.replace(/\/$/, "")
-    if (seen.has(key)) throw new ZipReadError(422, `el ZIP repite la ruta ${name}`)
-    seen.add(key)
+    // Case-insensitive: on macOS and Windows `SKILL.md` and `skill.md` are the same file.
+    const folded = key.normalize("NFC").toLowerCase()
+    if (seen.has(folded)) throw new ZipReadError(422, `el ZIP repite la ruta ${name} (sin distinguir mayúsculas)`)
+    seen.add(folded)
     total += size
     if (total > limits.maxTotalBytes) throw new ZipReadError(413, `el contenido del ZIP supera ${Math.round(limits.maxTotalBytes / 1024 / 1024)} MB descomprimido`)
     entries.push({ name: key, method, crc, compressedSize, size, localOffset, directory: name.endsWith("/") })
