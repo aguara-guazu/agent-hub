@@ -110,7 +110,7 @@ export function JobPanel({ job, cancelling, retrying, onRetry, onCancel, onClose
           </div>
         )}
         {jobLocked(job) && <Chip tone="locked">{t("jobs.panel.locked")}</Chip>}
-        <Dl items={items} />
+        <Dl items={items.filter(item => item.value !== null && item.value !== undefined)} />
         {warnings.length > 0 && (
           <div className="field">
             <span className="label">{t("jobs.panel.warnings")}</span>

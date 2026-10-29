@@ -48,7 +48,7 @@ export function ProposalPanel({ kind, proposal, onClose }: { kind: "identity" | 
             { label: t("proposals.panel.emails"), value: `${p.from_email ?? noEmail} → ${p.into_email ?? noEmail}` },
             { label: t("proposals.panel.rule"), value: p.applied_rule === "medium_corroborated" ? t("proposals.panel.corroborated") : null },
           ] : []),
-        ]} />
+        ].filter(item => item.value !== null && item.value !== undefined)} />
         {p.reason && (
           <div className="field">
             <span className="label">{t("proposals.panel.reason")}</span>
