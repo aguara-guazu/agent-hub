@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from './api'
 import { useToast } from '../components/Toast'
+import { useT } from "../i18n"
 
 /**
  * Formas de las rutas humanas del scheduler (`/api/memory/schedules/*`) y de los ajustes de automatizaciones.
@@ -347,9 +348,10 @@ export function useJiraServer() {
 export function useSaveJiraServer() {
   const cache = useQueryClient()
   const toast = useToast()
+  const { t } = useT("settings")
   return useMutation({
     mutationFn: (serverId: string | null) => api.put<unknown>('/automations/jira-server', { server_id: serverId }),
     onSuccess: async () => { await cache.invalidateQueries({ queryKey: automationKeys.jiraServer }) },
-    onError: error => toast.error('No se pudo guardar', error.message),
+    onError: error => toast.error(t("integrations.jira.serverFailed"), error.message),
   })
 }
