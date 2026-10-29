@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest'
 import { summarizeReplyTick } from '../src/service.js'
+import type { ActionTickResult } from '../src/schedule-contract.js'
 
 it('resume solo conteos y nombres de error y calla los ciclos sin actividad', () => {
   expect(summarizeReplyTick(undefined)).toBeNull()
@@ -24,10 +25,14 @@ it('el barrido de recuperación de la flota corre después de que el reloj regis
   quiet.mockRestore()
 })
 
-it('el despachador deja evento solo con ejecuciones, resultados o errores', async () => {
+it('el despachador deja evento solo cuando intentó algo y nunca al saltearse, con el tipo del contrato', async () => {
   const { summarizeActionTick } = await import('../src/service.js')
-  expect(summarizeActionTick(undefined)).toBeNull()
-  expect(summarizeActionTick({ executed: 0, succeeded: 0, rejected: 0, uncertain: 0 })).toBeNull()
-  expect(summarizeActionTick({ executed: 3, succeeded: 2, uncertain: 1, ignored: 9 })).toEqual({ executed: 3, succeeded: 2, uncertain: 1 })
-  expect(summarizeActionTick({ executed: 0, errors: ['jira:TypeError', 7] })).toEqual({ errors: ['jira:TypeError'] })
+  const cycles: Array<[ActionTickResult | undefined, Record<string, unknown> | null]> = [
+    [undefined, null],
+    [{ attempted: 0, succeeded: 0, rejected: 0, uncertain: 0 }, null],
+    [{ skipped: 'in_flight' }, null],
+    [{ skipped: 'automations_off' }, null],
+    [{ attempted: 3, succeeded: 2, rejected: 0, uncertain: 1 }, { attempted: 3, succeeded: 2, rejected: 0, uncertain: 1 }],
+  ]
+  for (const [result, expected] of cycles) expect(summarizeActionTick(result)).toEqual(expected)
 })

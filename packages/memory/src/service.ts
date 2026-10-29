@@ -23,7 +23,7 @@ import { ScheduleStore } from './schedule-store.js'
 import { ScheduleAdmin } from './schedule-admin.js'
 import { ScheduleRuntime } from './schedule-runtime.js'
 import { EngineSynthesizer } from './schedule-synthesizer.js'
-import type { AttentionReaders, ScheduleAutomation } from './schedule-contract.js'
+import type { ActionTickResult, AttentionReaders, ScheduleAutomation } from './schedule-contract.js'
 import './schedule-templates.js'
 import './daily-templates.js'
 import { createFleetRecovery } from './fleet-recovery.js'
@@ -40,8 +40,11 @@ export async function startClockThenRecover(runtime: { start(): Promise<void> },
 }
 /** Counts and error names only; a cycle without activity leaves no event. */
 export function summarizeReplyTick(result: unknown): Record<string, unknown> | null { return summarizeTick(result, ['expired', 'consumed', 'rejected']) }
-/** Same rule for the action dispatcher: executions and their outcomes count, an empty cycle does not. */
-export function summarizeActionTick(result: unknown): Record<string, unknown> | null { return summarizeTick(result, ['executed', 'succeeded', 'rejected', 'uncertain']) }
+/** The action dispatcher leaves an event only when it attempted something; a skipped or empty cycle leaves none. */
+export function summarizeActionTick(result: ActionTickResult | undefined): Record<string, unknown> | null {
+  if (!result || 'skipped' in result || !(result.attempted > 0)) return null
+  return { attempted: result.attempted, succeeded: result.succeeded, rejected: result.rejected, uncertain: result.uncertain }
+}
 function summarizeTick(result: unknown, outcomes: string[]): Record<string, unknown> | null {
   if (!result || typeof result !== 'object') return null
   const summary: Record<string, unknown> = {}, errors: string[] = []
