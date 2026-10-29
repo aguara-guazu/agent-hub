@@ -134,7 +134,7 @@ describe('memoria HTTP y gateway MCP', () => {
     expect(skill.body).toContain('memory_search'); expect(skill.body).toContain('memory_review_duplicate'); expect(skill.body).not.toMatch(/^---/)
     const machine = app.store.insertMachine({ user_id: owner.id, hostname: 'skill-test', os: 'test', daemon_version: 'test' })
     const agent = app.store.insertAgent({ machine_id: machine.id, cli_kind: 'kiro', cli_version: 'test', config_path: '' })
-    expect(computeSnapshot(app.store, agent.id).skills.map(s => s.slug).sort()).toEqual(['google-setup', 'hub-collaboration', 'local-collaboration', 'memory'])
+    expect(computeSnapshot(app.store, agent.id).skills.map(s => s.slug).sort()).toEqual(['google-setup', 'hub-collaboration', 'local-collaboration', 'memory', 'responsabilidad'])
     // A newer app ships a different body: it replaces the untouched copy and bumps the version.
     app.store.updateSkill(skill.id, { body: 'cuerpo de una versión anterior', content_hash: 'hash-anterior' })
     app.store.setSetting('memory_skill_hash', 'hash-anterior')
