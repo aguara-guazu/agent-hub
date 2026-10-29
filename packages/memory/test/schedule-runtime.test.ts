@@ -88,6 +88,17 @@ it('una ejecución única completa el schedule solo cuando su ocurrencia termina
   expect((await store.schedule(s.id))).toMatchObject({ state: 'completed', next_run_at: null })
 })
 
+it('run_now sobre una ejecución única futura es una ejecución extra y deja el schedule activo con su hora', async () => {
+  const s = await schedule({ recurrence: { type: 'once', at: '2026-10-30T08:00:00.000Z' }, next_run_at: '2026-10-30T08:00:00.000Z' })
+  await store.insertRun({ schedule_id: s.id, scheduled_for: now.toISOString(), schedule_revision: s.revision, definition: snapshotOf(s), trigger: 'run_now' })
+  await run()
+  expect(await runsOf(s.id)).toMatchObject([{ state: 'succeeded', trigger: 'run_now' }])
+  expect(await store.schedule(s.id)).toMatchObject({ state: 'active', next_run_at: '2026-10-30T08:00:00.000Z' })
+  now = at('2026-10-30T08:00:30.000Z'); await runtime.tick(); await runtime.idle()
+  expect((await runsOf(s.id)).map(r => r.trigger).sort()).toEqual(['clock', 'run_now'])
+  expect(await store.schedule(s.id)).toMatchObject({ state: 'completed', next_run_at: null })
+})
+
 it('la síntesis recibe solo las secciones visibles para el modelo y su resultado llega al artefacto', async () => {
   const template: ScheduleTemplateDefinition<unknown> = { id: 'project_status', version: 1, kind: 'synthesis', scope: 'project', params: { safeParse: (v: unknown) => ({ success: true, data: v }) } as never, identity: () => ({}),
     min_interval_minutes: 60, max_live_per_project: 1, max_runtime_ms: 60_000, allowed_targets: ['hub_inbox'], misfire: 'run_once', grace_minutes: 60, grace_policy: 'minutes', admission_note: '',

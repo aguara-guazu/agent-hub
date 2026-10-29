@@ -474,8 +474,8 @@ export class ScheduleRuntime {
     if (!ok) return
     await this.store.addEvent({ type: 'run.finished', schedule_id: run.schedule_id, run_id: run.id, actor_kind: 'system', payload: { state } })
     const schedule = await this.store.schedule(run.schedule_id)
-    // A one-shot closes only when its occurrence reaches a terminal state, so a deferred run keeps it active.
-    if (schedule?.recurrence.type === 'once' && schedule.state === 'active' && TERMINAL_RUN_STATES.includes(state)) await this.store.touchSchedule(schedule.id, { state: state === 'skipped' ? 'expired' : 'completed', next_run_at: null })
+    // A one-shot closes only when its scheduled occurrence reaches a terminal state: a deferred run keeps it active and a run_now is an extra execution that leaves it untouched.
+    if (schedule?.recurrence.type === 'once' && schedule.state === 'active' && run.trigger !== 'run_now' && TERMINAL_RUN_STATES.includes(state)) await this.store.touchSchedule(schedule.id, { state: state === 'skipped' ? 'expired' : 'completed', next_run_at: null })
   }
 
   private async publishActive() {
