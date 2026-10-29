@@ -170,17 +170,22 @@ export function SchedulesPage() {
   const actions = useScheduleActions()
   const toast = useToast()
   const [params, setParams] = useSearchParams()
+  const [highlighted, setHighlighted] = useState<string | null>(null)
   const focus = params.get('focus')
+  const [runningNow, setRunningNow] = useState<ScheduleView | null>(null)
   const [editing, setEditing] = useState<ScheduleView | null>(null)
   const [channelsFor, setChannelsFor] = useState<ScheduleView | null>(null)
   const [cancelling, setCancelling] = useState<ScheduleView | null>(null)
   const [noRecreate, setNoRecreate] = useState(false)
   const rows = (schedules.data?.items ?? []).filter(schedule => schedule.state === 'active' || schedule.state === 'paused')
+  const loaded = schedules.data !== undefined
+  // El parámetro se consume una vez que la tabla ya tiene filas; limpiarlo al desmontar devolvería la navegación a /schedules.
   useEffect(() => {
-    if (!focus) return
+    if (!focus || !loaded) return
     document.getElementById(`schedule-${focus}`)?.scrollIntoView?.({ block: 'center' })
-    return () => setParams(current => { const next = new URLSearchParams(current); next.delete('focus'); return next }, { replace: true })
-  }, [focus, setParams])
+    setHighlighted(focus)
+    setParams(current => { const next = new URLSearchParams(current); next.delete('focus'); return next }, { replace: true })
+  }, [focus, loaded, setParams])
   const columns: Column<ScheduleView>[] = [
     { key: 'name', header: 'Automatización', render: schedule => <ScheduleRow schedule={schedule} /> },
     { key: 'kind', header: 'Tipo', render: schedule => <span title={KIND_HINTS[schedule.kind]}>{KIND_LABELS[schedule.kind]}</span> },
@@ -193,7 +198,7 @@ export function SchedulesPage() {
       <button className="btn btn-sm" onClick={() => setEditing(schedule)}>Cambiar horario</button>
       <button className="btn btn-sm" onClick={() => setChannelsFor(schedule)}>Canales</button>
       {schedule.state === 'paused' ? <button className="btn btn-sm" onClick={() => actions.resume.mutate({ id: schedule.id, revision: schedule.revision })}>Reanudar</button> : <button className="btn btn-sm" onClick={() => actions.pause.mutate({ id: schedule.id, revision: schedule.revision })}>Pausar</button>}
-      <button className="btn btn-sm" disabled={schedule.state !== 'active'} onClick={() => actions.runNow.mutate({ id: schedule.id }, { onSuccess: () => toast.success('Ejecución encolada', 'La entrega dirá «ejecutado manualmente».') })}>Ejecutar ahora</button>
+      <button className="btn btn-sm" disabled={schedule.state !== 'active'} onClick={() => setRunningNow(schedule)}>Ejecutar ahora</button>
       <button className="btn btn-sm btn-danger" onClick={() => { setNoRecreate(false); setCancelling(schedule) }}>Cancelar</button>
     </div> },
   ]
@@ -201,12 +206,16 @@ export function SchedulesPage() {
     <AutomationsHeader />
     <ScheduleNotices />
     <DataTable columns={columns} rows={rows} rowKey={schedule => schedule.id} loading={schedules.isLoading} error={schedules.error} onRetry={() => void schedules.refetch()} caption="Automatizaciones programadas"
-      rowClassName={schedule => schedule.id === focus ? 'automations-focus' : undefined}
+      rowId={schedule => `schedule-${schedule.id}`} rowClassName={schedule => schedule.id === highlighted ? 'automations-focus' : undefined}
       empty={<>Todavía no hay automatizaciones. Activa el brief y el cierre desde un proyecto, o pídeselo a tu agente. <Link to="/projects">Ir a proyectos</Link></>} />
     {(constraints.data?.items.length ?? 0) > 0 && <section className="automations-constraints"><h2>Restricciones</h2><p className="automations-muted">Cancelaste estas automatizaciones: el agente no puede volver a crearlas.</p>
       <ul>{constraints.data!.items.map(item => <li key={item.id}><span>{TEMPLATE_LABELS[item.template] ?? item.template}{item.scope === 'template_project' ? ' · todo el tipo en el proyecto' : ''}</span><small>{formatDateTime(item.created_at)}{item.reason ? ` · ${item.reason}` : ''}</small><button className="btn btn-sm" disabled={actions.lift.isPending} onClick={() => actions.lift.mutate({ constraintId: item.id })}>Levantar restricción</button></li>)}</ul></section>}
     {editing && <RescheduleModal key={editing.id} schedule={editing} onClose={() => setEditing(null)} />}
     {channelsFor && <ChannelsModal key={channelsFor.id} schedule={channelsFor} onClose={() => setChannelsFor(null)} />}
+    <ConfirmDialog open={runningNow !== null} title="Ejecutar ahora" confirmLabel="Ejecutar" cancelLabel="Volver" busy={actions.runNow.isPending}
+      message={<><p>Se genera la entrega de «{runningNow?.title}» ahora, fuera de su horario.</p>{runningNow?.delivery.some(target => target === 'gmail_self' || target === 'slack_self') && <p>Si tiene Gmail o Slack como canal, el mensaje también se envía a tu propia cuenta.</p>}</>}
+      onClose={() => setRunningNow(null)}
+      onConfirm={() => runningNow && actions.runNow.mutate({ id: runningNow.id }, { onSuccess: () => { setRunningNow(null); toast.success('Ejecución encolada', 'La entrega dirá «ejecutado manualmente».') } })} />
     <ConfirmDialog open={cancelling !== null} title="Cancelar automatización" destructive confirmLabel="Cancelar automatización" cancelLabel="Volver" busy={actions.cancel.isPending}
       message={<><p>El agente no podrá volver a crear esta automatización. Podrás levantar la restricción desde esta pantalla.</p><label className="automations-check"><input type="checkbox" checked={noRecreate} onChange={event => setNoRecreate(event.target.checked)} /> No volver a programar este tipo de automatización en el proyecto</label></>}
       onClose={() => setCancelling(null)}
@@ -261,6 +270,9 @@ export function DeliveriesPage() {
 }
 
 const PROPOSAL_ITEM_STATES: readonly ItemState[] = ['proposed']
+/** Ítems cuyo efecto no se deshace con una corrección de horas: se confirman viendo el efecto exacto. */
+const SENSITIVE_KINDS: readonly PublicItem['kind'][] = ['git_push', 'jira_transition', 'jira_comment']
+const KIND_LABELS_ITEM: Record<PublicItem['kind'], string> = { jira_worklog: 'Horas en Jira', jira_transition: 'Cambio de estado en Jira', jira_comment: 'Comentario en Jira', git_push: 'Push', info: 'Informativo' }
 
 function ItemsBlock({ runId, items, hasDecision }: { runId: string; items: PublicItem[]; hasDecision: boolean }) {
   const decision = useDecision(runId, hasDecision)
@@ -270,10 +282,14 @@ function ItemsBlock({ runId, items, hasDecision }: { runId: string; items: Publi
   const estimates = new Map(items.map(item => [item.ordinal, item.estimate]))
   const [selected, setSelected] = useState<Set<number> | null>(null)
   const [hours, setHours] = useState<Record<number, string>>({})
+  const [confirming, setConfirming] = useState<'approve' | 'reject' | null>(null)
   const proposed = merged.filter(item => PROPOSAL_ITEM_STATES.includes(item.state))
   const chosen = selected ?? new Set(proposed.map(item => item.ordinal))
   const toggle = (ordinal: number): void => setSelected(() => { const next = new Set(chosen); if (next.has(ordinal)) next.delete(ordinal); else next.add(ordinal); return next })
   if (merged.length === 0) return null
+  const approve = (done?: () => void): void => actions.approve.mutate({ ordinals: [...chosen].sort((a, b) => a - b), digest: decision.data!.digest }, { onSuccess: () => { setSelected(null); done?.() } })
+  const chosenItems = merged.filter(item => chosen.has(item.ordinal) && item.state === 'proposed')
+  const sensitive = chosenItems.some(item => SENSITIVE_KINDS.includes(item.kind))
   const open = decision.data?.state === 'open'
   const expired = decision.data?.state === 'expired'
   return <section className="automations-items"><h2>Acciones propuestas</h2>
@@ -284,14 +300,21 @@ function ItemsBlock({ runId, items, hasDecision }: { runId: string; items: Publi
         <Badge tone={item.state === 'succeeded' ? 'on' : item.state === 'uncertain' || item.state === 'unverifiable' ? 'stale' : item.state === 'rejected' || item.state === 'expired' ? 'off' : 'neutral'}>{ITEM_STATE_LABELS[item.state]}</Badge>
         {estimate && <small className="automations-muted">Estimación del agente, no medición: {(estimate.seconds / 3600).toLocaleString('es', { maximumFractionDigits: 1 })} h · confianza {estimate.confidence === 'high' ? 'alta' : estimate.confidence === 'medium' ? 'media' : 'baja'} · Base: {estimate.basis}{estimate.assumptions?.length ? ` · Supuestos: ${estimate.assumptions.join('; ')}` : ''}{estimate.would_change ? ` · Cambiaría si: ${estimate.would_change}` : ''}</small>}
         {mutable && item.kind === 'jira_worklog' && <span className="automations-revise"><input type="number" min={0.5} step={0.5} aria-label={`Horas del ítem ${item.ordinal}`} value={hours[item.ordinal] ?? ''} placeholder="h" onChange={event => setHours(current => ({ ...current, [item.ordinal]: event.target.value }))} />
-          <button className="btn btn-sm" disabled={actions.revise.isPending || !(Number(hours[item.ordinal]) >= 0.5)} onClick={() => actions.revise.mutate({ ordinal: item.ordinal, seconds: Math.round(Number(hours[item.ordinal]) * 3600) }, { onSuccess: () => { setSelected(null); setHours({}); toast.info('Corrección registrada', 'Aprueba la propuesta revisada.') } })}>Corregir</button></span>}
+          <button className="btn btn-sm" disabled={actions.revise.isPending || !(Number(hours[item.ordinal]) >= 0.5)} onClick={() => actions.revise.mutate({ ordinal: item.ordinal, seconds: Math.round(Number(hours[item.ordinal]) * 3600) }, { onSuccess: () => { setSelected(null); setHours({}); toast.info('Corrección registrada', 'Aprueba desde la app: el código enviado por el canal deja de valer.') } })}>Corregir</button></span>}
       </li> })}</ul>
+    {open && decision.data && merged.some(item => item.kind === 'jira_worklog') && <small className="automations-muted">Si corriges las horas, se crea una solicitud nueva: tras corregir, aprueba desde la app; el código enviado por el canal deja de valer.</small>}
     {open && decision.data && <div className="automations-actions">
-      <button className="btn btn-primary" disabled={actions.approve.isPending || chosen.size === 0 || decision.data.authority !== 'verified'} onClick={() => actions.approve.mutate({ ordinals: [...chosen].sort((a, b) => a - b), digest: decision.data!.digest }, { onSuccess: () => setSelected(null) })}>Aprobar seleccionados</button>
-      <button className="btn" disabled={actions.reject.isPending || proposed.length === 0} onClick={() => actions.reject.mutate({ ordinals: proposed.map(item => item.ordinal) })}>Rechazar todo</button>
-      {decision.data.reply_line && <span className="automations-reply"><code>{decision.data.reply_line}</code><button className="btn btn-sm" onClick={() => void navigator.clipboard?.writeText(decision.data!.reply_line!)}>Copiar respuesta</button></span>}
+      <button className="btn btn-primary" disabled={actions.approve.isPending || chosen.size === 0 || decision.data.authority !== 'verified'} onClick={() => sensitive ? setConfirming('approve') : approve()}>Aprobar seleccionados</button>
+      <button className="btn" disabled={actions.reject.isPending || proposed.length === 0} onClick={() => setConfirming('reject')}>Rechazar todo</button>
+      <small className="automations-muted">También puedes aprobar respondiendo con el código que recibiste por el canal de entrega.</small>
     </div>}
     {expired && <div className="automations-actions"><button className="btn" disabled={actions.repropose.isPending} onClick={() => actions.repropose.mutate()}>Volver a proponer</button></div>}
+    <ConfirmDialog open={confirming === 'approve'} title="Aprobar estas acciones" confirmLabel="Aprobar" cancelLabel="Volver" busy={actions.approve.isPending} onClose={() => setConfirming(null)}
+      onConfirm={() => approve(() => setConfirming(null))}
+      message={<><p>Se ejecutarán exactamente estas acciones sobre tus sistemas:</p><ul>{chosenItems.map(item => <li key={item.ordinal}><strong>{KIND_LABELS_ITEM[item.kind]}:</strong> {item.summary}</li>)}</ul></>} />
+    <ConfirmDialog open={confirming === 'reject'} title="Rechazar todo" destructive confirmLabel="Rechazar todo" cancelLabel="Volver" busy={actions.reject.isPending} onClose={() => setConfirming(null)}
+      onConfirm={() => actions.reject.mutate({ ordinals: proposed.map(item => item.ordinal) }, { onSuccess: () => setConfirming(null) })}
+      message={<p>Ninguna de las {proposed.length} acciones propuestas se ejecutará. Para repetirlas tendrás que volver a proponerlas.</p>} />
   </section>
 }
 

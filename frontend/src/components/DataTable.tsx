@@ -36,6 +36,8 @@ export interface DataTableProps<T> {
   onRetry?: () => void
   empty?: ReactNode
   rowClassName?: (row: T) => string | undefined
+  /** Atributo `id` de la fila, para enlazar o desplazarse hasta ella. */
+  rowId?: (row: T) => string | undefined
   /** Fila extra debajo de la fila normal, para el detalle expandido. */
   renderDetail?: (row: T) => ReactNode
   /** Descripcion para lectores de pantalla. */
@@ -52,6 +54,7 @@ export function DataTable<T>({
   onRetry,
   empty = 'No hay nada para mostrar.',
   rowClassName,
+  rowId,
   renderDetail,
   caption,
 }: DataTableProps<T>) {
@@ -80,7 +83,7 @@ export function DataTable<T>({
             const detail = renderDetail?.(row)
             return (
               <Fragment key={key}>
-                <tr className={rowClassName?.(row)}>
+                <tr id={rowId?.(row)} className={rowClassName?.(row)}>
                   {columns.map((column) => (
                     <td key={column.key} className={column.className}>
                       {column.render(row)}

@@ -28,8 +28,6 @@
 .automations-revise { display: inline-flex; align-items: center; gap: 6px; }
 .automations-revise input { width: 64px; }
 .automations-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.automations-reply { display: inline-flex; align-items: center; gap: 8px; }
-.automations-reply code { padding: 4px 8px; border-radius: 6px; background: var(--surface-3); }
 
 /* Markdown de un artefacto: tipografía sobria, sin heredar estilos de contenido externo. */
 .md { display: flex; flex-direction: column; gap: 10px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }

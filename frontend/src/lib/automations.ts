@@ -223,7 +223,7 @@ export function useRun(runId: string) {
   return useQuery({ queryKey: automationKeys.run(runId), queryFn: async () => normalizeRunDetail(await api.get<RawRunDetail>(`/memory/schedules/runs/${encodeURIComponent(runId)}`)), refetchInterval: 5000 })
 }
 
-/** Estado de la solicitud de decisión de una entrega (`GET …/runs/:runId/decision`). */
+/** Estado de la solicitud de decisión de una entrega (`GET …/runs/:runId/decision`). Nunca trae el código de aprobación: ese viaja solo por el canal. */
 export interface DecisionView {
   request_id: string
   revision: number
@@ -232,8 +232,6 @@ export interface DecisionView {
   /** Digest exacto que se envía al aprobar. */
   digest: string
   authority: 'verified' | 'authority_unavailable'
-  /** Línea lista para copiar y responder por el canal; sólo con `state='open'` y autoridad verificada. */
-  reply_line: string | null
   items: { ordinal: number; kind: ItemKind; summary: string; state: ItemState; effect_digest: string }[]
 }
 

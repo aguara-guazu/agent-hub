@@ -3,7 +3,7 @@ import { Route, Routes } from 'react-router-dom'
 import { DeliveriesPage, DeliveryDetailPage, SchedulesPage, describeNextRun, describeRecurrence, generatedNote } from './Automations'
 import type { RawRunDetail, RawRunListItem, ScheduleView } from '../lib/automations'
 import type { User } from '../lib/types'
-import { buttonByText, click, installFetch, jsonResponse, need, q, qa, renderWithProviders, setupDom, setValue, teardownDom, textOf } from '../test-utils'
+import { buttonByText, click, flush, installFetch, jsonResponse, need, q, qa, renderWithProviders, setupDom, setValue, teardownDom, textOf } from '../test-utils'
 import type { ApiCall } from '../test-utils'
 
 const user: User = { id: 'u1', email: 'a@b.c', full_name: 'Ana', org_role: 'member', is_active: true, squads: [], organization: 'Local' } as User
@@ -98,6 +98,7 @@ describe('Programaciones', () => {
     const api = mockSchedules([schedule({ delivery: ['hub_inbox', 'app_window'] })])
     const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
     await click(buttonByText(container, 'Canales'))
+    await flush(3)
     const boxes = qa<HTMLInputElement>(document.body, '.automations-form input[type="checkbox"]')
     expect(boxes[0]!.disabled).toBe(true)
     expect(boxes[2]!.disabled).toBe(true)
@@ -120,7 +121,17 @@ describe('Programaciones', () => {
     await click(buttonByText(container, 'Pausar'))
     expect(api.lastCall('/memory/schedules/s1/pause', 'POST')?.body).toEqual({ expected_revision: 3 })
     await click(buttonByText(container, 'Ejecutar ahora'))
+    expect(api.callsTo('/memory/schedules/s1/run_now', 'POST')).toHaveLength(0)
+    expect(textOf(document.body)).toContain('fuera de su horario')
+    expect(textOf(document.body)).toContain('también se envía a tu propia cuenta')
+    await click(buttonByText(need(document.body, '[role="dialog"]'), 'Ejecutar'))
     expect(api.callsTo('/memory/schedules/s1/run_now', 'POST')).toHaveLength(1)
+  })
+
+  it('cada fila lleva un id para poder desplazarse hasta ella', async () => {
+    mockSchedules([schedule()])
+    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
+    expect(q(container, 'tr#schedule-s1')).not.toBeNull()
   })
 
   it('cambiar horario guarda una recurrencia diaria con los días elegidos', async () => {
@@ -254,10 +265,13 @@ describe('Detalle de una entrega', () => {
     expect(api.lastCall('/memory/schedules/runs/r1/approve', 'POST')?.body).toEqual({ ordinals: [1], digest: 'd'.repeat(64) })
   })
 
-  it('rechazar todo envía todos los ítems propuestos', async () => {
+  it('rechazar todo pide confirmación y envía todos los ítems propuestos', async () => {
     const api = mockDetail()
     const { container } = await mount()
     await click(buttonByText(container, 'Rechazar todo'))
+    expect(api.callsTo('/memory/schedules/runs/r1/reject', 'POST')).toHaveLength(0)
+    expect(textOf(document.body)).toContain('Ninguna de las 2 acciones propuestas se ejecutará')
+    await click(buttonByText(need(document.body, '[role="dialog"]'), 'Rechazar todo'))
     expect(api.lastCall('/memory/schedules/runs/r1/reject', 'POST')?.body).toEqual({ ordinals: [1, 2] })
   })
 
@@ -269,16 +283,56 @@ describe('Detalle de una entrega', () => {
     expect(api.lastCall('/memory/schedules/runs/r1/revise', 'POST')?.body).toEqual({ ordinal: 1, seconds: 5400 })
   })
 
-  it('muestra la línea de respuesta sólo con autoridad verificada y una solicitud abierta', async () => {
+  it('nunca muestra ni copia un código de aprobación, aunque la respuesta traiga una línea', async () => {
+    const api = installFetch({ user, handle: call => {
+      if (call.path === '/memory/schedules/runs/r1') return jsonResponse(detail)
+      if (call.path === '/memory/schedules/runs/r1/decision') return jsonResponse({ ...decision, reply_line: 'aprobar K7P4-M2XN 1,2' })
+      if (call.path === '/memory/schedules/runs/r1/read') return jsonResponse({})
+      return undefined
+    } })
+    const { container } = await mount()
+    expect(textOf(container)).not.toContain('K7P4-M2XN')
+    expect(qa(container, 'button').some(button => button.textContent?.includes('Copiar respuesta'))).toBe(false)
+    expect(api.calls.length).toBeGreaterThan(0)
+  })
+
+  it('con autoridad no verificable no se puede aprobar y se explica', async () => {
+    mockDetail({ decision: { authority: 'authority_unavailable' } })
+    const { container } = await mount()
+    expect(textOf(container)).toContain('No se puede verificar la autoridad')
+    expect(buttonByText(container, 'Aprobar seleccionados').disabled).toBe(true)
+  })
+
+  it('aprobar un push muestra el efecto exacto y exige confirmar antes de enviar el digest', async () => {
+    const withPush = { ...decision, items: [{ ordinal: 1, kind: 'git_push', summary: 'feat/x a1b2c3d → origin', state: 'proposed', effect_digest: 'e1' }, { ordinal: 2, kind: 'jira_worklog', summary: 'ABC-1 worklog 2 h', state: 'proposed', effect_digest: 'e2' }] }
+    const api = installFetch({ user, handle: call => {
+      if (call.path === '/memory/schedules/runs/r1') return jsonResponse(detail)
+      if (call.path === '/memory/schedules/runs/r1/decision') return jsonResponse(withPush)
+      if (call.path === '/memory/schedules/runs/r1/read') return jsonResponse({})
+      if (call.path.startsWith('/memory/schedules/runs/r1/')) return jsonResponse({ request_id: 'q1', revision: 1, state: 'open', items: [] })
+      return undefined
+    } })
+    const { container } = await mount()
+    await click(buttonByText(container, 'Aprobar seleccionados'))
+    expect(api.callsTo('/memory/schedules/runs/r1/approve', 'POST')).toHaveLength(0)
+    const dialog = need(document.body, '[role="dialog"]')
+    expect(textOf(dialog)).toContain('Push: feat/x a1b2c3d → origin')
+    expect(textOf(dialog)).toContain('Horas en Jira: ABC-1 worklog 2 h')
+    await click(buttonByText(dialog, 'Aprobar'))
+    expect(api.lastCall('/memory/schedules/runs/r1/approve', 'POST')?.body).toEqual({ ordinals: [1, 2], digest: 'd'.repeat(64) })
+  })
+
+  it('avisa que tras corregir horas se aprueba desde la app y el código del canal deja de valer', async () => {
     mockDetail()
-    const verified = await mount()
-    expect(textOf(verified.container)).toContain('aprobar K7P4-M2XN 1,2')
-    verified.unmount()
-    mockDetail({ decision: { authority: 'authority_unavailable', reply_line: null } })
-    const unavailable = await mount()
-    expect(textOf(unavailable.container)).not.toContain('K7P4-M2XN')
-    expect(textOf(unavailable.container)).toContain('No se puede verificar la autoridad')
-    expect(buttonByText(unavailable.container, 'Aprobar seleccionados').disabled).toBe(true)
+    const { container } = await mount()
+    expect(textOf(container)).toContain('tras corregir, aprueba desde la app; el código enviado por el canal deja de valer')
+  })
+
+  it('aprobar solo horas no pide confirmación adicional', async () => {
+    const api = mockDetail({ decision: { items: decision.items.filter(item => item.kind === 'jira_worklog') } })
+    const { container } = await mount()
+    await click(buttonByText(container, 'Aprobar seleccionados'))
+    expect(api.lastCall('/memory/schedules/runs/r1/approve', 'POST')?.body).toEqual({ ordinals: [1], digest: 'd'.repeat(64) })
   })
 
   it('una solicitud vencida ofrece volver a proponer y no permite aprobar', async () => {
