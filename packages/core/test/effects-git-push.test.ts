@@ -237,6 +237,27 @@ describe('preparePush / executePush', () => {
     expect(await reasonOf(preparePush(item(), policy))).toBe('unsafe_repo_config')
   })
 
+  it.each([
+    ['http.proxy', 'http://127.0.0.1:9'],
+    ['http.sslVerify', 'false'],
+    ['http.sslCAInfo', '/tmp/ca.pem'],
+    ['http.extraHeader', 'X-Test: 1'],
+    ['http.cookieFile', '/tmp/cookies'],
+    ['http.https://github.com/.proxy', 'http://127.0.0.1:9'],
+  ])('refuses repository-scoped %s because it can reroute the push credentials, in prepare and in reconcile', async (name, value) => {
+    git(repo, 'config', name, value)
+    expect(await reasonOf(preparePush(item(), policy))).toBe('unsafe_repo_config')
+    expect(await reasonOf(reconcilePush(item(), policy))).toBe('unsafe_repo_config')
+    git(repo, 'config', '--unset', name)
+    expect(await reasonOf(preparePush(item(), policy))).toBe('none')
+  })
+
+  it('refuses an http key brought in through a repository include', async () => {
+    writeFileSync(join(root, 'extra.config'), '[http]\n\tproxy = http://127.0.0.1:9\n')
+    git(repo, 'config', 'include.path', join(root, 'extra.config'))
+    expect(await reasonOf(preparePush(item(), policy))).toBe('unsafe_repo_config')
+  })
+
   it('only allows local transports when the policy says so, and requires the approved URL', async () => {
     expect(await reasonOf(preparePush(item(), { ...policy, allow_local_remote: false }))).toBe('remote_not_allowed')
     expect(await reasonOf(preparePush(item({ canonical_remote_url: join(root, 'another.git') }), policy))).toBe('remote_mismatch')

@@ -29,6 +29,8 @@ const DEFAULT_TIMEOUT = 60_000
 const DEFAULT_PROTECTED = ['main', 'master']
 // Repo-scoped settings that name a program git would run during a push.
 const EXECUTABLE_CONFIG = '^(core\\.(sshcommand|gitproxy|askpass)|credential\\..*|include(if\\..*)?\\.path|remote\\..*\\.(receivepack|uploadpack|vcs|proxy))$'
+// Any repo-scoped http.* key (proxy, per-URL proxy, TLS verification, CA bundle, extra headers, cookies) can route the push credentials through a controlled endpoint.
+const HTTP_CONFIG = '^http\\..*'
 // A rewrite in any scope changes the destination after the approved URL was validated.
 const REWRITE_CONFIG = '^url\\..*\\.(insteadof|pushinsteadof)$'
 // Single-ref guard run by git itself with the OIDs it is about to announce, so the remote tip is compared at push time and not at an earlier read.
@@ -140,6 +142,20 @@ const snapshotPolicy = (policy: PushPolicy): PushPolicy => Object.freeze({
   ...(policy.protected_branches ? { protected_branches: Object.freeze([...policy.protected_branches]) as string[] } : {})
 })
 
+/** Refuses a repository whose local, worktree or command-scoped configuration could run a program, rewrite the destination or reroute the credentials during a push. */
+async function assertSafeConfig(repo: string, git: GitRunner, timeout: number) {
+  const query = async (pattern: string) => {
+    const result = await git(['config', '--show-scope', '--get-regexp', pattern], { cwd: repo, env: gitEnv(false), timeout })
+    // Exit 1 is "no match"; anything else means the configuration could not be inspected.
+    if (!result.completed || (result.code !== 0 && result.code !== 1)) throw new PushRejected('unsafe_repo_config', 'No se pudo inspeccionar la configuración de git.')
+    return result.code === 0 ? result.stdout.split('\n').filter(Boolean) : []
+  }
+  const repoScoped = (line: string) => /^(local|worktree|command)\t/.test(line)
+  if ((await query(EXECUTABLE_CONFIG)).some(repoScoped)) throw new PushRejected('unsafe_repo_config', 'La configuración del repositorio define programas que git ejecutaría durante el push.')
+  if ((await query(HTTP_CONFIG)).some(repoScoped)) throw new PushRejected('unsafe_repo_config', 'La configuración http del repositorio podría desviar las credenciales del push.')
+  if ((await query(REWRITE_CONFIG)).length) throw new PushRejected('unsafe_repo_config', 'La configuración de git reescribe URLs y podría redirigir el destino aprobado.')
+}
+
 /** Read-only guards. Every rejection here happens before any object leaves the machine. */
 export async function preparePush(request: PushRequest, rawPolicy: PushPolicy, git: GitRunner = defaultGitRunner): Promise<PreparedPush> {
   const item = snapshotRequest(request), policy = snapshotPolicy(rawPolicy)
@@ -150,14 +166,7 @@ export async function preparePush(request: PushRequest, rawPolicy: PushPolicy, g
   const top = await git(['rev-parse', '--show-toplevel'], { ...probe, cwd: repo })
   const root = top.code === 0 ? await realpath(top.stdout.trim()).catch(() => null) : null
   if (root !== repo || item.repo_path !== repo) throw new PushRejected('repo_not_canonical', 'repo_path debe ser la raíz canónica del repositorio.')
-  const query = async (pattern: string) => {
-    const result = await git(['config', '--show-scope', '--get-regexp', pattern], { cwd: repo, env: gitEnv(false), timeout })
-    // Exit 1 is "no match"; anything else means the configuration could not be inspected.
-    if (!result.completed || (result.code !== 0 && result.code !== 1)) throw new PushRejected('unsafe_repo_config', 'No se pudo inspeccionar la configuración de git.')
-    return result.code === 0 ? result.stdout.split('\n').filter(Boolean) : []
-  }
-  if ((await query(EXECUTABLE_CONFIG)).some(line => /^(local|worktree|command)\t/.test(line))) throw new PushRejected('unsafe_repo_config', 'La configuración del repositorio define programas que git ejecutaría durante el push.')
-  if ((await query(REWRITE_CONFIG)).length) throw new PushRejected('unsafe_repo_config', 'La configuración de git reescribe URLs y podría redirigir el destino aprobado.')
+  await assertSafeConfig(repo, git, timeout)
   const resolve = async (name: string) => {
     const result = await git(['rev-parse', '--verify', '--quiet', `${name}^{commit}`], { cwd: repo, env: gitEnv(false), timeout })
     return result.code === 0 ? result.stdout.trim() : null
@@ -223,6 +232,7 @@ export async function reconcilePush(request: PushRequest, rawPolicy: PushPolicy,
   const branch = validate(item, policy)
   const repo = await realpath(item.repo_path).catch(() => null)
   if (!repo || repo !== item.repo_path) throw new PushRejected('repo_not_canonical', 'repo_path debe ser la raíz canónica del repositorio.')
+  await assertSafeConfig(repo, git, policy.timeout_ms ?? DEFAULT_TIMEOUT)
   const target = await resolveRemote(item, policy, repo, git)
   const { tip } = await readRemote(target.url, branch, repo, target.env, target.timeout, git)
   return { state: tip === item.local_sha ? 'applied' : tip === item.expected_remote_sha ? 'not_applied' : 'diverged', remote_sha: tip }
