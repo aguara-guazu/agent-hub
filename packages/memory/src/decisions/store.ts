@@ -605,6 +605,43 @@ export class DecisionStore {
   }
 
 
+  /**
+   * Aprobación o rechazo desde la app del dueño: no hay código ni canal; la autoridad es el digest exacto que la persona vio. Mismas reglas que una respuesta
+   * por canal (solo ítems pendientes, un ítem con la misma operación viva o incierta vuelve como `blocked_uncertain`, nada de reintentos del código).
+   * Rechazar no exige digest. La solicitud se localiza por id; quien llama ya validó que el dueño es el autenticado.
+   */
+  consumeOwner(input: { request_id: string; kind: 'approve' | 'reject'; ordinals: number[]; digest?: string }): ConsumeResult {
+    return this.tx((): ConsumeResult => {
+      const request = this.request(input.request_id)
+      const origin = { integration: 'owner_ui', account: request.owner_id, native_message_id: `owner:${randomUUID()}` }
+      const done = (outcome: ConsumeResult['outcome'], extra: Partial<ConsumeResult> = {}): ConsumeResult => {
+        this.run('INSERT INTO inbound(integration, account, native_message_id, request_id, outcome, received_at) VALUES (?, ?, ?, ?, ?, ?)', origin.integration, origin.account, origin.native_message_id, request.request_id, outcome, this.iso())
+        return { outcome, request_id: request.request_id, ...extra }
+      }
+      if (request.state === 'expired') return done('expired')
+      if (request.state === 'revoked') return done('revoked')
+      if (request.state === 'superseded') return done('superseded')
+      if (request.state === 'closed') return done('no_open_request')
+      if (request.state === 'locked') return done('locked')
+      if (request.expires_at <= this.iso()) { this.closeRequest(request, 'expired', 'expired'); return done('expired') }
+      if (input.kind === 'approve' && input.digest !== request.canonical_digest) return done('digest_mismatch')
+      const items = this.all<ItemRow>('SELECT * FROM decision_items WHERE request_id = ? ORDER BY ordinal', request.request_id)
+      const decided = this.decide(request, items, { kind: input.kind, items: input.ordinals }, origin)
+      if (!decided) return done('bad_selection')
+      if (!this.get('SELECT 1 FROM decision_items WHERE request_id = ? AND state = \'pending\'', request.request_id)) {
+        this.run('UPDATE decision_requests SET state = \'closed\', updated_at = ? WHERE request_id = ? AND state = \'open\'', this.iso(), request.request_id)
+      }
+      this.run('INSERT INTO inbound(integration, account, native_message_id, request_id, outcome, received_at) VALUES (?, ?, ?, ?, ?, ?)', origin.integration, origin.account, origin.native_message_id, request.request_id, decided.outcome, this.iso())
+      return decided
+    })
+  }
+
+  /** Efecto canónico de un ítem para que la app lo muestre o lo corrija. Solo lectura; nunca sale por una vista pública. */
+  itemEffect(requestId: string, ordinal: number): { kind: DecisionItemKind; state: ItemState; effect: unknown } | undefined {
+    const row = this.get<ItemRow>('SELECT * FROM decision_items WHERE request_id = ? AND ordinal = ?', requestId, ordinal)
+    return row ? { kind: row.kind, state: row.state, effect: JSON.parse(row.exact_effect) } : undefined
+  }
+
   consumeReply(input: { integration: Integration; account: string; native_message_id: string; binding_id: string; parsed: ParsedReply }): ConsumeResult {
     return this.tx((): ConsumeResult => {
       const seen = this.get<{ request_id: string | null; outcome: string }>('SELECT request_id, outcome FROM inbound WHERE integration = ? AND account = ? AND native_message_id = ?',

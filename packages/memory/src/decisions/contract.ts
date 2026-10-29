@@ -63,7 +63,7 @@ export type ParsedReply =
 export type ConsumeOutcome =
   | 'approved' | 'rejected' | 'revision_requested'
   | 'duplicate' | 'no_open_request' | 'invalid_code' | 'locked' | 'rate_limited'
-  | 'expired' | 'revoked' | 'bad_selection' | 'unrecognized' | 'binding_unavailable'
+  | 'expired' | 'revoked' | 'superseded' | 'digest_mismatch' | 'bad_selection' | 'unrecognized' | 'binding_unavailable'
 
 export interface ConsumeResult {
   outcome: ConsumeOutcome

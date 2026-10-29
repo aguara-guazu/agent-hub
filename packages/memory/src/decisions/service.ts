@@ -41,6 +41,12 @@ export class DecisionService {
     return { gated: false, value: this.store.consumeReply(input) }
   }
 
+  /** Aprobación o rechazo del dueño desde la app, con la misma compuerta de autoridad que una respuesta por canal. */
+  async processOwner(requestId: string, input: { kind: 'approve' | 'reject'; ordinals: number[]; digest?: string }): Promise<GatedOutcome<ConsumeResult>> {
+    if (!(await this.live(requestId))) return { gated: true, reason: 'authority_unavailable' }
+    return { gated: false, value: this.store.consumeOwner({ request_id: requestId, ...input }) }
+  }
+
   /** Reclama una intención para despacho o reintento. Sin autoridad vigente no se reclama y la intención queda intacta. */
   async claimForDispatch(intentId: string, expectedGeneration: number): Promise<GatedOutcome<ReturnType<DecisionStore['claimIntent']>>> {
     const requestId = this.store.requestOfIntent(intentId)
