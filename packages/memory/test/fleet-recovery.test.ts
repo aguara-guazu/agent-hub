@@ -1,13 +1,13 @@
 import { expect, it, vi } from 'vitest'
 import type { UsageQuotaTransition } from '@agenthub/shared'
-import { FleetQuotaRecovery, QUOTA_RESUME_PROMPT, classifyQuotaFailure, type RecoveryIncidentLog } from '../src/fleet-recovery.js'
+import { FleetQuotaRecovery, QUOTA_RESUME_PROMPT, classifyQuotaFailure, type RecoveryFallback, type RecoveryIncidentLog } from '../src/fleet-recovery.js'
 import type { HubTeamStatus } from '../src/team-hub.js'
 
 const failedAt = '2026-10-28T18:38:00.000Z'
 const runtime = (patch: Partial<HubTeamStatus> = {}): HubTeamStatus => ({ id: 'member-1', cli: 'codex_cli', cwd: '/work', model: 'model-a', state: 'failed', error_code: 'fleet_turn_failed',
   error_cause: 'quota_exhausted', error_evidence: 'protocol', native_id: 'thread-1', provider: 'hub', generation: 'gen-1', updated_at: failedAt, ...patch })
 const pool = (status = 'available') => ({ id: 'pool-a', status }) as never
-function setup(options: { members?: Array<{ id: string; runtime: HubTeamStatus; team_id?: string }>; exhausted?: { pool_key: string } | undefined; quota?: { status: string; pools: unknown[] }; claims?: boolean[]; resume?: () => Promise<unknown>; check?: { ready: boolean; kind: string; plan?: { rung?: string; reason?: string } } } = {}, withNotices = false) {
+function setup(options: { members?: Array<{ id: string; runtime: HubTeamStatus; team_id?: string }>; exhausted?: { pool_key: string } | undefined; quota?: { status: string; pools: unknown[] }; claims?: boolean[]; resume?: () => Promise<unknown>; check?: { ready: boolean; kind: string; plan?: { rung?: string; reason?: string } }; fallback?: RecoveryFallback['restart'] } = {}, withNotices = false) {
   const members = options.members ?? [{ id: 'member-1', runtime: runtime() }]
   const query = vi.fn(async () => members.map(member => ({ id: member.id, team_id: member.team_id ?? 'team-1', worktree_name: `tree-${member.id}`, session_id: `session-${member.id}`, runtime: JSON.stringify(member.runtime) })))
   const exhaustedAt = vi.fn(async () => 'exhausted' in options ? options.exhausted : { pool_key: 'pool-a' })
@@ -20,8 +20,10 @@ function setup(options: { members?: Array<{ id: string; runtime: HubTeamStatus; 
   const log: RecoveryIncidentLog = { claim, settle }
   const publishResumption = vi.fn(async () => true)
   const publishLeaderClosed = vi.fn(async () => true)
-  const recovery = new FleetQuotaRecovery({ query } as never, { exhaustedAt, forCli }, { resumeMember, checkResume }, log, withNotices ? { publishResumption, publishLeaderClosed } : undefined)
-  return { recovery, exhaustedAt, forCli, resumeMember, checkResume, claim, settle, publishResumption, publishLeaderClosed }
+  const restart = options.fallback ? vi.fn(options.fallback) : undefined
+  const fallback: RecoveryFallback | undefined = restart ? { restart } : undefined
+  const recovery = new FleetQuotaRecovery({ query } as never, { exhaustedAt, forCli }, { resumeMember, checkResume }, log, withNotices ? { publishResumption, publishLeaderClosed } : undefined, fallback)
+  return { recovery, exhaustedAt, forCli, resumeMember, checkResume, claim, settle, publishResumption, publishLeaderClosed, restart }
 }
 const transition = (patch: Partial<UsageQuotaTransition> = {}): UsageQuotaTransition => ({ id: 't', pool_key: 'pool-a', before: 'exhausted', after: 'available', observed_at: '2026-10-29T04:00:00.000Z', binding_ids: ['b'], clis: ['codex_cli'], ...patch })
 
@@ -133,4 +135,46 @@ it('waits without spending the attempt when the leader is closed and leaves one 
   const again = setup({ members, check: { ready: false, kind: 'leader_closed' } }, true)
   await again.recovery.recover()
   expect(again.publishLeaderClosed.mock.calls.map(call => (call[0] as { key: string }).key)).toEqual(events.map(item => item.key))
+})
+
+const cannotResume = { ready: false, kind: 'unsupported', plan: { rung: 'linked_new', reason: 'resume_by_id_unverified' } }
+
+it('restarts the member in a new conversation once, and says so in the incident and in the notice, when the CLI cannot resume', async () => {
+  const { recovery, restart, settle, resumeMember, publishResumption } = setup({ check: cannotResume, fallback: async () => 'restarted' }, true)
+  const [outcome] = await recovery.recover()
+  expect(outcome).toMatchObject({ result: 'restarted', reason: 'new_conversation', evidence: 'protocol', member_id: 'member-1', generation: 'gen-1' })
+  expect(restart).toHaveBeenCalledExactlyOnceWith({ member_id: 'member-1', team_id: 'team-1' })
+  expect(resumeMember).not.toHaveBeenCalled()
+  expect(settle).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'resume_unsupported', detail: expect.objectContaining({ fallback: 'restarted', reason: 'resume_by_id_unverified' }) }))
+  expect(publishResumption).toHaveBeenCalledWith(expect.objectContaining({ members: [expect.objectContaining({ member_id: 'member-1', result: 'restarted', reason: 'new_conversation' })] }))
+})
+
+it('also falls back when the resume attempt itself is refused for a plan that is not an exclusive resume, but never after an ordinary failure', async () => {
+  const refused = Object.assign(new Error('refused'), { continuity: { rung: 'linked_new', reason: 'no_fork_or_exclusive_resume' } })
+  const viaPlan = setup({ resume: async () => { throw refused }, fallback: async () => 'restarted' })
+  expect((await viaPlan.recovery.recover())[0]).toMatchObject({ result: 'restarted' })
+  expect(viaPlan.resumeMember).toHaveBeenCalledTimes(1)
+  const ordinary = setup({ resume: async () => { throw new Error('boom') }, fallback: async () => 'restarted' })
+  expect((await ordinary.recovery.recover())[0]).toMatchObject({ result: 'failed', reason: 'resume_failed' })
+  expect(ordinary.restart).not.toHaveBeenCalled()
+})
+
+it('reports a refused or failed fallback as unsupported with its own reason, and survives a fallback that throws', async () => {
+  for (const [answer, reason] of [['refused', 'fallback_refused'], ['failed', 'fallback_failed']] as const) {
+    const attempt = setup({ check: cannotResume, fallback: async () => answer })
+    expect((await attempt.recovery.recover())[0]).toMatchObject({ result: 'unsupported', reason })
+    expect(attempt.settle).toHaveBeenCalledWith(expect.objectContaining({ action: 'resume_unsupported', detail: expect.objectContaining({ fallback: answer }) }))
+  }
+  const throwing = setup({ check: cannotResume, fallback: async () => { throw new Error('boom') } })
+  expect((await throwing.recovery.recover())[0]).toMatchObject({ result: 'unsupported', reason: 'fallback_failed' })
+})
+
+it('does not touch the fallback while the attempt is not final, or when the claim was already spent, so it runs once per member and generation', async () => {
+  const waiting = setup({ check: { ready: false, kind: 'exit_unconfirmed' }, fallback: async () => 'restarted' })
+  expect((await waiting.recovery.recover())[0]).toMatchObject({ result: 'skipped', reason: 'exit_unconfirmed' })
+  const spent = setup({ check: cannotResume, claims: [true, false], fallback: async () => 'restarted' })
+  expect((await spent.recovery.recover())[0]).toMatchObject({ result: 'skipped', reason: 'already_attempted' })
+  const generic = setup({ members: [{ id: 'member-1', runtime: runtime({ error_cause: undefined as never, cli: 'kiro' }) }], check: cannotResume, fallback: async () => 'restarted' })
+  expect((await generic.recovery.recover())[0]).toMatchObject({ result: 'skipped', reason: 'generic_failure' })
+  for (const attempt of [waiting, spent, generic]) expect(attempt.restart).not.toHaveBeenCalled()
 })

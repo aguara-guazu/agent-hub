@@ -21,7 +21,8 @@ export interface RecoveryOutcome {
   model: string
   /** Generation of the failed process this outcome is about; with the member it identifies an episode. */
   generation: string
-  result: 'resumed' | 'unsupported' | 'failed' | 'skipped'
+  /** `restarted`: the CLI cannot resume, so the approved member was started again in a new conversation over the same worktree. */
+  result: 'resumed' | 'restarted' | 'unsupported' | 'failed' | 'skipped'
   reason: string
   evidence?: QuotaEvidence
 }
@@ -32,6 +33,13 @@ export interface RecoveryNotices {
 export interface ResumeRuntime {
   resumeMember(handle: string, request: HubResumeRequest): Promise<unknown>
   checkResume(handle: string, request: HubResumeRequest): Promise<{ ready: boolean; kind: string; plan?: { rung?: string; reason?: string } }>
+}
+/**
+ * Last resort for a CLI that cannot resume: restart the member in a new conversation over its own worktree, as `team_control` edit + clear would.
+ * It runs at most once per member and generation, because it sits behind the same claim as the resume attempt.
+ */
+export interface RecoveryFallback {
+  restart(member: { member_id: string; team_id: string }): Promise<'restarted' | 'refused' | 'failed'>
 }
 /** One attempt per member, generation and cause: claim() is the atomic gate and reports whether this call won it. */
 export interface RecoveryIncidentLog {
@@ -65,6 +73,7 @@ export class FleetQuotaRecovery {
     private readonly runtime: ResumeRuntime,
     private readonly log: RecoveryIncidentLog,
     private readonly notices?: RecoveryNotices,
+    private readonly fallback?: RecoveryFallback,
   ) {}
 
   /** Entry point for the quota recovery event: only a pool leaving exhaustion or cooldown triggers a sweep. */
@@ -112,6 +121,15 @@ export class FleetQuotaRecovery {
     }
   }
 
+  /** The CLI cannot continue the conversation: leave the incident and, when a fallback is configured, start the member again in a new conversation. */
+  private async unsupported(named: Pick<RecoveryOutcome, 'member_id' | 'team_id' | 'worktree_name' | 'cli' | 'model' | 'generation'>, detail: Record<string, unknown>, planReason: string | undefined, evidence: QuotaEvidence): Promise<RecoveryOutcome> {
+    const fallback = this.fallback ? await this.fallback.restart({ member_id: named.member_id, team_id: named.team_id }).catch(() => 'failed' as const) : undefined
+    await this.log.settle({ member_id: named.member_id, generation: named.generation, action: 'resume_unsupported',
+      detail: { ...detail, ...(planReason ? { reason: planReason } : {}), ...(fallback ? { fallback } : {}) } })
+    if (fallback === 'restarted') return { ...named, result: 'restarted', reason: 'new_conversation', evidence }
+    return { ...named, result: 'unsupported', reason: fallback ? `fallback_${fallback}` : planReason ?? 'resume_unsupported', evidence }
+  }
+
   private async attempt(memberId: string, teamId: string, worktreeName: string, sessionId: string | null, runtime: HubTeamStatus): Promise<RecoveryOutcome> {
     const named = { member_id: memberId, team_id: teamId, worktree_name: worktreeName, cli: runtime.cli, model: runtime.model, generation: runtime.generation }
     const skip = (reason: string, evidence?: QuotaEvidence): RecoveryOutcome => ({ ...named, result: 'skipped', reason, ...(evidence ? { evidence } : {}) })
@@ -128,19 +146,16 @@ export class FleetQuotaRecovery {
     const verdict = await this.runtime.checkResume(memberId, request)
     if (!verdict.ready && verdict.kind !== 'unsupported') return skip(verdict.kind, failure.evidence)
     if (!await this.log.claim({ ...base, cause: 'quota_resume', detail })) return skip('already_attempted', failure.evidence)
-    if (!verdict.ready) {
-      await this.log.settle({ member_id: memberId, generation: runtime.generation, action: 'resume_unsupported', detail: { ...detail, ...(verdict.plan?.reason ? { reason: verdict.plan.reason } : {}) } })
-      return { ...named, result: 'unsupported', reason: verdict.plan?.reason ?? 'resume_unsupported', evidence: failure.evidence }
-    }
+    if (!verdict.ready) return this.unsupported(named, detail, verdict.plan?.reason, failure.evidence)
     try {
       await this.runtime.resumeMember(memberId, request)
       await this.log.settle({ member_id: memberId, generation: runtime.generation, action: 'resumed', detail })
       return { ...named, result: 'resumed', reason: 'exclusive_resume', evidence: failure.evidence }
     } catch (error) {
       const plan = (error as { continuity?: { rung?: string; reason?: string } }).continuity
-      const unsupported = plan !== undefined && plan.rung !== 'exclusive_resume'
-      await this.log.settle({ member_id: memberId, generation: runtime.generation, action: unsupported ? 'resume_unsupported' : 'resume_failed', detail: { ...detail, ...(plan?.reason ? { reason: plan.reason } : {}) } })
-      return { ...named, result: unsupported ? 'unsupported' : 'failed', reason: plan?.reason ?? 'resume_failed', evidence: failure.evidence }
+      if (plan !== undefined && plan.rung !== 'exclusive_resume') return this.unsupported(named, detail, plan.reason, failure.evidence)
+      await this.log.settle({ member_id: memberId, generation: runtime.generation, action: 'resume_failed', detail: { ...detail, ...(plan?.reason ? { reason: plan.reason } : {}) } })
+      return { ...named, result: 'failed', reason: plan?.reason ?? 'resume_failed', evidence: failure.evidence }
     }
   }
 }
@@ -171,8 +186,8 @@ export class SqlRecoveryIncidentLog implements RecoveryIncidentLog {
 
 /** Builds the recovery over the Hub's own fleet runtime; absent when the runtime cannot resume members (another backend or no fleet). */
 export function createFleetRecovery(db: Pick<MemoryDatabase, 'query'>, usage: Pick<UsageQuotas, 'exhaustedAt' | 'forCli'>,
-  fleet: unknown, notices?: RecoveryNotices): FleetQuotaRecovery | undefined {
+  fleet: unknown, notices?: RecoveryNotices, fallback?: RecoveryFallback): FleetQuotaRecovery | undefined {
   const runtime = fleet as Partial<ResumeRuntime> | undefined
   if (!runtime || typeof runtime.resumeMember !== 'function' || typeof runtime.checkResume !== 'function') return undefined
-  return new FleetQuotaRecovery(db, usage, runtime as ResumeRuntime, new SqlRecoveryIncidentLog(db), notices)
+  return new FleetQuotaRecovery(db, usage, runtime as ResumeRuntime, new SqlRecoveryIncidentLog(db), notices, fallback)
 }

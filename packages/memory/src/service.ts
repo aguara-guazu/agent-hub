@@ -168,7 +168,7 @@ export class MemoryService {
   async startSchedules() {
     const { schedules, db, operations } = await this.get()
     if (!schedules) return
-    await startClockThenRecover(schedules.runtime, createFleetRecovery(db, operations.usage, operations.fleet, operations.usageNotices))
+    await startClockThenRecover(schedules.runtime, createFleetRecovery(db, operations.usage, operations.fleet, operations.usageNotices, operations.teams ? { restart: input => operations.teams!.continueMemberFresh(input.member_id) } : undefined))
   }
   async status() {
     const configuration = { database_configured: true, google_client_configured: this.vault.has('google-client'),

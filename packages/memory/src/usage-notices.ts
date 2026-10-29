@@ -8,7 +8,7 @@ export interface QuotaNoticeEvent {
   account_ref?:string
 }
 const activeTeam = "('launching','launched','partial','uncertain','active')"
-export interface ResumptionMember { member_id:string; worktree_name:string; cli:string; model:string; result:'resumed'|'unsupported'|'failed'; reason:string }
+export interface ResumptionMember { member_id:string; worktree_name:string; cli:string; model:string; result:'resumed'|'restarted'|'unsupported'|'failed'; reason:string }
 export interface LeaderClosedEvent { key:string; team_id:string; observed_at:string; members:string[] }
 export interface ResumptionEvent { key:string; team_id:string; observed_at:string; members:ResumptionMember[] }
 

@@ -37,6 +37,8 @@ export interface DerivedPorts {
 }
 const APPROVED_ITEM_STATES = ['approved', 'dispatching', 'succeeded']
 const STOP_UNCONFIRMED = 'stop_unconfirmed'
+const CONTINUATION_MARK = '--- Continuación tras cuota ---'
+const CONTINUATION_NOTE = `${CONTINUATION_MARK}\nTu conversación anterior se detuvo porque se agotó la cuota y el Hub no pudo reanudarla en el mismo hilo. Esta es una conversación nueva sobre tu mismo worktree: revisa el estado del repositorio (git status y git log), tu inbox y tu último work_update, y continúa exactamente la tarea que tenías en curso.`
 const TERMINAL_RUNTIME = ['stopped', 'exited', 'failed']
 /** A derived plan whose workers may still be running or whose stop was never confirmed keeps its slot and stays visible to later closes, whatever its logical state. */
 const HOLDS_PROCESS = `EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=chat_team_plans.id AND m.launch_handle IS NOT NULL
@@ -727,6 +729,24 @@ export class TeamOrchestration {
     return this.launch({plan_id:planId,digest:derived.digest,
       human_instruction:`Seguimiento aprobado (${followUp.source}, recibo ${followUp.ref}): solicitud ${input.request_id}, delegación v${input.delegation_version} de ${project.title}`},
     who,undefined,{source:followUp.source==='channel_reply'?DERIVED_APPROVAL_SOURCE:'standing_delegation+owner_ui',userId:this.derived.ownerId()})
+  }
+
+  /**
+   * Fallback of the quota recovery for a CLI that cannot resume: the same edit + clear the leader would do by hand. The prompt gets one marked
+   * continuation note (replaced, never stacked), the previous process must be confirmed stopped, and the worktree, CLI and model stay those the plan approved.
+   * It never runs for derived plans, and anything the leader's authority would refuse (closed leader, collaboration off) is refused here too.
+   */
+  async continueMemberFresh(memberId:string):Promise<'restarted'|'refused'|'failed'> {
+    const item=(await this.db.query(`SELECT m.id,m.team_id,m.prompt,m.runtime,t.created_by,t.delegation_project_id FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id WHERE m.id=$1`,[memberId]))[0]
+    const leader=item?(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[item.created_by]))[0]:undefined
+    if(!item || !leader || leader.closed_at || leader.removed_at || item.delegation_project_id)return 'refused'
+    const control={plan_id:item.team_id,member_id:item.id,expected_generation:item.runtime?.generation ?? 'none'}
+    try {
+      const base=String(item.prompt).split(CONTINUATION_MARK)[0]!.trimEnd().slice(0,15000)
+      await this.control({...control,action:'edit',prompt:`${base}\n\n${CONTINUATION_NOTE}`} as z.infer<typeof controlInput>,leader)
+      await this.control({...control,action:'clear'} as z.infer<typeof controlInput>,leader)
+      return 'restarted'
+    } catch(error) {return error instanceof MemoryError && [403,409].includes(error.statusCode)?'refused':'failed'}
   }
 
   /**
