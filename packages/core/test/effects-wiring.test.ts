@@ -91,6 +91,28 @@ describe('apagar las automatizaciones con una acción ya reclamada', () => {
     expect(decisions.intent(intentId)).toMatchObject({ state: 'rejected_before_dispatch', error_code: 'revoked' })
   })
 
+  it('si la primera resolución falla, el siguiente uso reintenta y funciona', async () => {
+    let attempts = 0
+    const vault = new Vault(dir)
+    const effects = createCoreScheduleEffects({ store, pool: {} as ConnectionPool, ownerId, automationsEnabled: () => true, adapters: [],
+      host: { directory: dir, vault, google: { granted: () => false } as never, load: async () => {
+        if (++attempts === 1) throw new Error('memoria no abierta')
+        return { db: { query: async () => [] as any[] }, schedules: { set: async () => {}, artifactAuthority: async () => 'live' as const, artifactOfRun: async () => undefined } }
+      } } })
+    await expect(effects.deliveries.available()).rejects.toThrow('memoria no abierta')
+    expect(await effects.deliveries.available()).toMatchObject({ gmail_self: { available: false }, slack_self: { available: false } })
+    expect(attempts).toBe(2)
+  })
+
+  it('la solicitud queda a nombre del dueño real aunque el runtime envíe su valor por defecto', async () => {
+    const effects = build([adapter()])
+    const { decision_request_ref } = await effects.decisions.prepareDecision({ run_id: 'run-9', artifact_id: 'a9', owner_id: 'owner', project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z',
+      items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p1', summary: 'uno', effect: { n: 1 } }] })
+    const { store: decisions } = await effects.ready()
+    const row = (decisions as unknown as { db: { prepare(sql: string): { get(id: string): { owner_id: string } } } }).db.prepare('SELECT owner_id FROM decision_requests WHERE request_id = ?').get(decision_request_ref)
+    expect(row.owner_id).toBe(ownerId)
+  })
+
   it('con el interruptor apagado ni siquiera se reclama la intención', async () => {
     const wl = adapter()
     const effects = build([wl], () => false)

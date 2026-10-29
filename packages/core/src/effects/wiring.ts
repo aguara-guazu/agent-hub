@@ -49,29 +49,33 @@ function verifierKey(vault: EffectsHost['vault']): Buffer {
  */
 export function createCoreScheduleEffects(options: CoreEffectsOptions): ScheduleEffects & { ready(): Promise<{ store: DecisionStore; service: DecisionService }> } {
   let ready: Promise<{ store: DecisionStore; service: DecisionService; effects: ScheduleEffects }> | undefined
+  /** Una resolución fallida no se conserva: el siguiente uso reintenta en lugar de quedar roto hasta reiniciar el core. */
   const resolve = () => ready ??= (async () => {
     const { db, schedules } = await options.host.load()
     const store = new DecisionStore(join(options.host.directory, STORE_FILE), { key: verifierKey(options.host.vault), exclusions: new MemoryExclusionSink(db), publicState: schedules })
-    store.recover()
-    store.resyncMirror()
-    const service = new DecisionService(store, query => schedules.artifactAuthority(query))
-    const tools = createEffectToolResolver(options.store, options.pool, options.ownerId)
-    const exclusions = new MemoryExclusionSink(db)
-    const artifacts: DeliveryArtifacts = { load: async ({ run_id, artifact_id }) => {
-      const artifact = await schedules.artifactOfRun(run_id)
-      return artifact && artifact.id === artifact_id ? { title: artifact.title, body_md: artifact.body_md, decision_request_ref: artifact.decision_request_ref } : null
-    } }
-    const gmail = { sender: new GmailSelfSender(options.host.google), connectorId: async () => {
-      const rows = await db.query<{ id: string; config: Record<string, any> }>("SELECT id, config FROM connectors WHERE provider = 'google' AND enabled = 1 ORDER BY created_at")
-      return rows.find(row => row.config?.['gmail_send_enabled'] === true && row.config?.['gmail_enabled'] !== false)?.id ?? null
-    } }
-    const effects = createScheduleEffects({
-      deliveries: createDeliveryAdapters({ store, artifacts, exclusions, gmail, slack: new SlackSelfDelivery({ store, tools, exclusions }) }),
-      actions: new CoreActionExecutor({ decisions: service, adapters: options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
-      decisions: service,
-    })
-    return { store, service, effects }
-  })()
+    try {
+      store.recover()
+      store.resyncMirror()
+      const service = new DecisionService(store, query => schedules.artifactAuthority(query))
+      const tools = createEffectToolResolver(options.store, options.pool, options.ownerId)
+      const exclusions = new MemoryExclusionSink(db)
+      const artifacts: DeliveryArtifacts = { load: async ({ run_id, artifact_id }) => {
+        const artifact = await schedules.artifactOfRun(run_id)
+        return artifact && artifact.id === artifact_id ? { title: artifact.title, body_md: artifact.body_md, decision_request_ref: artifact.decision_request_ref } : null
+      } }
+      const gmail = { sender: new GmailSelfSender(options.host.google), connectorId: async () => {
+        const rows = await db.query<{ id: string; config: Record<string, any> }>("SELECT id, config FROM connectors WHERE provider = 'google' AND enabled = 1 ORDER BY created_at")
+        return rows.find(row => row.config?.['gmail_send_enabled'] === true && row.config?.['gmail_enabled'] !== false)?.id ?? null
+      } }
+      const effects = createScheduleEffects({
+        deliveries: createDeliveryAdapters({ store, artifacts, exclusions, gmail, slack: new SlackSelfDelivery({ store, tools, exclusions }) }),
+        actions: new CoreActionExecutor({ decisions: service, adapters: options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
+        decisions: service,
+        ownerId: options.ownerId,
+      })
+      return { store, service, effects }
+    } catch (error) { store.close(); throw error }
+  })().catch(error => { ready = undefined; throw error })
   const effects = async () => (await resolve()).effects
   return {
     deliveries: {
