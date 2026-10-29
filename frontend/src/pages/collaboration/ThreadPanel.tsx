@@ -33,11 +33,7 @@ export function ThreadPanel({ threadId, messageOffset, onMessageOffset, onOpenPl
           {thread.team_plan_id && (
             <div className="card" style={{ padding: "var(--sp-3)", display: "flex", flexDirection: "column", gap: "var(--sp-2)", background: "var(--surface-2)" }}>
               <span>{t(plan === "prepared" ? "thread.planPending" : "thread.planLinked")}</span>
-              <div>
-                <Button variant={plan === "prepared" ? "primary" : "default"} small onClick={() => onOpenPlan(thread.team_plan_id!)}>
-                  {t(plan === "prepared" ? "actions.reviewTeam" : "actions.viewTeam")}
-                </Button>
-              </div>
+              <div><Button small onClick={() => onOpenPlan(thread.team_plan_id!)}>{t("actions.viewTeam")}</Button></div>
             </div>
           )}
           <Dl items={[

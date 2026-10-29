@@ -63,7 +63,6 @@ export default function CollaborationPage() {
   const connected = allAgents.filter(item => item.connection_state === "online" && !item.closed_at).length
   const selectedChannel = channels.data?.items.find(item => item.id === channel) ?? lookup.data?.items[0]
   const inspected = inspect ? (allAgents.find(item => item.id === inspect) ?? agents.data?.items.find(item => item.id === inspect)) : undefined
-  const pendingPlans = (threads.data?.items ?? []).filter(item => item.team_plan_id && !item.team_root_thread_id && planState(item.team_plan_state) === "prepared")
 
   const openThread = (id: string) => patch({ thread: id, moffset: 0, plan: null, inspect: null })
   const openPlan = (id: string) => patch({ plan: id, inspect: null })
@@ -82,9 +81,7 @@ export default function CollaborationPage() {
     ? <Banner tone="warn" action={<Button small disabled={retryStop.isPending} onClick={() => retryStop.mutate(notice.channelId)}>{t("actions.retryStop")}</Button>}>{t("banner.deleteUncertain")}</Banner>
     : notice?.kind === "designateUncertain"
       ? <Banner tone="warn" action={<Button small onClick={() => setNotice(null)}>{t("actions.dismiss")}</Button>}>{t("banner.designateUncertain")}</Banner>
-      : view === "threads" && pendingPlans.length > 0
-        ? <Banner tone="warn" action={<Button small onClick={() => openPlan(pendingPlans[0]!.team_plan_id!)}>{t("actions.reviewTeam")}</Button>}>{plural("banner.pendingPlans", pendingPlans.length)}</Banner>
-        : null
+      : null
 
   function renderThreads() {
     if (threads.isPending) return <SkeletonRows label={t("loading.threads")} />

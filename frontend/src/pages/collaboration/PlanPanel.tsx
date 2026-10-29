@@ -1,8 +1,7 @@
 import { useState } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import {
-  Button, Chip, ConfirmDialog, Dl, ErrorState, List, Loading, MoreMenu, Panel, PanelBody, PanelHeader, Row, absoluteTime, describeError,
-  useToast, type ChipTone, type MenuItem,
+  Button, Chip, Dl, ErrorState, List, Loading, MoreMenu, Panel, PanelBody, PanelHeader, Row, absoluteTime, type ChipTone, type MenuItem,
 } from "../../components/ui"
 import { useT } from "../../i18n"
 import { api } from "../../lib/api"
@@ -38,126 +37,99 @@ export interface PlanPanelProps {
   onClose: () => void
 }
 
-/** Plan de equipo de la flota. Aprobar envía exactamente el digest mostrado; el Hub vuelve a validar al lanzar. */
+type Approval = "ownerUi" | "coordinator" | "legacy" | "none"
+const APPROVAL_TONE: Record<Approval, ChipTone> = { ownerUi: "ok", coordinator: "ok", legacy: "off", none: "off" }
+
+function approvalOf(plan: Plan): Approval {
+  const source = plan.authorization?.source
+  if (source === "owner_ui") return "ownerUi"
+  if (source === "coordinator_declaration") return "coordinator"
+  if (source === "legacy_record") return "legacy"
+  return "none"
+}
+
+/** Plan de equipo de la flota, de solo lectura: el coordinador lo prepara, lo aprueba y lo controla por MCP. */
 export function PlanPanel({ planId, onThread, onClose }: PlanPanelProps) {
-  const { t, plural } = useT("collaboration")
-  const toast = useToast()
+  const { t } = useT("collaboration")
   const modelLine = useModelLine()
-  const cache = useQueryClient()
   const [memberId, setMemberId] = useState<string | null>(null)
-  const [reviewing, setReviewing] = useState(false)
   const plan = useQuery({
     queryKey: ["memory", "team-plan", planId],
     queryFn: () => api.get<Plan>(`/memory/teams/${encodeURIComponent(planId)}`),
     refetchInterval: 5000,
     refetchIntervalInBackground: false,
   })
-  const approve = useMutation({
-    mutationFn: (digest: string) => api.post<Plan>(`/memory/teams/${encodeURIComponent(planId)}/approve`, { digest }),
-    onSuccess: result => {
-      cache.setQueryData(["memory", "team-plan", planId], result)
-      void cache.invalidateQueries({ queryKey: ["memory"] })
-      setReviewing(false)
-      toast.success(t("plan.approved"))
-    },
-  })
 
   const value = plan.data
   const state = planState(value?.state)
-  const prepared = value?.state === "prepared"
   const members = value ? (value.members?.length ? value.members : value.plan.members) : []
   const selected = members.find(member => member.id === memberId) ?? null
   const definition = (member: Member) => value?.plan.members.find(item => item.id === member.id)
   const virtual = value?.parent.kind === "virtual"
-  const permissions = value?.plan.permissions === "full_access" ? t("plan.permissionsFull") : t("plan.permissionsClient")
+  const approval = value ? approvalOf(value) : "none"
+  const authorization = value?.authorization
 
   return (
     <Panel label={t("plan.title")} onClose={onClose} wide>
       <PanelHeader
         title={t("plan.title")}
         status={value && <Chip tone={PLAN_TONE[state]}>{t(`planState.${state}`)}</Chip>}
-        actions={value?.root_thread_id ? <MoreMenu small ghost items={[{ label: t("actions.openCoordination"), onSelect: () => onThread(value.root_thread_id!, value.master_channel_id) }]} /> : undefined}
       />
       <PanelBody>
         {plan.isPending && <Loading label={t("plan.loading")} />}
         {plan.error && <ErrorState error={plan.error} title={t("plan.error")} onRetry={() => void plan.refetch()} />}
         {value && <>
-          {prepared && (
-            <div className="card" style={{ padding: "var(--sp-3)", display: "flex", flexDirection: "column", gap: "var(--sp-2)", background: "var(--surface-2)" }}>
-              <span>{plural("plan.pendingApproval", members.length)}</span>
-              <div><Button variant="primary" small onClick={() => { approve.reset(); setReviewing(true) }}>{t("actions.reviewTeam")}</Button></div>
-            </div>
-          )}
           <p className="prose" style={{ margin: 0, overflowWrap: "anywhere" }}>{value.objective}</p>
           <Dl items={[
             { label: t("plan.joined"), value: t("plan.ratio", { done: value.progress.joined, total: value.progress.total }) },
             { label: t("plan.processes"), value: t("plan.ratio", { done: value.progress.processes_accepted, total: value.progress.total }) },
             { label: t("plan.workspaces"), value: t("plan.ratio", { done: value.progress.workspaces_created, total: value.progress.total }) },
-            { label: t("plan.permissions"), value: permissions },
+            { label: t("plan.permissions"), value: value.plan.permissions === "full_access" ? t("plan.permissionsFull") : t("plan.permissionsClient") },
             { label: t(virtual ? "plan.virtualSpace" : "plan.repository"), value: <span className="mono trunc" title={value.parent.path}>{value.parent.path}</span> },
             { label: t("plan.base"), value: <span className="mono trunc" title={value.base_revision}>{value.base_revision}</span> },
             { label: t("plan.digest"), value: <span className="mono xs" style={{ overflowWrap: "anywhere" }}>{value.digest}</span> },
           ]} />
           {virtual && <span className="xs t3">{t("plan.virtualNote")}</span>}
 
-          <List aria-label={t("plan.members")}>
-            {members.map(member => {
-              const work = workState(member)
-              return (
-                <Row
-                  key={member.id}
-                  selected={member.id === memberId}
-                  onOpen={() => setMemberId(current => (current === member.id ? null : member.id))}
-                  title={member.nickname ?? member.role.split(":")[0]}
-                  sub={modelLine(member)}
-                  meta={<Chip tone={WORK_TONE[work]}>{t(`work.${work}`)}</Chip>}
-                />
-              )
-            })}
-          </List>
-          {selected && <MemberDetail member={selected} plan={value} prompt={definition(selected)?.prompt ?? selected.prompt} onThread={onThread} />}
+          <hr className="divider" />
+          <section className="section" aria-label={t("plan.approval")}>
+            <div className="section-h"><span className="h3">{t("plan.approval")}</span><Chip tone={APPROVAL_TONE[approval]}>{t(`approval.${approval}`)}</Chip></div>
+            <Dl items={[
+              { label: t("plan.instruction"), value: authorization?.instruction ? <span className="t2" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{authorization.instruction}</span> : null },
+              { label: t("plan.approvedBy"), value: authorization?.approved_by_user_id ? <span className="mono trunc" title={authorization.approved_by_user_id}>{authorization.approved_by_user_id}</span> : null },
+              { label: t("plan.coordinator"), value: authorization?.coordinator_id ? <span className="mono trunc" title={authorization.coordinator_id}>{authorization.coordinator_id}</span> : null },
+              { label: t("plan.delegation"), value: authorization?.delegation ? t("plan.delegationVersion", { version: authorization.delegation.version }) : null },
+              { label: t("plan.launchStarted"), value: value.launch?.started_at ? absoluteTime(value.launch.started_at) : null },
+              { label: t("plan.launchAccepted"), value: value.launch?.accepted_at ? absoluteTime(value.launch.accepted_at) : null },
+              { label: t("plan.closedAt"), value: value.close?.at ? absoluteTime(value.close.at) : null },
+              { label: t("plan.closeReason"), value: value.close?.reason },
+            ]} />
+          </section>
+
+          <hr className="divider" />
+          <section className="section" aria-label={t("plan.members")}>
+            <div className="section-h"><span className="h3">{t("plan.members")}</span></div>
+            <List>
+              {members.map(member => {
+                const work = workState(member)
+                return (
+                  <Row
+                    key={member.id}
+                    selected={member.id === memberId}
+                    onOpen={() => setMemberId(current => (current === member.id ? null : member.id))}
+                    title={member.nickname ?? member.role.split(":")[0]}
+                    sub={modelLine(member)}
+                    meta={<Chip tone={WORK_TONE[work]}>{t(`work.${work}`)}</Chip>}
+                  />
+                )
+              })}
+            </List>
+            {selected && <MemberDetail member={selected} plan={value} prompt={definition(selected)?.prompt ?? selected.prompt} onThread={onThread} />}
+          </section>
         </>}
       </PanelBody>
-      {value && !prepared && value.root_thread_id && (
+      {value?.root_thread_id && (
         <div className="panel-f"><Button small onClick={() => onThread(value.root_thread_id!, value.master_channel_id)}>{t("actions.openCoordination")}</Button></div>
-      )}
-      {value && (
-        <ConfirmDialog
-          open={reviewing}
-          title={t("plan.confirmTitle")}
-          confirmLabel={approve.isPending ? t("plan.approving") : t("actions.approveTeam")}
-          destructive={false}
-          busy={approve.isPending}
-          onClose={() => setReviewing(false)}
-          onConfirm={() => approve.mutate(value.digest)}
-          message={
-            <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
-              <p className="t2 clamp2" style={{ margin: 0 }} title={value.objective}>{value.objective}</p>
-              <span className="t2">{plural("plan.confirmMembers", members.length, { permissions })}</span>
-              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--sp-1)" }}>
-                {members.map(member => {
-                  const quota = memberQuota(value, member)
-                  return (
-                    <li key={member.id} style={{ display: "flex", gap: "var(--sp-2)", alignItems: "center", minWidth: 0 }}>
-                      <span className="xs t2 trunc" style={{ flex: 1 }} title={modelLine(member)}>{member.role.split(":")[0]} · {modelLine(member)}</span>
-                      {quota && <Chip tone={QUOTA_TONE[quota]}>{t(`quota.${quota}`)}</Chip>}
-                    </li>
-                  )
-                })}
-              </ul>
-              <div className="field">
-                <span className="label">{t("plan.digest")}</span>
-                <span className="mono xs" style={{ overflowWrap: "anywhere" }}>{value.digest}</span>
-              </div>
-              {approve.error && (
-                <div role="alert" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-1)" }}>
-                  <span className="xs" style={{ color: "var(--danger)" }}>{describeError(approve.error)}</span>
-                  {approve.error.message && <span className="xs t3" style={{ overflowWrap: "anywhere" }}>{approve.error.message}</span>}
-                </div>
-              )}
-            </div>
-          }
-        />
       )}
     </Panel>
   )

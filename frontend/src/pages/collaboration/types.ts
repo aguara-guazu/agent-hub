@@ -123,4 +123,13 @@ export interface Plan {
   plan: { permissions: string; members: Member[]; usage?: MemberUsage[]; usage_redacted?: boolean }
   members?: Member[]
   progress: { workspaces_created: number; processes_accepted: number; joined: number; total: number }
+  authorization?: {
+    source: string | null
+    instruction: string | null
+    coordinator_id: string
+    approved_by_user_id: string | null
+    delegation?: { project_id: string; version: number }
+  }
+  launch?: { started_at: string | null; accepted_at: string | null; instruction_declared: boolean }
+  close?: { at: string | null; reason: string | null }
 }
