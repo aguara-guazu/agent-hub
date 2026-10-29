@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ChangeEvent } from "react"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useQueryClient } from "@tanstack/react-query"
 import { useSearchParams } from "react-router-dom"
 import { Button, Empty, EmptyFiltered, ErrorState, Icon, List, MoreMenu, Row, SearchInput, Seg, SkeletonRows, Switch, Tag, hueFor, useToast } from "../../components/ui"
 import { useT } from "../../i18n"
@@ -11,7 +11,8 @@ import { useSkills } from "../../lib/queries"
 import { draftFromSkillFile, saveBlob, slugify } from "../../lib/skills"
 import type { SkillDraft } from "../../lib/skills"
 import type { Skill } from "../../lib/types"
-import { invalidateSkills, useSkillRule } from "./rules"
+import { cancelDelete, commitAll, commitDelete, scheduleDelete } from "./pendingDeletes"
+import { invalidateSkills, snapshotClientRule, snapshotRules, useSkillRule } from "./rules"
 import { SkillPanel } from "./SkillPanel"
 
 type Filter = "all" | "on" | "off"
@@ -76,42 +77,48 @@ export default function SkillsPage() {
   }
 
   function toggleAll(skill: Skill, enabled: boolean) {
-    rule.mutate({ id: skill.id, enabled }, {
+    const before = snapshotRules(rowOf(skill.id), skill.id)
+    rule.mutate([{ id: skill.id, state: enabled ? "on" : "off" }], {
       onSuccess: () => toast.show({
         message: t(enabled ? "toast.onAll" : "toast.offAll", { name: skill.display_name }),
-        undo: () => rule.mutate({ id: skill.id, enabled: !enabled }),
+        undo: () => rule.mutate(before),
       }),
     })
   }
 
   function toggleClient(skill: Skill, client: LocalClient, enabled: boolean) {
     const name = status(`client.${client.cli_kind}`)
-    rule.mutate({ id: skill.id, enabled, client: client.id }, {
+    const before = snapshotClientRule(rowOf(skill.id), skill.id, client.id)
+    rule.mutate([{ id: skill.id, state: enabled ? "on" : "off", client: client.id }], {
       onSuccess: () => toast.show({
         message: t(enabled ? "toast.onClient" : "toast.offClient", { name: skill.display_name, client: name }),
-        undo: () => rule.mutate({ id: skill.id, enabled: !enabled, client: client.id }),
+        undo: () => rule.mutate([before]),
       }),
     })
   }
 
-  const remove = useMutation({
-    mutationFn: (skill: Skill) => api.delete(`/catalog/skills/${skill.id}`),
-    onSettled: async () => { await invalidateSkills(cache) },
-    onError: (error, skill) => {
-      setHidden(current => { const next = new Set(current); next.delete(skill.id); return next })
-      toast.error(t("toast.deleteFailed", { name: skill.display_name }), error.message)
-    },
-  })
+  const unhide = useCallback((id: string) => setHidden(current => { const next = new Set(current); next.delete(id); return next }), [])
+  const deleteToast = useRef<string | null>(null)
 
-  /** El borrado se aplica al vencer el aviso; Deshacer solo vuelve a mostrar la fila. */
+  // Salir de la vista dentro del plazo confirma el borrado: no queda un toast con Deshacer que ya no puede cumplir.
+  useEffect(() => () => {
+    if (deleteToast.current) toast.dismiss(deleteToast.current)
+    void commitAll().then(() => invalidateSkills(cache))
+  }, [toast, cache])
+
+  /** El DELETE sale al vencer el aviso, al desmontar la vista o en pagehide; Deshacer lo cancela. */
   function deleteSkill(skill: Skill) {
     setHidden(current => new Set(current).add(skill.id))
     setDirty(false)
     setSelection(null)
-    toast.show({
+    scheduleDelete(skill.id, error => {
+      unhide(skill.id)
+      toast.error(t("toast.deleteFailed", { name: skill.display_name }), error instanceof Error ? error.message : undefined)
+    })
+    deleteToast.current = toast.show({
       message: common("toast.deleted", { name: skill.display_name }),
-      undo: () => setHidden(current => { const next = new Set(current); next.delete(skill.id); return next }),
-      onCommit: () => remove.mutate(skill),
+      undo: () => { if (cancelDelete(skill.id)) unhide(skill.id) },
+      onCommit: () => { void commitDelete(skill.id).then(() => invalidateSkills(cache)) },
     })
   }
 
