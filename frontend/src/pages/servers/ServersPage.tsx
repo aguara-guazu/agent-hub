@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import {
   Avatar, Banner, Button, Chip, Empty, EmptyFiltered, ErrorState, List, MoreMenu, Row, RowHead, SearchInput, Seg, Select,
   SkeletonRows, Switch, useToast,
 } from "../../components/ui"
 import { useT } from "../../i18n/useT"
+import { ApiError } from "../../lib/api"
 import { useOverview } from "../../lib/local"
 import type { LocalClient } from "../../lib/local"
 import { useServers } from "../../lib/queries"
 import {
-  STATUS_TONE, deleteServer, deleteServerKeepalive, needsAttention, needsAuth, probeServer, rowEnabled, serverStatus, snapshotRules,
+  STATUS_TONE, deleteServer, needsAttention, needsAuth, probeServer, restoreServer, rowEnabled, serverStatus, snapshotRules,
   useRuleWrite, useServersCache,
 } from "../../lib/servers"
 import type { RuleWrite, ServerStatus } from "../../lib/servers"
@@ -129,47 +130,31 @@ export default function ServersPage() {
     })
   }
 
-  /** Borrados en espera de que venza su aviso. La API borra en el acto, así que el DELETE se difiere para que
-   *  «Deshacer» no pierda nada; al desmontar la vista o en pagehide se envía igual (nunca se descarta). */
-  const pendingDeletes = useRef(new Map<string, string>())
-
-  const commitDelete = useCallback((server: McpServer, unhide: () => void) => {
-    if (!pendingDeletes.current.delete(server.id)) return
-    deleteServer(server.id)
-      .then(refresh)
-      .catch(error => { unhide(); toast.error(t("toast.deleteFailed", { name: server.display_name }), failDetail(error)) })
-  }, [refresh, toast, t, failDetail])
-
-  useEffect(() => {
-    const pending = pendingDeletes.current
-    // pagehide: el documento puede no sobrevivir a una promesa normal; keepalive deja salir el pedido.
-    const onPageHide = () => {
-      for (const [id, toastId] of [...pending]) {
-        pending.delete(id)
-        deleteServerKeepalive(id)
-        toast.dismiss(toastId)
-      }
-    }
-    window.addEventListener("pagehide", onPageHide)
-    return () => {
-      window.removeEventListener("pagehide", onPageHide)
-      // Cerrar el aviso dispara onCommit → commitDelete, que manda el DELETE pendiente.
-      for (const toastId of [...pending.values()]) toast.dismiss(toastId)
-    }
-  }, [toast])
-
+  /** Borrado suave en el acto; «Deshacer» lo restaura con sus herramientas, reglas y autorización (30 min). */
   function remove(server: McpServer) {
     setHidden(current => new Set(current).add(server.id))
     setPanelDirty(false)
     setSelectedId(current => (current === server.id ? null : current))
     const unhide = () => setHidden(current => { const next = new Set(current); next.delete(server.id); return next })
-    pendingDeletes.current.set(server.id, "")
-    const toastId = toast.show({
-      message: t("toast.deleted", { name: server.display_name }),
-      undo: () => { pendingDeletes.current.delete(server.id); unhide() },
-      onCommit: () => commitDelete(server, unhide),
-    })
-    if (pendingDeletes.current.has(server.id)) pendingDeletes.current.set(server.id, toastId)
+    deleteServer(server.id)
+      .then(() => {
+        void refresh().then(unhide)
+        toast.show({
+          message: t("toast.deleted", { name: server.display_name }),
+          undo: () => {
+            restoreServer(server.id)
+              .then(refresh)
+              .catch(error => toast.error(t("toast.restoreFailed", { name: server.display_name }), restoreDetail(error)))
+          },
+        })
+      })
+      .catch(error => { unhide(); toast.error(t("toast.deleteFailed", { name: server.display_name }), failDetail(error)) })
+  }
+
+  function restoreDetail(error: unknown): string {
+    if (error instanceof ApiError && error.status === 404) return t("toast.restoreExpired")
+    if (error instanceof ApiError && error.status === 409) return t("toast.restoreConflict")
+    return failDetail(error)
   }
 
   async function created(server: McpServer) {
