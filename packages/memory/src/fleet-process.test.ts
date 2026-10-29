@@ -287,6 +287,21 @@ describe('FleetProcessManager', () => {
     expect(events.at(-1)).toMatchObject({ pid: events[0]!.pid, process_started: manager.status('one')!.process_started })
     expect(JSON.stringify(events)).not.toMatch(/PRIVATE/)
   })
+  it('keeps the claude.ai connectors out of a Claude child only when the member asks for isolation', async () => {
+    const previous = process.env.ENABLE_CLAUDEAI_MCP_SERVERS
+    delete process.env.ENABLE_CLAUDEAI_MCP_SERVERS
+    try {
+      const isolated = await setup('normal')
+      await isolated.manager.start({ ...isolated.input, cli: 'claude_code', isolate_connectors: true })
+      expect(isolated.launches[0]!.env!.ENABLE_CLAUDEAI_MCP_SERVERS).toBe('false')
+      const plain = await setup('normal')
+      await plain.manager.start({ ...plain.input, cli: 'claude_code' })
+      expect(plain.launches[0]!.env!.ENABLE_CLAUDEAI_MCP_SERVERS).toBeUndefined()
+      const codex = await setup('normal')
+      await codex.manager.start({ ...codex.input, isolate_connectors: true })
+      expect(codex.launches[0]!.env!.ENABLE_CLAUDEAI_MCP_SERVERS).toBeUndefined()
+    } finally { if (previous === undefined) delete process.env.ENABLE_CLAUDEAI_MCP_SERVERS; else process.env.ENABLE_CLAUDEAI_MCP_SERVERS = previous }
+  })
   it('never infers a quota cause from a Claude result failure', async () => {
     const { manager, input } = await setup('failed')
     await manager.start({ ...input, cli: 'claude_code' })

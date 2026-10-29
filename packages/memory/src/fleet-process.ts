@@ -15,6 +15,8 @@ export interface FleetStart {
   resume_id?: string
   /** With resume_id, continue in a new native session copied from it instead of reusing the original. */
   fork?: boolean
+  /** Starts a Claude child without the connectors of the user's claude.ai account; set for members that run derived, approved plans. */
+  isolate_connectors?: boolean
 }
 /** No prompts, transcripts, command output or CLI error text. Native questions are explicitly structured. */
 export interface FleetQuestion {
@@ -448,6 +450,7 @@ export class FleetProcessManager {
       : ['app-server', '--listen', 'stdio://']
     const env = { ...process.env }
     for (const key of Object.keys(env)) if (/^(AGENTHUB_|ORCA_|ELECTRON_RUN_AS_NODE$|CLAUDECODE$|CLAUDE_CODE_ENTRYPOINT$|CODEX_THREAD_ID$)/i.test(key)) delete env[key]
+    if (input.isolate_connectors && input.cli === 'claude_code') env.ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
     const launcher = this.options.launcher ?? ((command, argv, options) => spawn(command, argv, { ...options, stdio: 'pipe' }))
     const child = launcher(input.cli === 'claude_code' ? 'claude' : input.cli === 'kiro' ? 'kiro-cli' : 'codex', args, { cwd: input.cwd, env, detached: process.platform !== 'win32', windowsHide: true })
     const status: FleetStatus = { id: input.id, cli: input.cli, cwd: input.cwd, model: input.model, state: 'starting', ...(input.effort ? { effort: input.effort } : {}),
