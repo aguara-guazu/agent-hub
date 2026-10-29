@@ -5,8 +5,9 @@ import { useAuthorizeGmailSend } from '../lib/project-automation'
 
 /** «Falta autorizar el envío»: atajo que guarda la opción en la fuente y abre la autorización de Google. */
 export function GmailAuthorize({ destination }: { destination?: string }) {
-  const { google, authorize } = useAuthorizeGmailSend()
+  const { google, ambiguous, authorize } = useAuthorizeGmailSend(destination)
   const [asking, setAsking] = useState(false)
+  if (ambiguous) return <small className="automations-muted"> Hay varias cuentas de Google: autoriza el envío en <Link to="/memory/sources">Fuentes y ajustes</Link>, en la cuenta que corresponde.</small>
   if (!google) return <small className="automations-muted"> Conecta Google en <Link to="/memory/sources">Fuentes y ajustes</Link>.</small>
   return <>
     <button type="button" className="btn btn-sm" disabled={authorize.isPending} onClick={() => setAsking(true)}>Autorizar</button>

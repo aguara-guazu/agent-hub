@@ -5,7 +5,7 @@ import { DataTable } from '../components/DataTable'
 import { formatDateTime } from '../components/DataTable'
 import { useRuns, useDeliveryChannels, useSchedules, useScheduleActions, CHANNEL_REASONS } from '../lib/automations'
 import { GmailAuthorize } from '../components/GmailAuthorize'
-import { DEFAULT_LIMITS, useProjectAutomation, useSaveProjectAutomation, useSaveRepositories } from '../lib/project-automation'
+import { cleanDocument, DEFAULT_LIMITS, ITEM_KIND_LABELS, useAddRepository, useProjectAutomation, useSaveProjectAutomation } from '../lib/project-automation'
 import type { DelegatedItemKind, DelegationDocument, ProjectAutomationView, RosterEntry } from '../lib/project-automation'
 import { CLI_LABELS } from '../lib/types'
 import { ErrorBox } from '../lib/memory'
@@ -24,13 +24,13 @@ function RosterPicker({ label, value, onChange }: { label: string; value: Roster
 }
 
 function RepositoryAdder({ projectId }: { projectId: string }) {
-  const save = useSaveRepositories(projectId)
+  const save = useAddRepository(projectId)
   const [path, setPath] = useState('')
   const [branches, setBranches] = useState('feat/*, fix/*')
   return <div className="project-automation-repo-add">
     <label>Ruta del repositorio<input value={path} placeholder="/ruta/al/repositorio" onChange={event => setPath(event.target.value)} /></label>
     <label>Ramas permitidas<input value={branches} onChange={event => setBranches(event.target.value)} /></label>
-    <button type="button" className="btn btn-sm" disabled={!path.trim() || save.isPending} onClick={() => save.mutate([{ repo_path: path.trim(), allowed_branches: branches.split(',').map(item => item.trim()).filter(Boolean) }], { onSuccess: () => setPath('') })}>Agregar repositorio</button>
+    <button type="button" className="btn btn-sm" disabled={!path.trim() || save.isPending} onClick={() => save.mutate({ repo_path: path.trim(), allowed_branches: branches.split(',').map(item => item.trim()).filter(Boolean) }, { onSuccess: () => setPath('') })}>Agregar repositorio</button>
   </div>
 }
 
@@ -42,20 +42,20 @@ function ActivationForm({ project, view, onDone }: { project: MemoryEntity; view
   const fallback: RosterEntry = view.defaults?.coordinator ?? { cli: 'claude_code', model: '' }
   const [coordinator, setCoordinator] = useState<RosterEntry>(current?.roster.coordinator ?? fallback)
   const [agent, setAgent] = useState<RosterEntry>(current?.roster.project_agent ?? view.defaults?.project_agent ?? fallback)
-  const [kinds, setKinds] = useState<DelegatedItemKind[]>(current?.item_kinds ?? ['jira_worklog'])
+  const hasJira = Boolean(project.data?.jira_project_key)
+  const [kinds, setKinds] = useState<DelegatedItemKind[]>(current?.item_kinds ?? (hasJira ? ['jira_worklog'] : []))
   const [repositories, setRepositories] = useState<string[]>(current?.repository_ids ?? [])
   const [channelId, setChannelId] = useState(view.channel?.id ?? view.channel_candidates[0]?.id ?? '')
-  const hasJira = Boolean(project.data?.jira_project_key)
   const toggleKind = (...group: DelegatedItemKind[]): void => setKinds(items => group.every(kind => items.includes(kind)) ? items.filter(kind => !group.includes(kind)) : [...new Set([...items, ...group])])
   const pushOn = kinds.includes('git_push')
   const needsRoster = Boolean(channelId)
   const valid = !needsRoster || (coordinator.model.trim() !== '' && agent.model.trim() !== '')
   const submit = (): void => {
-    const document: DelegationDocument = {
+    const document: DelegationDocument = cleanDocument({
       schema_version: 1,
       roster: { coordinator: { ...coordinator, model: coordinator.model.trim() }, project_agent: { ...agent, model: agent.model.trim() } },
       item_kinds: kinds, repository_ids: pushOn ? repositories : [], limits: current?.limits ?? { ...DEFAULT_LIMITS },
-    }
+    })
     save.mutate({ enabled: true, expected_version: view.delegation?.version ?? null, channel_id: channelId || null, document }, { onSuccess: onDone })
   }
   return <form className="project-automation-form" onSubmit={event => { event.preventDefault(); submit() }}>
@@ -78,6 +78,23 @@ function ActivationForm({ project, view, onDone }: { project: MemoryEntity; view
     {project.data?.remote_processing === false && <p className="automations-warning">El resumen de este proyecto no se generará con un modelo remoto; recibirás solo los datos.</p>}
     <div className="automations-actions"><button type="submit" className="btn btn-primary" disabled={!valid || save.isPending}>{view.delegation ? 'Guardar cambios' : 'Activar para este proyecto'}</button><button type="button" className="btn" onClick={onDone} disabled={save.isPending}>Cancelar</button></div>
   </form>
+}
+
+/** La delegación completa en lenguaje claro: lo que la persona confirma es lo que el backend va a usar. */
+function DelegationSummary({ document, view }: { document: DelegationDocument; view: ProjectAutomationView }) {
+  const repositories = document.repository_ids.map(id => view.repositories.find(repo => repo.id === id) ?? null)
+  const roster = (entry: RosterEntry): string => `${CLI_LABELS[entry.cli as keyof typeof CLI_LABELS] ?? entry.cli} · ${entry.model}${entry.effort ? ` · esfuerzo ${entry.effort}` : ''}`
+  return <div className="project-automation-summary">
+    <h4>Acciones que podrá proponer</h4>
+    {document.item_kinds.length ? <ul>{document.item_kinds.map(kind => <li key={kind}>{ITEM_KIND_LABELS[kind] ?? kind}</li>)}</ul> : <p>Ninguna.</p>}
+    {document.item_kinds.includes('git_push') && <><h4>Repositorios y ramas</h4>
+      {repositories.length ? <ul>{repositories.map((repo, index) => <li key={repo?.id ?? index}>{repo ? <>{repo.repo_path} <small className="automations-muted">remoto {repo.canonical_remote_url} · ramas permitidas: {repo.allowed_branches.join(', ') || 'ninguna'} · la principal ({repo.default_branch}) queda excluida</small></> : `Repositorio ${document.repository_ids[index]} (ya no está disponible)`}</li>)}</ul> : <p>Ninguno: no podrá proponer pushes.</p>}</>}
+    <h4>Equipo</h4>
+    <ul><li>Coordinador: {roster(document.roster.coordinator)}</li><li>Agente del proyecto: {roster(document.roster.project_agent)}</li></ul>
+    <h4>Límites</h4>
+    <ul><li>Planes simultáneos: {document.limits.max_concurrent_plans}</li><li>Duración máxima: {document.limits.max_runtime_minutes} min</li></ul>
+    <p className="automations-muted">Canal de trabajo: {view.channel?.name ?? 'sin canal (no habrá coordinador ni acciones de flota)'}. Cada acción externa sigue pidiendo tu aprobación por ítem.</p>
+  </div>
 }
 
 function UpcomingRuns({ projectId }: { projectId: string }) {
@@ -104,6 +121,7 @@ export function ProjectAutomation({ project }: { project: MemoryEntity }) {
   const save = useSaveProjectAutomation(project.id)
   const [editing, setEditing] = useState(false)
   const [deactivating, setDeactivating] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const view = automation.data
   if (automation.error) return <ErrorBox error={automation.error} retry={automation.refetch} />
   if (!view) return <div className="hub-loading" role="status">Cargando…</div>
@@ -114,15 +132,18 @@ export function ProjectAutomation({ project }: { project: MemoryEntity }) {
   return <div className="project-automation">
     <section className="project-automation-card"><h3>Delegación v{delegation.version}</h3>
       <p>{delegation.approval_source === 'owner_ui' ? 'Aprobada en la app' : `Declarada por un agente${delegation.instruction ? `: «${delegation.instruction}»` : ''}`} · {formatDateTime(delegation.created_at)} · digest {delegation.digest.slice(0, 8)}…</p>
-      <p>Acciones permitidas: {delegation.document.item_kinds.length ? delegation.document.item_kinds.join(', ') : 'ninguna'}. Coordinador: {view.coordinator === 'ready' ? 'listo' : view.coordinator === 'no_channel' ? 'sin canal' : 'desactivado'}{view.channel ? ` · canal ${view.channel.name}` : ''}.</p>
+      <p>Acciones permitidas: {delegation.document.item_kinds.length ? delegation.document.item_kinds.map(kind => ITEM_KIND_LABELS[kind] ?? kind).join('; ') : 'ninguna'}. Coordinador: {view.coordinator === 'ready' ? 'listo' : view.coordinator === 'no_channel' ? 'sin canal' : 'desactivado'}{view.channel ? ` · canal ${view.channel.name}` : ''}.</p>
       <div className="automations-actions">
-        {delegation.approval_source === 'coordinator_declaration' && <button className="btn" disabled={save.isPending} onClick={() => save.mutate({ enabled: true, expected_version: delegation.version, channel_id: view.channel?.id ?? null, document: delegation.document })}>Confirmar en la app</button>}
+        {delegation.approval_source === 'coordinator_declaration' && <button className="btn" disabled={save.isPending} onClick={() => setConfirming(true)}>Revisar y confirmar</button>}
         <button className="btn" onClick={() => setEditing(true)}>Configurar</button>
         <button className="btn btn-danger" onClick={() => setDeactivating(true)}>Desactivar</button></div></section>
     <UpcomingRuns projectId={project.id} />
     <LastClose />
+    <ConfirmDialog open={confirming} title="Confirmar la delegación" confirmLabel="Confirmar en la app" cancelLabel="Volver" busy={save.isPending} onClose={() => setConfirming(false)}
+      message={<><p>Un agente declaró esta delegación{delegation.instruction ? <> con la frase «{delegation.instruction}»</> : ''}. Al confirmar queda aprobada por ti, con exactamente lo siguiente (versión {delegation.version}, digest {delegation.digest.slice(0, 12)}…):</p><DelegationSummary document={delegation.document} view={view} /></>}
+      onConfirm={() => save.mutate({ enabled: true, expected_version: delegation.version, expected_digest: delegation.digest, channel_id: view.channel?.id ?? null, document: cleanDocument(delegation.document) }, { onSuccess: () => setConfirming(false) })} />
     <ConfirmDialog open={deactivating} title="Desactivar brief y cierre" destructive confirmLabel="Desactivar" busy={save.isPending}
       message="Se revoca la delegación y se cancelan las automatizaciones de este proyecto. Se conservan el historial y las entregas."
-      onClose={() => setDeactivating(false)} onConfirm={() => save.mutate({ enabled: false, expected_version: delegation.version, channel_id: view.channel?.id ?? null, document: delegation.document }, { onSuccess: () => setDeactivating(false) })} />
+      onClose={() => setDeactivating(false)} onConfirm={() => save.mutate({ enabled: false, expected_version: delegation.version, channel_id: view.channel?.id ?? null, document: cleanDocument(delegation.document) }, { onSuccess: () => setDeactivating(false) })} />
   </div>
 }

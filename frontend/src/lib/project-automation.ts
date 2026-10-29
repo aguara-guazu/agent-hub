@@ -16,7 +16,7 @@ export interface DelegationDocument {
   roster: { coordinator: RosterEntry; project_agent: RosterEntry }
   item_kinds: DelegatedItemKind[]
   repository_ids: string[]
-  limits: { max_concurrent_plans: number; max_members: number; max_runtime_minutes: number }
+  limits: { max_concurrent_plans: number; max_runtime_minutes: number }
 }
 
 export interface ProjectRepositoryView { id: string; repo_path: string; canonical_remote_url: string; remote_name: string; default_branch: string; allowed_branches: string[] }
@@ -34,7 +34,26 @@ export interface ProjectAutomationView {
   defaults?: { coordinator?: RosterEntry; project_agent?: RosterEntry }
 }
 
-export const DEFAULT_LIMITS = { max_concurrent_plans: 1, max_members: 2, max_runtime_minutes: 60 } as const
+/** Nombre en lenguaje claro de cada tipo de acción que una delegación permite proponer. */
+export const ITEM_KIND_LABELS: Record<DelegatedItemKind, string> = {
+  jira_worklog: 'Registrar horas en Jira',
+  jira_transition: 'Cambiar el estado de tareas en Jira',
+  jira_comment: 'Comentar tareas en Jira',
+  git_push: 'Hacer push de ramas (nunca a la principal ni con force)',
+}
+
+export const DEFAULT_LIMITS = { max_concurrent_plans: 1, max_runtime_minutes: 60 } as const
+
+/** Reconstruye el documento con solo los campos vigentes: el esquema estricto del backend rechaza con 422 cualquier campo retirado (p. ej. `max_members`). */
+export function cleanDocument(document: DelegationDocument): DelegationDocument {
+  const entry = (value: RosterEntry): RosterEntry => ({ cli: value.cli, model: value.model, ...(value.effort ? { effort: value.effort } : {}) })
+  return {
+    schema_version: 1,
+    roster: { coordinator: entry(document.roster.coordinator), project_agent: entry(document.roster.project_agent) },
+    item_kinds: [...document.item_kinds], repository_ids: [...document.repository_ids],
+    limits: { max_concurrent_plans: document.limits.max_concurrent_plans, max_runtime_minutes: document.limits.max_runtime_minutes },
+  }
+}
 
 export const AUTOMATION_ERRORS: Record<string, string> = {
   stale_version: 'La configuración cambió desde que abriste esta pantalla; recárgala y vuelve a confirmar.',
@@ -56,7 +75,7 @@ export function useSaveProjectAutomation(projectId: string) {
   const cache = useQueryClient()
   const toast = useToast()
   return useMutation({
-    mutationFn: (body: { enabled: boolean; expected_version: number | null; channel_id: string | null; document: DelegationDocument }) =>
+    mutationFn: (body: { enabled: boolean; expected_version: number | null; channel_id: string | null; document: DelegationDocument; expected_digest?: string }) =>
       api.put<ProjectAutomationView>(`/memory/projects/${encodeURIComponent(projectId)}/automation`, body),
     onSuccess: async view => {
       cache.setQueryData(automationKey(projectId), view)
@@ -66,32 +85,50 @@ export function useSaveProjectAutomation(projectId: string) {
   })
 }
 
-export function useSaveRepositories(projectId: string) {
+/** Agrega o actualiza un repositorio (`POST …/repositories`); el backend resuelve el remoto y la rama principal. */
+export function useAddRepository(projectId: string) {
   const cache = useQueryClient()
   const toast = useToast()
   return useMutation({
-    mutationFn: (repositories: { repo_path: string; remote_name?: string; allowed_branches: string[] }[]) =>
-      api.put<{ repositories: ProjectRepositoryView[] }>(`/memory/projects/${encodeURIComponent(projectId)}/repositories`, { repositories }),
+    mutationFn: (repository: { repo_path: string; remote_name?: string; allowed_branches: string[] }) =>
+      api.post<{ repository: ProjectRepositoryView }>(`/memory/projects/${encodeURIComponent(projectId)}/repositories`, repository),
     onSuccess: async () => { await cache.invalidateQueries({ queryKey: automationKey(projectId) }) },
     onError: error => { toast.error('No se pudo guardar el repositorio', error instanceof ApiError && error.code && AUTOMATION_ERRORS[error.code] ? AUTOMATION_ERRORS[error.code]! : error.message) },
   })
 }
 
-/** Fuente Google existente: guarda `gmail_send_enabled` y abre la autorización completa (lectura y envío) en un solo paso. */
-export function useAuthorizeGmailSend() {
+/**
+ * Fuente Google que recibe el envío: la de la cuenta `destination` (`account_email`); sin coincidencia solo se usa si es la única,
+ * porque con varias cuentas conectadas elegir la primera podría autorizar el envío desde otra cuenta.
+ */
+export function pickGoogleSource<T extends { provider: string; account_email?: string | null }>(connectors: readonly T[] | undefined, destination?: string): T | undefined {
+  const sources = (connectors ?? []).filter(connector => connector.provider === 'google')
+  const wanted = destination?.trim().toLowerCase()
+  const byAccount = wanted ? sources.filter(source => source.account_email?.toLowerCase() === wanted) : []
+  if (byAccount.length === 1) return byAccount[0]
+  return sources.length === 1 && byAccount.length === 0 ? sources[0] : undefined
+}
+
+/**
+ * Guarda `gmail_send_enabled` en la fuente y abre la autorización completa (lectura y envío). El backend arma los scopes desde la
+ * configuración guardada, así que la opción se guarda antes de abrir Google; si la persona no completa el consentimiento, la fuente queda
+ * como «Falta autorizar el envío» y se puede reintentar o desactivar en Fuentes.
+ */
+export function useAuthorizeGmailSend(destination?: string) {
   const toast = useToast()
   const cache = useQueryClient()
   const connectors = useMemory<any[]>('list_connectors', {})
-  const google = connectors.data?.find(connector => connector.provider === 'google')
+  const google = pickGoogleSource(connectors.data, destination)
+  const ambiguous = Boolean(connectors.data) && !google && (connectors.data?.filter(connector => connector.provider === 'google').length ?? 0) > 1
   const authorize = useMutation({
     mutationFn: async () => {
-      if (!google) throw new Error('Todavía no hay una fuente Google conectada')
+      if (!google) throw new Error('No se pudo determinar la fuente de Google de esa cuenta')
       await memoryCall('save_connector', { id: google.id, provider: 'google', name: google.name, config: { ...google.config, gmail_send_enabled: true }, project_ids: google.project_ids, interval_minutes: google.interval_minutes, enabled: google.enabled })
-      const started = await api.post<{ authorization_url: string }>(`/memory/connectors/${google.id}/google/start`)
+      const started = await api.post<{ authorization_url: string }>(`/memory/connectors/${encodeURIComponent(google.id)}/google/start`)
       window.open(started.authorization_url, '_blank', 'noopener,noreferrer')
     },
     onSuccess: async () => { await Promise.all([cache.invalidateQueries({ queryKey: ['memory'] }), cache.invalidateQueries({ queryKey: ['delivery-channels'] })]) },
     onError: error => { toast.error('No se pudo iniciar la autorización', error.message) },
   })
-  return { google, authorize }
+  return { google, ambiguous, authorize }
 }
