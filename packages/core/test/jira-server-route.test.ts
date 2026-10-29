@@ -5,7 +5,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { buildApp, type CoreApp } from '../src/app.js'
 import { ensureLocalOwner } from '../src/local.js'
 import { createAccessToken, generateDaemonToken } from '../src/security.js'
-import { JIRA_SERVER_SETTING, readJiraServerId } from '../src/effects/jira-server.js'
+import { JIRA_SERVER_NONE, JIRA_SERVER_SETTING, readJiraServerId } from '../src/effects/jira-server.js'
 
 describe('servidor de Jira elegido por el dueño', () => {
   let app: CoreApp, directory: string, ownerId: string, headers: { authorization: string }
@@ -92,15 +92,34 @@ describe('servidor de Jira elegido por el dueño', () => {
     expect(readJiraServerId(app.store, ownerId)).toBe(first.id)
   })
 
-  it('null borra el setting y las escrituras vuelven a quedar cerradas', async () => {
+  it('null guarda «Ninguno» y las escrituras vuelven a quedar cerradas', async () => {
     const first = server(ownerId, 'atlassian_rovo', 'Atlassian', jiraTools)
     await put({ server_id: first.id })
     const cleared = await put({ server_id: null })
     expect(cleared.statusCode).toBe(200)
     expect(cleared.json().selected).toBeNull()
-    expect(app.store.setting(JIRA_SERVER_SETTING)).toBeUndefined()
+    expect(app.store.setting(JIRA_SERVER_SETTING)).toBe(JIRA_SERVER_NONE)
     expect(readJiraServerId(app.store, ownerId)).toBeUndefined()
     expect((await put({ server_id: null })).statusCode).toBe(200)
+  })
+
+  it('sin elección rige el conector atlassian-rovo del dueño si es utilizable, y «Ninguno» elegido no vuelve a él', async () => {
+    const rovo = server(ownerId, 'atlassian-rovo', 'Atlassian Rovo', jiraTools)
+    const second = server(ownerId, 'atlassian-rovo-2', 'Atlassian Rovo (2)', jiraTools)
+    expect(readJiraServerId(app.store, ownerId)).toBe(rovo.id)
+    expect((await app.fastify.inject({ method: 'GET', url, headers })).json().selected).toBe(rovo.id)
+    expect((await put({ server_id: second.id })).json().selected).toBe(second.id)
+    expect((await put({ server_id: null })).json().selected).toBeNull()
+    expect(readJiraServerId(app.store, ownerId)).toBeUndefined()
+  })
+
+  it('el conector por defecto no rige si no es utilizable o es de otro dueño', async () => {
+    server(ownerId, 'atlassian-rovo', 'Atlassian Rovo', ['getJiraIssue'])
+    expect(readJiraServerId(app.store, ownerId)).toBeUndefined()
+    const org = app.store.insertOrganization('otra', 'Otra')
+    const other = app.store.insertUser({ organization_id: org.id, email: 'otro@example.com', full_name: 'Otro', password_hash: '!', org_role: 'owner' })
+    server(other.id, 'atlassian-rovo', 'Atlassian Rovo', jiraTools)
+    expect(readJiraServerId(app.store, ownerId)).toBeUndefined()
   })
 
   it('un seleccionado que dejó de ser del dueño o de existir se informa como null', async () => {

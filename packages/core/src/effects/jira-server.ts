@@ -4,15 +4,25 @@ import { JIRA_GET_ISSUE_TOOL, JIRA_USER_INFO_TOOL } from './jira.js'
 /** Setting del dueño con el id (del catálogo, no el slug) del servidor Atlassian donde se escribe en Jira. */
 export const JIRA_SERVER_SETTING = 'jira.server_id'
 
+/** Valor guardado cuando el dueño eligió «Ninguno»: distingue esa decisión de no haber elegido todavía. */
+export const JIRA_SERVER_NONE = 'none'
+/** Conector Atlassian del catálogo que rige mientras el dueño no eligió servidor. */
+export const DEFAULT_JIRA_SERVER_SLUG = 'atlassian-rovo'
+
 /**
- * Servidor de Jira fijado por el dueño para las escrituras, o `undefined` si no hay ninguno utilizable. Se valida contra el catálogo en cada lectura:
- * un id que ya no existe o que pertenece a otro dueño no se usa, de modo que la escritura falla cerrada en lugar de elegir un servidor.
+ * Servidor de Jira para las escrituras, o `undefined` si no hay ninguno utilizable. Se valida contra el catálogo en cada lectura.
+ * Un id elegido que ya no existe o que pertenece a otro dueño no se usa, de modo que la escritura falla cerrada en lugar de elegir otro servidor.
+ * Sin elección rige el conector `atlassian-rovo` del dueño si es utilizable; «Ninguno» elegido explícitamente no vuelve a ese valor.
  */
 export function readJiraServerId(store: Store, ownerId: string): string | undefined {
   const id = store.setting(JIRA_SERVER_SETTING)?.trim()
-  if (!id) return undefined
-  const server = store.server(id)
-  return server && server.user_id === ownerId ? server.id : undefined
+  if (id === JIRA_SERVER_NONE) return undefined
+  if (id) {
+    const server = store.server(id)
+    return server && server.user_id === ownerId ? server.id : undefined
+  }
+  const fallback = store.serversOfUser(ownerId).find(server => server.slug === DEFAULT_JIRA_SERVER_SLUG)
+  return fallback && isUsableJiraServer(store, fallback.id) ? fallback.id : undefined
 }
 
 export interface JiraServerOption {
@@ -42,11 +52,11 @@ export function readJiraServerSelection(store: Store, ownerId: string): JiraServ
 }
 
 /**
- * Fija o borra (`null`) el servidor de Jira del dueño. Devuelve el motivo del rechazo, o `null` si guardó; ante un rechazo no toca el setting.
- * Borrar deja las escrituras cerradas porque `readJiraServerId` vuelve a `undefined`.
+ * Fija el servidor de Jira del dueño, o «Ninguno» con `null`. Devuelve el motivo del rechazo, o `null` si guardó; ante un rechazo no toca el setting.
+ * «Ninguno» deja las escrituras cerradas aunque exista el conector por defecto.
  */
 export function saveJiraServerId(store: Store, ownerId: string, serverId: string | null): 'unknown_server' | 'not_usable' | null {
-  if (serverId === null) { store.deleteSetting(JIRA_SERVER_SETTING); return null }
+  if (serverId === null) { store.setSetting(JIRA_SERVER_SETTING, JIRA_SERVER_NONE); return null }
   const server = store.server(serverId)
   if (!server || server.user_id !== ownerId) return 'unknown_server'
   if (!isUsableJiraServer(store, server.id)) return 'not_usable'
