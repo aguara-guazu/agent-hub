@@ -13,7 +13,6 @@ import { projectForPath, orcaWorkspaceSchema, type AgentContext } from './agents
 import type { MemoryStore } from './store.js'
 import type { Sql } from './database.js'
 import { teamGuidance, teamGuidanceVersion } from './local-chat-team.js'
-import { channelMembership } from './chat-access.js'
 import { canReadChannel, readAccessDefinitions, readDenied, readElevate, readInterest, readNoticeValid, readRequest, readScope, sweepReadAccess,
   confirmReadRequest, rejectReadRequest, revokeReadGrant, personReadGrants, personReadRequests, type ReadScope } from './chat-read-access.js'
 
@@ -939,9 +938,6 @@ export class LocalChat {
         }
       }
       check(thread,'Hilo inexistente',404)
-      // Read scope never grants writing: only channel membership or a current team binding does.
-      check(await channelMembership(sql,who.id,thread.channel_id) || await this.teamForThread(sql,who,thread),
-        'Podés leer este canal, pero no sos miembro: no podés escribir, mencionar ni participar en él. Pedile a tu líder que te incorpore.',403)
       let linkedTeam:Record<string,any>|undefined
       const teamRoot=(await sql.query('SELECT id FROM chat_team_plans WHERE root_thread_id=$1',[thread.team_root_thread_id ?? thread.id]))[0]
       if(teamRoot || thread.channel_id!==who.channel_id) {

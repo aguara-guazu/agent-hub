@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { check, id } from "./contracts.js"
 import type { Sql } from "./database.js"
-import { ACTIVE_TEAM_STATES, channelMembership, recordAuthorityEvent, sessionProjectId, teamChannelIds } from "./chat-access.js"
+import { ACTIVE_TEAM_STATES, channelMembership, channelProjectId, recordAuthorityEvent, sessionProjectId, teamChannelIds } from "./chat-access.js"
 
 /** Hard cap of a cross-project read grant, even while the agent keeps working. */
 export const READ_GRANT_MAX_TTL_MS = 8 * 60 * 60 * 1000
@@ -42,14 +42,6 @@ export async function readScope(sql: Sql, sessionId: string): Promise<ReadScope>
   const led = await sql.query("SELECT id FROM chat_channels WHERE leader_id=$1", [sessionId])
   const channels = new Set<string>([...(session ? [String(session.channel_id)] : []), ...led.map(row => String(row.id)), ...await teamChannelIds(sql, sessionId)])
   return { projects: [...new Set([...(own ? [own] : []), ...grants.map(row => String(row.project_id))])], channels: [...channels] }
-}
-
-/** Effective project of a channel: a worker channel belongs to its master's project. */
-export async function channelProjectId(sql: Sql, channelId: string): Promise<string | null> {
-  const row = (await sql.query(`SELECT COALESCE((SELECT master.project_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
-    JOIN chat_channels master ON master.id=p.master_channel_id WHERE m.channel_id=c.id ORDER BY p.created_at DESC LIMIT 1),c.project_id) AS project_id
-    FROM chat_channels c WHERE c.id=$1`, [channelId]))[0]
-  return row?.project_id ?? null
 }
 
 export async function canReadChannel(sql: Sql, sessionId: string, channelId: string, scope?: ReadScope) {
