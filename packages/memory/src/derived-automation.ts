@@ -1,6 +1,5 @@
-import type { MemoryDatabase } from './database.js'
 import type { DecisionService } from './decisions/service.js'
-import type { DerivedPorts, TeamOrchestration } from './team-orchestration.js'
+import type { DerivedPorts } from './team-orchestration.js'
 import { MemoryError } from './contracts.js'
 
 export interface DerivedPortsOptions {
@@ -48,9 +47,17 @@ export function createDerivedPorts(o: DerivedPortsOptions): DerivedPorts {
   }
 }
 
+/** What the dispatcher needs of the team orchestration; also what a host hands over so the ports can be attached lazily. */
+export interface DerivedTeams {
+  attachAutomation(ports: DerivedPorts): void
+  launchDerived(input: { project_id: string; delegation_version: number; request_id: string }): Promise<unknown>
+  expireDerived(): Promise<{ closed: string[]; failed: string[] }>
+  derivedAvailable(): boolean
+}
+
 export interface DerivedDispatcherOptions {
-  db: MemoryDatabase
-  teams: Pick<TeamOrchestration, 'launchDerived' | 'expireDerived' | 'derivedAvailable'>
+  db: { query(sql: string, params?: unknown[]): Promise<Array<Record<string, any>>> }
+  teams: Pick<DerivedTeams, 'launchDerived' | 'expireDerived' | 'derivedAvailable'>
   decisions: DecisionService
   /** How far back to look for decision requests that may still carry an unclaimed follow-up. */
   lookbackMs?: number

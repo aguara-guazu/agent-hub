@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import type { ConnectionPool } from '@agenthub/gateway'
-import { type ActionTickResult, DecisionService, DecisionStore, GmailSelfSender, MemoryExclusionSink, pollGmailReplies, type DecisionAuthorityReader, type GoogleAuth, type ReplyPollResult, type ScheduleEffects, type Vault } from '@agenthub/memory'
+import { type ActionTickResult, createDerivedPorts, DecisionService, DecisionStore, DerivedDispatcher, GmailSelfSender, MemoryExclusionSink, pollGmailReplies, type DecisionAuthorityReader, type DerivedTeams, type DerivedTick, type GoogleAuth, type ReplyPollResult, type ScheduleEffects, type Vault } from '@agenthub/memory'
 import type { Store } from '../store.js'
 import { CoreActionExecutor, type ActionAdapter } from './executor.js'
 import { createDeliveryAdapters, type DeliveryArtifacts } from './delivery.js'
@@ -23,6 +23,8 @@ export interface EffectsHost {
     db: { query<T = Record<string, any>>(sql: string, params?: unknown[]): Promise<T[]> }
     /** Espejo público por ítem, lector de autoridad del artefacto y lectura del artefacto de un run. */
     schedules: { set(entry: any): Promise<void>; replaceDecisionRef(runId: string, oldRef: string, newRef: string): Promise<boolean>; artifactAuthority: DecisionAuthorityReader; artifactOfRun(runId: string): Promise<{ id: string; title: string; body_md: string; decision_request_ref: string | null } | undefined> }
+    /** Orquestación de equipos del servicio de memoria; sin ella los planes derivados no se despachan. */
+    teams?: DerivedTeams
   }>
 }
 
@@ -47,6 +49,7 @@ export interface ReplyTickResult {
   slack?: SlackPollResult | { error: string }
   /** Despacho inmediato de lo recién aprobado por canal. */
   actions?: ActionTickResult
+  derived?: DerivedTick | { error: string }
 }
 
 /** Resultado de un ciclo de despacho: solo conteos, nunca efectos ni contenido. */
@@ -66,7 +69,7 @@ function verifierKey(vault: EffectsHost['vault']): Buffer {
  * necesitan la base de la memoria, que el servicio abre después de registrar las rutas. Un fallo al resolver deja cada llamada fallando cerrada.
  */
 export function createCoreScheduleEffects(options: CoreEffectsOptions): ScheduleEffects & { ready(): Promise<{ store: DecisionStore; service: DecisionService }>; replyTick(): Promise<ReplyTickResult>; actionTick(): Promise<ActionTickResult> } {
-  type Resolved = { store: DecisionStore; service: DecisionService; effects: ScheduleEffects; tools: ReturnType<typeof createEffectToolResolver>; gmailConnector(): Promise<string | null> }
+  type Resolved = { store: DecisionStore; service: DecisionService; effects: ScheduleEffects; tools: ReturnType<typeof createEffectToolResolver>; gmailConnector(): Promise<string | null>; derived?: DerivedDispatcher }
   let ready: Promise<Resolved> | undefined
   let dispatching = false
   /**
@@ -94,7 +97,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
   }
   /** Una resolución fallida no se conserva: el siguiente uso reintenta en lugar de quedar roto hasta reiniciar el core. */
   const resolve = () => ready ??= (async () => {
-    const { db, schedules } = await options.host.load()
+    const { db, schedules, teams } = await options.host.load()
     const store = new DecisionStore(join(options.host.directory, STORE_FILE), { key: verifierKey(options.host.vault), exclusions: new MemoryExclusionSink(db), publicState: schedules })
     try {
       store.recover()
@@ -117,7 +120,13 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
         ownerId: options.ownerId,
         review: createDecisionReview({ store, service, schedules, onApproved: () => { void runActionTick().catch(() => undefined) } }),
       })
-      return { store, service, effects, tools, gmailConnector: gmail.connectorId }
+      // Derived plans read the approved follow-ups through the public API of the decision service; the host attaches no issuer of the action profile here.
+      let derived: DerivedDispatcher | undefined
+      if (teams) {
+        teams.attachAutomation(createDerivedPorts({ decisions: service, ownerId: () => options.ownerId, automationsEnabled: options.automationsEnabled }))
+        derived = new DerivedDispatcher({ db, teams, decisions: service })
+      }
+      return { store, service, effects, tools, gmailConnector: gmail.connectorId, ...(derived ? { derived } : {}) }
     } catch (error) { store.close(); throw error }
   })().catch(error => { ready = undefined; throw error })
   const effects = async () => (await resolve()).effects
@@ -150,7 +159,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
     actionTick: runActionTick,
     async replyTick() {
       if (!options.automationsEnabled()) return { skipped: 'automations_off' as const }
-      const { store, service, tools, gmailConnector } = await resolve()
+      const { store, service, tools, gmailConnector, derived } = await resolve()
       const result: ReplyTickResult = { expired: store.expireDue() }
       try {
         const connectorId = await gmailConnector()
@@ -159,6 +168,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       try { result.slack = await pollSlackReplies({ store, service, tools }) } catch (error) { result.slack = { error: error instanceof Error ? error.name : 'error' } }
       const consumed = (result.gmail && 'consumed' in result.gmail ? result.gmail.consumed : 0) + (result.slack && 'consumed' in result.slack ? result.slack.consumed : 0)
       if (consumed > 0) result.actions = await runActionTick().catch((): ActionTickResult => ({ attempted: 0, succeeded: 0, rejected: 0, uncertain: 0, errors: 1 }))
+      if (derived) result.derived = await derived.tick().catch(() => ({ error: 'derived_tick_failed' }))
       await store.flushMirror().catch(() => undefined)
       return result
     },

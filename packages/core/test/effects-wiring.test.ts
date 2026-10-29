@@ -215,6 +215,28 @@ describe('ciclo de sondeo (replyTick)', () => {
     expect(calls).toBe(1)
   })
 
+  it('adjunta los puertos de planes derivados y ofrece el despachador en cada ciclo cuando el host entrega la orquestación', async () => {
+    const teams = { attachAutomation: vi.fn(), launchDerived: vi.fn(async () => ({})), expireDerived: vi.fn(async () => ({ closed: [] as string[], failed: [] as string[] })), derivedAvailable: vi.fn(() => false) }
+    const effects = createCoreScheduleEffects({ store, pool: {} as ConnectionPool, ownerId, automationsEnabled: () => true, adapters: [],
+      host: { directory: dir, vault: new Vault(dir), google: { granted: () => false } as never,
+        load: async () => ({ db: { query: async () => [] as any[] }, schedules: { set: async () => {}, artifactAuthority: async () => 'live' as const, artifactOfRun: async () => undefined } as any, teams }) } })
+    const first = await effects.replyTick(), second = await effects.replyTick()
+    expect(teams.attachAutomation).toHaveBeenCalledTimes(1)
+    const ports = teams.attachAutomation.mock.calls[0]![0] as Record<string, unknown>
+    expect(Object.keys(ports).sort()).toEqual(['approved', 'automationsEnabled', 'claimFollowUp', 'live', 'ownerId'])
+    expect(ports.ownerId).toBeInstanceOf(Function)
+    expect((ports.ownerId as () => string)()).toBe(ownerId)
+    expect(first.derived).toMatchObject({ skipped: 'unavailable', launched: [] })
+    expect(second.derived).toMatchObject({ skipped: 'unavailable' })
+    expect(teams.expireDerived).toHaveBeenCalledTimes(2)
+    expect(teams.launchDerived).not.toHaveBeenCalled()
+  })
+
+  it('sin orquestación en el host no hay despachador y el resultado no lo menciona', async () => {
+    const effects = build()
+    expect(await effects.replyTick()).not.toHaveProperty('derived')
+  })
+
   it('con las automatizaciones apagadas no hace nada', async () => {
     const effects = build({ enabled: () => false })
     expect(await effects.replyTick()).toEqual({ skipped: 'automations_off' })
