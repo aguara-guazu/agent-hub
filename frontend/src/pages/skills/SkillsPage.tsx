@@ -58,6 +58,16 @@ export default function SkillsPage() {
     setParams(next, { replace: true })
   }, [params, setParams, openCreate])
 
+  // ?focus=<id> (inventario de Clientes): abre el panel de esa skill una vez.
+  useEffect(() => {
+    const focus = params.get("focus")
+    if (!focus || dirtyRef.current) return
+    setSelection({ kind: "edit", id: focus })
+    const next = new URLSearchParams(params)
+    next.delete("focus")
+    setParams(next, { replace: true })
+  }, [params, setParams])
+
   const rows = overview.data?.rows ?? []
   const clients = overview.data?.clients ?? []
   const rowOf = (id: string) => rows.find(row => row.resource_type === "skill" && row.resource_id === id)

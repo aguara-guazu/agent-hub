@@ -34,6 +34,17 @@ const clients = {
     drift: "Attention",
     paused: "Paused",
   },
+  unmanaged: {
+    title: "Installed outside the hub",
+    server: "Server",
+    skill: "Skill",
+    linkedSkill: "Linked skill",
+    notConnected: "not connected",
+    openInHub: "Open “{{name}}” in the hub",
+    truncated: "Showing the first 200.",
+    errors_one: "Couldn't read {{count}} path; the list may be incomplete.",
+    errors_other: "Couldn't read {{count}} paths; the list may be incomplete.",
+  },
   compatible: {
     title: "Also supported",
     missing: "Not detected",

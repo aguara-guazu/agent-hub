@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import {
   Avatar, Banner, Button, Chip, Empty, EmptyFiltered, ErrorState, List, MoreMenu, Row, RowHead, SearchInput, Seg, Select,
@@ -59,6 +59,14 @@ export default function ServersPage() {
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set())
   const [panelDirty, setPanelDirty] = useState(false)
   const [blockedSignal, setBlockedSignal] = useState(0)
+
+  // ?focus=<id> (inventario de Clientes): abre el panel de ese servidor una vez.
+  const focus = params.get("focus")
+  useEffect(() => {
+    if (!focus) return
+    setSelectedId(focus)
+    setParams(current => { const next = new URLSearchParams(current); next.delete("focus"); return next }, { replace: true })
+  }, [focus, setParams])
 
   const creating = params.get("new") === "server"
   const setCreating = useCallback((open: boolean) => {
