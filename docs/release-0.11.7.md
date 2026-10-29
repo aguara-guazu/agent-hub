@@ -38,7 +38,8 @@ automáticamente a los equipos que se quedaron sin cuota a mitad de una tarea.
   por un modelo, con el efecto exacto que se mostró.
 - Las escrituras en Jira van por el servidor elegido en Ajustes →
   Automatizaciones; si no se eligió ninguno, se usa la conexión «Atlassian Rovo»
-  cuando está disponible. Solo se escriben tickets asignados a la cuenta del
+  cuando está disponible. Con «Ninguno» no se escribe en Jira, ni siquiera lo que
+  ya estaba aprobado. Solo se escriben tickets asignados a la cuenta del
   dueño, verificada en Jira antes de cada escritura, y un cierre repetido el
   mismo día no duplica horas.
 - Los pushes solo van a ramas permitidas en la delegación del proyecto, nunca
@@ -65,7 +66,10 @@ miembros esperan y la persona recibe un aviso.
   desactivar en Ajustes, y opción para mantener la computadora despierta
   mientras corre una programación.
 - El permiso de envío por Gmail se pide en el mismo consentimiento de Google y
-  solo se habilita si Google lo concede.
+  solo se habilita si Google lo concede. Si la cuenta de Google ya está
+  conectada, la acción «Canales» de cada automatización ofrece «Autorizar»; Slack
+  requiere agregar su servidor MCP en el Catálogo.
+- Al hacer clic en la notificación del brief o del cierre se abre su entrega.
 
 ## Otros cambios
 
