@@ -210,7 +210,7 @@ const project = {
       blocked: "Bloqueado",
     },
     finishReason: {
-      explicit: "Cerrada por el agente",
+      explicit: "Cerrada",
       turn_end: "Terminó el turno",
       session_end: "Terminó la sesión",
       inactive: "Sin actividad",
@@ -236,6 +236,7 @@ const project = {
     },
     panel: {
       label: "Tarea",
+      you: "Vos",
       errorTitle: "No se pudo abrir la tarea",
       title: "Título",
       titleRequired: "Escribí un título para la tarea.",

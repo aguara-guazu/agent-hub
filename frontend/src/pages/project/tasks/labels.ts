@@ -30,5 +30,8 @@ export function useTaskLabels() {
     return t("tasks.panel.event.updated")
   }
 
-  return { statusLabel, originLabel, noteState, finishReason, rowDetail, eventLabel }
+  /** `user` es la persona desde la app; los agentes llegan con su etiqueta. */
+  const actorLabel = (actor: string | null | undefined) => !actor ? "—" : actor === "user" ? t("tasks.panel.you") : actor
+
+  return { actorLabel, statusLabel, originLabel, noteState, finishReason, rowDetail, eventLabel }
 }

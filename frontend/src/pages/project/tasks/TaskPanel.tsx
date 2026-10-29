@@ -145,7 +145,7 @@ function TaskEditor({ detail, onClose }: { detail: TaskDetail; onClose: () => vo
           <Textarea rows={3} maxLength={2000} value={draft.note} disabled={saving} placeholder={t("tasks.panel.notePlaceholder")} onChange={event => update({ note: event.target.value })} />
         </Field>
         <Dl items={[
-          { label: t("tasks.panel.created"), value: task.created_by ? t("tasks.panel.createdBy", { when: format.date(task.created_at), actor: task.created_by }) : format.date(task.created_at) },
+          { label: t("tasks.panel.created"), value: task.created_by ? t("tasks.panel.createdBy", { when: format.date(task.created_at), actor: labels.actorLabel(task.created_by) }) : format.date(task.created_at) },
           { label: t("tasks.panel.updated"), value: format.date(task.updated_at) },
         ]} />
         <TaskHistory detail={detail} />
@@ -166,7 +166,7 @@ function TaskHistory({ detail }: { detail: TaskDetail }) {
         <List>
           {detail.events.map(event => {
             const text = event.detail?.note ?? event.detail?.text
-            return <Row key={event.id} title={labels.eventLabel(event)} sub={text ? `${event.actor} · ${text}` : event.actor} meta={<span className="xs t3">{format.date(event.created_at)}</span>} />
+            return <Row key={event.id} title={labels.eventLabel(event)} sub={text ? `${labels.actorLabel(event.actor)} · ${text}` : labels.actorLabel(event.actor)} meta={<span className="xs t3">{format.date(event.created_at)}</span>} />
           })}
         </List>
       </section>

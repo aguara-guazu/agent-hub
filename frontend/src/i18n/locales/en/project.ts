@@ -213,7 +213,7 @@ const project = {
       blocked: "Blocked",
     },
     finishReason: {
-      explicit: "Closed by the agent",
+      explicit: "Closed",
       turn_end: "Turn ended",
       session_end: "Session ended",
       inactive: "No activity",
@@ -239,6 +239,7 @@ const project = {
     },
     panel: {
       label: "Task",
+      you: "You",
       errorTitle: "Couldn't open the task",
       title: "Title",
       titleRequired: "Enter a title for the task.",
