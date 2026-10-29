@@ -296,6 +296,18 @@ it('una negativa estable del módulo de decisiones termina el run sin reintentar
   expect(await store.deliveriesOf(String(r!.id))).toEqual([])
 })
 
+it('la clave de operación de cada ítem del artefacto llega a la solicitud de decisión', async () => {
+  const template = closeTemplate()
+  template.render = ctx => ({ kind: 'close', title: ctx.title, body_md: 'cierre', snapshot_refs: [],
+    items: [{ ordinal: 1, kind: 'info', project_id: projectId, summary: 'nota' }, { ordinal: 2, kind: 'jira_worklog', project_id: projectId, summary: 'Cargar 2h', operation_key: 'jira_worklog:site:ABC-1:2026-10-28T08:00:00Z' }],
+    proposed_effects: [{ ordinal: 2, effect: { kind: 'jira_worklog', seconds: 7200 } }] })
+  registerScheduleTemplate(template)
+  const s = await schedule({ template: 'daily_close', scope: 'owner', project_id: null, delivery: ['hub_inbox'] })
+  await run()
+  expect(prepared[0].items).toMatchObject([{ ordinal: 1, effect: undefined }, { ordinal: 2, operation_key: 'jira_worklog:site:ABC-1:2026-10-28T08:00:00Z', effect: { seconds: 7200 } }])
+  expect((await runsOf(s.id))[0]).toMatchObject({ state: 'succeeded' })
+})
+
 it('un artefacto restaurado sin autoridad no crea una solicitud nueva ni se entrega', async () => {
   registerScheduleTemplate(closeTemplate())
   const s = await schedule({ template: 'daily_close', scope: 'owner', project_id: null, delivery: ['hub_inbox'] })

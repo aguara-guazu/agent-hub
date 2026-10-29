@@ -80,7 +80,8 @@ export interface RunPackage {
   sections: Array<{ id: string; title: string; data: unknown; sources: Array<{ entity_id?: string; task_id?: string; as_of: string }>; model_visible?: boolean }>
   remote_allowed: boolean; char_count: number
 }
-export interface PublicItem { ordinal: number; estimate_id?: string; kind: 'jira_worklog' | 'jira_transition' | 'jira_comment' | 'git_push' | 'info'; project_id: string; summary: string; effect_digest?: string }
+/** `operation_key` identifies the operation across runs (site, issue and window of a worklog); the decision store refuses a second intention under the same key. */
+export interface PublicItem { ordinal: number; estimate_id?: string; operation_key?: string; kind: 'jira_worklog' | 'jira_transition' | 'jira_comment' | 'git_push' | 'info'; project_id: string; summary: string; effect_digest?: string }
 export interface ArtifactDraft {
   kind: 'notice' | 'brief' | 'close' | 'status' | 'report'; title: string; body_md: string; items: PublicItem[]
   snapshot_refs: Array<{ project_id: string; version: number }>; proposed_effects?: Array<{ ordinal: number; effect: unknown }>
@@ -131,7 +132,7 @@ export interface ActionExecutor {
 export interface DecisionRequests {
   /** Revokes every request with something awaiting approval or dispatch; called when the automations switch goes off. Returns how many were revoked. */
   revokeAll?(): Promise<number>
-  prepareDecision(input: { run_id: string; artifact_id: string; owner_id: string; project_ids: string[]; items: Array<{ ordinal: number; kind: PublicItem['kind']; project_id: string; summary: string; effect: unknown }>; expires_at: string }): Promise<{ decision_request_ref: string }>
+  prepareDecision(input: { run_id: string; artifact_id: string; owner_id: string; project_ids: string[]; items: Array<{ ordinal: number; kind: PublicItem['kind']; project_id: string; summary: string; effect: unknown; operation_key?: string }>; expires_at: string }): Promise<{ decision_request_ref: string }>
 }
 /** Implemented by the schedule store; the decision module calls it after each transition of an item. */
 export interface PublicStateSink {

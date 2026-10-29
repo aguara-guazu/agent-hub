@@ -365,7 +365,7 @@ export class ScheduleRuntime {
       if (artifact.authority !== 'live' || !decisions) { await this.finish(run, 'failed', { error_code: artifact.authority !== 'live' ? 'hub_restart' : 'delivery_unavailable' }); return 'blocked' }
       const full = await this.store.artifactOfRun(run.id)
       const effects = artifact.effects as Array<{ ordinal: number; effect: unknown }>
-      const items = (full!.items as Array<{ ordinal: number; kind: PublicItem['kind']; project_id: string; summary: string }>).map(item => ({ ...item, effect: effects.find(entry => entry.ordinal === item.ordinal)?.effect }))
+      const items = (full!.items as Array<{ ordinal: number; kind: PublicItem['kind']; project_id: string; summary: string; operation_key?: string }>).map(item => ({ ...item, effect: effects.find(entry => entry.ordinal === item.ordinal)?.effect }))
       let decision_request_ref: string
       const expiresAt = isoAt(this.now() + DECISION_TTL_MS)
       try {
