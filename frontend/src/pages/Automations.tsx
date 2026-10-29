@@ -17,7 +17,7 @@ import { api } from '../lib/api'
 import { useMemory } from '../lib/memory'
 import type { MemoryEntity, Page } from '../lib/memory'
 import { automationKeys, CHANNEL_REASONS, useAutomationSettings, useConstraints, useDeliveryChannels, useDecision, useDecisionActions, useRun, useRuns, useScheduleActions, useSchedules } from '../lib/automations'
-import type { DeliveryTarget, DeliveryView, ItemState, PublicItem, Recurrence, RunListItem, RunState, ScheduleView } from '../lib/automations'
+import type { DeliveryAvailability, DeliveryTarget, DeliveryView, ItemState, PublicItem, Recurrence, RunListItem, RunState, ScheduleView } from '../lib/automations'
 
 const TEMPLATE_LABELS: Record<string, string> = {
   daily_brief: 'Brief', daily_close: 'Cierre', project_status: 'Estado del proyecto', reminder: 'Recordatorio', custom_synthesis: 'Síntesis', team_health: 'Salud del equipo',
@@ -128,7 +128,21 @@ function ChannelsModal({ schedule, onClose }: { schedule: ScheduleView; onClose:
 }
 
 function ScheduleRow({ schedule }: { schedule: ScheduleView }) {
-  return <div className="automations-name"><strong>{templateLabel(schedule)}</strong><span>{schedule.title}</span><small>{describeRecurrence(schedule.recurrence)}</small></div>
+  const overridden = schedule.human_override
+  return <div className="automations-name"><strong>{templateLabel(schedule)}</strong><span>{schedule.title}</span><small>{describeRecurrence(schedule.recurrence)}{overridden.includes('recurrence') ? ' · horario fijado por ti' : ''}</small>{overridden.includes('delivery') && <small>Canales fijados por ti</small>}</div>
+}
+
+function createdByText(schedule: ScheduleView): string {
+  const { kind, label } = schedule.created_by
+  return kind === 'agent' ? label || 'Un agente' : kind === 'human' ? 'Tú' : 'Agent Hub'
+}
+
+function channelChips(schedule: ScheduleView, availability: DeliveryAvailability | undefined): ReactNode {
+  return <div className="chip-list">{schedule.delivery.filter(target => target !== 'hub_inbox').map(target => {
+    const missing = schedule.delivery_unavailable.includes(target)
+    const reason = target === 'gmail_self' || target === 'slack_self' ? availability?.[target]?.reason : undefined
+    return <span key={target} className="chip" title={missing ? `No disponible: ${CHANNEL_REASONS[reason ?? ''] ?? 'revisa la conexión'}` : 'activo'}>{TARGET_LABELS[target]}{missing ? ' ⚠' : ''}</span>
+  })}</div>
 }
 
 function lastRunText(schedule: ScheduleView): ReactNode {
@@ -170,10 +184,10 @@ export function SchedulesPage() {
   const columns: Column<ScheduleView>[] = [
     { key: 'name', header: 'Automatización', render: schedule => <ScheduleRow schedule={schedule} /> },
     { key: 'kind', header: 'Tipo', render: schedule => <span title={KIND_HINTS[schedule.kind]}>{KIND_LABELS[schedule.kind]}</span> },
-    { key: 'by', header: 'Creado por', render: schedule => <div><span>{schedule.created_by_kind === 'agent' ? schedule.created_by.label ?? 'Un agente' : schedule.created_by_kind === 'human' ? 'Tú' : 'Agent Hub'}</span><small className="automations-muted">{schedule.admission_note}</small></div> },
+    { key: 'by', header: 'Creado por', render: schedule => <div><span>{createdByText(schedule)}</span><small className="automations-muted">{schedule.admission_note}</small></div> },
     { key: 'next', header: 'Próxima ejecución', render: nextRunText },
     { key: 'last', header: 'Última ejecución', render: lastRunText },
-    { key: 'channels', header: 'Canales', render: schedule => <div className="chip-list">{schedule.delivery.filter(target => target !== 'hub_inbox').map(target => { const missing = schedule.delivery_unavailable.find(item => item.target === target); return <span key={target} className="chip" title={missing ? `Falta autorizar: ${missing.reason}` : 'activo'}>{TARGET_LABELS[target]}{missing ? ' ⚠' : ''}</span> })}</div> },
+    { key: 'channels', header: 'Canales', render: schedule => channelChips(schedule, schedules.data?.delivery_available) },
     { key: 'state', header: 'Estado', render: stateBadge },
     { key: 'actions', header: '', className: 'actions', render: schedule => <div className="actions">
       <button className="btn btn-sm" onClick={() => setEditing(schedule)}>Cambiar horario</button>
@@ -200,12 +214,14 @@ export function SchedulesPage() {
   </>
 }
 
-function deliverySummary(deliveries: DeliveryView[]): ReactNode {
+function deliverySummary(deliveries: DeliveryView[] | undefined): ReactNode {
+  if (!deliveries) return <span className="automations-muted">—</span>
   return <div className="chip-list">{deliveries.filter(item => item.target !== 'hub_inbox').map(item => <span key={item.target} className="chip" title={item.error_code ?? undefined}>{TARGET_LABELS[item.target]} {item.state === 'sent' ? '✓' : item.state === 'failed' ? `falló${item.error_code ? `: ${item.error_code}` : ''}` : item.state === 'uncertain' ? 'incierto' : item.state === 'sending' ? '…' : item.state === 'skipped' ? 'omitido' : 'pendiente'}</span>)}</div>
 }
 
 function decisionSummary(run: RunListItem): string {
   const decision = run.decision
+  if (decision === undefined) return '—'
   if (!decision) return 'sin acciones'
   if (decision.state === 'open') return `pendiente${decision.expires_at ? ` hasta ${formatDateTime(decision.expires_at)}` : ''}`
   if (decision.state === 'expired') return 'vencido'
@@ -300,7 +316,7 @@ export function DeliveryDetailPage() {
         {data.incidents?.map(incident => <p key={incident.observed_at} className="automations-warning">Proceso interrumpido ({incident.cause}): {incident.action}</p>)}
         <Link to={`/schedules?focus=${data.schedule_id}`}>Ver automatización</Link></header>
       <Markdown source={data.body_md} />
-      <ItemsBlock runId={data.run_id} items={data.items} hasDecision={data.decision != null} />
+      <ItemsBlock runId={data.run_id} items={data.items} hasDecision={data.has_decision} />
     </article>
   </>
 }

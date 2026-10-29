@@ -4,8 +4,8 @@ import { useToast } from '../components/Toast'
 
 /**
  * Formas de las rutas humanas del scheduler (`/api/memory/schedules/*`) y de los ajustes de automatizaciones.
- * Reflejan el CONTRATO del scheduler (ScheduleView, schedule_runs, schedule_item_states); los campos marcados
- * «provisional» se alinean con `schedule-contract.ts` cuando el área A lo publique.
+ * `ScheduleView` espeja `packages/memory/src/schedule-contract.ts`; las respuestas de runs se normalizan abajo
+ * (`normalizeRunList`, `normalizeRunDetail`) porque el backend las entrega como filas planas.
  */
 
 export type ScheduleState = 'active' | 'paused' | 'cancelled' | 'expired' | 'completed'
@@ -18,13 +18,16 @@ export type Recurrence =
   | { type: 'daily'; time: string; weekdays?: number[] }
   | { type: 'interval'; minutes: number }
 
+export type HumanOverrideField = 'recurrence' | 'delivery'
+export type Actor = 'agent' | 'human' | 'system'
+
 export interface ScheduleRunSummary {
   id: string
   state: RunState
   scheduled_for: string
   trigger?: 'clock' | 'misfire' | 'run_now'
-  skip_reason?: string | null
-  deferred_reason?: string | null
+  skip_reason?: string
+  deferred_reason?: string
 }
 
 export interface ScheduleView {
@@ -40,20 +43,23 @@ export interface ScheduleView {
   next_run_at: string | null
   next_run_local: string | null
   delivery: DeliveryTarget[]
-  delivery_unavailable: { target: DeliveryTarget; reason: string }[]
+  /** Destinos pedidos cuyo adaptador reporta no disponible; el motivo sale de `delivery_available` en la lista. */
+  delivery_unavailable: DeliveryTarget[]
   state: ScheduleState
-  paused_by: 'agent' | 'human' | 'system' | null
+  paused_by: Actor | null
   revision: number
-  created_by: { agent_id: string | null; label: string | null }
-  created_by_kind: 'agent' | 'human' | 'system'
+  /** Campos que la persona cambió desde la app; un agente ya no puede modificarlos. */
+  human_override: HumanOverrideField[]
+  created_by: { kind: Actor; agent_id: string | null; label: string }
   /** Línea fija de la plantilla que explica por qué no pidió aprobación. */
   admission_note: string
-  last_run?: ScheduleRunSummary | null
+  last_run?: ScheduleRunSummary
   /** Presente cuando hay un run diferido (por cuota, automatizaciones apagadas o entrega no disponible). */
-  deferred?: { reason: string; resets_at: string | null; next_attempt_at: string | null } | null
+  deferred?: { reason: string; resets_at: string | null; next_attempt_at: string | null }
 }
 
-export interface DeliveryAvailability { channel?: 'app' | 'gmail' | 'slack'; target?: DeliveryTarget; available: boolean; reason?: string | null; destination?: string | null }
+export type DeliveryUnavailableReason = 'not_connected' | 'scope_missing' | 'identity_unverified' | 'identity_is_bot' | 'tool_off'
+export type DeliveryAvailability = Record<'gmail_self' | 'slack_self', { available: boolean; reason?: DeliveryUnavailableReason }>
 
 export interface ScheduleConstraint {
   id: string
@@ -77,7 +83,9 @@ export interface PublicItem {
   project_id: string | null
   summary: string
   state?: ItemState
-  /** Provisional: partes de la estimación de horas (valor, base, confianza, supuestos). */
+  /** Referencia a la estimación de horas (`hour_estimates`); sus partes no viajan en el detalle del run. */
+  estimate_id?: string
+  /** Partes de la estimación (valor, base, confianza, supuestos) cuando el backend las entregue. */
   estimate?: { seconds: number; basis: string; confidence: 'low' | 'medium' | 'high'; assumptions?: string[]; would_change?: string } | null
   receipt_url?: string | null
   failure_reason?: string | null
@@ -85,27 +93,66 @@ export interface PublicItem {
 
 export interface DeliveryView { target: DeliveryTarget; state: 'pending' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'skipped'; error_code?: string | null; updated_at?: string }
 
-/** Provisional: fila de la lista de entregas. */
+/** Fila de la lista de entregas. `deliveries` y `decision` quedan sin definir mientras `GET …/schedules/runs` no los incluya. */
 export interface RunListItem {
   run_id: string
   schedule_id: string
   artifact_kind: 'notice' | 'brief' | 'close' | 'status' | 'report' | null
   title: string
+  project_id: string | null
   scheduled_for: string
   started_at: string | null
   state: RunState
   trigger: 'clock' | 'misfire' | 'run_now'
+  skip_reason: string | null
+  deferred_reason: string | null
   read_at: string | null
-  deliveries: DeliveryView[]
+  deliveries?: DeliveryView[]
   decision?: { state: string; expires_at: string | null; approved: number; total: number } | null
 }
 
-/** Provisional: detalle de una entrega. */
+/** Detalle de una entrega: artefacto markdown, ítems públicos con su estado y entregas por canal. */
 export interface RunDetail extends RunListItem {
   body_md: string
   items: PublicItem[]
-  phases: { phase: string; state: string; finished_at: string | null }[]
+  /** Hay ítems accionables, por lo que existe una solicitud de decisión que consultar. */
+  has_decision: boolean
   incidents?: { cause: string; action: string; observed_at: string }[]
+}
+
+interface RawRun {
+  id: string; schedule_id: string; scheduled_for: string; trigger: RunListItem['trigger']; state: RunState; skip_reason?: string | null; deferred_reason?: string | null
+  started_at?: string | null; finished_at?: string | null
+}
+export interface RawRunListItem extends RawRun {
+  schedule_title?: string | null; project_id?: string | null; artifact_kind?: RunListItem['artifact_kind']; title?: string | null; read_at?: string | null
+  deliveries?: DeliveryView[]; decision?: RunListItem['decision']
+}
+export interface RawRunDetail {
+  run: RawRun
+  artifact: { id: string; kind: NonNullable<RunListItem['artifact_kind']>; title: string; body_md: string; items: Omit<PublicItem, 'state'>[]; read_at: string | null } | null
+  items: { ordinal: number; kind: ItemKind; state: ItemState; estimate_id?: string | null }[]
+  deliveries: DeliveryView[]
+  incidents?: RunDetail['incidents']
+}
+
+export function normalizeRunList(raw: { items: RawRunListItem[] } & Page): { items: RunListItem[] } & Page {
+  return { ...raw, items: raw.items.map(item => ({
+    run_id: item.id, schedule_id: item.schedule_id, artifact_kind: item.artifact_kind ?? null, title: item.title ?? item.schedule_title ?? 'Entrega', project_id: item.project_id ?? null,
+    scheduled_for: item.scheduled_for, started_at: item.started_at ?? null, state: item.state, trigger: item.trigger, skip_reason: item.skip_reason ?? null, deferred_reason: item.deferred_reason ?? null,
+    read_at: item.read_at ?? null, ...(item.deliveries ? { deliveries: item.deliveries } : {}), ...(item.decision !== undefined ? { decision: item.decision } : {}),
+  })) }
+}
+
+export function normalizeRunDetail(raw: RawRunDetail): RunDetail {
+  const states = new Map(raw.items.map(item => [item.ordinal, item.state]))
+  const items: PublicItem[] = (raw.artifact?.items ?? []).map(item => ({ ...item, state: states.get(item.ordinal) ?? 'proposed' }))
+  return {
+    run_id: raw.run.id, schedule_id: raw.run.schedule_id, artifact_kind: raw.artifact?.kind ?? null, title: raw.artifact?.title ?? 'Entrega', project_id: null,
+    scheduled_for: raw.run.scheduled_for, started_at: raw.run.started_at ?? null, state: raw.run.state, trigger: raw.run.trigger, skip_reason: raw.run.skip_reason ?? null, deferred_reason: raw.run.deferred_reason ?? null,
+    read_at: raw.artifact?.read_at ?? null, deliveries: raw.deliveries, body_md: raw.artifact?.body_md ?? '', items, has_decision: items.some(item => item.kind !== 'info'),
+    ...(raw.incidents ? { incidents: raw.incidents } : {}),
+  }
 }
 
 export interface AutomationSettings {
@@ -139,7 +186,7 @@ export function useSaveAutomationSettings() {
 }
 
 export function useSchedules() {
-  return useQuery({ queryKey: automationKeys.schedules, queryFn: () => api.get<{ items: ScheduleView[]; delivery_available?: DeliveryAvailability[] } & Page>('/memory/schedules?limit=200'), refetchInterval: 5000 })
+  return useQuery({ queryKey: automationKeys.schedules, queryFn: () => api.get<{ items: ScheduleView[]; delivery_available?: DeliveryAvailability } & Page>('/memory/schedules?limit=200'), refetchInterval: 5000 })
 }
 
 export function useConstraints() {
@@ -165,15 +212,15 @@ export function useScheduleActions() {
   }
 }
 
-export function useRuns(filters: { kind?: string; project_id?: string; unread?: string; limit?: string } = {}) {
+export function useRuns(filters: { kind?: string; project_id?: string; unread?: 'true' | 'false'; limit?: string } = {}) {
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value)
   const query = params.toString()
-  return useQuery({ queryKey: automationKeys.runs(filters), queryFn: () => api.get<{ items: RunListItem[] } & Page>(`/memory/schedules/runs${query ? `?${query}` : ''}`), refetchInterval: 5000 })
+  return useQuery({ queryKey: automationKeys.runs(filters), queryFn: async () => normalizeRunList(await api.get<{ items: RawRunListItem[] } & Page>(`/memory/schedules/runs${query ? `?${query}` : ''}`)), refetchInterval: 5000 })
 }
 
 export function useRun(runId: string) {
-  return useQuery({ queryKey: automationKeys.run(runId), queryFn: () => api.get<RunDetail>(`/memory/schedules/runs/${encodeURIComponent(runId)}`), refetchInterval: 5000 })
+  return useQuery({ queryKey: automationKeys.run(runId), queryFn: async () => normalizeRunDetail(await api.get<RawRunDetail>(`/memory/schedules/runs/${encodeURIComponent(runId)}`)), refetchInterval: 5000 })
 }
 
 /** Estado de la solicitud de decisión de una entrega (`GET …/runs/:runId/decision`). */

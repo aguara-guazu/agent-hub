@@ -63,7 +63,7 @@ export function Layout() {
     return () => document.removeEventListener('keydown', listener)
   }, [searchOpen])
   const overview = useOverview()
-  const unreadDeliveries = useRuns({ unread: '1', limit: '1' }).data?.total ?? 0
+  const unreadDeliveries = useRuns({ unread: 'true', limit: '1' }).data?.total ?? 0
   const { pathname } = useLocation()
   const cache = useQueryClient()
   const toast = useToast()

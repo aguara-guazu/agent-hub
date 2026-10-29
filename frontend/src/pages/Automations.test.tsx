@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Route, Routes } from 'react-router-dom'
 import { DeliveriesPage, DeliveryDetailPage, SchedulesPage, describeNextRun, describeRecurrence, generatedNote } from './Automations'
-import type { RunDetail, RunListItem, ScheduleView } from '../lib/automations'
+import type { RawRunDetail, RawRunListItem, ScheduleView } from '../lib/automations'
 import type { User } from '../lib/types'
 import { buttonByText, click, installFetch, jsonResponse, need, q, qa, renderWithProviders, setupDom, setValue, teardownDom, textOf } from '../test-utils'
 import type { ApiCall } from '../test-utils'
@@ -13,14 +13,15 @@ function schedule(overrides: Partial<ScheduleView> = {}): ScheduleView {
     id: 's1', scope: 'owner', project_id: null, template: 'daily_brief', template_version: 1, kind: 'synthesis', title: 'Brief diario',
     recurrence: { type: 'daily', time: '08:00', weekdays: [1, 2, 3, 4, 5] }, timezone: 'America/Argentina/Buenos_Aires',
     next_run_at: '2026-10-29T11:00:00Z', next_run_local: '2026-10-29T08:00:00-03:00', delivery: ['hub_inbox', 'app_window', 'gmail_self'],
-    delivery_unavailable: [{ target: 'gmail_self', reason: 'scope_missing' }], state: 'active', paused_by: null, revision: 3,
-    created_by: { agent_id: 'a1', label: 'Quilla' }, created_by_kind: 'agent', admission_note: 'Dentro de los límites del Hub: solo lectura, entrega solo a ti', last_run: null, ...overrides,
+    delivery_unavailable: ['gmail_self'], state: 'active', paused_by: null, revision: 3, human_override: [],
+    created_by: { kind: 'agent', agent_id: 'a1', label: 'Quilla' }, admission_note: 'Dentro de los límites del Hub: solo lectura, entrega solo a ti', ...overrides,
   }
 }
 
-function run(overrides: Partial<RunListItem> = {}): RunListItem {
-  return { run_id: 'r1', schedule_id: 's1', artifact_kind: 'brief', title: 'Brief · martes 28/10', scheduled_for: '2026-10-28T11:00:00Z', started_at: '2026-10-28T11:00:05Z', state: 'succeeded', trigger: 'clock', read_at: null,
-    deliveries: [{ target: 'app_window', state: 'sent' }, { target: 'gmail_self', state: 'failed', error_code: 'token_expired' }], decision: null, ...overrides }
+/** Fila plana tal como la devuelve `GET /api/memory/schedules/runs`. */
+function run(overrides: Partial<RawRunListItem> = {}): RawRunListItem {
+  return { id: 'r1', schedule_id: 's1', artifact_kind: 'brief', title: 'Brief · martes 28/10', schedule_title: 'Brief diario', project_id: null, scheduled_for: '2026-10-28T11:00:00Z', started_at: '2026-10-28T11:00:05Z', finished_at: null,
+    state: 'succeeded', trigger: 'clock', skip_reason: null, deferred_reason: null, read_at: null, ...overrides }
 }
 
 let calls: ApiCall[]
@@ -54,7 +55,7 @@ describe('Programaciones', () => {
   function mockSchedules(items: ScheduleView[], extra: { constraints?: unknown[]; settings?: object } = {}) {
     return installFetch({ user, handle: call => {
       calls.push(call)
-      if (call.path === '/memory/schedules') return jsonResponse({ items, total: items.length, limit: 200, offset: 0 })
+      if (call.path === '/memory/schedules') return jsonResponse({ items, total: items.length, limit: 200, offset: 0, delivery_available: { gmail_self: { available: false, reason: 'scope_missing' }, slack_self: { available: true } } })
       if (call.path === '/memory/schedule-constraints') return jsonResponse({ items: extra.constraints ?? [] })
       if (call.path === '/memory/schedules/delivery-channels') return jsonResponse({ items: [{ channel: 'app', available: true }, { channel: 'gmail', available: true, destination: 'ana@example.com' }, { channel: 'slack', available: false, reason: 'not_connected' }] })
       if (call.path === '/automations') return jsonResponse({ automations_enabled: true, notify_schedule_created: true, notify_delivery: true, workday_hours: 9, keep_awake: true, ...extra.settings })
@@ -72,11 +73,21 @@ describe('Programaciones', () => {
     expect(text).toContain('Quilla')
     expect(text).toContain('Dentro de los límites del Hub: solo lectura, entrega solo a ti')
     expect(text).toContain('Las automatizaciones corren solo mientras Agent Hub está abierto')
-    expect(qa(container, '.chip').find(chip => chip.textContent?.includes('Gmail'))?.getAttribute('title')).toContain('scope_missing')
+    expect(qa(container, '.chip').find(chip => chip.textContent?.includes('Gmail'))?.getAttribute('title')).toContain('Falta autorizar el envío')
+  })
+
+  it('marca los campos que la persona fijó y muestra al sistema como creador', async () => {
+    mockSchedules([schedule({ human_override: ['recurrence', 'delivery'], created_by: { kind: 'system', agent_id: null, label: 'Hub' } })])
+    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
+    const text = textOf(container)
+    expect(text).toContain('horario fijado por ti')
+    expect(text).toContain('Canales fijados por ti')
+    expect(text).toContain('Agent Hub')
+    expect(text).not.toContain('Quilla')
   })
 
   it('el tipo se rotula con o sin modelo y la última ejecución abre su entrega', async () => {
-    mockSchedules([schedule({ kind: 'notice', last_run: { id: 'r7', state: 'succeeded', scheduled_for: '2026-10-28T11:00:00Z' } })])
+    mockSchedules([schedule({ kind: 'notice', last_run: { id: 'r7', state: 'succeeded', scheduled_for: '2026-10-28T11:00:00Z', trigger: 'clock' } })])
     const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
     expect(textOf(container)).toContain('Sin modelo')
     expect(textOf(container)).not.toContain('Aviso')
@@ -148,9 +159,17 @@ describe('Programaciones', () => {
 })
 
 describe('Entregas', () => {
+  it('sin deliveries ni decision en la fila no inventa «sin acciones» ni canales', async () => {
+    installFetch({ user, handle: call => call.path === '/memory/schedules/runs' ? jsonResponse({ items: [run()], total: 1, limit: 50, offset: 0 }) : undefined })
+    const { container } = await renderWithProviders(<DeliveriesPage />, { route: '/deliveries' })
+    expect(textOf(container)).toContain('Brief · martes 28/10')
+    expect(textOf(container)).not.toContain('sin acciones')
+    expect(qa<HTMLAnchorElement>(container, 'a').some(anchor => anchor.getAttribute('href') === '/deliveries/r1')).toBe(true)
+  })
+
   it('lista las entregas con el estado por canal y la decisión', async () => {
     installFetch({ user, handle: call => {
-      if (call.path === '/memory/schedules/runs') return jsonResponse({ items: [run({ decision: { state: 'open', expires_at: '2026-10-28T23:59:00Z', approved: 0, total: 2 } })], total: 1, limit: 50, offset: 0 })
+      if (call.path === '/memory/schedules/runs') return jsonResponse({ items: [run({ deliveries: [{ target: 'app_window', state: 'sent' }, { target: 'gmail_self', state: 'failed', error_code: 'token_expired' }], decision: { state: 'open', expires_at: '2026-10-28T23:59:00Z', approved: 0, total: 2 } })], total: 1, limit: 50, offset: 0 })
       return undefined
     } })
     const { container } = await renderWithProviders(<DeliveriesPage />, { route: '/deliveries' })
@@ -183,8 +202,15 @@ describe('Entregas', () => {
 })
 
 describe('Detalle de una entrega', () => {
-  const detail: RunDetail = { ...run({ decision: { state: 'open', expires_at: '2026-10-28T23:59:00Z', approved: 0, total: 2 } }), body_md: '# Cierre\n\n<script>alert(1)</script> [Jira](https://example.atlassian.net/browse/ABC-1) [malo](javascript:alert(1))',
-    items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p', summary: 'ABC-1 worklog 2 h', estimate: { seconds: 5400, basis: 'notas 10:15–12:40', confidence: 'medium', assumptions: ['sin pruebas manuales'], would_change: 'hubo pruebas en staging' } }, { ordinal: 2, kind: 'jira_transition', project_id: 'p', summary: 'ABC-2 → En revisión' }], phases: [] }
+  const estimate = { seconds: 5400, basis: 'notas 10:15–12:40', confidence: 'medium', assumptions: ['sin pruebas manuales'], would_change: 'hubo pruebas en staging' }
+  /** Detalle tal como lo devuelve `GET …/runs/:runId`: run, artefacto, estados públicos de los ítems y entregas por separado. */
+  const detail = {
+    run: { id: 'r1', schedule_id: 's1', scheduled_for: '2026-10-28T11:00:00Z', trigger: 'clock', state: 'succeeded', started_at: '2026-10-28T11:00:05Z', finished_at: null, skip_reason: null, deferred_reason: null },
+    artifact: { id: 'a1', kind: 'brief', title: 'Brief · martes 28/10', read_at: null, body_md: '# Cierre\n\n<script>alert(1)</script> [Jira](https://example.atlassian.net/browse/ABC-1) [malo](javascript:alert(1))',
+      items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p', summary: 'ABC-1 worklog 2 h', estimate_id: 'e1', estimate }, { ordinal: 2, kind: 'jira_transition', project_id: 'p', summary: 'ABC-2 → En revisión' }] },
+    items: [{ ordinal: 1, kind: 'jira_worklog', state: 'proposed', estimate_id: 'e1' }, { ordinal: 2, kind: 'jira_transition', state: 'proposed' }],
+    deliveries: [{ target: 'app_window', state: 'sent' }, { target: 'gmail_self', state: 'failed', error_code: 'token_expired' }], incidents: [],
+  } as unknown as RawRunDetail
   const decision = { request_id: 'q1', revision: 1, state: 'open', expires_at: '2026-10-28T23:59:00Z', digest: 'd'.repeat(64), authority: 'verified', reply_line: 'aprobar K7P4-M2XN 1,2',
     items: [{ ordinal: 1, kind: 'jira_worklog', summary: 'ABC-1 worklog 2 h', state: 'proposed', effect_digest: 'e1' }, { ordinal: 2, kind: 'jira_transition', summary: 'ABC-2 → En revisión', state: 'proposed', effect_digest: 'e2' }] }
 
@@ -209,7 +235,7 @@ describe('Detalle de una entrega', () => {
     expect(api.callsTo('/memory/schedules/runs/r1/read', 'PUT')).toHaveLength(1)
   })
 
-  it('muestra la estimación con sus cuatro partes y decimales en español', async () => {
+  it('muestra la estimación con sus partes y decimales en español cuando el artefacto las trae', async () => {
     mockDetail()
     const { container } = await mount()
     const text = textOf(container)
