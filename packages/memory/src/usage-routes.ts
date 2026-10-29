@@ -5,6 +5,7 @@ import { check, parse } from './contracts.js'
 import type { MemoryService } from './service.js'
 import type { MemoryRouteOptions } from './routes.js'
 import { usageQuotaObservationSchema } from './usage-quotas.js'
+import { createFleetRecovery } from './fleet-recovery.js'
 import type { UsageQuotaBinding, UsageQuotaObservation } from '@agenthub/shared'
 
 const installedIdentity={agent_id:z.string().min(1).max(200)}
@@ -55,6 +56,9 @@ export function registerUsageRoutes(app:FastifyInstance,service:MemoryService,op
       return value
     })
     if(result.transitions.length)operations.chat.events.emit('change')
+    // Restarting members is a consequence of the recovery, never part of the response to the reporting daemon.
+    if(result.transitions.length)void createFleetRecovery(db,operations.usage,operations.fleet,operations.usageNotices)?.onTransitions(result.transitions)
+      .catch(error=>console.error('[fleet-recovery]',error instanceof Error?error.message:'falló'))
     return result
   })
 }

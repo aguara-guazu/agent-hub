@@ -25,6 +25,7 @@ import { ScheduleRuntime } from './schedule-runtime.js'
 import { EngineSynthesizer } from './schedule-synthesizer.js'
 import type { AttentionReaders, ScheduleAutomation } from './schedule-contract.js'
 import './schedule-templates.js'
+import { createFleetRecovery } from './fleet-recovery.js'
 
 const REPLY_TICK_MS = 60_000
 /** Counts and error names only; a cycle without activity leaves no event. */
@@ -109,6 +110,9 @@ export class MemoryService {
       { catalog: new TeamCatalog(this.cliExtraction), orca: chat => new HubTeamRuntime(chat,this.directory,this.collaborationEnabled) }, this.collaborationEnabled)
     operations.chat.usageEnabled=this.usageEnabled
     if (this.orchestrationOwner) await operations.teams?.initialize()
+    // Members that stopped on an exhausted quota while the Hub was down are looked at once the quota state is readable.
+    if (this.orchestrationOwner) void createFleetRecovery(db, operations.usage, operations.fleet, operations.usageNotices)?.recover()
+      .catch(error => console.error('[fleet-recovery]', error instanceof Error ? error.message : 'falló'))
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     this.current = { db, store, ai, operations, runner, network: new SharedNetwork(operations.sharing) }
     if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
