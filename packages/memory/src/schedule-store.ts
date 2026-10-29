@@ -291,6 +291,10 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   async setDecisionRef(artifactId: string, ref: string) {
     await this.db.query("UPDATE schedule_artifacts SET decision_request_ref=$2,effects='[]' WHERE id=$1 AND decision_request_ref IS NULL AND authority='live'", [artifactId, ref])
   }
+  /** After a correction the artifact points to the new request; only while it still points to the one that was replaced and keeps its authority. */
+  async replaceDecisionRef(runId: string, oldRef: string, newRef: string): Promise<boolean> {
+    return (await this.db.query("UPDATE schedule_artifacts SET decision_request_ref=$3 WHERE run_id=$1 AND decision_request_ref=$2 AND authority='live' RETURNING id", [runId, oldRef, newRef])).length === 1
+  }
   async markArtifactRead(runId: string) { await this.db.query('UPDATE schedule_artifacts SET read_at=COALESCE(read_at,$2) WHERE run_id=$1', [runId, isoNow()]) }
   async markDeliveriesRead(runId: string) { await this.db.query("UPDATE schedule_deliveries SET read_at=COALESCE(read_at,$2) WHERE run_id=$1 AND target IN ('hub_inbox','app_window')", [runId, isoNow()]) }
 

@@ -147,6 +147,8 @@ export interface ScheduleEffects {
   deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests
   /** One cycle of channel reply reading and request expiry; the clock calls it about once a minute. */
   replyTick?(): Promise<unknown>
+  /** Owner operations of the app on the decision request of a run; none of them returns an approval code. */
+  review?: import('./decisions/review.js').DecisionReview
 }
 
 /** Switch and effects injected by the core; the memory package never reads the core database. */
