@@ -94,16 +94,15 @@ describe('Programaciones', () => {
     expect(qa<HTMLAnchorElement>(container, 'a').some(anchor => anchor.getAttribute('href') === '/deliveries/r7')).toBe(true)
   })
 
-  it('Canales guarda App fija más los canales elegidos y no deja marcar uno no disponible', async () => {
+  it('Canales guarda App fija más Gmail y no ofrece Slack', async () => {
     const api = mockSchedules([schedule({ delivery: ['hub_inbox', 'app_window'] })])
     const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
     await click(buttonByText(container, 'Canales'))
     await flush(3)
     const boxes = qa<HTMLInputElement>(document.body, '.automations-form input[type="checkbox"]')
+    expect(boxes).toHaveLength(2)
     expect(boxes[0]!.disabled).toBe(true)
-    expect(boxes[2]!.disabled).toBe(true)
-    expect(textOf(document.body)).toContain('No está conectado')
-    expect(document.body.querySelector('.automations-form a[href$="/catalog"]')).not.toBeNull()
+    expect(textOf(document.querySelector('[role="dialog"]')!)).not.toContain('Slack')
     await click(boxes[1])
     await click(buttonByText(document.body, 'Guardar'))
     expect(api.lastCall('/memory/schedules/s1/delivery', 'PUT')?.body).toEqual({ expected_revision: 3, delivery: ['hub_inbox', 'app_window', 'gmail_self'] })
@@ -159,7 +158,7 @@ describe('Programaciones', () => {
     expect(textOf(document.body)).toContain('Completa el permiso en el navegador')
   })
 
-  it('con Gmail listo y sin usar, el asistente agrega Gmail a las automatizaciones elegidas conservando sus otros canales', async () => {
+  it('con Gmail listo y sin usar, el asistente agrega Gmail a las automatizaciones elegidas y retira Slack, que ya no es un canal', async () => {
     const api = mockGmailSetup([schedule({ delivery: ['hub_inbox', 'app_window'], delivery_unavailable: [] }),
       schedule({ id: 's2', title: 'Cierre del día', template: 'daily_close', revision: 5, delivery: ['hub_inbox', 'app_window', 'slack_self'], delivery_unavailable: [] }),
       schedule({ id: 's3', title: 'Estado · Proyecto', template: 'project_status', delivery: ['hub_inbox', 'app_window'], delivery_unavailable: [], delivery_allowed: ['hub_inbox', 'app_window'] })], { available: true, destination: 'ana@example.com' })
@@ -173,7 +172,7 @@ describe('Programaciones', () => {
     await click(buttonByText(document.body, 'Agregar Gmail'))
     await flush(4)
     expect(api.lastCall('/memory/schedules/s1/delivery', 'PUT')?.body).toEqual({ expected_revision: 3, delivery: ['hub_inbox', 'app_window', 'gmail_self'] })
-    expect(api.lastCall('/memory/schedules/s2/delivery', 'PUT')?.body).toEqual({ expected_revision: 5, delivery: ['hub_inbox', 'app_window', 'slack_self', 'gmail_self'] })
+    expect(api.lastCall('/memory/schedules/s2/delivery', 'PUT')?.body).toEqual({ expected_revision: 5, delivery: ['hub_inbox', 'app_window', 'gmail_self'] })
     expect(api.callsTo('/memory/schedules/s3/delivery', 'PUT')).toHaveLength(0)
   })
 

@@ -64,7 +64,7 @@ export function GmailSetupModal({ initial, schedules, availability, onClose }: {
     setSaving(true)
     let added = 0
     for (const schedule of pending.filter(item => selected.includes(item.id))) {
-      const delivery = Array.from(new Set<DeliveryTarget>(['hub_inbox', 'app_window', ...schedule.delivery, 'gmail_self']))
+      const delivery = Array.from(new Set<DeliveryTarget>(['hub_inbox', 'app_window', ...schedule.delivery.filter(target => target !== 'slack_self'), 'gmail_self']))
       try { await actions.delivery.mutateAsync({ id: schedule.id, revision: schedule.revision, delivery }); added++ } catch { /* el error ya se mostró; se sigue con las demás */ }
     }
     setSaving(false)

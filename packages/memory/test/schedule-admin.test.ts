@@ -35,7 +35,8 @@ it('crea un recordatorio con próxima ejecución en hora local y un anuncio fijo
   const { schedule, announce } = await create()
   expect(schedule).toMatchObject({ state: 'active', kind: 'notice', template: 'reminder', revision: 1, timezone: 'America/Argentina/Buenos_Aires', next_run_at: '2026-10-29T11:00:00.000Z', next_run_local: '2026-10-29T08:00:00-03:00' })
   expect(announce).toContain('Programé «Recordar»')
-  expect(schedule.delivery_allowed).toEqual(['hub_inbox', 'app_window', 'gmail_self', 'slack_self'])
+  expect(schedule.delivery_allowed).toEqual(['hub_inbox', 'app_window', 'gmail_self'])
+  expect(await code(create({ delivery: ['hub_inbox', 'slack_self'] }))).toBe('delivery_not_allowed')
 })
 
 it('es idempotente por agente y request_id', async () => {

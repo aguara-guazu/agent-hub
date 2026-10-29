@@ -84,7 +84,7 @@ describe('rutas humanas de decisión', () => {
 
   it('los canales reflejan la disponibilidad real y la app siempre está', async () => {
     expect((await app.inject({ method: 'GET', url: '/api/memory/schedules/delivery-channels' })).json()).toEqual({ items: [
-      { channel: 'app', available: true }, { channel: 'gmail', available: true, destination: 'me@example.com' }, { channel: 'slack', available: false, reason: 'tool_off' }] })
+      { channel: 'app', available: true }, { channel: 'gmail', available: true, destination: 'me@example.com' }] })
   })
 
   it('ninguna respuesta de estas rutas contiene un código ni una línea de respuesta', async () => {

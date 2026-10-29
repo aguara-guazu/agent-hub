@@ -25,7 +25,7 @@ const reminder: ScheduleTemplateDefinition<{ message: string }> = {
   params: z.object({ message: z.string().trim().min(1).max(500) }).strict(),
   identity: params => ({ message: params.message.toLowerCase() }),
   min_interval_minutes: 5, max_live_per_project: 10, max_runtime_ms: 10_000,
-  allowed_targets: ['hub_inbox', 'app_window', 'gmail_self', 'slack_self'], misfire: 'run_once', grace_minutes: 120, grace_policy: 'minutes',
+  allowed_targets: ['hub_inbox', 'app_window', 'gmail_self'], misfire: 'run_once', grace_minutes: 120, grace_policy: 'minutes',
   admission_note: 'recordatorio: aviso fijo sin modelo, entregado solo a ti',
   async collect(ctx) {
     const sections = [{ id: 'message', title: ctx.title, data: { message: String(ctx.params.message ?? '') }, sources: [], model_visible: false }]
@@ -42,7 +42,7 @@ const customSynthesis: ScheduleTemplateDefinition<{ topic: string }> = {
   params: z.object({ topic: z.string().trim().min(1).max(200) }).strict(),
   identity: params => ({ topic: params.topic.toLowerCase() }),
   min_interval_minutes: 60, max_live_per_project: 5, max_runtime_ms: 240_000,
-  allowed_targets: ['hub_inbox', 'app_window', 'gmail_self', 'slack_self'], misfire: 'run_once', grace_minutes: 180, grace_policy: 'minutes',
+  allowed_targets: ['hub_inbox', 'app_window', 'gmail_self'], misfire: 'run_once', grace_minutes: 180, grace_policy: 'minutes',
   admission_note: 'síntesis: modelo sin herramientas sobre un paquete armado por el Hub, entregada solo a ti',
   async collect(ctx, deps) {
     const tasks = await openTasks(ctx, deps)

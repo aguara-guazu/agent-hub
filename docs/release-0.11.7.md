@@ -29,13 +29,13 @@ automáticamente a los equipos que se quedaron sin cuota a mitad de una tarea.
   07:50, el brief a las 08:00 y el cierre a las 17:30, de lunes a viernes.
 - El brief reúne en un resumen ejecutivo el status vigente de cada proyecto,
   lo que requiere atención, la agenda del día y lo que quedó pendiente del
-  cierre anterior. Se entrega en la app y, si se configuró, por Gmail o Slack.
+  cierre anterior. Se entrega en la app y, si se configuró, por Gmail.
 - El cierre propone, con numeración única, horas por ticket de Jira como
   estimación del agente (en pasos de media hora, con su base y supuestos),
   transiciones, comentarios y pushes. Nada se ejecuta sin aprobación.
-- La persona aprueba respondiendo el correo o el mensaje de Slack con el código
-  del cierre, o desde la app. Los ítems aprobados los ejecuta el Hub sin pasar
-  por un modelo, con el efecto exacto que se mostró.
+- La persona aprueba respondiendo el correo con el código del cierre, o desde la
+  app. Los ítems aprobados los ejecuta el Hub sin pasar por un modelo, con el
+  efecto exacto que se mostró.
 - Las escrituras en Jira van por el servidor elegido en Ajustes →
   Automatizaciones; si no se eligió ninguno, se usa la conexión «Atlassian Rovo»
   cuando está disponible. Con «Ninguno» no se escribe en Jira, ni siquiera lo que
@@ -70,7 +70,7 @@ miembros esperan y la persona recibe un aviso.
   conectada, Automatizaciones muestra un aviso que abre un asistente: explica el
   permiso, abre Google y, cuando el envío queda autorizado, agrega Gmail a las
   automatizaciones elegidas. También se autoriza desde la acción «Canales» de
-  cada automatización. Slack requiere agregar su servidor MCP en el Catálogo.
+  cada automatización. Slack no es un canal de entrega en esta versión.
 - Al hacer clic en la notificación del brief o del cierre se abre su entrega.
 
 ## Otros cambios
