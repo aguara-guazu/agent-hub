@@ -16,8 +16,8 @@ export const workUpdateInput = z.object({
   if((v.event==='completed')!==Boolean(v.report_message_id))ctx.addIssue({code:'custom',message:'completed requiere el mensaje de reporte; otros eventos no lo aceptan'})
 })
 export const workDefinitions = {
-  chat_work_update:['Registrar progreso comprobado, espera explícita o finalización de tu trabajo autorizado en un hilo. No enviar heartbeats como progreso. completed requiere un reporte propio ya persistido en ese hilo; no afirma que el destinatario lo leyó. expected_version=0 crea; reusar request_id exacto evita duplicados.',workUpdateInput],
-  chat_work_list:['Leer estados de trabajo del hilo propio o del equipo vinculado y su última observación watchdog en modo shadow. Son declaraciones de agentes, separadas de la presencia y de recibos de lectura. La observación no ejecuta ni autoriza acciones; puede estar desactualizada. No despierta ni reinicia agentes.',z.object({...session,thread_id:id,limit:z.number().int().min(1).max(100).default(40),offset:z.number().int().min(0).default(0)}).strict()],
+  chat_work_update:['Log verified progress, explicit waiting or completion of your authorized work in a thread; heartbeats are not progress. completed needs your own report already persisted there; it does not mean it was read. expected_version=0 creates; reusing the exact request_id dedupes.',workUpdateInput],
+  chat_work_list:['Work states of your thread or linked team plus the latest shadow-mode watchdog observation. Agent claims, separate from presence and read receipts. The observation runs/authorizes nothing and may be stale. Wakes or restarts no agent.',z.object({...session,thread_id:id,limit:z.number().int().min(1).max(100).default(40),offset:z.number().int().min(0).default(0)}).strict()],
 } satisfies Record<string,[string,z.ZodType]>
 
 /** Called inside LocalChat's transaction after identity and thread authorization. */

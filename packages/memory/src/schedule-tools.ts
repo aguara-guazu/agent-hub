@@ -12,20 +12,20 @@ const requestId = z.string().min(1).max(200)
 const mutation = z.object({ schedule_id: id, expected_revision: revision, reason }).strict()
 
 export const scheduleDefinitions = {
-  schedule_create: ['Programar una tarea recurrente o única del Hub. Tú decides cuándo y cada cuánto; la persona puede verla, pausarla, cancelarla o cambiar el horario, pero nunca se le pide aprobar. Las horas son las del sistema. La plantilla fija qué hace el run (reminder: aviso fijo sin modelo; custom_synthesis: síntesis sin herramientas; project_status, daily_brief y daily_close: según su alcance) y a dónde se entrega, siempre solo a la persona. Un run nunca crea schedules. Si una persona canceló el mismo objetivo, la respuesta es schedule_constrained y no se debe recrear. Al crear, transmite en tu chat el texto de announce.',
+  schedule_create: ['Schedule a one-off or recurring Hub task. You pick when and how often; the person may view, pause, cancel or reschedule it but is never asked to approve. Times are system time. The template fixes what the run does (reminder: fixed notice, no model; custom_synthesis: no tools; project_status, daily_brief, daily_close: per scope) and delivery, always only to the person. Runs never create schedules. schedule_constrained means a person cancelled this goal: do not recreate. After creating, relay the announce text in your chat.',
     z.object({ project_id: id.optional(), template: z.enum(scheduleTemplates).exclude(['team_health']), title: z.string().trim().min(1).max(200), instructions: z.string().max(4000).default(''), params: jsonObject.default({}),
       recurrence: recurrenceSchema, delivery: z.array(target).min(1).max(4).default(['hub_inbox', 'app_window']), misfire: z.enum(['run_once', 'skip']).optional(), expires_at: instant.optional(), request_id: requestId }).strict()],
-  schedule_list: ['Listar schedules con su estado, próxima ejecución en hora local y disponibilidad de destinos. created_by_me limita a los propios.',
+  schedule_list: ['Schedules: state, next run in local time, delivery availability. created_by_me: only yours.',
     z.object({ project_id: id.optional(), state: z.enum(scheduleStates).optional(), created_by_me: z.boolean().default(false), ...page }).strict()],
-  schedule_get: ['Leer un schedule con sus últimas ejecuciones, incidentes de procesos interrumpidos y el artefacto del último run.', z.object({ schedule_id: id, runs: z.number().int().min(0).max(20).default(5) }).strict()],
-  schedule_update: ['Cambiar título, instrucciones, parámetros, recurrencia, destinos, misfire o vencimiento. Requiere expected_revision; cambiar los parámetros que definen el objetivo vuelve a pasar la admisión y las restricciones.',
+  schedule_get: ['Schedule with latest runs, interrupted-process incidents, last run artifact.', z.object({ schedule_id: id, runs: z.number().int().min(0).max(20).default(5) }).strict()],
+  schedule_update: ['Edit title, instructions, params, recurrence, delivery, misfire, expiry. Needs expected_revision; changing goal-defining params re-runs admission and restrictions.',
     z.object({ schedule_id: id, expected_revision: revision, title: z.string().trim().min(1).max(200).optional(), instructions: z.string().max(4000).optional(), params: jsonObject.optional(), recurrence: recurrenceSchema.optional(),
       delivery: z.array(target).min(1).max(4).optional(), misfire: z.enum(['run_once', 'skip']).optional(), expires_at: instant.nullable().optional() }).strict()],
-  schedule_pause: ['Pausar un schedule propio o de la persona dueña local. Solo la persona reanuda una pausa que ella hizo.', mutation],
-  schedule_resume: ['Reanudar un schedule pausado por un agente. No hay recuperación de ocurrencias perdidas durante la pausa.', mutation],
-  schedule_delete: ['Cancelar un schedule. No deja restricción: solo la cancelación de una persona impide volver a crearlo.', mutation],
-  schedule_run_now: ['Ejecutar ahora un schedule activo. Es idempotente por request_id y se rechaza si ya hay una ejecución en curso.', z.object({ schedule_id: id, request_id: requestId }).strict()],
-  schedule_runs: ['Ver ejecuciones con estado, fase, motivo de omisión o diferimiento e incidentes. Con run_id devuelve el artefacto completo, sus ítems públicos con estado y las entregas; nunca códigos de aprobación.',
+  schedule_pause: ['Pause your or the local owner\'s schedule. Only the person resumes a pause they made.', mutation],
+  schedule_resume: ['Resume an agent-paused schedule. Missed occurrences are not recovered.', mutation],
+  schedule_delete: ['Cancel a schedule. Leaves no restriction: only a person\'s cancel blocks re-creation.', mutation],
+  schedule_run_now: ['Run an active schedule now. Idempotent per request_id; rejected if a run is in progress.', z.object({ schedule_id: id, request_id: requestId }).strict()],
+  schedule_runs: ['Runs: state, phase, skip/defer reason, incidents. With run_id: full artifact, public items with state, deliveries; never approval codes.',
     z.object({ run_id: id.optional(), schedule_id: id.optional(), project_id: id.optional(), state: z.enum(runStates).optional(), ...page }).strict()],
 } satisfies Record<string, [string, z.ZodType]>
 

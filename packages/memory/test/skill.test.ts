@@ -9,7 +9,7 @@ describe('skill de fábrica de la memoria', () => {
     expect(body.startsWith('# ')).toBe(true)
     expect(body).toContain('hub')
     // Navigation comes first: data model, how to read responses and step-by-step recipes precede writing.
-    const order = ['## Cómo está organizada', '## Cómo leer cada respuesta', '## Recetas de navegación', '## Cómo responder', '## Guardar y corregir', '## Referencia de herramientas'].map(h => body.indexOf(h))
+    const order = ['## Data model', '## Reading responses', '## Navigation recipes', '## Answering', '## Saving and correcting', '## Tool reference'].map(h => body.indexOf(h))
     expect(order.every((index, i) => index > 0 && (i === 0 || index > order[i - 1]!))).toBe(true)
     for (const link of ['participant', 'calendar_event', 'meeting_document', 'derived_from']) expect(body).toContain(`\`${link}\``)
     expect(body).toContain('exhaustive')
@@ -18,7 +18,7 @@ describe('skill de fábrica de la memoria', () => {
   })
   it('agrupa una herramienta nueva aunque no tenga sección asignada', () => {
     const body = renderMemoryToolReference([...memoryTools, { name: 'nueva_operacion', description: 'Algo nuevo.' }])
-    expect(body).toContain('### Otras')
+    expect(body).toContain('### Other')
     expect(body).toContain('`memory_nueva_operacion`: Algo nuevo.')
   })
 })

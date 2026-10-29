@@ -172,7 +172,7 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
     open_tasks: tasks, working_notes: working.filter(n => n.session_id !== agent?.session_id), own_working_notes: working.filter(n => agent && n.session_id === agent.session_id),
     recent_notes: recent, projects: candidates,
     guidance: project
-      ? `Esta carpeta pertenece a «${project.title}». Busca primero con project_id=${project.id} y amplía a toda la memoria sólo si no alcanza. Antes de trabajar, lee working_notes y deja tu nota con memory_write_note; al terminar, ciérrala con memory_finish_notes.`
-      : 'Esta carpeta no está asociada a ningún proyecto. Si corresponde a uno de projects, pide a la persona que agregue la carpeta al proyecto (o hazlo con memory_update_entity en data.folders) y busca con su project_id.',
+      ? `Folder belongs to «${project.title}». Search with project_id=${project.id} first; widen to all memory only if needed. Before working read working_notes and leave your note via memory_write_note; close it with memory_finish_notes when done.`
+      : 'Folder not linked to any project. If it matches one in projects, ask the person to add it there (or do it via memory_update_entity data.folders), then search with its project_id.',
   }
 }

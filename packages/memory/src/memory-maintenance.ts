@@ -92,7 +92,7 @@ export async function tidyMemory(store: MemoryStore, config: AIConfig, raw: unkn
   ) SELECT *,1-distance AS similarity FROM pairs WHERE distance<0.12 ORDER BY distance,first_id,second_id LIMIT 30`, [scope.project_id ?? null,config.embedding_model]) : []
   const result = { stage: 'complete', finished_at: new Date().toISOString(), memories_reviewed: reviewed, memories_archived: archived, memory_duplicates: duplicates,
     historical_vectors_removed: pruned.length, archived_ids: archivedIds, related_memories: candidates,
-    guidance: 'Los pares por significado requieren leer ambos recuerdos y su evidencia. La similitud no prueba duplicación ni contradicción. Corregí con remember y la fecha vigente; archivá con manage_memory. Los originales y citas se conservan.' }
+    guidance: 'Semantic pairs: read both memories and their evidence; similarity proves neither duplication nor contradiction. Correct via remember with the current expected_updated_at; archive via manage_memory. Originals and citations kept.' }
   await store.db.query('INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [key(scope.project_id), JSON.stringify(result)])
   return result
 }
