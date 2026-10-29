@@ -94,9 +94,8 @@ export async function virtualFolder(path: string) {
     const failure=error as NodeJS.ErrnoException & {killed?:boolean}
     if(failure.killed || failure.name==='AbortError' || failure.code==='ETIMEDOUT' || failure.code==='ENOENT' || failure.syscall?.startsWith('spawn'))
       check(false,'No se pudo ejecutar Git para verificar la carpeta. Reintentá cuando Git esté disponible.',503)
-    check(/not a git repository/i.test(String((error as {stderr?:string}).stderr)),
-      'Git no confirmó una carpeta sin repositorio. Revisá permisos y el estado del repositorio antes de crear un espacio virtual.',409)
-    // A dangling .git file or directory is a broken repository, not an ordinary folder.
+    // A dangling .git file or directory is a broken repository, not an ordinary folder. Checked before
+    // Git's message: its wording for an unresolvable gitdir differs across Git versions.
     for(let current=root;;current=dirname(current)) {
       const marker=await lstat(join(current,'.git')).catch(cause=>{
         if(cause.code==='ENOENT')return null
@@ -105,6 +104,8 @@ export async function virtualFolder(path: string) {
       check(!marker,'La carpeta pertenece a un repositorio Git inválido. Reparalo antes de continuar; no se crea un espacio virtual.',409)
       if(dirname(current)===current)break
     }
+    check(/not a git repository/i.test(String((error as {stderr?:string}).stderr)),
+      'Git no confirmó una carpeta sin repositorio. Revisá permisos y el estado del repositorio antes de crear un espacio virtual.',409)
   }
   return root
 }
