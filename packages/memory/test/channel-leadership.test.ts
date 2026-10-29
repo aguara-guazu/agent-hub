@@ -263,6 +263,19 @@ describe("la persona prevalece", () => {
     expect((await channel(leader.channel.id)).leader_id).toBe(chosen.session.id)
   })
 
+  it("audita la asignación automática de líder y las expulsiones completas de agente y de persona", async () => {
+    const leader = await register("leader"), member = await register("member"), third = await register("third")
+    expect((await events(leader.channel.id, "leadership_assigned"))[0]).toMatchObject({ target_session_id: leader.session.id, actor_session_id: null, actor_user_id: null })
+    await call(leader, "chat_kick", { channel_id: leader.channel.id, participant_id: member.session.id, reason: "fuera" })
+    expect((await events(leader.channel.id, "session_kicked"))[0]).toMatchObject({ actor_session_id: leader.session.id, actor_user_id: null, target_session_id: member.session.id, reason: "fuera" })
+    await silence(leader, silentMinutes)
+    await take(third, leader.channel.id, leader.session.id)
+    await ops.chat.kick({ channel_id: leader.channel.id, participant_id: leader.session.id, reason: "orden de la persona" }, { user_id: "owner" })
+    const [, byPerson] = await events(leader.channel.id, "session_kicked")
+    expect(byPerson).toMatchObject({ actor_session_id: null, actor_user_id: "owner", target_session_id: leader.session.id })
+    expect(byPerson!.evidence).toMatchObject({ released_leaderships: [], released_reclaims: [leader.channel.id] })
+  })
+
   it("la persona puede expulsar al desplazado y eso libera el reclamo", async () => {
     const leader = await register("leader"), candidate = await register("candidate")
     await silence(leader, silentMinutes)

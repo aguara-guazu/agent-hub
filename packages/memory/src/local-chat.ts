@@ -268,11 +268,16 @@ export class LocalChat {
         return {session:publicSession(target),team:await this.team(channel.id)}
       }
       if(!target.removed_at) {
+        const led=(await sql.query('SELECT id FROM chat_channels WHERE leader_id=$1',[target.id])).map(row=>String(row.id))
+        const reclaims=(await sql.query('SELECT id FROM chat_channels WHERE displaced_leader_id=$1',[target.id])).map(row=>String(row.id))
         await sql.query(`UPDATE chat_sessions SET removed_at=now(),removed_by=$2,removal_reason=$3,state='offline',closed_at=now(),lease_until=NULL,wake_error=NULL WHERE id=$1`,[target.id,removedBy,input.reason])
         await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Destinatario expulsado del canal' WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL`,[target.id])
         // A removed session can never act again, so it releases every channel it led and any reclaim right.
         await sql.query('UPDATE chat_channels SET leader_id=NULL,leader_changed_at=now(),updated_at=now() WHERE leader_id=$1',[target.id])
         await sql.query('UPDATE chat_channels SET displaced_leader_id=NULL,displaced_at=NULL WHERE displaced_leader_id=$1',[target.id])
+        await recordAuthorityEvent(sql,{kind:"session_kicked",channel_id:channel.id,project_id:await channelProjectId(sql,channel.id),
+          actor_session_id:'agent' in actor?removedBy.slice(6):null,actor_user_id:'agent' in actor?null:removedBy.slice(5),target_session_id:target.id,
+          reason:input.reason,evidence:{released_leaderships:led,released_reclaims:reclaims}})
         await this.cancelInvalidTurnAlerts()
       }
       return {session:publicSession((await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[target.id]))[0]!),team:await this.team(channel.id)}
@@ -392,8 +397,12 @@ export class LocalChat {
     // Registration and inbox bootstrap are available before choosing a nickname.
     if(!(await this.db.query(`SELECT 1 FROM chat_sessions WHERE id=$1 AND nickname IS NOT NULL AND trim(nickname)<>''`,[sid])).length)return
     // A displaced leader recovers a channel only through an explicit, audited reclaim.
-    await this.db.query(`UPDATE chat_channels SET leader_id=$1 WHERE leader_id IS NULL AND closed_at IS NULL AND displaced_leader_id IS NOT $1
-      AND (kind<>'virtual' OR activated_at IS NOT NULL) AND id=(SELECT channel_id FROM chat_sessions WHERE id=$1 AND closed_at IS NULL)`,[sid])
+    await this.db.transaction(async sql=>{
+      const assigned=await sql.query(`UPDATE chat_channels SET leader_id=$1 WHERE leader_id IS NULL AND closed_at IS NULL AND displaced_leader_id IS NOT $1
+        AND (kind<>'virtual' OR activated_at IS NOT NULL) AND id=(SELECT channel_id FROM chat_sessions WHERE id=$1 AND closed_at IS NULL) RETURNING id`,[sid])
+      for(const row of assigned)await recordAuthorityEvent(sql,{kind:"leadership_assigned",channel_id:String(row.id),project_id:await channelProjectId(sql,String(row.id)),
+        target_session_id:sid,reason:"Asignado automáticamente al primer participante activo de un canal sin líder",evidence:{mode:"auto"}})
+    })
     await this.db.query(`UPDATE chat_sessions SET team_seen=1 WHERE id=$1 AND EXISTS(
       SELECT 1 FROM chat_channels c WHERE c.id=chat_sessions.channel_id AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL))`,[sid])
   }
