@@ -67,6 +67,10 @@ describe('deliveryNotice', () => {
     expect(deliveryNotice(event(2, { type: 'run.persisted', run_id: 'r2', artifact_kind: 'close', title: 'Cierre' }))?.title).toBe('Cierre listo')
   })
 
+  it('un evento sin título no escribe «null» en el aviso', () => {
+    expect(deliveryNotice(event(6, { type: 'run.persisted', run_id: 'r6', artifact_kind: 'brief', title: null }))?.body).toBe('Abre la entrega para verla.')
+  })
+
   it('ignora otros eventos, otros tipos de artefacto y runs sin id', () => {
     expect(deliveryNotice(event(3, { type: 'run.started', run_id: 'r3' }))).toBeNull()
     expect(deliveryNotice(event(4, { type: 'run.persisted', run_id: 'r4', artifact_kind: 'status' }))).toBeNull()
@@ -95,6 +99,13 @@ describe('ScheduleNoticeBatcher', () => {
     expect([...timers.values()][0]!.ms).toBe(15_000)
     fire()
     expect(emitted).toEqual([{ title: 'Tu agente programó: Brief · Proyecto X', body: 'Haz clic para verlo o cancelarlo.', route: '/schedules?focus=s1' }])
+  })
+
+  it('un cambio de agente sin título se nombra de forma genérica', () => {
+    const { batcher, emitted, fire } = harness()
+    batcher.add([event(1, { title: null })])
+    fire()
+    expect(emitted[0]?.title).toBe('Tu agente programó: una automatización')
   })
 
   it('varios cambios dentro de la ventana salen como un solo aviso sin foco', () => {

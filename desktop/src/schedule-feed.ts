@@ -14,7 +14,8 @@ export interface FeedEvent {
   actor_kind: 'agent' | 'human' | 'system'
   schedule_id: string | null
   run_id: string | null
-  title: string
+  /** El core envía `null` cuando el evento no trae título. */
+  title: string | null
   project_id: string | null
   /** Presente en `run.persisted`. */
   artifact_kind?: string
@@ -23,7 +24,7 @@ export interface FeedEvent {
 export interface ActiveRun {
   run_id: string
   phase: string
-  deadline_at?: string
+  deadline_at?: string | null
 }
 
 export interface FeedResponse {
@@ -71,17 +72,18 @@ const SCHEDULE_CHANGES: Record<string, 'created' | 'updated' | 'cancelled'> = {
 export function deliveryNotice(event: FeedEvent): Notice | null {
   if (event.type !== 'run.persisted' || !event.run_id) return null
   if (event.artifact_kind !== 'brief' && event.artifact_kind !== 'close') return null
-  return { title: event.artifact_kind === 'close' ? 'Cierre listo' : 'Brief listo', body: event.title, route: `/deliveries/${event.run_id}` }
+  return { title: event.artifact_kind === 'close' ? 'Cierre listo' : 'Brief listo', body: event.title ?? 'Abre la entrega para verla.', route: `/deliveries/${event.run_id}` }
 }
 
 function describeChanges(changes: { kind: 'created' | 'updated' | 'cancelled'; event: FeedEvent }[]): Notice {
   const [first] = changes
+  const named = (event: FeedEvent): string => event.title ?? 'una automatización'
   if (changes.length === 1 && first) {
     const { kind, event } = first
     const route = event.schedule_id ? `/schedules?focus=${event.schedule_id}` : '/schedules'
-    if (kind === 'created') return { title: `Tu agente programó: ${event.title}`, body: 'Haz clic para verlo o cancelarlo.', route }
-    if (kind === 'updated') return { title: `Tu agente cambió el horario: ${event.title}`, body: 'Haz clic para revisarlo.', route }
-    return { title: `Tu agente canceló: ${event.title}`, body: 'Haz clic para ver las automatizaciones.', route }
+    if (kind === 'created') return { title: `Tu agente programó: ${named(event)}`, body: 'Haz clic para verlo o cancelarlo.', route }
+    if (kind === 'updated') return { title: `Tu agente cambió el horario: ${named(event)}`, body: 'Haz clic para revisarlo.', route }
+    return { title: `Tu agente canceló: ${named(event)}`, body: 'Haz clic para ver las automatizaciones.', route }
   }
   const kinds = new Set(changes.map(change => change.kind))
   const verb = kinds.size > 1 ? 'cambió' : kinds.has('created') ? 'programó' : kinds.has('cancelled') ? 'canceló' : 'cambió'
