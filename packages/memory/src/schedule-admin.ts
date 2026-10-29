@@ -121,6 +121,10 @@ export class ScheduleAdmin {
     const template = scheduleTemplate(current.template)
     if (!template) this.fail(409, 'template_unknown', 'La plantilla del schedule ya no está registrada.')
     const changes: Parameters<ScheduleStore['updateSchedule']>[2] = {}
+    // A field the person changed from the app stays theirs: an agent update that touches it is refused, and a person's change protects it.
+    const touched = (['recurrence', 'delivery'] as const).filter(field => patch[field] !== undefined)
+    if (principal.kind === 'agent' && touched.some(field => current.human_override.includes(field))) this.fail(409, 'human_override', 'La persona cambió este campo desde la app; solo ella puede volver a modificarlo.')
+    if (principal.kind === 'human' && touched.length) changes.human_override = [...new Set([...current.human_override, ...touched])]
     if (patch.title !== undefined) changes.title = patch.title
     if (patch.instructions !== undefined) changes.instructions = patch.instructions
     if (patch.misfire !== undefined) changes.misfire = patch.misfire
@@ -233,7 +237,7 @@ export class ScheduleAdmin {
     const quota = last?.state === 'deferred' ? last.quota as { resets_at?: string } | null : null
     return { id: row.id, scope: row.scope, project_id: row.project_id, template: row.template, template_version: row.template_version, kind: row.kind, title: row.title, recurrence: row.recurrence, timezone: zone,
       next_run_at: row.next_run_at, next_run_local: row.next_run_at ? localIso(Date.parse(row.next_run_at), zone) : null, delivery: row.delivery,
-      delivery_unavailable: row.delivery.filter(target => (target === 'gmail_self' || target === 'slack_self') && !available?.[target]?.available), state: row.state as ScheduleState, paused_by: row.paused_by, revision: row.revision,
+      delivery_unavailable: row.delivery.filter(target => (target === 'gmail_self' || target === 'slack_self') && !available?.[target]?.available), state: row.state as ScheduleState, paused_by: row.paused_by, revision: row.revision, human_override: row.human_override,
       created_by: { kind: row.created_by_kind, agent_id: row.created_by_agent, label: label ?? (row.created_by_kind === 'human' ? 'Persona' : row.created_by_kind === 'system' ? 'Hub' : 'Agente') },
       admission_note: template?.admission_note ?? '',
       ...(last ? { last_run: { id: last.id, state: last.state, scheduled_for: last.scheduled_for, trigger: last.trigger, ...(last.skip_reason ? { skip_reason: last.skip_reason } : {}), ...(last.deferred_reason ? { deferred_reason: last.deferred_reason } : {}) } } : {}),

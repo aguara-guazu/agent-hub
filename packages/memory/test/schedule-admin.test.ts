@@ -129,3 +129,17 @@ it('dos run_now simultáneos con distinto request_id crean una sola ocurrencia v
   const results = await Promise.all([admin.runNow(agent(), schedule.id, 'a'), admin.runNow(agent(), schedule.id, 'b')].map(promise => promise.then(() => 'ok', error => (error as { code?: string }).code)))
   expect(results.sort()).toEqual(['ok', 'run_in_progress'])
 })
+
+it('un campo que la persona cambió desde la app queda protegido frente a los agentes, que conservan el resto', async () => {
+  const { schedule } = await create()
+  const changed = await admin.update(human, schedule.id, 1, { recurrence: { type: 'daily', time: '10:00' } })
+  expect(changed.schedule).toMatchObject({ revision: 2, human_override: ['recurrence'] })
+  expect(await code(admin.update(agent(), schedule.id, 2, { recurrence: { type: 'daily', time: '07:00' } }))).toBe('human_override')
+  expect((await store.schedule(schedule.id))!.recurrence).toEqual({ type: 'daily', time: '10:00' })
+  const ok = await admin.update(agent(), schedule.id, 2, { title: 'Otro título', delivery: ['hub_inbox'] })
+  expect(ok.schedule).toMatchObject({ title: 'Otro título', delivery: ['hub_inbox'], human_override: ['recurrence'] })
+  const both = await admin.update(human, schedule.id, 3, { delivery: ['hub_inbox', 'app_window'] })
+  expect(both.schedule.human_override).toEqual(['recurrence', 'delivery'])
+  expect(await code(admin.update(agent(), schedule.id, 4, { delivery: ['hub_inbox'] }))).toBe('human_override')
+  expect(await code(admin.cancel(agent(), schedule.id, 4))).toBe('ok')
+})

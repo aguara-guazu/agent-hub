@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { MemoryDatabase } from './database.js'
 import { MemoryError } from './contracts.js'
-import type { Actor, ArtifactAuthorityReader, AttemptState, DeliveryTarget, GracePolicy, IncidentAction, IncidentCause, ItemState, PublicStateSink, Recurrence, RunPhase, RunState, RunTrigger,
+import type { Actor, ArtifactAuthorityReader, AttemptState, DeliveryTarget, GracePolicy, HumanOverrideField, IncidentAction, IncidentCause, ItemState, PublicStateSink, Recurrence, RunPhase, RunState, RunTrigger,
   ScheduleKind, ScheduleScope, ScheduleSnapshot, ScheduleState, ScheduleTemplate, ScheduleEventType } from './schedule-contract.js'
 
 type Row = Record<string, any>
@@ -14,7 +14,7 @@ export interface ScheduleRow {
   id: string; scope: ScheduleScope; project_id: string | null; template: ScheduleTemplate; template_version: number; kind: ScheduleKind; title: string; instructions: string
   params: Record<string, unknown>; recurrence: Recurrence; delivery: DeliveryTarget[]; misfire: 'run_once' | 'skip'; grace_minutes: number; grace_policy: GracePolicy; grace_until: string | null
   target_key: string; state: ScheduleState; paused_by: Actor | null; next_run_at: string | null; expires_at: string | null; revision: number
-  created_by_kind: Actor; created_by_agent: string | null; created_by_session: string | null; origin: Record<string, unknown>
+  created_by_kind: Actor; created_by_agent: string | null; created_by_session: string | null; origin: Record<string, unknown>; human_override: HumanOverrideField[]
   cancelled_at: string | null; cancelled_by: Actor | null; cancel_reason: string | null; created_at: string; updated_at: string
 }
 export interface RunRow {
@@ -23,7 +23,7 @@ export interface RunRow {
   quota: Record<string, unknown> | null; artifact_id: string | null; continuity: string | null; error_code: string | null
   created_at: string; started_at: string | null; finished_at: string | null; updated_at: string
 }
-export type NewSchedule = Omit<ScheduleRow, 'revision' | 'paused_by' | 'cancelled_at' | 'cancelled_by' | 'cancel_reason' | 'created_at' | 'updated_at' | 'state'> & { state?: ScheduleState }
+export type NewSchedule = Omit<ScheduleRow, 'revision' | 'human_override' | 'paused_by' | 'cancelled_at' | 'cancelled_by' | 'cancel_reason' | 'created_at' | 'updated_at' | 'state'> & { state?: ScheduleState }
 
 export const targetKey = (parts: unknown) => createHash('sha256').update(json(parts)).digest('hex')
 /** Canonical copy of the mutable columns, frozen into schedule_runs.definition when an occurrence is created. */
@@ -55,9 +55,9 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
     return { items, total: count }
   }
   /** Optimistic update: returns undefined when the revision no longer matches. */
-  async updateSchedule(id: string, expectedRevision: number, patch: Partial<Pick<ScheduleRow, 'title' | 'instructions' | 'params' | 'recurrence' | 'delivery' | 'misfire' | 'expires_at' | 'target_key' | 'state' | 'paused_by' | 'next_run_at' | 'cancelled_at' | 'cancelled_by' | 'cancel_reason'>>) {
+  async updateSchedule(id: string, expectedRevision: number, patch: Partial<Pick<ScheduleRow, 'title' | 'instructions' | 'params' | 'recurrence' | 'delivery' | 'misfire' | 'expires_at' | 'target_key' | 'state' | 'paused_by' | 'next_run_at' | 'cancelled_at' | 'cancelled_by' | 'cancel_reason' | 'human_override'>>) {
     const entries = Object.entries(patch), sets = entries.map(([key], i) => `${key}=$${i + 3}`)
-    const values = entries.map(([key, value]) => ['params', 'recurrence', 'delivery'].includes(key) ? json(value) : value)
+    const values = entries.map(([key, value]) => ['params', 'recurrence', 'delivery', 'human_override'].includes(key) ? json(value) : value)
     const rows = await this.db.query<ScheduleRow>(`UPDATE schedules SET ${sets.length ? `${sets.join(',')},` : ''}revision=revision+1,updated_at=$${entries.length + 3} WHERE id=$1 AND revision=$2 RETURNING *`,
       [id, expectedRevision, ...values, isoNow()])
     return rows[0]
@@ -143,6 +143,11 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
     const now = isoNow()
     return (await this.db.query<{ id: string }>(`UPDATE schedule_runs SET state='skipped',phase='done',skip_reason=$1,finished_at=$2,updated_at=$2,next_attempt_at=NULL,generation=generation+1
       WHERE state IN ('pending','deferred','interrupted') RETURNING id`, [skipReason, now])).map(row => row.id)
+  }
+  /** Fleet members the last Hub process left in a live state; their child processes are gone with it. */
+  async fleetMembersInFlight() {
+    return this.db.query<{ id: string; team_id: string; session_id: string | null; generation: string | null; state: string }>(`SELECT id,team_id,session_id,runtime->>'generation' AS generation,runtime->>'state' AS state
+      FROM chat_team_members WHERE runtime IS NOT NULL AND runtime->>'state' IN ('starting','busy','idle','waiting_input')`)
   }
   async failedPhaseCount(runId: string): Promise<number> {
     return Number((await this.db.query<{ n: number }>("SELECT count(DISTINCT generation) AS n FROM schedule_run_phases WHERE run_id=$1 AND state='failed'", [runId]))[0]!.n)

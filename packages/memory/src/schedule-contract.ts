@@ -31,7 +31,7 @@ export type IncidentCause = 'hub_restart' | 'deadline_exceeded' | 'automations_o
 export type IncidentAction = 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' | 'none' | 'resumed' | 'resume_unsupported' | 'resume_failed'
 
 export const scheduleEventTypes = ['schedule.created', 'schedule.updated', 'schedule.paused', 'schedule.resumed', 'schedule.cancelled', 'schedule.constrained',
-  'run.started', 'run.deferred', 'decisions.revoked', 'run.persisted', 'run.delivered', 'run.finished', 'run.interrupted', 'decision.received', 'action.receipt'] as const
+  'run.started', 'run.deferred', 'decisions.revoked', 'replies.processed', 'run.persisted', 'run.delivered', 'run.finished', 'run.interrupted', 'decision.received', 'action.receipt'] as const
 export type ScheduleEventType = typeof scheduleEventTypes[number]
 
 /** Closed error codes stored in schedule_runs.error_code and phase receipts; provider or CLI text never reaches them. */
@@ -142,7 +142,11 @@ export interface ArtifactAuthorityReader {
   /** 'unavailable' on every artifact after a restore, even without a reference; 'unknown' when no artifact matches. */
   artifactAuthority(input: { run_id: string; decision_request_ref?: string }): Promise<'live' | 'unavailable' | 'unknown'>
 }
-export interface ScheduleEffects { deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests }
+export interface ScheduleEffects {
+  deliveries: DeliveryAdapters; actions: ActionExecutor; decisions: DecisionRequests
+  /** One cycle of channel reply reading and request expiry; the clock calls it about once a minute. */
+  replyTick?(): Promise<unknown>
+}
 
 /** Switch and effects injected by the core; the memory package never reads the core database. */
 export interface ScheduleAutomation { enabled(): boolean; effects?: ScheduleEffects }
@@ -151,11 +155,14 @@ export interface ScheduleAutomation { enabled(): boolean; effects?: ScheduleEffe
 export const RUN_PROFILE_CLI_KINDS: readonly string[] = ['hub_run_action', 'hub_effects']
 export function isRunProfileAgent(agent: { cli_kind: string }): boolean { return RUN_PROFILE_CLI_KINDS.includes(agent.cli_kind) }
 
+/** Fields of a schedule a person changed from the app; an agent cannot change them afterwards. */
+export type HumanOverrideField = 'recurrence' | 'delivery'
+
 /** `next_run_local` carries the system offset; `delivery_unavailable` lists requested targets whose adapter reports unavailable. */
 export interface ScheduleView {
   id: string; scope: ScheduleScope; project_id: string | null; template: ScheduleTemplate; template_version: number; kind: ScheduleKind; title: string; recurrence: Recurrence
   timezone: string; next_run_at: string | null; next_run_local: string | null; delivery: DeliveryTarget[]; delivery_unavailable: DeliveryTarget[]
-  state: ScheduleState; paused_by: Actor | null; revision: number; created_by: { kind: Actor; agent_id: string | null; label: string }; admission_note: string
+  state: ScheduleState; paused_by: Actor | null; revision: number; human_override: HumanOverrideField[]; created_by: { kind: Actor; agent_id: string | null; label: string }; admission_note: string
   last_run?: { id: string; state: RunState; scheduled_for: string; trigger: RunTrigger; skip_reason?: string; deferred_reason?: string }
   /** Present while a run waits for quota or for the machine to wake. */
   deferred?: { reason: string; resets_at: string | null; next_attempt_at: string | null }

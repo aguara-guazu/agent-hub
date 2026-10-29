@@ -727,4 +727,7 @@ INSERT INTO process_incidents(id,subject_kind,subject_id,generation,schedule_id,
 DROP TABLE process_incidents_previous;
 CREATE UNIQUE INDEX process_incidents_subject ON process_incidents(subject_kind,subject_id,COALESCE(generation,''),cause);
 CREATE INDEX process_incidents_project ON process_incidents(project_id,observed_at DESC);
+`, String.raw`
+-- Fields a person changed from the app; an agent update that touches one is refused.
+ALTER TABLE schedules ADD COLUMN human_override JSON NOT NULL DEFAULT '[]';
 `]

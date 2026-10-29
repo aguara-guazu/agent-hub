@@ -15,10 +15,11 @@ afterEach(async () => { await db.close(); await rm(dir, { recursive: true, force
 const insert = (id: string, cause: string, action: string) => db.query(`INSERT INTO process_incidents(id,subject_kind,subject_id,generation,cause,action,observed_at) VALUES($1,'fleet_member',$2,'g1',$3,$4,'2026-10-29T00:00:00.000Z')`, [id, id, cause, action])
 
 it('la reconstrucción conserva las filas anteriores y sus índices y admite las causas y acciones de cuota', async () => {
-  for (const sql of migrations.slice(0, -1)) await db.execute(sql)
+  const rebuild = migrations.findIndex(sql => sql.includes('process_incidents_previous'))
+  for (const sql of migrations.slice(0, rebuild)) await db.execute(sql)
   await insert('old', 'hub_restart', 'terminated')
   await expect(insert('rejected', 'quota_exhausted', 'resumed')).rejects.toThrow()
-  await db.execute(migrations.at(-1)!)
+  for (const sql of migrations.slice(rebuild)) await db.execute(sql)
   expect((await db.query('SELECT id,cause,action FROM process_incidents'))).toEqual([{ id: 'old', cause: 'hub_restart', action: 'terminated' }])
   for (const [id, cause, action] of [['a', 'quota_exhausted', 'none'], ['b', 'quota_resume', 'resumed'], ['c', 'quota_resume', 'resume_unsupported'], ['d', 'quota_resume', 'resume_failed']] as const) await insert(id, cause, action)
   await expect(insert('e', 'quota_restored', 'none')).rejects.toThrow()
