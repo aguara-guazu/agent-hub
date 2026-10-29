@@ -16,7 +16,7 @@ import { useToast } from '../components/Toast'
 import { api } from '../lib/api'
 import { useMemory } from '../lib/memory'
 import type { MemoryEntity, Page } from '../lib/memory'
-import { automationKeys, CHANNEL_REASONS, STORE_ITEM_TO_PUBLIC, DECISION_ERRORS, useAutomationSettings, useConstraints, useDeliveryChannels, useDecision, useDecisionActions, useRun, useRuns, useScheduleActions, useSchedules } from '../lib/automations'
+import { automationKeys, CHANNEL_REASONS, STORE_ITEM_TO_PUBLIC, DECISION_ERRORS, useAutomationSettings, useConstraints, useDeliveryChannels, useDecision, useDecisionActions, useRetryDelivery, useRun, useRuns, useScheduleActions, useSchedules } from '../lib/automations'
 import type { DeliveryAvailability, DeliveryTarget, DeliveryView, ItemState, PublicItem, Recurrence, RunListItem, RunState, ScheduleView } from '../lib/automations'
 
 const TEMPLATE_LABELS: Record<string, string> = {
@@ -330,6 +330,22 @@ function ItemsBlock({ runId, items, hasDecision }: { runId: string; items: Publi
   </section>
 }
 
+const RETRYABLE: readonly DeliveryTarget[] = ['gmail_self', 'slack_self']
+
+/** «Reintentar» de una entrega por canal fallida o incierta; siempre pide confirmación antes de llamar. */
+function DeliveryRetry({ runId, deliveries }: { runId: string; deliveries: DeliveryView[] | undefined }) {
+  const retry = useRetryDelivery(runId)
+  const [asking, setAsking] = useState<DeliveryView | null>(null)
+  const retryable = (deliveries ?? []).filter(item => item.id && RETRYABLE.includes(item.target) && (item.state === 'failed' || item.state === 'uncertain'))
+  if (retryable.length === 0) return null
+  return <div className="automations-actions">
+    {retryable.map(item => <button key={item.id} className="btn btn-sm" disabled={retry.isPending} onClick={() => setAsking(item)}>Reintentar {TARGET_LABELS[item.target]}</button>)}
+    <ConfirmDialog open={asking !== null} title={`Reintentar el envío por ${asking ? TARGET_LABELS[asking.target] : ''}`} confirmLabel="Reintentar" cancelLabel="Volver" busy={retry.isPending} onClose={() => setAsking(null)}
+      message={asking?.state === 'uncertain' ? <p>No se pudo confirmar si este mensaje llegó: puede llegar dos veces. Reintenta solo si no lo recibiste.</p> : <p>El envío falló; se vuelve a intentar una vez, a tu propia cuenta.</p>}
+      onConfirm={() => asking?.id && retry.mutate(asking.id, { onSettled: () => setAsking(null) })} />
+  </div>
+}
+
 export function DeliveryDetailPage() {
   const { runId = '' } = useParams()
   const navigate = useNavigate()
@@ -348,6 +364,7 @@ export function DeliveryDetailPage() {
     <article className="automations-detail">
       <header><h2>{data.title}</h2><p className="automations-muted">Programado {formatDateTime(data.scheduled_for)}{generatedNote(data)}</p>
         {deliverySummary(data.deliveries)}
+        <DeliveryRetry runId={data.run_id} deliveries={data.deliveries} />
         {data.incidents?.map(incident => <p key={incident.observed_at} className="automations-warning">Proceso interrumpido ({incident.cause}): {incident.action}</p>)}
         <Link to={`/schedules?focus=${data.schedule_id}`}>Ver automatización</Link></header>
       <Markdown source={data.body_md} />

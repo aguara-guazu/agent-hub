@@ -91,7 +91,7 @@ export interface PublicItem {
   failure_reason?: string | null
 }
 
-export interface DeliveryView { target: DeliveryTarget; state: 'pending' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'skipped'; error_code?: string | null; updated_at?: string }
+export interface DeliveryView { id?: string; target: DeliveryTarget; state: 'pending' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'skipped'; error_code?: string | null; updated_at?: string }
 
 /** Fila de la lista de entregas. `deliveries` y `decision` quedan sin definir mientras `GET …/schedules/runs` no los incluya. */
 export interface RunListItem {
@@ -316,4 +316,26 @@ export const CHANNEL_REASONS: Record<string, string> = {
 }
 export function useDeliveryChannels() {
   return useQuery({ queryKey: ['delivery-channels'], queryFn: () => api.get<{ items: DeliveryChannel[] }>('/memory/schedules/delivery-channels') })
+}
+
+export interface RetryResult { delivery_id: string; state: DeliveryView['state']; error_code?: string; may_duplicate: boolean }
+const RETRY_ERRORS: Record<string, string> = {
+  not_retryable: 'Esta entrega ya no se puede reintentar.',
+  automations_off: 'Las automatizaciones están desactivadas en Ajustes.',
+  delivery_not_found: 'La entrega ya no existe.',
+}
+
+/** Reintento humano de una entrega fallida o incierta (`POST …/deliveries/:id/retry`); una incierta pudo haber llegado ya. */
+export function useRetryDelivery(runId: string) {
+  const cache = useQueryClient()
+  const toast = useToast()
+  return useMutation({
+    mutationFn: (deliveryId: string) => api.post<RetryResult>(`/memory/schedules/deliveries/${encodeURIComponent(deliveryId)}/retry`, {}),
+    onSuccess: async result => {
+      await Promise.all([cache.invalidateQueries({ queryKey: automationKeys.run(runId) }), cache.invalidateQueries({ queryKey: ['schedule-runs'] })])
+      if (result.state === 'sent') toast.success('Entrega reenviada', result.may_duplicate ? 'Puede haber llegado dos veces.' : undefined)
+      else toast.info('El reintento no terminó', `Estado: ${result.state}${result.error_code ? ` (${result.error_code})` : ''}.`)
+    },
+    onError: error => { toast.error('No se pudo reintentar', error instanceof ApiError && error.code && RETRY_ERRORS[error.code] ? RETRY_ERRORS[error.code]! : error.message) },
+  })
 }

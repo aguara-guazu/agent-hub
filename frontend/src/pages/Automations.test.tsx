@@ -229,15 +229,16 @@ describe('Detalle de una entrega', () => {
     artifact: { id: 'a1', kind: 'brief', title: 'Brief · martes 28/10', read_at: null, body_md: '# Cierre\n\n<script>alert(1)</script> [Jira](https://example.atlassian.net/browse/ABC-1) [malo](javascript:alert(1))',
       items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p', summary: 'ABC-1 worklog 2 h', estimate_id: 'e1', estimate }, { ordinal: 2, kind: 'jira_transition', project_id: 'p', summary: 'ABC-2 → En revisión' }] },
     items: [{ ordinal: 1, kind: 'jira_worklog', state: 'proposed', estimate_id: 'e1' }, { ordinal: 2, kind: 'jira_transition', state: 'proposed' }],
-    deliveries: [{ target: 'app_window', state: 'sent' }, { target: 'gmail_self', state: 'failed', error_code: 'token_expired' }], incidents: [],
+    deliveries: [{ id: 'd1', target: 'app_window', state: 'sent' }, { id: 'd2', target: 'gmail_self', state: 'failed', error_code: 'token_expired' }], incidents: [],
   } as unknown as RawRunDetail
   const decision = { request_id: 'q1', revision: 1, state: 'open', expires_at: '2026-10-28T23:59:00Z', digest: 'd'.repeat(64), authority: 'verified',
     items: [{ ordinal: 1, kind: 'jira_worklog', summary: 'ABC-1 worklog 2 h', state: 'pending', effect_digest: 'e1' }, { ordinal: 2, kind: 'jira_transition', summary: 'ABC-2 → En revisión', state: 'pending', effect_digest: 'e2' }] }
 
-  function mockDetail(overrides: { decision?: object } = {}) {
+  function mockDetail(overrides: { decision?: object; deliveries?: object[] } = {}) {
     return installFetch({ user, handle: call => {
       calls.push(call)
-      if (call.path === '/memory/schedules/runs/r1') return jsonResponse(detail)
+      if (call.path === '/memory/schedules/deliveries/d2/retry') return jsonResponse({ delivery_id: 'd2', state: 'sent', may_duplicate: overrides.deliveries?.some(item => (item as { state: string }).state === 'uncertain') ?? false })
+      if (call.path === '/memory/schedules/runs/r1') return jsonResponse(overrides.deliveries ? { ...detail, deliveries: overrides.deliveries } : detail)
       if (call.path === '/memory/schedules/runs/r1/decision') return jsonResponse({ ...decision, ...overrides.decision })
       if (call.path === '/memory/schedules/runs/r1/read') return jsonResponse({})
       if (call.path.startsWith('/memory/schedules/runs/r1/')) return jsonResponse({ request_id: 'q1', revision: 1, state: 'open', items: [] })
@@ -355,6 +356,32 @@ describe('Detalle de una entrega', () => {
     const { container } = await mount()
     expect(textOf(container)).toContain('bloqueada por demasiados intentos fallidos')
     expect(qa(container, 'button').some(button => button.textContent?.includes('Aprobar seleccionados'))).toBe(false)
+  })
+
+  it('reintentar una entrega fallida pide confirmación antes de llamar', async () => {
+    const api = mockDetail()
+    const { container } = await mount()
+    expect(qa(container, 'button').filter(button => button.textContent?.startsWith('Reintentar'))).toHaveLength(1)
+    await click(buttonByText(container, 'Reintentar Gmail'))
+    expect(api.callsTo('/memory/schedules/deliveries/d2/retry', 'POST')).toHaveLength(0)
+    expect(textOf(need(document.body, '[role="dialog"]'))).toContain('El envío falló')
+    await click(buttonByText(need(document.body, '[role="dialog"]'), 'Reintentar'))
+    expect(api.lastCall('/memory/schedules/deliveries/d2/retry', 'POST')?.body).toEqual({})
+  })
+
+  it('reintentar una entrega incierta advierte que puede llegar dos veces y Volver no llama', async () => {
+    const api = mockDetail({ deliveries: [{ id: 'd2', target: 'gmail_self', state: 'uncertain' }] })
+    const { container } = await mount()
+    await click(buttonByText(container, 'Reintentar Gmail'))
+    expect(textOf(need(document.body, '[role="dialog"]'))).toContain('puede llegar dos veces')
+    await click(buttonByText(need(document.body, '[role="dialog"]'), 'Volver'))
+    expect(api.callsTo('/memory/schedules/deliveries/d2/retry', 'POST')).toHaveLength(0)
+  })
+
+  it('no ofrece reintentar entregas enviadas ni la de la app', async () => {
+    mockDetail({ deliveries: [{ id: 'd1', target: 'app_window', state: 'failed' }, { id: 'd2', target: 'gmail_self', state: 'sent' }] })
+    const { container } = await mount()
+    expect(qa(container, 'button').some(button => button.textContent?.startsWith('Reintentar'))).toBe(false)
   })
 
   it('aprobar solo horas no pide confirmación adicional', async () => {
