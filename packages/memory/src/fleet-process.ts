@@ -25,6 +25,8 @@ export interface FleetQuestion {
   isSecret?: boolean
 }
 export interface FleetPendingQuestion { id: string; questions: FleetQuestion[] }
+/** Codex reports the exhausted quota in turn.error.codexErrorInfo; rateLimitExceeded is a transient limit and stays generic. */
+export type FleetErrorCause = 'quota_exhausted'
 export type FleetQuestionAnswers = Record<string, { answers: string[] }>
 export interface FleetStatus {
   id: string
@@ -36,6 +38,9 @@ export interface FleetStatus {
   native_id?: string
   turn_id?: string
   error_code?: string
+  /** Set only with protocol evidence of the CLI itself; absent means the failure is generic. */
+  error_cause?: FleetErrorCause
+  error_evidence?: 'protocol'
   questions?: FleetPendingQuestion[]
 }
 export type FleetEvent = FleetStatus
@@ -47,6 +52,7 @@ export interface FleetProcessOptions {
 }
 const FORK_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type Packet = Record<string, any>
+const codexCause = (error: Packet | null | undefined): FleetErrorCause | undefined => error?.codexErrorInfo === 'usageLimitExceeded' ? 'quota_exhausted' : undefined
 type Pending = { resolve: (value: Packet) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
 type PendingQuestion = {
   value: FleetPendingQuestion
@@ -98,11 +104,13 @@ export class FleetProcessManager {
   private snapshot(value: FleetStatus): FleetStatus {
     return { ...value, ...(value.questions ? { questions: structuredClone(value.questions) } : {}) }
   }
-  private publish(s: Session, state: FleetState, error_code?: string) {
+  private publish(s: Session, state: FleetState, error_code?: string, cause?: FleetErrorCause) {
     if (this.sessions.get(s.status.id) !== s) return
     s.status.state = state
     if (error_code) s.status.error_code = error_code
     else delete s.status.error_code
+    if (error_code && cause) { s.status.error_cause = cause; s.status.error_evidence = 'protocol' }
+    else { delete s.status.error_cause; delete s.status.error_evidence }
     const event = this.snapshot(s.status)
     // Serialize writes so a slow busy callback cannot overwrite a later idle callback.
     s.eventQueue = s.eventQueue.then(() => this.options.onEvent?.(event)).then(() => {}, () => {
@@ -135,10 +143,10 @@ export class FleetProcessManager {
     s.pending.clear()
     s.ready?.reject(new Error(code)); s.ready = undefined
   }
-  private fail(s: Session, code: string) {
+  private fail(s: Session, code: string, cause?: FleetErrorCause) {
     if (this.sessions.get(s.status.id) !== s || s.stopping || s.status.state === 'failed') return
     this.clearQuestions(s)
-    this.publish(s, 'failed', code)
+    this.publish(s, 'failed', code, cause)
     this.rejectPending(s, code)
     void this.terminate(s)
   }
@@ -214,9 +222,9 @@ export class FleetProcessManager {
       this.clearQuestions(s)
       delete s.status.turn_id
       if (turn.status === 'completed' || turn.status === 'interrupted') this.publish(s, 'idle')
-      else this.fail(s, turn.status === 'failed' ? 'fleet_turn_failed' : 'fleet_invalid_turn_status')
+      else this.fail(s, turn.status === 'failed' ? 'fleet_turn_failed' : 'fleet_invalid_turn_status', turn.status === 'failed' ? codexCause(turn.error) : undefined)
     }
-    if (packet.method === 'error' && params.willRetry === false) this.fail(s, 'fleet_turn_failed')
+    if (packet.method === 'error' && params.willRetry === false) this.fail(s, 'fleet_turn_failed', codexCause(params.error))
   }
 
   private receiveAcp(s: Session, packet: Packet) {

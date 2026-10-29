@@ -81,7 +81,7 @@ createInterface({input:process.stdin}).on('line',line=>{
    out({method:'item/agentMessage/delta',params:{threadId:'thread-native',delta:'SECRET TRANSCRIPT'}});
    process.stderr.write('SECRET STDERR\n');
    out({method:'turn/started',params:{threadId:'thread-native',turn:{id:active}}});
-   const complete=()=>out({method:'turn/completed',params:{threadId:'thread-native',turn:{id:active,status:mode==='failed'?'failed':'completed',error:{message:'SECRET ERROR'}}}});
+   const complete=()=>out({method:'turn/completed',params:{threadId:'thread-native',turn:{id:active,status:['failed','usageLimit','rateLimit'].includes(mode)?'failed':'completed',error:{message:'SECRET ERROR',codexErrorInfo:mode==='usageLimit'?'usageLimitExceeded':mode==='rateLimit'?'rateLimitExceeded':null}}}});
    if(mode==='fast') complete();
    if(mode.startsWith('question')) {
     const ask={method:'item/tool/requestUserInput',id:42,params:{threadId:'thread-native',turnId:active,isBlocking:true,questions:[{id:'choice',header:'Approach',question:'Which approach?',isOther:true,isSecret:false,options:[{label:'Yes',description:'Proceed'},{label:'No',description:'Wait'}]}]}};
@@ -266,6 +266,21 @@ describe('FleetProcessManager', () => {
     await manager.start({ ...input, cli: 'kiro' })
     await until(() => manager.status('one')?.state === state)
     expect(manager.status('one')?.error_code).toBe(error)
+  })
+  it('marks a Codex failure as quota exhaustion only for the usage-limit protocol error', async () => {
+    for (const [mode, cause] of [['usageLimit', 'quota_exhausted'], ['rateLimit', undefined], ['failed', undefined]] as const) {
+      const { manager, input } = await setup(mode)
+      await manager.start(input)
+      await until(() => manager.status('one')?.state === 'failed')
+      expect(manager.status('one')).toMatchObject({ error_code: 'fleet_turn_failed', ...(cause ? { error_cause: cause, error_evidence: 'protocol' } : {}) })
+      if (!cause) { expect(manager.status('one')).not.toHaveProperty('error_cause'); expect(manager.status('one')).not.toHaveProperty('error_evidence') }
+    }
+  })
+  it('never infers a quota cause from a Claude result failure', async () => {
+    const { manager, input } = await setup('failed')
+    await manager.start({ ...input, cli: 'claude_code' })
+    await until(() => manager.status('one')?.state === 'failed')
+    expect(manager.status('one')).not.toHaveProperty('error_cause')
   })
   it('parses fragmented JSON packets without leaking their content', async () => {
     const { manager, input, events } = await setup('fragmented')
