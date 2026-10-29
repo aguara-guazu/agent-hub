@@ -1,11 +1,12 @@
 import { useRef } from "react"
 import type { AnchorHTMLAttributes, CSSProperties, HTMLAttributes, KeyboardEvent, ReactNode } from "react"
 import { Link, type LinkProps } from "react-router-dom"
-import { ApiError } from "../../lib/api"
+import i18n from "i18next"
+import { errorKey } from "../../i18n/errors"
+import { useT } from "../../i18n"
 import { Icon, type IconName } from "../Icon"
 import { Button } from "./basics"
 import { cx } from "./layers"
-import { uiText } from "./strings"
 
 /** Botón sin apariencia propia, para pestañas y títulos clicables. */
 const BARE_BUTTON: CSSProperties = { border: 0, background: "transparent", padding: 0, font: "inherit", color: "inherit", textAlign: "left", cursor: "pointer" }
@@ -105,10 +106,11 @@ export function Empty({ icon = "info", title, detail, action, tone = "neutral" }
 
 /** Vacío por filtro: una línea + «Limpiar filtros». */
 export function EmptyFiltered({ text, onClear }: { text: string; onClear: () => void }) {
+  const { t } = useT("common")
   return (
     <div className="empty" style={{ padding: "var(--sp-5)" }}>
       <span className="t2">{text}</span>
-      <Button small onClick={onClear}>{uiText("action.clearFilters")}</Button>
+      <Button small onClick={onClear}>{t("actions.clearFilters")}</Button>
     </div>
   )
 }
@@ -189,8 +191,9 @@ export function ExternalRowLink({ title, sub, lead, meta, ...rest }: RowContent 
 
 /** Carga: filas esqueleto con la misma altura que las reales. */
 export function SkeletonRows({ count = 3, avatar = true, label }: { count?: number; avatar?: boolean; label?: string }) {
+  const { t } = useT("common")
   return (
-    <div className="list" role="status" aria-busy="true" aria-label={label ?? uiText("loading")}>
+    <div className="list" role="status" aria-busy="true" aria-label={label ?? t("states.loading")}>
       {Array.from({ length: count }, (_, index) => (
         <div className="row" key={index} aria-hidden="true">
           {avatar && <span className="av" style={{ background: "var(--surface-3)" }} />}
@@ -206,21 +209,13 @@ export function SkeletonRows({ count = 3, avatar = true, label }: { count?: numb
 
 /** Línea de carga para bloques que no son listas. */
 export function Loading({ label }: { label?: string }) {
-  return <div role="status" aria-busy="true" className="t3 xs" style={{ padding: "var(--sp-4)" }}>{label ?? uiText("loading")}…</div>
+  const { t } = useT("common")
+  return <div role="status" aria-busy="true" className="t3 xs" style={{ padding: "var(--sp-4)" }}>{label ?? t("states.loading")}</div>
 }
 
+/** Texto de `errors` para lo que se lanzó (causa + qué hacer). Fuera de React; sigue el idioma activo de i18next. */
 export function describeError(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.status === 401) return uiText("error.session")
-    if (error.status === 403) return error.message || uiText("error.forbidden")
-    if (error.status === 404) return error.message || uiText("error.notFound")
-    if (error.status >= 500) return uiText("error.server", { status: error.status })
-    return error.message || uiText("error.unknown")
-  }
-  if (error instanceof TypeError) return uiText("error.network")
-  if (error instanceof Error) return error.message
-  if (typeof error === "string") return error
-  return uiText("error.unknown")
+  return i18n.t(errorKey(error), { ns: "errors" })
 }
 
 export interface ErrorStateProps {
@@ -233,13 +228,15 @@ export interface ErrorStateProps {
 
 /** Error de carga: causa + una acción. */
 export function ErrorState({ error, title, onRetry, action }: ErrorStateProps) {
+  const { t } = useT("common")
+  const { t: te } = useT("errors")
   return (
     <Empty
       tone="danger"
       icon="error"
-      title={title ?? uiText("error.title")}
-      detail={describeError(error)}
-      action={action ?? (onRetry && <Button small onClick={onRetry}>{uiText("action.retry")}</Button>)}
+      title={title ?? t("error.title")}
+      detail={te(errorKey(error))}
+      action={action ?? (onRetry && <Button small onClick={onRetry}>{t("actions.retry")}</Button>)}
     />
   )
 }

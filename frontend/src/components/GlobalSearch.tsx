@@ -8,7 +8,7 @@ import { Icon, type IconName } from "./Icon"
 import { Avatar, Kbd, Tag } from "./ui/basics"
 import { Layer, trapTab, useLayer } from "./ui/layers"
 import { relativeTime } from "./ui/time"
-import { uiText, type UiStringKey } from "./ui/strings"
+import { useT } from "../i18n"
 import { DESTINATIONS, type useShellStatus } from "./useShellStatus"
 
 interface SearchRow { key: string; entity_id: string; title: string; kind: string; href: string; updated_at: string }
@@ -25,9 +25,11 @@ interface PaletteItem {
   run: () => void
 }
 
-const KIND_KEYS: Record<string, UiStringKey> = {
-  project: "kind.project", company: "kind.company", person: "kind.person", meeting: "kind.meeting",
-  document: "kind.document", note: "kind.note", collection: "kind.collection", fact: "kind.fact",
+const ENTITY_KINDS = ["company", "project", "person", "meeting", "event", "document", "message", "issue", "note", "collection", "fact"] as const
+type EntityKind = (typeof ENTITY_KINDS)[number]
+
+function entityKind(kind: string): EntityKind | "other" {
+  return (ENTITY_KINDS as readonly string[]).includes(kind) ? kind as EntityKind : "other"
 }
 
 function normalize(text: string): string {
@@ -48,7 +50,7 @@ function highlight(text: string, query: string): ReactNode {
   return <>{text.slice(0, index)}<b>{text.slice(index, index + query.length)}</b>{text.slice(index + query.length)}</>
 }
 
-const GROUP_KEYS: Record<Group, UiStringKey> = { memory: "cmdk.group.memory", goto: "cmdk.group.goto", actions: "cmdk.group.actions" }
+const GROUP_KEYS = { memory: "cmdk.groupMemory", goto: "cmdk.groupGoto", actions: "cmdk.groupActions" } as const satisfies Record<Group, string>
 
 export interface GlobalSearchProps {
   open: boolean
@@ -65,6 +67,8 @@ export function GlobalSearch({ open, onClose, status, theme }: GlobalSearchProps
 
 function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
   const navigate = useNavigate()
+  const { t } = useT("nav")
+  const { t: ts } = useT("status")
   const root = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLInputElement>(null)
   const listId = useId()
@@ -100,36 +104,36 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
       label: row.title,
       lead: row.kind === "project" || row.kind === "company" || row.kind === "person"
         ? <Avatar name={row.title} small round={row.kind === "person"} />
-        : <Tag>{uiText(KIND_KEYS[row.kind] ?? "kind.other")}</Tag>,
-      meta: <span className="xs t3">{row.kind === "project" || row.kind === "company" || row.kind === "person" ? uiText(KIND_KEYS[row.kind]!) : relativeTime(row.updated_at)}</span>,
+        : <Tag>{ts(`entity.${entityKind(row.kind)}`)}</Tag>,
+      meta: <span className="xs t3">{row.kind === "project" || row.kind === "company" || row.kind === "person" ? ts(`entity.${entityKind(row.kind)}`) : relativeTime(row.updated_at)}</span>,
       run: go(row.href),
     }))
     const destinations: PaletteItem[] = DESTINATIONS
-      .filter(destination => matches(trimmed, uiText(destination.labelKey), destination.keywordsKey ? uiText(destination.keywordsKey) : ""))
-      .map(destination => ({ id: `g-${destination.to}`, group: "goto", label: uiText(destination.labelKey), lead: <Icon name={destination.icon} />, run: go(destination.to) }))
-    const actionList: Array<{ id: string; key: UiStringKey; icon: IconName; run: () => void }> = [
-      { id: "new-project", key: "cmdk.action.newProject", icon: "add", run: go("/projects?new=project") },
-      { id: "new-note", key: "cmdk.action.newNote", icon: "note", run: go("/memory?new=note") },
-      { id: "add-server", key: "cmdk.action.addServer", icon: "add", run: go("/servers?new=server") },
-      { id: "new-skill", key: "cmdk.action.newSkill", icon: "add", run: go("/skills?new=skill") },
-      { id: "sync", key: "cmdk.action.sync", icon: "sync", run: () => { onClose(); status.sync.mutate() } },
-      { id: "theme", key: theme.theme === "dark" ? "cmdk.action.themeLight" : "cmdk.action.themeDark", icon: theme.theme === "dark" ? "sun" : "moon", run: () => { theme.toggle(); onClose() } },
+      .filter(destination => matches(trimmed, t(destination.labelKey), destination.keywordsKey ? t(destination.keywordsKey) : ""))
+      .map(destination => ({ id: `g-${destination.to}`, group: "goto", label: t(destination.labelKey), lead: <Icon name={destination.icon} />, run: go(destination.to) }))
+    const actionList: Array<{ id: string; key: "cmdk.newProject" | "cmdk.newNote" | "cmdk.addServer" | "cmdk.newSkill" | "cmdk.sync" | "cmdk.themeLight" | "cmdk.themeDark"; icon: IconName; run: () => void }> = [
+      { id: "new-project", key: "cmdk.newProject", icon: "add", run: go("/projects?new=project") },
+      { id: "new-note", key: "cmdk.newNote", icon: "note", run: go("/memory?new=note") },
+      { id: "add-server", key: "cmdk.addServer", icon: "add", run: go("/servers?new=server") },
+      { id: "new-skill", key: "cmdk.newSkill", icon: "add", run: go("/skills?new=skill") },
+      { id: "sync", key: "cmdk.sync", icon: "sync", run: () => { onClose(); status.sync.mutate() } },
+      { id: "theme", key: theme.theme === "dark" ? "cmdk.themeLight" : "cmdk.themeDark", icon: theme.theme === "dark" ? "sun" : "moon", run: () => { theme.toggle(); onClose() } },
     ]
     const actions: PaletteItem[] = actionList
-      .filter(action => matches(trimmed, uiText(action.key)))
-      .map(action => ({ id: `a-${action.id}`, group: "actions", label: uiText(action.key), lead: <Icon name={action.icon} />, run: action.run }))
+      .filter(action => matches(trimmed, t(action.key)))
+      .map(action => ({ id: `a-${action.id}`, group: "actions", label: t(action.key), lead: <Icon name={action.icon} />, run: action.run }))
     if (trimmed) {
       actions.push({
         id: "search-all",
         group: "actions",
-        label: uiText("cmdk.searchAll", { query: trimmed }),
+        label: t("cmdk.searchAll", { query: trimmed }),
         lead: <Icon name="find" />,
         meta: <Kbd>↵</Kbd>,
         run: go(`/memory?q=${encodeURIComponent(trimmed)}`),
       })
     }
     return [...memory, ...destinations, ...actions]
-  }, [waiting, search.isError, search.data, trimmed, onClose, navigate, status.sync, theme])
+  }, [waiting, search.isError, search.data, trimmed, onClose, navigate, status.sync, theme, t, ts])
 
   // Con texto y sin coincidencias propias, la opción activa por defecto es buscar en toda la memoria.
   useEffect(() => {
@@ -155,7 +159,7 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
           className="pop"
           role="dialog"
           aria-modal="true"
-          aria-label={uiText("cmdk.title")}
+          aria-label={t("cmdk.title")}
           style={{ width: "100%", maxWidth: 560, display: "flex", flexDirection: "column", maxHeight: "76vh" }}
           onKeyDown={event => trapTab(event, root.current)}
         >
@@ -166,8 +170,8 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
               className="input"
               value={query}
               maxLength={2000}
-              placeholder={uiText("cmdk.placeholder")}
-              aria-label={uiText("cmdk.placeholder")}
+              placeholder={t("cmdk.placeholder")}
+              aria-label={t("cmdk.placeholder")}
               role="combobox"
               aria-expanded="true"
               aria-controls={listId}
@@ -184,15 +188,15 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
             />
             <Kbd>esc</Kbd>
           </div>
-          <div id={listId} role="listbox" aria-label={uiText("cmdk.title")} style={{ padding: "var(--sp-1)", display: "flex", flexDirection: "column", overflowY: "auto", minHeight: 0 }}>
-            {waiting && <span className="eyebrow" role="status" style={{ padding: "var(--sp-2) var(--sp-3) var(--sp-1)" }}>{uiText("cmdk.searching")}</span>}
-            {search.isError && !waiting && <span className="xs t3" role="status" style={{ padding: "var(--sp-2) var(--sp-3)" }}>{uiText("cmdk.searchError")}</span>}
+          <div id={listId} role="listbox" aria-label={t("cmdk.title")} style={{ padding: "var(--sp-1)", display: "flex", flexDirection: "column", overflowY: "auto", minHeight: 0 }}>
+            {waiting && <span className="eyebrow" role="status" style={{ padding: "var(--sp-2) var(--sp-3) var(--sp-1)" }}>{t("cmdk.searching")}</span>}
+            {search.isError && !waiting && <span className="xs t3" role="status" style={{ padding: "var(--sp-2) var(--sp-3)" }}>{t("cmdk.searchError")}</span>}
             {items.map((item, index) => {
               const heading = item.group !== lastGroup
               lastGroup = item.group
               return (
                 <div key={item.id} style={{ display: "contents" }}>
-                  {heading && <span className="eyebrow" aria-hidden="true" style={{ padding: "var(--sp-2) var(--sp-3) var(--sp-1)" }}>{uiText(GROUP_KEYS[item.group])}</span>}
+                  {heading && <span className="eyebrow" aria-hidden="true" style={{ padding: "var(--sp-2) var(--sp-3) var(--sp-1)" }}>{t(GROUP_KEYS[item.group])}</span>}
                   <div
                     id={`${listId}-${index}`}
                     role="option"
@@ -212,9 +216,9 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
             })}
           </div>
           <div className="xs t3" style={{ display: "flex", gap: "var(--sp-4)", padding: "var(--sp-2) var(--sp-4)", borderTop: "1px solid var(--border)", flex: "none" }}>
-            <span><Kbd>↑↓</Kbd> {uiText("cmdk.hint.move")}</span>
-            <span><Kbd>↵</Kbd> {uiText("cmdk.hint.open")}</span>
-            <span><Kbd>esc</Kbd> {uiText("cmdk.hint.close")}</span>
+            <span><Kbd>↑↓</Kbd> {t("cmdk.hintMove")}</span>
+            <span><Kbd>↵</Kbd> {t("cmdk.hintOpen")}</span>
+            <span><Kbd>esc</Kbd> {t("cmdk.hintClose")}</span>
           </div>
         </div>
       </div>

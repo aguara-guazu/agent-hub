@@ -4,7 +4,7 @@ import { Icon, type IconName } from "../Icon"
 import { Button, IconButton } from "./basics"
 import { useTheme } from "../../lib/theme"
 import { cx } from "./layers"
-import { uiText } from "./strings"
+import { useT } from "../../i18n"
 
 export type ToastKind = "info" | "success" | "error"
 
@@ -91,6 +91,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, [show, dismiss, clear])
 
   const theme = useTheme()
+  const { t } = useT("common")
   const icon: IconName = toast?.kind === "error" ? "error" : toast?.kind === "info" ? "info" : "done"
   return (
     <ToastContext.Provider value={api}>
@@ -103,9 +104,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 <span>{toast.message}</span>
                 {toast.detail && <span className="xs t3 clamp2">{toast.detail}</span>}
               </div>
-              {toast.undo && <Button small variant="ghost" style={{ color: "var(--accent-text)" }} onClick={() => finish(toast.id, true)}>{uiText("action.undo")}</Button>}
+              {toast.undo && <Button small variant="ghost" style={{ color: "var(--accent-text)" }} onClick={() => finish(toast.id, true)}>{t("actions.undo")}</Button>}
               {toast.action && <Button small variant="ghost" style={{ color: "var(--accent-text)" }} onClick={() => { const action = toast.action!; finish(toast.id, false); action.onClick() }}>{toast.action.label}</Button>}
-              {!toast.undo && <IconButton small variant="ghost" icon="close" label={uiText("action.close")} onClick={() => finish(toast.id, false)} />}
+              {!toast.undo && <IconButton small variant="ghost" icon="close" label={t("actions.close")} onClick={() => finish(toast.id, false)} />}
             </div>
           )}
       </div>

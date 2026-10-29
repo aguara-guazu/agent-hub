@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef } from "react"
 import type { FormEvent, ReactNode } from "react"
 import { Button, IconButton } from "./basics"
 import { Layer, focusableIn, hasBlockingLayer, trapTab, useLayer } from "./layers"
-import { uiText } from "./strings"
+import { useT } from "../../i18n"
 
 export interface DialogProps {
   open: boolean
@@ -26,6 +26,7 @@ export interface DialogProps {
 
 /** Solo para crear (hasta 5 campos) o confirmar lo irreversible. Nunca un diálogo sobre otro. */
 export function Dialog({ open, title, onClose, children, footer, onSubmit, busy = false, role = "dialog", initialFocus, width, showClose = false }: DialogProps) {
+  const { t } = useT("common")
   const panel = useRef<HTMLDivElement>(null)
   const titleId = useId()
   const close = useCallback(() => { if (!busy) onClose() }, [busy, onClose])
@@ -46,7 +47,7 @@ export function Dialog({ open, title, onClose, children, footer, onSubmit, busy 
   const body = <>
     <div className="modal-h" style={showClose ? { display: "flex", alignItems: "flex-start", gap: "var(--sp-2)" } : undefined}>
       <h2 id={titleId} className="h2" style={{ flex: 1, minWidth: 0 }}>{title}</h2>
-      {showClose && <IconButton icon="close" small variant="ghost" label={uiText("action.close")} disabled={busy} onClick={close} />}
+      {showClose && <IconButton icon="close" small variant="ghost" label={t("actions.close")} disabled={busy} onClick={close} />}
     </div>
     <div className="modal-b">{children}</div>
     {footer && <div className="modal-f">{footer}</div>}
@@ -94,6 +95,7 @@ export interface ConfirmDialogProps {
 
 /** Confirmación de lo irreversible. El foco inicial va a «Cancelar». */
 export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel, destructive = true, busy = false, onConfirm, onClose, role = "alertdialog" }: ConfirmDialogProps) {
+  const { t } = useT("common")
   return (
     <Dialog
       open={open}
@@ -104,7 +106,7 @@ export function ConfirmDialog({ open, title, message, confirmLabel, cancelLabel,
       initialFocus="[data-confirm-cancel]"
       width={420}
       footer={<>
-        <Button variant="ghost" data-confirm-cancel="" onClick={onClose} disabled={busy}>{cancelLabel ?? uiText("action.cancel")}</Button>
+        <Button variant="ghost" data-confirm-cancel="" onClick={onClose} disabled={busy}>{cancelLabel ?? t("actions.cancel")}</Button>
         <Button variant={destructive ? "danger" : "primary"} onClick={onConfirm} disabled={busy}>{confirmLabel}</Button>
       </>}
     >

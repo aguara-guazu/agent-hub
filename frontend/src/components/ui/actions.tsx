@@ -2,11 +2,12 @@ import type { ReactNode } from "react"
 import type { IconName } from "../Icon"
 import { BtnGroup, Button, IconButton } from "./basics"
 import { Menu, type MenuItem } from "./Menu"
-import { uiText } from "./strings"
+import { useT } from "../../i18n"
 
 /** El «…» de una vista, fila o panel. */
 export function MoreMenu({ items, label, small = false, ghost = false }: { items: readonly MenuItem[]; label?: string; small?: boolean; ghost?: boolean }) {
-  const text = label ?? uiText("action.more")
+  const { t } = useT("common")
+  const text = label ?? t("a11y.moreActions")
   return (
     <Menu
       items={items}

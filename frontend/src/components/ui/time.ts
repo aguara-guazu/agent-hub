@@ -1,25 +1,32 @@
-import { uiLanguage, uiText } from "./strings"
+import i18n from "i18next"
+import { formatDate, formatRelative } from "../../i18n/format"
+import type { Language } from "../../i18n/types"
 
-/** Fechas en listas: relativas hasta 7 días, después absolutas cortas («16 oct»). */
-export function relativeTime(value: string | number | Date | null | undefined, now = Date.now()): string {
-  if (value === null || value === undefined || value === "") return "—"
-  const time = new Date(value).getTime()
-  if (!Number.isFinite(time)) return "—"
-  const minutes = Math.max(0, Math.round((now - time) / 60000))
-  if (minutes < 1) return uiText("time.now")
-  if (minutes < 60) return uiText("time.minutes", { count: minutes })
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return uiText("time.hours", { count: hours })
-  const days = Math.round(hours / 24)
-  if (days === 1) return uiText("time.yesterday")
-  if (days < 7) return uiText("time.days", { count: days })
-  return new Date(time).toLocaleDateString(uiLanguage() === "en" ? "en-US" : "es-AR", { day: "numeric", month: "short" })
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+const SHORT_DATE: Intl.DateTimeFormatOptions = { day: "numeric", month: "short" }
+
+/** Idioma activo de i18next; fuera de React no hay re-render, así que se lee en cada llamada. */
+function activeLanguage(): Language {
+  return (i18n.resolvedLanguage ?? i18n.language) === "en" ? "en" : "es"
 }
 
-/** Fechas en paneles: absolutas completas («29 oct 2026, 14:19»). */
-export function absoluteTime(value: string | number | Date | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "—"
+function parse(value: string | number | Date | null | undefined): Date | null {
+  if (value === null || value === undefined || value === "") return null
   const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return "—"
-  return date.toLocaleString(uiLanguage() === "en" ? "en-US" : "es-AR", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
+  return Number.isFinite(date.getTime()) ? date : null
+}
+
+/** Fechas en listas (R5): relativas hasta 7 días, después absolutas cortas («16 oct»). Sin fecha: «—». */
+export function relativeTime(value: string | number | Date | null | undefined, now = Date.now()): string {
+  const date = parse(value)
+  if (!date) return "—"
+  const language = activeLanguage()
+  if (Math.abs(now - date.getTime()) >= WEEK_MS) return new Intl.DateTimeFormat(language, SHORT_DATE).format(date)
+  return formatRelative(date, language, now)
+}
+
+/** Fechas en paneles (R5): absolutas completas («29 oct 2026, 14:19»). Sin fecha: «—». */
+export function absoluteTime(value: string | number | Date | null | undefined): string {
+  const date = parse(value)
+  return date ? formatDate(date, activeLanguage(), "datetime") : "—"
 }

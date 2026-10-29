@@ -10,7 +10,12 @@ const errors = {
   conflict: "It changed while you were editing. Reload and apply your change again.",
   tooLarge: "The file is over the size limit. Try a smaller one.",
   server: "Something failed in Agent Hub. Try again; if it keeps failing, check Activity.",
+  invalid: "Some value isn’t valid. Check the fields and try again.",
+  rateLimited: "Too many attempts in a row. Wait a moment and try again.",
   unknown: "Something went wrong. Try again.",
+  memoryUnavailable: "Memory isn’t responding. Agent Hub keeps trying to open it; if it persists, check Activity.",
+  desktopOnly: "This action is only available in the desktop app.",
+  actionFailed: "Couldn’t complete the action. Try again.",
   loadFailed: "Couldn’t load. Try again.",
   saveFailed: "Change not saved. Try again.",
   field: {

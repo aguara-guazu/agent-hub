@@ -3,7 +3,7 @@ import type { Resources } from "./types"
 
 /** Claves de primer nivel del namespace `errors` que describen una falla general. */
 export type ErrorKey = Extract<keyof Resources["errors"],
-  "network" | "timeout" | "unauthorized" | "forbidden" | "notFound" | "conflict" | "tooLarge" | "server" | "unknown">
+  "network" | "timeout" | "unauthorized" | "forbidden" | "notFound" | "conflict" | "tooLarge" | "invalid" | "rateLimited" | "server" | "unknown">
 
 /**
  * Clave de `errors` para un error de la API o de red, para mostrar con `t(errorKey(error), { ns: "errors" })`.
@@ -17,6 +17,8 @@ export function errorKey(error: unknown): ErrorKey {
     if (error.status === 408 || error.status === 504) return "timeout"
     if (error.status === 409 || error.status === 412) return "conflict"
     if (error.status === 413) return "tooLarge"
+    if (error.status === 429) return "rateLimited"
+    if (error.status === 400 || error.status === 422) return "invalid"
     if (error.status >= 500) return "server"
     return "unknown"
   }
