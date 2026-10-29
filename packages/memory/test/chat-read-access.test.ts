@@ -95,6 +95,15 @@ describe("lectura dentro del proyecto", () => {
     await rejected(call(w.member, "chat_read_interest", { channel_id: w.outsider.channel.id, reason: "x" }), 403)
   })
 
+  it("rechaza por MCP cualquier operación de chat sin identidad de agente; la persona lee todo por su ruta", async () => {
+    const w = await world()
+    for (const [operation, input] of [["chat_read", { thread_id: w.betaThread, unread_only: false }], ["chat_threads", {}], ["chat_channels", {}], ["chat_agents", {}]] as const)
+      await rejected(ops.call(operation, input, "mcp", undefined), 403)
+    expect((await ops.call("chat_read", { thread_id: w.betaThread, unread_only: false }, "owner", undefined)).items).toHaveLength(1)
+    const threads = (await ops.call("chat_threads", {}, "owner", undefined)).items.map((t: any) => t.id)
+    expect(threads).toEqual(expect.arrayContaining([w.betaThread, w.sideThread]))
+  })
+
   it("una sesión sin proyecto sólo lee su propio canal", async () => {
     const w = await world()
     const loose = join(root, "loose"); repo(loose)
@@ -268,7 +277,8 @@ describe("rutas de la persona", () => {
     } })
     const confirm = vi.fn(async () => ({ state: "granted" })), reject = vi.fn(async () => ({ state: "rejected" }))
     const revoke = vi.fn(async () => ({ revoked: true })), list = vi.fn(async () => ({ items: [] }))
-    vi.spyOn(service, "get").mockResolvedValue({ operations: { chat: { confirmReadRequest: confirm, rejectReadRequest: reject, revokeReadGrant: revoke, readRequests: list, readGrants: list } } } as any)
+    const personCall = vi.fn(async () => ({ items: [] }))
+    vi.spyOn(service, "get").mockResolvedValue({ operations: { call: personCall, chat: { confirmReadRequest: confirm, rejectReadRequest: reject, revokeReadGrant: revoke, readRequests: list, readGrants: list } } } as any)
     const id = "11111111-1111-4111-8111-111111111111"
     const routes = [
       { method: "POST" as const, url: `/api/memory/chat/read-requests/${id}/confirm`, payload: { phrase } },
@@ -290,6 +300,9 @@ describe("rutas de la persona", () => {
       expect(confirm).toHaveBeenCalledWith(id, phrase, "owner")
       const tooLong = await app.inject({ ...routes[0]!, payload: { phrase: "x".repeat(501) }, headers: { authorization: "Bearer owner" } })
       expect(tooLong.statusCode).toBe(422)
+      const read = await app.inject({ method: "POST", url: "/api/memory/call", payload: { operation: "chat_threads", input: {} }, headers: { authorization: "Bearer owner" } })
+      expect(read.statusCode).toBe(200)
+      expect(personCall).toHaveBeenCalledWith("chat_threads", {}, "owner", undefined, expect.anything())
     } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
   })
 })
