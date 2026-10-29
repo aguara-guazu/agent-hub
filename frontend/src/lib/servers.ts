@@ -7,7 +7,7 @@
  */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { api } from "./api"
+import { api, getToken } from "./api"
 import { LOCAL_KEY } from "./local"
 import { invalidateAfterCatalogChange } from "./queries"
 import type { MatrixCell, MatrixRow, McpServer, ResourceType, RuleState, ServerAuth, Transport } from "./types"
@@ -403,6 +403,13 @@ export function saveOAuthClient(id: string, clientId: string, clientSecret: stri
 
 export function deleteServer(id: string): Promise<void> {
   return api.delete<void>(`/catalog/servers/${id}`)
+}
+
+/** DELETE que sobrevive al cierre del documento (pagehide). `api` no expone `keepalive`, por eso va con fetch directo;
+ *  no hay respuesta que esperar: si falla, el servidor sigue en la lista al volver a abrir. */
+export function deleteServerKeepalive(id: string): void {
+  const token = getToken()
+  void fetch(`/api/catalog/servers/${id}`, { method: "DELETE", keepalive: true, headers: token ? { Authorization: `Bearer ${token}` } : {} }).catch(() => undefined)
 }
 
 export function oauthRedirectUrl(): Promise<{ redirect_url: string }> {
