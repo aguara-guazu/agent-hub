@@ -42,8 +42,7 @@ async function agentIn(channel: string | null) {
   return { agent, key }
 }
 async function repositories() {
-  await service.setRepositories(projectId, [{ repo_path: repo, allowed_branches: ['feature/*'] }])
-  return (await db.query('SELECT id FROM project_repositories WHERE project_id=$1', [projectId]))[0]!.id as string
+  return (await service.addRepository(projectId, { repo_path: repo, allowed_branches: ['feature/*'] })).repository.id
 }
 
 beforeEach(async () => {
@@ -138,10 +137,10 @@ it('deactivates: revokes the version, closes plans, retires the leader, and lets
   expect(again.delegation!.version).toBe(2)
 })
 
-it('resolves repositories itself and refuses ambiguous destinations, credentials, the default branch and wildcards', async () => {
-  const saved = await service.setRepositories(projectId, [{ repo_path: repo, allowed_branches: ['feature/*', 'release/1'] }])
-  expect(saved.repositories).toEqual([expect.objectContaining({ repo_path: repo, canonical_remote_url: URL, remote_name: 'origin', default_branch: 'main', allowed_branches: ['feature/*', 'release/1'] })])
-  const attempt = (over: Record<string, unknown> = {}) => error(service.setRepositories(projectId, [{ repo_path: repo, allowed_branches: ['feature/*'], ...over } as any]))
+it('resolves a repository itself and refuses ambiguous destinations, credentials, the default branch and wildcards', async () => {
+  const saved = await service.addRepository(projectId, { repo_path: repo, allowed_branches: ['feature/*', 'release/1'] })
+  expect(saved.repository).toEqual(expect.objectContaining({ repo_path: repo, canonical_remote_url: URL, remote_name: 'origin', default_branch: 'main', allowed_branches: ['feature/*', 'release/1'] }))
+  const attempt = (over: Record<string, unknown> = {}) => error(service.addRepository(projectId, { repo_path: repo, allowed_branches: ['feature/*'], ...over } as any))
   expect((await attempt({ allowed_branches: ['main'] }))?.code).toBe('branch_invalid')
   expect((await attempt({ allowed_branches: ['*'] }))?.code).toBe('branch_invalid')
   expect((await attempt({ allowed_branches: [] }))?.code).toBe('branch_invalid')
@@ -157,12 +156,41 @@ it('resolves repositories itself and refuses ambiguous destinations, credentials
   expect((await error(service.branches(projectId, join(dir, 'nope'))))?.code).toBe('repository_unavailable')
 })
 
-it('refuses to drop a repository that the delegation in force references, and removes it once the delegation is gone', async () => {
+it('adds one repository without touching the others, and updates or removes one by id', async () => {
+  const second = join(dir, 'lib'); await mkdir(second)
+  const first = (await service.addRepository(projectId, { repo_path: repo, allowed_branches: ['feature/*'] })).repository
+  const other = (await service.addRepository(projectId, { repo_path: second, allowed_branches: ['fix/*'] })).repository
+  expect((await service.view(projectId)).repositories.map(entry => entry.id).sort()).toEqual([first.id, other.id].sort())
+  expect((await service.addRepository(projectId, { repo_path: repo, allowed_branches: ['feature/*', 'wip/*'] })).repository).toMatchObject({ id: first.id, allowed_branches: ['feature/*', 'wip/*'] })
+  const updated = await service.updateRepository(projectId, other.id, { allowed_branches: ['hotfix/*'] })
+  expect(updated.repository).toMatchObject({ id: other.id, repo_path: second, allowed_branches: ['hotfix/*'] })
+  expect((await error(service.updateRepository(projectId, randomUUID(), { allowed_branches: ['x/*'] })))?.code).toBe('repository_unavailable')
+  expect((await error(service.updateRepository(otherProject, first.id, { allowed_branches: ['x/*'] })))?.code).toBe('repository_unavailable')
+  expect(await service.removeRepository(projectId, other.id)).toEqual({ removed: other.id })
+  expect((await service.view(projectId)).repositories.map(entry => entry.id)).toEqual([first.id])
+  expect((await error(service.removeRepository(projectId, other.id)))?.code).toBe('repository_unavailable')
+})
+
+it('replaces the whole list only against the digest of the list that was shown', async () => {
+  const second = join(dir, 'lib'); await mkdir(second)
+  await service.addRepository(projectId, { repo_path: repo, allowed_branches: ['feature/*'] })
+  const shown = (await service.view(projectId)).repositories_digest
+  await service.addRepository(projectId, { repo_path: second, allowed_branches: ['fix/*'] })
+  expect((await error(service.replaceRepositories(projectId, [{ repo_path: repo, allowed_branches: ['feature/*'] }], shown)))?.code).toBe('stale_repositories')
+  expect((await service.view(projectId)).repositories).toHaveLength(2)
+  const current = (await service.view(projectId)).repositories_digest
+  const replaced = await service.replaceRepositories(projectId, [{ repo_path: repo, allowed_branches: ['feature/*'] }], current)
+  expect(replaced.repositories.map(entry => entry.repo_path)).toEqual([repo])
+  expect((await error(service.replaceRepositories(projectId, [{ repo_path: repo, allowed_branches: ['feature/*'] }, { repo_path: repo, allowed_branches: ['x/*'] }], (await service.view(projectId)).repositories_digest)))?.statusCode).toBe(422)
+})
+
+it('refuses to drop a repository that the delegation in force references, by any route, and removes it once the delegation is gone', async () => {
   const repoId = await repositories()
   await service.activate(owner, { project_id: projectId, enabled: true, delegation: document({ item_kinds: ['git_push'], repository_ids: [repoId] }), channel_id: null })
-  expect((await error(service.setRepositories(projectId, [])))?.code).toBe('repository_in_use')
+  expect((await error(service.removeRepository(projectId, repoId)))?.code).toBe('repository_in_use')
+  expect((await error(service.replaceRepositories(projectId, [], (await service.view(projectId)).repositories_digest)))?.code).toBe('repository_in_use')
   await service.activate(owner, { project_id: projectId, enabled: false, channel_id: null })
-  expect((await service.setRepositories(projectId, [])).repositories).toEqual([])
+  expect(await service.removeRepository(projectId, repoId)).toEqual({ removed: repoId })
 })
 
 async function activatedForPush() {

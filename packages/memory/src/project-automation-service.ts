@@ -45,6 +45,8 @@ export interface ProjectAutomationView {
   channel_candidates: Array<{ id: string; name: string }>
   coordinator: 'ready' | 'no_channel' | 'disabled'
   repositories: ProjectRepositoryView[]
+  /** Digest of the repository ids shown; a full replacement must echo it back. */
+  repositories_digest: string
   history: Array<{ version: number; digest: string; approval_source: string; created_at: string; revoked_at: string | null }>
 }
 /** Canonical effect of a `git_push` item, as stored by the decision store and executed by the core. */
@@ -116,6 +118,7 @@ export class ProjectAutomationService {
     const stored = current ? asObject(current.document) as StoredDelegation : undefined
     const channel = automation?.channel_id ? ((await this.db.query('SELECT id,name FROM chat_channels WHERE id=$1 AND closed_at IS NULL', [automation.channel_id]))[0] as { id: string; name: string } | undefined) ?? null : null
     const { repositories: snapshots, channel: authorized, ...rest } = stored ?? ({} as StoredDelegation)
+    const repositories = await this.repositories(projectId)
     return {
       project_id: projectId, enabled: Boolean(current),
       delegation: current && stored ? { version: current.version, digest: current.digest, approval_source: current.approval_source, instruction: current.instruction ?? null, created_at: current.created_at, revoked_at: null,
@@ -123,7 +126,8 @@ export class ProjectAutomationService {
       channel: current ? channel : null, automation_channel: authorized ?? null,
       channel_candidates: await this.candidates(projectId),
       coordinator: !current ? 'disabled' : authorized && channel && automation?.coordinator_session_id ? 'ready' : 'no_channel',
-      repositories: await this.repositories(projectId),
+      repositories,
+      repositories_digest: ProjectAutomationService.repositoriesDigest(repositories),
       history: versions.map(row => ({ version: row.version, digest: row.digest, approval_source: row.approval_source, created_at: row.created_at, revoked_at: row.revoked_at ?? null })),
     }
   }
@@ -236,54 +240,96 @@ export class ProjectAutomationService {
     return outcomes
   }
 
+  /** Hash of the repository ids a screen was showing; a full replacement is accepted only against the list the caller actually saw. */
+  static repositoriesDigest(repositories: Array<{ id: string }>) { return hash({ ids: repositories.map(entry => entry.id).sort() }) }
+
   /**
    * The backend resolves destination and default branch itself; the client contributes only a path, a remote name and branch patterns.
-   * Replacing the set drops repositories no longer listed, so a delegation can only reference repositories that exist.
+   * Nothing is written here: the caller persists the resolved values.
    */
-  async setRepositories(projectId: string, requested: Array<{ repo_path: string; remote_name?: string | undefined; allowed_branches: string[] }>) {
-    await this.project(projectId)
-    const resolved: Array<{ repo_path: string; url: string; remote: string; default_branch: string; allowed: string[] }> = []
-    for (const entry of requested) {
-      const remote = entry.remote_name ?? 'origin'
-      if (!REMOTE_NAME.test(remote)) fail(422, 'remote_not_allowed', 'Nombre de remoto inválido.')
-      if (!isAbsolute(entry.repo_path)) fail(422, 'repository_unavailable', 'repo_path debe ser una ruta absoluta.')
-      const repo = await realpath(entry.repo_path).catch(() => null)
-      if (!repo) fail(422, 'repository_unavailable', 'El repositorio no existe en esta computadora.')
-      const top = await this.git(['rev-parse', '--show-toplevel'], repo!)
-      if (top.code !== 0 || await realpath(top.stdout.trim()).catch(() => null) !== repo) fail(422, 'repository_unavailable', 'repo_path debe ser la raíz del repositorio.')
-      const urls = async (push: boolean) => {
-        const result = await this.git(['remote', 'get-url', ...(push ? ['--push'] : []), '--all', remote], repo!)
-        return result.code === 0 ? result.stdout.split('\n').map(line => line.trim()).filter(Boolean) : []
-      }
-      const [fetch, push] = [await urls(false), await urls(true)]
-      if (fetch.length !== 1 || push.length !== 1 || fetch[0] !== push[0]) fail(422, 'remote_not_allowed', 'El remoto no tiene un único destino de push verificable.')
-      const url = push[0]!
-      if (/[\s\x00-\x1f\x7f]/.test(url) || url.startsWith('-') || /^[a-z][a-z0-9+.-]*:\/\/[^/@]*:[^/@]*@/i.test(url) || !(/^(https:\/\/|ssh:\/\/)/.test(url) || /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:(?!\/\/)\S+$/.test(url)))
-        fail(422, 'remote_not_allowed', 'El remoto debe usar https o ssh y no puede llevar credenciales.')
-      const probe = await this.git(['ls-remote', '--symref', url, 'HEAD'], repo!)
-      const head = probe.code === 0 ? /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(probe.stdout)?.[1] : undefined
-      if (!head) fail(422, 'repository_unavailable', 'No se pudo determinar la rama principal del remoto.')
-      if (!entry.allowed_branches.length) fail(422, 'branch_invalid', 'Cada repositorio necesita al menos una rama permitida.')
-      for (const pattern of entry.allowed_branches) branchPattern(pattern, head!)
-      resolved.push({ repo_path: repo!, url, remote, default_branch: head!, allowed: [...new Set(entry.allowed_branches)] })
+  private async resolveRepository(entry: { repo_path: string; remote_name?: string | undefined; allowed_branches: string[] }) {
+    const remote = entry.remote_name ?? 'origin'
+    if (!REMOTE_NAME.test(remote)) fail(422, 'remote_not_allowed', 'Nombre de remoto inválido.')
+    if (!isAbsolute(entry.repo_path)) fail(422, 'repository_unavailable', 'repo_path debe ser una ruta absoluta.')
+    const repo = await realpath(entry.repo_path).catch(() => null)
+    if (!repo) fail(422, 'repository_unavailable', 'El repositorio no existe en esta computadora.')
+    const top = await this.git(['rev-parse', '--show-toplevel'], repo)
+    if (top.code !== 0 || await realpath(top.stdout.trim()).catch(() => null) !== repo) fail(422, 'repository_unavailable', 'repo_path debe ser la raíz del repositorio.')
+    const urls = async (push: boolean) => {
+      const result = await this.git(['remote', 'get-url', ...(push ? ['--push'] : []), '--all', remote], repo)
+      return result.code === 0 ? result.stdout.split('\n').map(line => line.trim()).filter(Boolean) : []
     }
+    const [fetch, push] = [await urls(false), await urls(true)]
+    if (fetch.length !== 1 || push.length !== 1 || fetch[0] !== push[0]) fail(422, 'remote_not_allowed', 'El remoto no tiene un único destino de push verificable.')
+    const url = push[0]!
+    if (/[\s\x00-\x1f\x7f]/.test(url) || url.startsWith('-') || /^[a-z][a-z0-9+.-]*:\/\/[^/@]*:[^/@]*@/i.test(url) || !(/^(https:\/\/|ssh:\/\/)/.test(url) || /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:(?!\/\/)\S+$/.test(url)))
+      fail(422, 'remote_not_allowed', 'El remoto debe usar https o ssh y no puede llevar credenciales.')
+    const probe = await this.git(['ls-remote', '--symref', url, 'HEAD'], repo)
+    const head = probe.code === 0 ? /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(probe.stdout)?.[1] : undefined
+    if (!head) fail(422, 'repository_unavailable', 'No se pudo determinar la rama principal del remoto.')
+    if (!entry.allowed_branches.length) fail(422, 'branch_invalid', 'Cada repositorio necesita al menos una rama permitida.')
+    for (const pattern of entry.allowed_branches) branchPattern(pattern, head)
+    return { repo_path: repo, url, remote, default_branch: head, allowed: [...new Set(entry.allowed_branches)] }
+  }
+
+  private async saveRepository(sql: { query(sql: string, params?: unknown[]): Promise<Array<Record<string, any>>> }, projectId: string, entry: Awaited<ReturnType<ProjectAutomationService['resolveRepository']>>) {
+    await sql.query(`INSERT INTO project_repositories(id,project_id,repo_path,canonical_remote_url,remote_name,default_branch,allowed_branches) VALUES($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT(project_id,repo_path) DO UPDATE SET canonical_remote_url=excluded.canonical_remote_url,remote_name=excluded.remote_name,default_branch=excluded.default_branch,allowed_branches=excluded.allowed_branches`,
+    [randomUUID(), projectId, entry.repo_path, entry.url, entry.remote, entry.default_branch, JSON.stringify(entry.allowed)])
+    return (await sql.query('SELECT id,repo_path,canonical_remote_url,remote_name,default_branch,allowed_branches FROM project_repositories WHERE project_id=$1 AND repo_path=$2', [projectId, entry.repo_path]))[0]!
+  }
+
+  /** Adds one repository, or refreshes it when the path is already registered. The rest of the list is untouched. */
+  async addRepository(projectId: string, requested: { repo_path: string; remote_name?: string | undefined; allowed_branches: string[] }) {
+    await this.project(projectId)
+    const resolved = await this.resolveRepository(requested)
+    const row = await this.saveRepository(this.db, projectId, resolved)
+    return { repository: { ...row, allowed_branches: asObject(row.allowed_branches) } as ProjectRepositoryView }
+  }
+
+  /** Changes the remote name or the allowed branches of a registered repository; the path never changes. Versions already created keep the snapshot they were built with. */
+  async updateRepository(projectId: string, repoId: string, patch: { remote_name?: string | undefined; allowed_branches: string[] }) {
+    await this.project(projectId)
+    const current = (await this.db.query('SELECT repo_path,remote_name FROM project_repositories WHERE id=$1 AND project_id=$2', [repoId, projectId]))[0]
+    if (!current) fail(404, 'repository_unavailable', 'El repositorio no pertenece al proyecto.')
+    const resolved = await this.resolveRepository({ repo_path: current.repo_path, remote_name: patch.remote_name ?? current.remote_name, allowed_branches: patch.allowed_branches })
+    const row = await this.saveRepository(this.db, projectId, resolved)
+    return { repository: { ...row, allowed_branches: asObject(row.allowed_branches) } as ProjectRepositoryView }
+  }
+
+  private async delegatedPaths(sql: { query(sql: string, params?: unknown[]): Promise<Array<Record<string, any>>> }, projectId: string) {
+    return new Set((await sql.query('SELECT d.document FROM project_automation a JOIN project_delegations d ON d.project_id=a.project_id AND d.version=a.delegation_version WHERE a.project_id=$1 AND a.enabled=1 AND d.revoked_at IS NULL', [projectId]))
+      .flatMap(row => (asObject(row.document) as StoredDelegation).repositories.map(repo => repo.repo_path)))
+  }
+
+  /** A repository the delegation in force references cannot be removed; the person changes or deactivates the delegation first. */
+  async removeRepository(projectId: string, repoId: string) {
+    await this.project(projectId)
+    await this.db.transaction(async sql => {
+      const row = (await sql.query('SELECT repo_path FROM project_repositories WHERE id=$1 AND project_id=$2', [repoId, projectId]))[0]
+      if (!row) fail(404, 'repository_unavailable', 'El repositorio no pertenece al proyecto.')
+      if ((await this.delegatedPaths(sql, projectId)).has(row.repo_path)) fail(409, 'repository_in_use', 'El repositorio pertenece a la delegación vigente; desactiva o cambia la delegación primero.')
+      await sql.query('DELETE FROM project_repositories WHERE id=$1', [repoId])
+    })
+    return { removed: repoId }
+  }
+
+  /** Replaces the whole list. It is accepted only against the digest of the list the caller saw, so a stale screen cannot silently drop repositories added elsewhere. */
+  async replaceRepositories(projectId: string, requested: Array<{ repo_path: string; remote_name?: string | undefined; allowed_branches: string[] }>, expectedIdsDigest: string) {
+    await this.project(projectId)
+    if (ProjectAutomationService.repositoriesDigest(await this.repositories(projectId)) !== expectedIdsDigest) fail(409, 'stale_repositories', 'La lista de repositorios cambió desde que se leyó; vuelve a cargarla.')
+    const resolved: Array<Awaited<ReturnType<ProjectAutomationService['resolveRepository']>>> = []
+    for (const entry of requested) resolved.push(await this.resolveRepository(entry))
     check(new Set(resolved.map(entry => entry.repo_path)).size === resolved.length, 'Hay repositorios repetidos.', 422)
     await this.db.transaction(async sql => {
-      const inUse = new Set((await sql.query("SELECT d.document FROM project_automation a JOIN project_delegations d ON d.project_id=a.project_id AND d.version=a.delegation_version WHERE a.project_id=$1 AND a.enabled=1 AND d.revoked_at IS NULL", [projectId]))
-        .flatMap(row => ((asObject(row.document) as StoredDelegation).repositories).map(repo => repo.repo_path)))
       const keep = new Set(resolved.map(entry => entry.repo_path))
-      for (const path of inUse) if (!keep.has(path)) fail(409, 'repository_in_use', 'Un repositorio de la delegación vigente no puede quitarse; desactiva o cambia la delegación primero.')
-      for (const entry of resolved) {
-        await sql.query(`INSERT INTO project_repositories(id,project_id,repo_path,canonical_remote_url,remote_name,default_branch,allowed_branches) VALUES($1,$2,$3,$4,$5,$6,$7)
-          ON CONFLICT(project_id,repo_path) DO UPDATE SET canonical_remote_url=excluded.canonical_remote_url,remote_name=excluded.remote_name,default_branch=excluded.default_branch,allowed_branches=excluded.allowed_branches`,
-        [randomUUID(), projectId, entry.repo_path, entry.url, entry.remote, entry.default_branch, JSON.stringify(entry.allowed)])
-      }
+      for (const path of await this.delegatedPaths(sql, projectId)) if (!keep.has(path)) fail(409, 'repository_in_use', 'Un repositorio de la delegación vigente no puede quitarse; desactiva o cambia la delegación primero.')
+      for (const entry of resolved) await this.saveRepository(sql, projectId, entry)
       const paths = [...keep]
       await sql.query(`DELETE FROM project_repositories WHERE project_id=$1${paths.length ? ` AND repo_path NOT IN (${paths.map((_, index) => `$${index + 2}`).join(',')})` : ''}`, [projectId, ...paths])
     })
     return { repositories: await this.repositories(projectId) }
   }
-
 
   /** Delegation currently in force for a project, with its repository snapshot: the only policy a push candidate is judged against. */
   private async currentDelegation(projectId: string) {

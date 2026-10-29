@@ -8,7 +8,10 @@ const projectId = randomUUID(), channelId = randomUUID()
 const stub = {
   view: vi.fn(async (id: string) => ({ project_id: id })),
   activate: vi.fn(async (_principal: unknown, input: Record<string, unknown>) => ({ project_id: input.project_id, enabled: input.enabled, schedules: [{ template: 'daily_brief' }], plans: { closed: [], failed: [] }, coordinator_state: 'ready', changed: true })),
-  setRepositories: vi.fn(async (_id: string, repositories: unknown) => ({ repositories })),
+  addRepository: vi.fn(async (_id: string, input: unknown) => ({ repository: input })),
+  updateRepository: vi.fn(async (_id: string, repoId: string, patch: unknown) => ({ repository: { id: repoId, ...(patch as object) } })),
+  removeRepository: vi.fn(async (_id: string, repoId: string) => ({ removed: repoId })),
+  replaceRepositories: vi.fn(async (_id: string, repositories: unknown, digest: string) => ({ repositories, digest })),
   branches: vi.fn(async () => ({ branches: ['main'], default_branch: 'main' })),
 }
 const document = { schema_version: 1, roster: { coordinator: { cli: 'claude_code', model: 'm' }, project_agent: { cli: 'claude_code', model: 'm' } }, item_kinds: ['jira_worklog'], repository_ids: [], limits: { max_concurrent_plans: 1, max_runtime_minutes: 30 } }
@@ -36,13 +39,29 @@ it('rejects unknown fields, a missing document and a malformed project id before
   expect(off.statusCode).toBe(200)
 })
 
-it('serves the view, the repositories and the branches only to the owner', async () => {
+const digest = 'a'.repeat(64), repository = { repo_path: '/r', allowed_branches: ['feature/*'] }
+
+it('adds, updates, removes and replaces repositories through separate routes and only the replacement takes a digest', async () => {
+  const base = `/api/memory/projects/${projectId}/repositories`
+  expect((await app.inject({ method: 'POST', url: base, payload: repository })).json()).toEqual({ repository })
+  expect(stub.addRepository).toHaveBeenCalledWith(projectId, repository)
+  expect((await app.inject({ method: 'PUT', url: `${base}/repo-1`, payload: { allowed_branches: ['x/*'] } })).json()).toEqual({ repository: { id: 'repo-1', allowed_branches: ['x/*'] } })
+  expect((await app.inject({ method: 'DELETE', url: `${base}/repo-1` })).json()).toEqual({ removed: 'repo-1' })
+  expect((await app.inject({ method: 'PUT', url: base, payload: { repositories: [repository], expected_ids_digest: digest } })).statusCode).toBe(200)
+  expect(stub.replaceRepositories).toHaveBeenCalledWith(projectId, [repository], digest)
+  for (const payload of [{ repositories: [repository] }, { repositories: [repository], expected_ids_digest: 'short' }, { ...repository }, { repositories: [{ ...repository, repo_path: undefined }], expected_ids_digest: digest }])
+    expect((await app.inject({ method: 'PUT', url: base, payload: payload as never })).statusCode).toBeGreaterThanOrEqual(400)
+  expect((await app.inject({ method: 'POST', url: base, payload: { ...repository, id: 'x' } as never })).statusCode).toBeGreaterThanOrEqual(400)
+  expect(stub.replaceRepositories).toHaveBeenCalledTimes(1)
+})
+
+it('serves the view and the branches only to the owner, and every repository route needs that authorization', async () => {
   expect((await app.inject({ method: 'GET', url: `/api/memory/projects/${projectId}/automation` })).json()).toEqual({ project_id: projectId })
-  expect((await app.inject({ method: 'PUT', url: `/api/memory/projects/${projectId}/repositories`, payload: { repositories: [{ repo_path: '/r', allowed_branches: ['feature/*'] }] } })).statusCode).toBe(200)
-  expect(stub.setRepositories).toHaveBeenCalledWith(projectId, [{ repo_path: '/r', allowed_branches: ['feature/*'] }])
   expect((await app.inject({ method: 'GET', url: `/api/memory/projects/${projectId}/repositories/branches?repo_path=%2Fr` })).json()).toEqual({ branches: ['main'], default_branch: 'main' })
   expect((await app.inject({ method: 'GET', url: `/api/memory/projects/${projectId}/repositories/branches` })).statusCode).toBeGreaterThanOrEqual(400)
   allowed = false
-  for (const request of [{ method: 'GET', url: `/api/memory/projects/${projectId}/automation` }, { method: 'PUT', url: `/api/memory/projects/${projectId}/repositories`, payload: { repositories: [] } }] as const)
+  const base = `/api/memory/projects/${projectId}/repositories`
+  for (const request of [{ method: 'GET', url: `/api/memory/projects/${projectId}/automation` }, { method: 'POST', url: base, payload: repository }, { method: 'PUT', url: `${base}/r1`, payload: { allowed_branches: [] } },
+    { method: 'DELETE', url: `${base}/r1` }, { method: 'PUT', url: base, payload: { repositories: [], expected_ids_digest: digest } }] as const)
     expect((await app.inject(request as never)).statusCode).toBe(401)
 })
