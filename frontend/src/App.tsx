@@ -12,7 +12,9 @@ import { AuthProvider, useAuth } from "./lib/auth"
 import { useTheme } from "./lib/theme"
 import { DeliveriesPage, DeliveryDetailPage, SchedulesPage } from "./pages/Automations"
 import { HubActivity, HubCatalog, HubClients, HubSettings, HubSkills } from "./pages/Hub"
-import { MemoryEntityPage, MemoryExplore, MemoryProjects, MemoryReview, MemorySearch } from "./pages/Memory"
+import { MemoryEntityPage, MemoryExplore, MemoryReview, MemorySearch } from "./pages/Memory"
+import ProjectPage from "./pages/project/ProjectPage"
+import ProjectsPage from "./pages/projects/ProjectsPage"
 import { MemoryLocalCollaboration } from "./pages/MemoryLocalCollaboration"
 import { MemoryProcessing } from "./pages/MemoryProcessing"
 import { MemorySettings } from "./pages/MemorySettings"
@@ -44,8 +46,8 @@ export function App() {
               <Route index element={<Redirect to="/home" />} />
               <Route path="home" element={<InterimHome review={<MemoryReview />} />} />
 
-              <Route path="projects" element={legacy(<MemoryProjects />)} />
-              <Route path="projects/:id" element={legacy(<MemoryEntityPage />)} />
+              <Route path="projects" element={<ProjectsPage />} />
+              <Route path="projects/:id" element={<ProjectPage />} />
               <Route path="memory" element={legacy(<MemoryHome />)} />
               <Route path="memory/entities/:id" element={legacy(<MemoryEntityPage />)} />
               <Route path="collaboration" element={legacy(<MemoryLocalCollaboration />)} />
