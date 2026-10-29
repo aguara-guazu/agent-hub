@@ -47,3 +47,9 @@ it('los incidentes de cuota sobreviven al respaldo y la restauración', async ()
   const check = new MemoryDatabase(join(target, 'memory.sqlite'))
   try { expect((await check.query("SELECT cause,action,detail FROM process_incidents"))).toMatchObject([{ cause: 'quota_exhausted', action: 'none', detail: { evidence: 'protocol+quota_observation' } }]) } finally { await check.close() }
 })
+
+it('chat_sessions registra cuándo se observó el modelo por última vez', async () => {
+  await db.migrate()
+  const columns = (await db.query<{ name: string }>("SELECT name FROM pragma_table_info('chat_sessions')")).map(row => row.name)
+  expect(columns).toEqual(expect.arrayContaining(['model', 'model_observed_at']))
+})

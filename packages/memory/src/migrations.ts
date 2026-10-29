@@ -730,4 +730,7 @@ CREATE INDEX process_incidents_project ON process_incidents(project_id,observed_
 `, String.raw`
 -- Fields a person changed from the app; an agent update that touches one is refused.
 ALTER TABLE schedules ADD COLUMN human_override JSON NOT NULL DEFAULT '[]';
+`, String.raw`
+-- When the model of a session was last reported by a hook (session start or a model switch).
+ALTER TABLE chat_sessions ADD COLUMN model_observed_at TIMESTAMP;
 `]
