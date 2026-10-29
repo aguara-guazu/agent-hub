@@ -7,7 +7,7 @@ import { LocalChat } from './local-chat.js'
 import { teamBootstrap } from './local-chat-team.js'
 
 const exec = promisify(execFile)
-export const chatWakeText = (ids: string[]) => `Agent Hub: tenés menciones o avisos privados pendientes (${ids.join(', ')}). Leé memory_chat_inbox con tu session_key antes de continuar y verificá team.leader_id. Para pedidos respondé en su hilo con reply_to; para avisos response_due revisá tu pedido pendiente en work_thread_id; para los demás avisos de estado verificá si falta reporte y pedilo en el hilo existente. Nunca leas la terminal, salida, logs ni transcripción de otro agente. Usá memory_chat_ack con el id recibido sólo cuando hayas atendido el pedido. No hagas polling ni envíes respuestas automáticas sin contenido.`
+export const chatWakeText = (ids: string[]) => `Agent Hub: pending mentions/private notices (${ids.join(', ')}). Before continuing, read memory_chat_inbox (your session_key) and verify team.leader_id. Requests: reply in-thread via reply_to. response_due: check your pending request in work_thread_id. Other status notices: request any missing report in the existing thread. Never read another agent's terminal, output, logs or transcript. memory_chat_ack the id only once handled. No polling or empty auto-replies.`
 
 /** Only the local Hub owns the dispatcher. No inference process is created to listen. */
 export class LocalChatRuntime {
@@ -101,7 +101,7 @@ export class LocalChatRuntime {
       if(!this.enabled(s.agent_id))continue
       if(!await this.claimBootstrap(s.id))continue
       if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) continue
-      try {await this.dispatch(s,s.nickname?teamBootstrap:'Agent Hub: elegí tu nickname y registralo con memory_chat_set_nick.')}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
+      try {await this.dispatch(s,s.nickname?teamBootstrap:'Agent Hub: register a nickname via memory_chat_set_nick.')}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
     }
   }
   private async dispatch(session:Record<string,any>,text:string) {
@@ -159,7 +159,7 @@ export class LocalChatRuntime {
           if (!this.collaborationEnabled() || !s || s.capability==='hub_fleet' || s.closed_at || s.channel_closed_at || !this.enabled(s.agent_id)) return { closed:true, messages:[] }
           if (s.state === 'idle') {
             if (!s.nickname && (s.channel_kind!=='virtual' || s.activated_at)) {
-              if(await this.claimBootstrap(sid)) return {messages:[],bootstrap:true,context:'Agent Hub: elegí tu nickname y registralo con memory_chat_set_nick.'}
+              if(await this.claimBootstrap(sid)) return {messages:[],bootstrap:true,context:'Agent Hub: register a nickname via memory_chat_set_nick.'}
               await change
               continue
             }

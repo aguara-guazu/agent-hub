@@ -53,7 +53,7 @@ it('avisa al líder con autoría Agent Hub sólo al cerrar un turno sin chat act
   await ops.chat.lifecycle(member.a,{session_key:member.k,native_id:'member',event:'Stop',at:stop.toISOString(),turn_id:'turn-1'})
   await ops.chat.processTurnAlerts(stop.getTime()+2000,0)
   const alert=(await db.query('SELECT * FROM chat_status_notices WHERE session_id=$1',[member.session.id]))[0]
-  expect(alert.text).toContain('pasó el plazo de reporte')
+  expect(alert.text).toContain('missed the report deadline')
   expect((await ops.call('chat_inbox',{session_key:leader.k},'mcp',leader.a)).items.find((item:any)=>item.id===alert.id)).toMatchObject({author_source:'hub',thread_id:null})
   expect(await db.query('SELECT * FROM chat_threads')).toHaveLength(0)
   await ops.call('chat_ack',{session_key:leader.k,message_id:alert.id},'mcp',leader.a)

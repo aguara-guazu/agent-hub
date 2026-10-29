@@ -55,11 +55,11 @@ it('mantiene una conexión pasiva en carpeta común sin afirmar que ya existe un
   const state={loadCredentials:()=>({token:'test',controlPlaneUrl:'http://127.0.0.1:8765'}),loadSnapshot:()=>({servers:[{tools:[{name:'chat_join'}]}]})} as unknown as DaemonState
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({session:{label:'Sin nick',id:'native:one'},channel:{id:'pending',path:'/ordinary',kind:'virtual',activated_at:null},team:{leader_id:null},pending:[]})}))
   const result=await localChatHook(state,'agent','codex_cli',{session_id:'session',cwd:'/ordinary',hook_event_name:'SessionStart'})
-  expect(JSON.stringify(result.output)).toContain('sin canal activo')
-  expect(JSON.stringify(result.output)).toContain('grupo multiagente del Hub o trabajar sólo con el agente normal')
-  expect(JSON.stringify(result.output)).toContain('En modo solo no registres nickname')
+  expect(JSON.stringify(result.output)).toContain('no active channel')
+  expect(JSON.stringify(result.output)).toContain('Hub multi-agent group, or solo with the normal agent')
+  expect(JSON.stringify(result.output)).toContain('Solo: no nickname')
   expect(JSON.stringify(result.output)).toContain('memory_chat_create_channel')
-  expect(JSON.stringify(result.output)).toContain('Antes de crear un canal, preguntá')
+  expect(JSON.stringify(result.output)).toContain('Before creating a channel, ask')
 })
 
 it('un rechazo definitivo informa el motivo sin bloquear la CLI ni mantener listeners',async()=> {
@@ -67,7 +67,7 @@ it('un rechazo definitivo informa el motivo sin bloquear la CLI ni mantener list
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:false,status:409}))
   const raw={session_id:'session',cwd:'/ordinary',hook_event_name:'SessionStart'}
   const result=await localChatHook(state,'agent','codex_cli',raw)
-  expect(JSON.stringify(result.output)).toContain('canal fue cerrado')
+  expect(JSON.stringify(result.output)).toContain('channel closed')
   expect(result.code).toBeUndefined()
   expect(await localChatHook(state,'agent','claude_code',raw,'Watch')).toEqual({})
   expect(fetch).toHaveBeenCalledTimes(2)
@@ -91,11 +91,11 @@ it('mantiene la identidad y el coordinador con guía compacta recuperable entre 
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>context}))
   const raw={session_id:'session',cwd:'/worktree',hook_event_name:'UserPromptSubmit'}
   const response=JSON.stringify((await localChatHook(state,'agent','codex_cli',raw)).output)
-  expect(response).toContain('líder del canal: child')
-  expect(response).toContain('Coordinador del equipo vinculado: master')
-  expect(response).toContain('versión de guía: v1')
-  expect(response).toContain('recuperala con memory_chat_join')
-  expect(response).not.toContain('Al comenzar cada turno')
+  expect(response).toContain('channel leader: child')
+  expect(response).toContain('Linked team coordinator: master')
+  expect(response).toContain('guidance version: v1')
+  expect(response).toContain('recover it with memory_chat_join')
+  expect(response).not.toContain('At the start of each turn')
   expect(await localChatHook(state,'agent','codex_cli',{...raw,hook_event_name:'PreToolUse'})).toEqual({})
 })
 
@@ -108,10 +108,10 @@ it.each(['PreToolUse','BeforeTool','PostToolUse','PostToolUseFailure'])('avisa p
   const output=result.output as {hookSpecificOutput:{hookEventName:string;additionalContext:string}}
   expect(output.hookSpecificOutput.hookEventName).toBe(event)
   const context=output.hookSpecificOutput.additionalContext
-  expect(context).toContain('12 avisos pendientes')
+  expect(context).toContain('12 pending notices')
   expect(context).toContain('message-0')
   expect(context).not.toContain('message-10')
-  expect(context).toContain('lista parcial')
+  expect(context).toContain('partial list')
   expect(context).toContain('memory_chat_inbox')
   expect(context).toMatch(/session_key=[a-f0-9]{64}/)
   expect(context).toContain('author_id')

@@ -110,4 +110,4 @@ export class UsageNotices {
     for(const id of ids)await this.db.query('UPDATE usage_quota_notices SET notified_at=COALESCE(notified_at,now()) WHERE id=$1 AND recipient_id=$2',[id,recipient])
   }
 }
-export const usageWakeText = 'Agent Hub: cambió la disponibilidad de cuota de tu equipo. Consultá memory_usage_status con tu session_key para leer el estado actual y los avisos. Conservá el progreso antes de reasignar; un aviso no autoriza cambiar cuenta, modelo ni gasto. No hagas polling.'
+export const usageWakeText = 'Agent Hub: team quota availability changed. Read memory_usage_status with your session_key for state and notices. Save progress before reassigning; notices do not authorize account, model or spend changes. No polling.'

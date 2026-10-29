@@ -142,7 +142,7 @@ export class SharedEvents extends SharedProjects {
     await this.store.db.query(`INSERT INTO shared_notices(project_id,recipient,fingerprint,shown_at) VALUES($1,$2,$3,now())
       ON CONFLICT(project_id,recipient) DO UPDATE SET fingerprint=excluded.fingerprint,shown_at=excluded.shown_at`, [projectId, recipient, fingerprint])
     return { project_id: projectId, pending: messages.total, skill: 'hub-collaboration', tool: 'memory_read_messages',
-      guidance: 'Hay mensajes pendientes de este proyecto. Consultá la skill hub-collaboration si aún no la leíste y usá memory_read_messages cuando sea adecuado. Leer no implica aceptar el pedido.' }
+      guidance: 'Pending project messages. Read the hub-collaboration skill if unread; use memory_read_messages when appropriate. Reading is not accepting.' }
   }
   async claim(projectId: string, key: string, agent?: AgentContext) {
     await this.member(projectId, true)
