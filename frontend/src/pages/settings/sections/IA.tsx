@@ -13,7 +13,7 @@ import { QuotasBlock } from "../QuotasBlock"
 import { SettingRow, SettingsSection, useErrorDetail } from "../SettingRow"
 import { useMemoryAction } from "../memory"
 
-/** Mismo identificador que `pages/NativeEmbeddings.tsx`; el servidor lo usa para elegir el motor integrado. */
+/** Espeja el identificador de `packages/memory/src/embedding-model.ts`; el servidor lo usa para elegir el motor integrado. */
 const NATIVE_EMBEDDING_MODEL = "embeddinggemma-2-native-q8-v1"
 const OLLAMA_EMBEDDING_DEFAULT = "nomic-embed-text"
 const CLI_PROVIDERS = ["claude_code", "codex_cli", "opencode", "kiro"] as const
