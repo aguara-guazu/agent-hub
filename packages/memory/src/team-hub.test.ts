@@ -59,12 +59,14 @@ function mockChat() {
   let authorized = true
   let leaderClosed = false
   const incidents = new Set<string>()
+  const derived = new Set<string>()
   const managedQuestions = vi.fn(async (_sender: string, _questions: unknown[], _generation: string) => {})
   const lifecycle = vi.fn(async (_session: string, _event: string, _at: string, _turn?: string) => {})
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     if (sql.startsWith('SELECT * FROM chat_sessions WHERE id=$1')) return sessions.has(String(params[0])) ? [{ ...sessions.get(String(params[0])) }] : []
     if (sql.startsWith("SELECT id,title,data FROM entities WHERE kind='project'")) return []
     if (sql.includes('leader.closed_at,leader.removed_at')) return [{ closed_at: leaderClosed ? new Date().toISOString() : null, removed_at: null }]
+    if (sql.includes('p.delegation_project_id IS NOT NULL')) return derived.has(String(params[0])) ? [{ '1': 1 }] : []
     if (sql.includes('FROM process_incidents')) return incidents.has(`${params[0]}:${params[1]}`) ? [{ id: 'incident' }] : []
     if (sql.startsWith('SELECT m.id FROM chat_team_members')) return authorized && rows.get(String(params[0]))?.session_id === params[1] ? [{ id: params[0] }] : []
     if (sql.startsWith('SELECT id,session_id,runtime') && sql.includes('WHERE session_id=$1')) return [...rows.values()].filter(row => row.session_id === params[0]).map(row => ({ ...row }))
@@ -76,7 +78,7 @@ function mockChat() {
     }
     throw new Error('Unexpected test SQL')
   })
-  return { chat: { db: { query }, managedLifecycle: lifecycle, managedQuestions } as unknown as LocalChat, rows, sessions, lifecycle, managedQuestions, query, incidents, setAuthorized: (value: boolean) => { authorized = value }, setLeaderClosed: (value: boolean) => { leaderClosed = value } }
+  return { chat: { db: { query }, managedLifecycle: lifecycle, managedQuestions } as unknown as LocalChat, rows, sessions, lifecycle, managedQuestions, query, incidents, derived, setAuthorized: (value: boolean) => { authorized = value }, setLeaderClosed: (value: boolean) => { leaderClosed = value } }
 }
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'hub-team-runtime-'))
@@ -471,6 +473,36 @@ describe('HubTeamRuntime lifecycle', () => {
       await backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE' })
     } finally { if (previous === undefined) delete process.env.AGENTHUB_CHAT_SESSION_KEY; else process.env.AGENTHUB_CHAT_SESSION_KEY = previous }
     expect(Object.keys(launched.mock.calls[0]![2].env).some(key => /^(AGENTHUB_|ORCA_|GIT_)/.test(key))).toBe(false)
+  })
+})
+
+describe('HubTeamRuntime action profile', () => {
+  const profile = { kind: 'action' as const, agent_instance_id: 'hub_run_action', principal_handle: 'handle' }
+  it('starts Claude members of derived plans without the account connectors and refuses a CLI that cannot isolate them', async () => {
+    const { backend, launched, id } = setup('hold')
+    const parent = await backend.workspace(join(directory, 'repo'))
+    await expect(backend.launch(parent, { member_id: id, cli: 'claude_code', model: 'test', prompt: 'p', profile })).rejects.toThrow(/action_profile_unavailable/)
+    Object.defineProperty(backend, 'supportsProfiles', { value: true })
+    await expect(backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'p', profile })).rejects.toThrow(/no puede aislar los conectores/)
+    expect(launched).not.toHaveBeenCalled()
+    await backend.launch(parent, { member_id: id, cli: 'claude_code', model: 'test', prompt: 'p', profile })
+    expect(launched.mock.calls[0]![2].env.ENABLE_CLAUDEAI_MCP_SERVERS).toBe('false')
+    const plain = setup('hold')
+    await plain.backend.launch(await plain.backend.workspace(join(directory, 'repo')), { member_id: plain.id, cli: 'claude_code', model: 'test', prompt: 'p' })
+    expect(plain.launched.mock.calls[0]![2].env.ENABLE_CLAUDEAI_MCP_SERVERS).toBeUndefined()
+  })
+  it('does not resume a member of a derived plan on a runtime that cannot isolate its connectors', async () => {
+    const { backend, rows, id, incidents, derived, launched } = setup('hold', { run: async (command, args, runOptions) => command === 'git' ? exec(command, args, runOptions) : { stdout: help } })
+    const workspace = await backend.workspace(join(directory, 'repo'))
+    rows.get(id)!.session_id = 'member-session'
+    rows.get(id)!.runtime = { id, cli: 'claude_code', cwd: workspace.path, model: 'exact-model', state: 'failed', native_id: 'native-old', provider: 'hub', generation: 'g', updated_at: new Date().toISOString() } as HubTeamStatus
+    incidents.add(`${id}:g`)
+    derived.add(id)
+    await expect(backend.resumeMember(id, { prompt: 'FIXED', pool_key: 'pool-a' })).rejects.toThrow(/action_profile_unavailable/)
+    expect(launched).not.toHaveBeenCalled()
+    Object.defineProperty(backend, 'supportsProfiles', { value: true })
+    await backend.resumeMember(id, { prompt: 'FIXED', pool_key: 'pool-a' })
+    expect(launched.mock.calls[0]![2].env.ENABLE_CLAUDEAI_MCP_SERVERS).toBe('false')
   })
 })
 

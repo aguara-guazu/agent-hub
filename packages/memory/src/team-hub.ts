@@ -291,6 +291,8 @@ export class HubTeamRuntime implements TeamOrca {
     check(!this.launching.has(id), 'El miembro ya tiene un lanzamiento en curso.', 409)
     check(member.prompt.length > 0 && member.prompt.length <= 24_000 && !member.prompt.includes('\0'), 'Instrucción inicial inválida.', 400)
     check(!member.profile || this.supportsProfiles, 'action_profile_unavailable: el runtime del Hub no aplica perfiles de ejecución todavía.', 409)
+    // Connector isolation is only implemented for Claude; any other CLI cannot honor the action profile.
+    check(!member.profile || member.cli === 'claude_code', 'action_profile_unavailable: este CLI no puede aislar los conectores de la cuenta.', 409)
     this.launching.add(id)
     let attempted = false, plan: ResumePlan | undefined
     try {
@@ -311,7 +313,8 @@ export class HubTeamRuntime implements TeamOrca {
       this.nextGenerations.set(id, randomUUID())
       attempted = true
       const result = await this.manager.start({ id, cli: member.cli, cwd: current.path, model: member.model, prompt: member.prompt,
-        ...(member.effort ? { effort: member.effort } : {}), ...(plan?.rung === 'fork' ? { resume_id: plan.native_id!, fork: true } : {}) })
+        ...(member.effort ? { effort: member.effort } : {}), ...(plan?.rung === 'fork' ? { resume_id: plan.native_id!, fork: true } : {}),
+        ...(member.profile ? { isolate_connectors: true } : {}) })
       await this.verifyLaunchEnabled(id)
       if (!['busy', 'idle', 'waiting_input'].includes(result.state)) {
         throw new MemoryError(503, 'El agente del Hub no confirmó la entrega inicial. Inspeccioná su estado antes de volver a lanzar.')
@@ -384,11 +387,15 @@ export class HubTeamRuntime implements TeamOrca {
       this.requireEnabled()
       if (evaluated.kind !== 'ready') throw Object.assign(new MemoryError(409, 'El Hub no puede reanudar la misma conversación con evidencia suficiente; no se lanzó nada.'), { continuity: plan })
       const { runtime, current } = evaluated
+      // A member of a derived plan resumes with the same connector isolation it launched with; a runtime that cannot apply it must not resume it.
+      const derived = Boolean((await this.chat.db.query(`SELECT 1 FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+        WHERE m.id=$1 AND p.delegation_project_id IS NOT NULL`, [handle]))[0])
+      check(!derived || (this.supportsProfiles && runtime.cli === 'claude_code'), 'action_profile_unavailable: un miembro de plan derivado no puede reanudarse sin el aislamiento de conectores.', 409)
       await this.preflight([{ cli: runtime.cli, model: runtime.model, ...(runtime.effort ? { effort: runtime.effort } : {}) }])
       this.nextGenerations.set(handle, randomUUID())
       attempted = true
       const result = await this.manager.start({ id: handle, cli: runtime.cli, cwd: current.path, model: runtime.model, prompt: request.prompt,
-        ...(runtime.effort ? { effort: runtime.effort } : {}), resume_id: plan!.native_id! })
+        ...(runtime.effort ? { effort: runtime.effort } : {}), resume_id: plan!.native_id!, ...(derived ? { isolate_connectors: true } : {}) })
       await this.verifyLaunchEnabled(handle)
       if (!['busy', 'idle', 'waiting_input'].includes(result.state)) throw new MemoryError(503, 'El agente del Hub no confirmó la reanudación.')
       const status = await this.status(handle)
