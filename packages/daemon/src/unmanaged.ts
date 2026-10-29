@@ -8,7 +8,7 @@ import { dirname, join, resolve, sep } from "node:path"
 
 import { UNMANAGED_MAX_ITEMS, UNMANAGED_MAX_NAME, UNMANAGED_MAX_PATH, type UnmanagedInventory } from "@agenthub/shared"
 
-import { Manifest, readRegion, region, storeRoot, type ManagedRegion } from "./adapters/index.js"
+import { ConfigParseError, Manifest, readRegion, region, storeRoot, type ManagedRegion } from "./adapters/index.js"
 import { SERVER_ALIAS } from "./naming.js"
 
 interface InventoryTargets {
@@ -51,6 +51,20 @@ function linksInto(link: string, root: string): boolean {
   }
 }
 
+/**
+ * Motivo sin texto libre: un mensaje de parser o de sistema puede copiar valores del archivo (tokens en `env`, `headers`).
+ * Viaja solo un código fijo, la posición de un error de parseo o el código errno.
+ */
+function failureReason(error: unknown): string {
+  if (error instanceof ConfigParseError) {
+    const match = /\((toml|json)_parse_error(?:, fila (\d+), columna (\d+))?\)/.exec(error.message)
+    if (match) return match[2] ? `${match[1]}_parse_error: fila ${match[2]}, columna ${match[3]}` : `${match[1]}_parse_error`
+    return "parse_error"
+  }
+  const code = (error as NodeJS.ErrnoException)?.code
+  return typeof code === "string" && /^E[A-Z]+$/.test(code) ? `read_error: ${code}` : "read_error"
+}
+
 const clip = (value: string, max: number): string => (value.length > max ? value.slice(0, max) : value)
 
 export function readUnmanaged(cliKind: string, adapter: PathAdapter | object, home: string, now: () => Date = () => new Date()): UnmanagedInventory {
@@ -69,7 +83,7 @@ export function readUnmanaged(cliKind: string, adapter: PathAdapter | object, ho
     try {
       value = readRegion(path, container)
     } catch (error) {
-      inventory.errors.push({ path: clip(path, UNMANAGED_MAX_PATH), reason: clip((error as Error).message, 300) })
+      inventory.errors.push({ path: clip(path, UNMANAGED_MAX_PATH), reason: failureReason(error) })
       continue
     }
     if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) continue
@@ -86,7 +100,7 @@ export function readUnmanaged(cliKind: string, adapter: PathAdapter | object, ho
     try {
       names = readdirSync(root).sort()
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") inventory.errors.push({ path: clip(root, UNMANAGED_MAX_PATH), reason: clip((error as Error).message, 300) })
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") inventory.errors.push({ path: clip(root, UNMANAGED_MAX_PATH), reason: failureReason(error) })
       continue
     }
     for (const name of names) {

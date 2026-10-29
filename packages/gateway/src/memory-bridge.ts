@@ -116,3 +116,66 @@ export function siteFromResources(result: CallResult, cloudId: string): string |
   for (const value of parseContent(result)) { const site = visit(value); if (site) return site }
   return undefined
 }
+
+/**
+ * Escrituras sobre un issue que ya existe (comentar, mover de estado, cargar horas, editar, borrar), en el MCP de Atlassian
+ * (Rovo) y en mcp-atlassian. Regla permanente del dueño: solo se escriben issues asignados a él. Crear issues no entra.
+ */
+const JIRA_EXISTING_WRITES = new Set(["editjiraissue", "transitionjiraissue", "addcommenttojiraissue", "addworklogtojiraissue",
+  "jira_update_issue", "jira_transition_issue", "jira_add_comment", "jira_add_worklog", "jira_delete_issue"])
+/** Identidad de la cuenta con la que escribe el server; mcp-atlassian no publica una equivalente. */
+const JIRA_IDENTITY_TOOLS = ["atlassianuserinfo"]
+const JIRA_ACCOUNT = /^[A-Za-z0-9:_-]{1,128}$/
+
+export function isJiraExistingWrite(toolName: string): boolean {
+  return JIRA_EXISTING_WRITES.has(toolName.toLowerCase())
+}
+
+export function jiraIdentityTool(toolName: string): boolean {
+  return JIRA_IDENTITY_TOOLS.includes(toolName.toLowerCase())
+}
+
+/** Clave o id numérico del issue que la escritura toca; `undefined` si falta o no tiene forma válida. */
+export function targetIssue(args: Record<string, unknown>): string | undefined {
+  const raw = args["issueIdOrKey"] ?? args["issue_key"]
+  const value = typeof raw === "string" ? raw.trim().toUpperCase() : ""
+  return ISSUE_KEY.test(value) || /^\d{1,20}$/.test(value) ? value : undefined
+}
+
+/** Argumentos de la lectura del asignado con la misma forma que la escritura (Rovo pide `cloudId`). */
+export function assigneeReadArgs(readTool: string, args: Record<string, unknown>, issue: string): Record<string, unknown> | undefined {
+  if (readTool.toLowerCase() === "jira_get_issue") return { issue_key: issue, fields: "assignee" }
+  return typeof args["cloudId"] === "string" ? { cloudId: args["cloudId"], issueIdOrKey: issue, fields: ["assignee"], responseContentFormat: "markdown" } : undefined
+}
+
+export function jsonPayload(result: CallResult): Record<string, unknown> | undefined {
+  for (const value of parseContent(result)) if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>
+  return undefined
+}
+
+/** Cuenta de `atlassianUserInfo`. */
+export function accountOf(result: CallResult): string | undefined {
+  const account = jsonPayload(result)?.["account_id"]
+  return typeof account === "string" && JIRA_ACCOUNT.test(account) ? account : undefined
+}
+
+/**
+ * Asignado del issue leído: `{ account }` (puede ser null si está sin asignar) solo si la respuesta es del issue pedido
+ * (por clave o por id numérico); `undefined` si no se puede afirmar nada.
+ */
+export function assigneeOf(result: CallResult, issue: string): { account: string | null; name: string | null } | undefined {
+  const body = jsonPayload(result)
+  if (!body) return undefined
+  const same = /^\d+$/.test(issue) ? String(body["id"] ?? "") === issue : String(body["key"] ?? "").toUpperCase() === issue
+  if (!same) return undefined
+  const fields = body["fields"] && typeof body["fields"] === "object" ? body["fields"] as Record<string, unknown> : undefined
+  if (!fields || !("assignee" in fields)) return undefined
+  const assignee = fields["assignee"]
+  if (assignee === null) return { account: null, name: null }
+  if (!assignee || typeof assignee !== "object") return undefined
+  const row = assignee as Record<string, unknown>
+  const account = row["accountId"] ?? row["account_id"]
+  if (typeof account !== "string" || !JIRA_ACCOUNT.test(account)) return undefined
+  const name = row["displayName"] ?? row["display_name"]
+  return { account, name: typeof name === "string" && name.trim() ? name.trim().slice(0, 200) : null }
+}

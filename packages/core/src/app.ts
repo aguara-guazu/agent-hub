@@ -67,7 +67,7 @@ import {
 } from './security.js'
 import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, SkillRow, User } from './types.js'
 import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
-import { SKILL_ZIP_MAX_BYTES, UNMANAGED_MAX_ITEMS, UNMANAGED_MAX_NAME, UNMANAGED_MAX_PATH, type LocalUnmanaged, type SkillZipImportExtras, type UnmanagedInventory } from "@agenthub/shared"
+import { CATALOG_RESTORE_WINDOW_MS, SKILL_ZIP_MAX_BYTES, UNMANAGED_MAX_ITEMS, UNMANAGED_MAX_NAME, UNMANAGED_MAX_PATH, type LocalUnmanaged, type SkillZipImportExtras, type UnmanagedInventory } from "@agenthub/shared"
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
 import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
@@ -179,6 +179,17 @@ function optionalString(body: Record<string, unknown>, field: string, fallback =
   return value
 }
 
+const UNMANAGED_REASON = /^(?:(?:toml|json)_parse_error(?:: fila \d+, columna \d+)?|parse_error|read_error(?:: E[A-Z]+)?)$/
+
+/**
+ * Deriva que reporta el daemon, sin el texto que un parser de un daemon anterior copiaba tras «no es TOML/JSON válido:»
+ * (la línea fallida, con posibles tokens de `env` o `headers`). Lo demás queda igual.
+ */
+function scrubDriftDetail(detail: string): string {
+  // Continuation lines of a multi-line parser message do not start with an absolute path, as every drift line does.
+  return detail.replace(/(no es (?:TOML|JSON) válido):[^\n]*(?:\n(?!\/|[A-Za-z]:\\)[^\n]*)*/g, "$1 (parse_error)")
+}
+
 /** Inventario `unmanaged` de `POST /api/sync/report`, validado estricto: un campo de más o fuera de tope rechaza el reporte entero. */
 function readUnmanagedReport(raw: unknown): UnmanagedInventory {
   const fail = (detail: string): never => { throw new HttpError(422, `unmanaged: ${detail}`) }
@@ -203,7 +214,11 @@ function readUnmanagedReport(raw: unknown): UnmanagedInventory {
     if (typeof item.linked !== "boolean") fail("skills[].linked debe ser booleano")
     return { slug: text(item.slug, "skills[].slug", UNMANAGED_MAX_NAME), path: text(item.path, "skills[].path", UNMANAGED_MAX_PATH), linked: item.linked as boolean }
   })
-  const errors = list(body.errors, "errors", ["path", "reason"]).map((item) => ({ path: text(item.path, "errors[].path", UNMANAGED_MAX_PATH), reason: text(item.reason, "errors[].reason", 300) }))
+  // Solo motivos con la forma de código fijo; cualquier otro texto (un mensaje de parser de un daemon viejo) se reemplaza.
+  const errors = list(body.errors, "errors", ["path", "reason"]).map((item) => {
+    const reason = text(item.reason, "errors[].reason", 300)
+    return { path: text(item.path, "errors[].path", UNMANAGED_MAX_PATH), reason: UNMANAGED_REASON.test(reason) ? reason : "unknown_error" }
+  })
   if (servers.length + skills.length > UNMANAGED_MAX_ITEMS) fail(`servers y skills suman más de ${UNMANAGED_MAX_ITEMS}`)
   return { checked_at: new Date(checkedAt).toISOString(), servers, skills, errors, truncated: body.truncated === true }
 }
@@ -898,11 +913,17 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     return reply.code(204).send()
   })
 
+  function withinRestoreWindow(deletedAt: string): boolean {
+    const at = Date.parse(deletedAt)
+    return Number.isFinite(at) && Date.now() - at <= CATALOG_RESTORE_WINDOW_MS
+  }
+
   fastify.post("/api/catalog/servers/:id/restore", async (request) => {
     const user = await currentUser(request)
     const { id } = request.params as { id: string }
     const deleted = store.deletedServer(id)
-    if (!deleted || deleted.user_id !== user.id) {
+    // The window is checked here, not only by the purge: a purge timer that has not run yet must not extend it.
+    if (!deleted || deleted.user_id !== user.id || !withinRestoreWindow(deleted.deleted_at)) {
       const live = store.server(id)
       if (live && live.user_id === user.id) throw new HttpError(409, "el MCP server no está eliminado")
       throw new HttpError(404, "el MCP server no existe o ya venció el plazo para restaurarlo")
@@ -1213,7 +1234,8 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const user = await currentUser(request)
     const { id } = request.params as { id: string }
     const deleted = store.deletedSkill(id)
-    if (!deleted || deleted.user_id !== user.id) {
+    // The window is checked here, not only by the purge: a purge timer that has not run yet must not extend it.
+    if (!deleted || deleted.user_id !== user.id || !withinRestoreWindow(deleted.deleted_at)) {
       const live = store.skill(id)
       if (live && live.user_id === user.id) throw new HttpError(409, 'la skill no está eliminada')
       throw new HttpError(404, 'la skill no existe o ya venció el plazo para restaurarla')
@@ -1506,7 +1528,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     if (typeof body.listed_hash === 'string') fields.last_listed_hash = body.listed_hash
     if (body.connected === true) fields.last_connected_at = new Date().toISOString()
     if (typeof body.drift_detected === 'boolean') fields.drift_detected = body.drift_detected
-    if (typeof body.drift_detail === 'string') fields.drift_detail = body.drift_detail
+    if (typeof body.drift_detail === 'string') fields.drift_detail = scrubDriftDetail(body.drift_detail)
     if (isObject(body.account_skills)) {
       const raw = body.account_skills
       const items = Array.isArray(raw.skills) ? raw.skills.filter(isObject) : []
