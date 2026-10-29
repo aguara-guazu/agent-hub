@@ -9,6 +9,7 @@ type TransitionEffect = Extract<JiraEffect, { kind: 'jira_transition' }>
 type CommentEffect = Extract<JiraEffect, { kind: 'jira_comment' }>
 
 const USER_INFO = 'atlassianUserInfo'
+const RESOURCES = 'getAccessibleAtlassianResources'
 const GET_ISSUE = 'getJiraIssue'
 const GET_TRANSITIONS = 'getTransitionsForJiraIssue'
 const ADD_WORKLOG = 'addWorklogToJiraIssue'
@@ -69,9 +70,10 @@ const commentEffect = { parse(raw: unknown): CommentEffect {
   return { ...value, text: text(value['text'], MAX_TEXT), evidence_ref: text(value['evidence_ref'], 200) } as CommentEffect
 } }
 
+/** Cuerpo JSON de una respuesta. `getAccessibleAtlassianResources` responde con un arreglo en la raíz; el resto, con objetos. */
 function payload(result: CallResult): Record<string, any> | undefined {
   if (result.structured_content) return result.structured_content
-  try { const parsed = JSON.parse(resultText(result)); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : undefined } catch { return undefined }
+  try { const parsed = JSON.parse(resultText(result)); return parsed && typeof parsed === 'object' ? parsed : undefined } catch { return undefined }
 }
 
 /** Lectura previa a una escritura. Todo fallo, también uno de red, significa que nada se escribió y sale como rechazo. */
@@ -99,6 +101,25 @@ function history(container: unknown, list: 'worklogs' | 'comments'): { items: Re
   return { items, complete: typeof value?.['total'] === 'number' && items.length >= value['total'] }
 }
 
+/**
+ * Sitio donde se escribe. El del efecto manda; sin él, solo vale el único recurso accesible con scope de Jira y dominio `*.atlassian.net`.
+ * Con cero o varios candidatos no se adivina: `site_unknown`.
+ */
+async function resolveSite(ctx: ActionContext, effect: JiraEffect): Promise<string> {
+  if (effect.site) return effect.site
+  const data = await read(ctx, RESOURCES, {})
+  const resources: unknown[] = Array.isArray(data) ? data : Array.isArray(data['resources']) ? data['resources'] : []
+  const sites = resources.flatMap(resource => {
+    const row = resource as Record<string, unknown> | null
+    const origin = siteOrigin(row?.['url'])
+    const scopes = row?.['scopes']
+    return origin && Array.isArray(scopes) && scopes.some(scope => typeof scope === 'string' && scope.includes('jira')) ? [origin] : []
+  })
+  const unique = [...new Set(sites)]
+  if (unique.length !== 1) throw new EffectRejected('site_unknown')
+  return unique[0]!
+}
+
 interface Guarded {
   cloud: string
   issue: Record<string, any>
@@ -110,9 +131,8 @@ interface Guarded {
  * diferencia rechaza antes de escribir. Se ejecuta en `prepare` y otra vez justo antes de cada escritura.
  */
 async function guard(ctx: ActionContext, effect: JiraEffect, fields: string[]): Promise<Guarded> {
-  const cloud = effect.site
-  if (!cloud) throw new EffectRejected('site_unknown')
   if (!effect.account_id) throw new EffectRejected('account_unpinned')
+  const cloud = await resolveSite(ctx, effect)
   const info = await read(ctx, USER_INFO, {})
   const account = info['account_id']
   if (typeof account !== 'string' || !ACCOUNT_ID.test(account)) throw new EffectRejected('identity_unverified')
@@ -177,7 +197,7 @@ function worklogAdapter(options: JiraAdapterOptions): ActionAdapter<WorklogEffec
   return {
     kind: 'jira_worklog',
     effect: worklogEffect,
-    tools: [USER_INFO, GET_ISSUE, ADD_WORKLOG],
+    tools: [USER_INFO, RESOURCES, GET_ISSUE, ADD_WORKLOG],
     server: bound(options),
     async prepare(ctx, effect) {
       const { existing } = await check(ctx, effect)
@@ -200,8 +220,9 @@ function worklogAdapter(options: JiraAdapterOptions): ActionAdapter<WorklogEffec
       return id ? { state: 'succeeded', remote_ref: `${effect.issue_key}/worklog/${id}` } : { state: 'uncertain', error_code: 'receipt_unparsed' }
     },
     async reconcile(ctx, _intentId, effect): Promise<Receipt | null> {
-      if (!effect.site) return null
-      const issue = await read(ctx, GET_ISSUE, { cloudId: effect.site, issueIdOrKey: effect.issue_key, fields: ['worklog'], responseContentFormat: 'markdown' })
+      const cloud = await resolveSite(ctx, effect).catch(() => null)
+      if (!cloud) return null
+      const issue = await read(ctx, GET_ISSUE, { cloudId: cloud, issueIdOrKey: effect.issue_key, fields: ['worklog'], responseContentFormat: 'markdown' })
       const found = findOwn(issue['fields']?.['worklog'], 'worklogs', ctx)
       return typeof found === 'string' && found !== 'unknown' ? { state: 'succeeded', remote_ref: `${effect.issue_key}/worklog/${found}` } : null
     },
@@ -218,7 +239,7 @@ function commentAdapter(options: JiraAdapterOptions): ActionAdapter<CommentEffec
   return {
     kind: 'jira_comment',
     effect: commentEffect,
-    tools: [USER_INFO, GET_ISSUE, ADD_COMMENT],
+    tools: [USER_INFO, RESOURCES, GET_ISSUE, ADD_COMMENT],
     server: bound(options),
     async prepare(ctx, effect) {
       const { existing } = await check(ctx, effect)
@@ -240,8 +261,9 @@ function commentAdapter(options: JiraAdapterOptions): ActionAdapter<CommentEffec
       return id ? { state: 'succeeded', remote_ref: `${effect.issue_key}/comment/${id}` } : { state: 'uncertain', error_code: 'receipt_unparsed' }
     },
     async reconcile(ctx, _intentId, effect): Promise<Receipt | null> {
-      if (!effect.site) return null
-      const issue = await read(ctx, GET_ISSUE, { cloudId: effect.site, issueIdOrKey: effect.issue_key, fields: ['comment'], responseContentFormat: 'markdown' })
+      const cloud = await resolveSite(ctx, effect).catch(() => null)
+      if (!cloud) return null
+      const issue = await read(ctx, GET_ISSUE, { cloudId: cloud, issueIdOrKey: effect.issue_key, fields: ['comment'], responseContentFormat: 'markdown' })
       const found = findOwn(issue['fields']?.['comment'], 'comments', ctx)
       return typeof found === 'string' && found !== 'unknown' ? { state: 'succeeded', remote_ref: `${effect.issue_key}/comment/${found}` } : null
     },
@@ -268,7 +290,7 @@ function transitionAdapter(options: JiraAdapterOptions): ActionAdapter<Transitio
   return {
     kind: 'jira_transition',
     effect: transitionEffect,
-    tools: [USER_INFO, GET_ISSUE, GET_TRANSITIONS, TRANSITION],
+    tools: [USER_INFO, RESOURCES, GET_ISSUE, GET_TRANSITIONS, TRANSITION],
     server: bound(options),
     async prepare(ctx, effect) {
       const { transition_id } = await check(ctx, effect)
@@ -291,7 +313,7 @@ function transitionAdapter(options: JiraAdapterOptions): ActionAdapter<Transitio
     },
     /** Solo lectura. Un ticket ya en «done» es evidencia del resultado buscado, no de quién lo movió; sin ese estado no hay prueba en ningún sentido. */
     async reconcile(ctx, _intentId, effect): Promise<Receipt | null> {
-      const cloud = effect.site
+      const cloud = await resolveSite(ctx, effect).catch(() => null)
       if (!cloud) return null
       const issue = await read(ctx, GET_ISSUE, { cloudId: cloud, issueIdOrKey: effect.issue_key, fields: ['status'] })
       return statusCategory(issue) === 'done' ? { state: 'succeeded', remote_ref: `${effect.issue_key}/status/done` } : null
