@@ -41,6 +41,10 @@ export interface AgentHubBridge {
   openStoredPdf?(versionId: string): Promise<{ ok: boolean; detail: string }>
   /** Pedidos de navegación del proceso principal (clic en una notificación). Ausente en versiones anteriores del escritorio. */
   onNavigate?(listener: (route: string) => void): () => void
+  /** Preferencia de idioma guardada por el escritorio (`auto` si no hay ninguna). Ausente en versiones anteriores del escritorio. */
+  getLanguage?(): Promise<"es" | "en" | "auto">
+  /** Guarda la preferencia para la bandeja, las notificaciones y los diálogos; devuelve la vigente. Ausente en versiones anteriores del escritorio. */
+  setLanguage?(preference: "es" | "en" | "auto"): Promise<"es" | "en" | "auto">
 }
 
 declare global {
