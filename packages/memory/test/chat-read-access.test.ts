@@ -13,7 +13,8 @@ import { Vault, defaultAI } from "../src/config.js"
 import { chatDefinitions, chatFolder } from "../src/local-chat.js"
 import { LocalChatRuntime } from "../src/local-chat-runtime.js"
 import { SESSION_LEASE_MS } from "../src/channel-authority.js"
-import { canReadChannel, READ_GRANT_LIVENESS_GRACE_MS, READ_GRANT_MAX_TTL_MS, READ_REQUEST_PENDING_TTL_MS, validateGrantPhrase } from "../src/chat-read-access.js"
+import { canReadChannel, READ_GRANT_LIVENESS_GRACE_MS, READ_GRANT_MAX_TTL_MS, READ_INTEREST_PER_CHANNEL, READ_INTEREST_PER_SESSION, READ_INTEREST_REASON_MAX, READ_INTEREST_WINDOW_MS,
+  READ_REQUEST_PENDING_TTL_MS, validateGrantPhrase } from "../src/chat-read-access.js"
 import { registerMemory } from "../src/routes.js"
 import type { AgentContext } from "../src/agents.js"
 import { existingChannel } from "./helpers/chat-channel.js"
@@ -83,6 +84,20 @@ describe("lectura dentro del proyecto", () => {
     const interest = await call(w.member, "chat_read_interest", { channel_id: w.side.channel.id, reason: "Quiero seguir ese canal" })
     expect(interest).toMatchObject({ readable: true, writable: false, leader_id: w.leader.session.id, notified: true })
     expect((await events("read_interest"))[0]).toMatchObject({ actor_session_id: w.member.session.id, target_session_id: w.leader.session.id })
+  })
+
+  it("limita los avisos de interés por canal y por sesión, y el largo del motivo", async () => {
+    const w = await world()
+    for (let i = 0; i < READ_INTEREST_PER_CHANNEL; i++)
+      expect(await call(w.member, "chat_read_interest", { channel_id: w.side.channel.id, reason: `motivo ${i}` })).toMatchObject({ readable: true })
+    await rejected(call(w.member, "chat_read_interest", { channel_id: w.side.channel.id, reason: "otra vez" }), 429)
+    await rejected(call(w.leader, "chat_read_interest", { channel_id: w.side.channel.id, reason: "x".repeat(READ_INTEREST_REASON_MAX + 1) }), 422)
+    expect(await events("read_interest")).toHaveLength(READ_INTEREST_PER_CHANNEL)
+    await db.query("UPDATE chat_authority_events SET created_at=$1 WHERE kind='read_interest'", [iso(Date.now() - READ_INTEREST_WINDOW_MS - 60_000)])
+    expect(await call(w.member, "chat_read_interest", { channel_id: w.side.channel.id, reason: "después de la ventana" })).toMatchObject({ readable: true })
+    for (let i = 0; i < READ_INTEREST_PER_SESSION; i++)
+      await db.query("INSERT INTO chat_authority_events(id,kind,channel_id,actor_session_id,reason) VALUES($1,'read_interest',$2,$3,'x')", [randomUUID(), randomUUID(), w.leader.session.id])
+    await rejected(call(w.leader, "chat_read_interest", { channel_id: w.side.channel.id, reason: "uno más" }), 429)
   })
 
   it("no lee canales, hilos ni agentes de otro proyecto sin permiso", async () => {

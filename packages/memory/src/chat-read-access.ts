@@ -11,12 +11,17 @@ export const READ_GRANT_LIVENESS_GRACE_MS = 5 * 60 * 1000
 /** An unanswered request is cancelled after this, so a stale elevation cannot be confirmed days later. */
 export const READ_REQUEST_PENDING_TTL_MS = 24 * 60 * 60 * 1000
 export const READ_PHRASE_MAX = 500
+/** read_interest only informs the leader; these bounds keep it from flooding the audit and the leader's notices. */
+export const READ_INTEREST_WINDOW_MS = 10 * 60_000
+export const READ_INTEREST_PER_CHANNEL = 3
+export const READ_INTEREST_PER_SESSION = 20
+export const READ_INTEREST_REASON_MAX = 500
 
 const activeStates = ACTIVE_TEAM_STATES.map(state => `'${state}'`).join(",")
 const key = z.string().min(32).max(200).optional()
 export const readAccessDefinitions = {
   chat_read_interest: ["Tell your leader you want to follow another channel of your own project. You can already read it (memory_chat_threads/memory_chat_read); reading never lets you write, mention or take part there. Leaders need not call this.",
-    z.object({ session_key: key, channel_id: id, reason: z.string().trim().min(1).max(1000) }).strict()],
+    z.object({ session_key: key, channel_id: id, reason: z.string().trim().min(1).max(READ_INTEREST_REASON_MAX) }).strict()],
   chat_read_request: ["Ask to read the channels of another project. Your leader must elevate it with memory_chat_read_elevate and only the person grants it, in the Hub UI. A grant is read-only, temporary and ends when your work completes, your session closes or goes offline. Never claim the person approved: the Hub records it.",
     z.object({ session_key: key, project_id: id, reason: z.string().trim().min(1).max(1000) }).strict()],
   chat_read_elevate: ["Leader only: forward a pending cross-project read request of your channel or team member to the person. It stays pending until the person confirms it in the Hub UI; you cannot grant it.",
@@ -98,6 +103,10 @@ export async function readInterest(sql: Sql, who: Record<string, any>, input: { 
   check(channel && !channel.deleted_at && (channel.kind !== "virtual" || channel.activated_at), "Canal inexistente.", 404)
   const own = await sessionProjectId(sql, who.id), project = await channelProjectId(sql, channel.id)
   check(own && project === own, "Ese canal no es de tu proyecto. Para leer otro proyecto usá memory_chat_read_request.", 403)
+  const sent = (await sql.query(`SELECT count(*) AS total,COALESCE(SUM(CASE WHEN channel_id=$2 THEN 1 ELSE 0 END),0) AS channel FROM chat_authority_events
+    WHERE kind='read_interest' AND actor_session_id=$1 AND created_at>$3`, [who.id, channel.id, new Date(Date.now() - READ_INTEREST_WINDOW_MS).toISOString()]))[0]!
+  check(Number(sent.channel) < READ_INTEREST_PER_CHANNEL && Number(sent.total) < READ_INTEREST_PER_SESSION,
+    "Ya avisaste a tu líder de este interés hace poco; esperá su respuesta antes de repetirlo.", 429)
   const membership = await channelMembership(sql, who.id, channel.id)
   const leader = await requesterLeader(sql, who)
   const audit = await recordAuthorityEvent(sql, { kind: "read_interest", reason: input.reason, channel_id: channel.id, project_id: project,
