@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef } from "react"
-import type { ReactNode } from "react"
+import type { CSSProperties, ReactNode } from "react"
 import { Button, IconButton } from "./basics"
 import { useLayer } from "./layers"
 import { useT } from "../../i18n"
