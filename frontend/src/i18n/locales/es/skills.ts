@@ -2,7 +2,7 @@ const skills = {
   actions: {
     newSkill: "Nueva skill",
     createSkill: "Crear skill",
-    importFile: "Importar SKILL.md",
+    importFile: "Importar skill",
     export: "Exportar para claude.ai",
     duplicate: "Duplicar",
     delete: "Eliminar",
@@ -77,8 +77,16 @@ const skills = {
     exported: "ZIP de «{{name}}» descargado",
     exportedDetail: "Subilo en Claude Desktop: Personalizar › Skills › Subir skill.",
     exportFailed: "No se pudo exportar «{{name}}»",
-    importFailed: "No se pudo leer el archivo",
+    importFailed: "No se pudo importar la skill",
     imported: "Revisá la skill y creala",
+    importedZip: "Se importó «{{name}}»",
+    ignoredFiles_one: "Se guardó solo el SKILL.md; quedó afuera {{files}}.",
+    ignoredFiles_other: "Se guardó solo el SKILL.md; quedaron afuera {{count}} archivos: {{files}}.",
+    importType: "Elegí un archivo .zip o un SKILL.md.",
+    importInvalid: "El ZIP no es una skill válida: {{detail}}",
+    restoreFailed: "No se pudo restaurar «{{name}}»",
+    restoreExpired: "Pasaron más de 30 minutos y ya se eliminó del todo.",
+    restoreConflict: "Otra skill usa ahora ese identificador. Cambiale el identificador y volvé a intentar.",
   },
 }
 

@@ -1,3 +1,6 @@
+import { api } from "./api"
+import type { Skill } from "./types"
+
 /** Reglas del SKILL.md que el daemon materializa (`packages/daemon/src/adapters/skills.ts`).
  *  El frontmatter lo genera el daemon con `name` igual al slug: los CLIs no cargan una skill
  *  cuya carpeta y cuyo `name` no coinciden. */
@@ -88,4 +91,18 @@ export function saveBlob(blob: Blob, filename: string): void {
   } finally {
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
+}
+
+/** Respuesta de `POST /api/catalog/skills/import` (`SkillZipImportExtras` de shared). */
+export type ImportedSkill = Skill & { ignored_files: string[] }
+
+/** El ZIP se envía tal cual: el servidor valida estructura, tamaño y frontmatter. */
+export function importSkillZip(file: File): Promise<ImportedSkill> {
+  const blob = file.type === "application/zip" ? file : new Blob([file], { type: "application/zip" })
+  return api.upload<ImportedSkill>("/catalog/skills/import", blob)
+}
+
+/** Deshace un borrado suave dentro de CATALOG_RESTORE_WINDOW_MS; 404 si ya se purgó, 409 si el slug está tomado. */
+export function restoreSkill(id: string): Promise<Skill> {
+  return api.post<Skill>(`/catalog/skills/${id}/restore`)
 }

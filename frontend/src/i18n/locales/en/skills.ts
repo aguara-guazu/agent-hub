@@ -5,7 +5,7 @@ const skills = {
   actions: {
     newSkill: "New skill",
     createSkill: "Create skill",
-    importFile: "Import SKILL.md",
+    importFile: "Import skill",
     export: "Export for claude.ai",
     duplicate: "Duplicate",
     delete: "Delete",
@@ -80,8 +80,16 @@ const skills = {
     exported: "Downloaded “{{name}}” ZIP",
     exportedDetail: "Upload it in Claude Desktop: Customize › Skills › Upload skill.",
     exportFailed: "Couldn't export “{{name}}”",
-    importFailed: "Couldn't read the file",
+    importFailed: "Couldn't import the skill",
     imported: "Review the skill and create it",
+    importedZip: "Imported “{{name}}”",
+    ignoredFiles_one: "Only SKILL.md was kept; {{files}} was left out.",
+    ignoredFiles_other: "Only SKILL.md was kept; {{count}} files were left out: {{files}}.",
+    importType: "Choose a .zip file or a SKILL.md.",
+    importInvalid: "The ZIP isn't a valid skill: {{detail}}",
+    restoreFailed: "Couldn't restore “{{name}}”",
+    restoreExpired: "More than 30 minutes passed and it was permanently deleted.",
+    restoreConflict: "Another skill now uses that identifier. Change its identifier and try again.",
   },
 } satisfies Messages<typeof es>
 

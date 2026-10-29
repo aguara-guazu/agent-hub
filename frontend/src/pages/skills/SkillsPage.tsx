@@ -3,15 +3,14 @@ import type { ChangeEvent } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useSearchParams } from "react-router-dom"
 import { Button, Empty, EmptyFiltered, ErrorState, Icon, List, MoreMenu, Row, SearchInput, Seg, SkeletonRows, Switch, Tag, hueFor, useToast } from "../../components/ui"
-import { useT } from "../../i18n"
-import { api } from "../../lib/api"
+import { errorKey, useFormat, useT } from "../../i18n"
+import { ApiError, api } from "../../lib/api"
 import { resourceEnabled, useOverview } from "../../lib/local"
 import type { LocalClient } from "../../lib/local"
 import { useSkills } from "../../lib/queries"
-import { draftFromSkillFile, saveBlob, slugify } from "../../lib/skills"
+import { draftFromSkillFile, importSkillZip, restoreSkill, saveBlob, slugify } from "../../lib/skills"
 import type { SkillDraft } from "../../lib/skills"
 import type { Skill } from "../../lib/types"
-import { cancelDelete, commitAll, commitDelete, scheduleDelete } from "./pendingDeletes"
 import { invalidateSkills, snapshotClientRule, snapshotRules, useSkillRule } from "./rules"
 import { SkillPanel } from "./SkillPanel"
 
@@ -22,7 +21,9 @@ const EMPTY_DRAFT: SkillDraft = { slug: "", displayName: "", description: "", bo
 
 /** Skills · plantilla A con panel ancho. `?new=skill` abre el panel de creación. */
 export default function SkillsPage() {
-  const { t } = useT("skills")
+  const { t, plural } = useT("skills")
+  const errors = useT("errors").t
+  const { list } = useFormat()
   const nav = useT("nav").t
   const common = useT("common").t
   const status = useT("status").t
@@ -98,28 +99,45 @@ export default function SkillsPage() {
   }
 
   const unhide = useCallback((id: string) => setHidden(current => { const next = new Set(current); next.delete(id); return next }), [])
-  const deleteToast = useRef<string | null>(null)
 
-  // Salir de la vista dentro del plazo confirma el borrado: no queda un toast con Deshacer que ya no puede cumplir.
-  useEffect(() => () => {
-    if (deleteToast.current) toast.dismiss(deleteToast.current)
-    void commitAll().then(() => invalidateSkills(cache))
-  }, [toast, cache])
-
-  /** El DELETE sale al vencer el aviso, al desmontar la vista o en pagehide; Deshacer lo cancela. */
+  /** Borrado suave en el acto; «Deshacer» la restaura mientras el servidor la conserva (30 min). */
   function deleteSkill(skill: Skill) {
     setHidden(current => new Set(current).add(skill.id))
     setDirty(false)
     setSelection(null)
-    scheduleDelete(skill.id, error => {
-      unhide(skill.id)
-      toast.error(t("toast.deleteFailed", { name: skill.display_name }), error instanceof Error ? error.message : undefined)
-    })
-    deleteToast.current = toast.show({
-      message: common("toast.deleted", { name: skill.display_name }),
-      undo: () => { if (cancelDelete(skill.id)) unhide(skill.id) },
-      onCommit: () => { void commitDelete(skill.id).then(() => invalidateSkills(cache)) },
-    })
+    api.delete<void>(`/catalog/skills/${skill.id}`)
+      .then(() => {
+        void invalidateSkills(cache).then(() => unhide(skill.id))
+        toast.show({
+          message: common("toast.deleted", { name: skill.display_name }),
+          undo: () => {
+            restoreSkill(skill.id)
+              .then(() => invalidateSkills(cache))
+              .catch(error => toast.error(t("toast.restoreFailed", { name: skill.display_name }), restoreDetail(error)))
+          },
+        })
+      })
+      .catch(error => {
+        unhide(skill.id)
+        toast.error(t("toast.deleteFailed", { name: skill.display_name }), errors(errorKey(error)))
+      })
+  }
+
+  function restoreDetail(error: unknown): string {
+    if (error instanceof ApiError && error.status === 404) return t("toast.restoreExpired")
+    if (error instanceof ApiError && error.status === 409) return t("toast.restoreConflict")
+    return errors(errorKey(error))
+  }
+
+  function importDetail(error: unknown): string {
+    if (error instanceof ApiError) {
+      if (error.status === 409) return t("panel.slugTaken")
+      if (error.status === 413) return errors("tooLarge")
+      if (error.status === 415) return t("toast.importType")
+      // 422 trae la causa concreta del ZIP (sin SKILL.md, ruta insegura, frontmatter incompleto).
+      if (error.status === 422 && error.message) return t("toast.importInvalid", { detail: error.message })
+    }
+    return errors(errorKey(error))
   }
 
   async function exportSkill(skill: Skill) {
@@ -141,6 +159,25 @@ export default function SkillsPage() {
     const file = event.target.files?.[0]
     event.target.value = ""
     if (!file) return
+    if (/\.zip$/i.test(file.name)) {
+      try {
+        const skill = await importSkillZip(file)
+        await invalidateSkills(cache)
+        setFilter("all")
+        setQuery("")
+        setSelection({ kind: "edit", id: skill.id })
+        const ignored = skill.ignored_files
+        toast.show({
+          kind: ignored.length ? "info" : "success",
+          message: t("toast.importedZip", { name: skill.display_name }),
+          detail: ignored.length ? plural("toast.ignoredFiles", ignored.length, { files: list(ignored) }) : undefined,
+          duration: ignored.length ? 10000 : undefined,
+        })
+      } catch (error) {
+        toast.error(t("toast.importFailed"), importDetail(error))
+      }
+      return
+    }
     try {
       const folder = file.name.replace(/\.md$/i, "")
       const draft = draftFromSkillFile(await file.text(), folder.toLowerCase() === "skill" ? "" : folder)
@@ -163,7 +200,7 @@ export default function SkillsPage() {
           <div className="ph-actions">
             <Button variant="primary" icon="add" onClick={() => openCreate()}>{t("actions.newSkill")}</Button>
             <MoreMenu items={[{ label: t("actions.importFile"), onSelect: () => fileInput.current?.click() }]} />
-            <input ref={fileInput} type="file" accept=".md,text/markdown" hidden onChange={event => void importFile(event)} />
+            <input ref={fileInput} type="file" accept=".zip,.md,application/zip,text/markdown" hidden onChange={event => void importFile(event)} />
           </div>
         </div>
 
