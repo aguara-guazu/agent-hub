@@ -12,6 +12,7 @@ import { STAGE_CHOICES, isRelation, listDate, projectActivity, projectStage, use
 import { AttachDialog, NoteDialog } from "./dialogs"
 import { AutomationPanel, CollectionPanel, DetailsPanel, HistoryPanel, LinkPanel, type EntityLink, type ProjectDetail } from "./panels"
 import { StageChip, useErrorText, useMemoryAction, useNarrow } from "./shared"
+import { PanelSlotContext } from "./work"
 
 const Resumen = lazy(() => import("./tabs/Resumen"))
 const Contenido = lazy(() => import("./tabs/Contenido"))
@@ -74,6 +75,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
   const panel = PANELS.find(value => value === params.get("panel")) ?? null
   const [adding, setAdding] = useState<AddKind | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [panelSlot, setPanelSlot] = useState<HTMLElement | null>(null)
   const remove = useMemoryAction("delete_entity")
 
   const setParam = (key: string, value: string | null) => setParams(current => {
@@ -161,6 +163,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
         <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-6)", alignItems: "flex-start" }}>
           <div style={{ flex: "999 1 520px", minWidth: 0 }}>
             <TabPanel idPrefix="project-tab" value={tab}>
+              <PanelSlotContext.Provider value={panel ? null : panelSlot}>
               <Suspense fallback={<SkeletonRows count={3} avatar={false} />}>
                 {tab === "resumen" && <Resumen project={project} />}
                 {tab === "contenido" && <Contenido project={project} />}
@@ -168,12 +171,15 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
                 {tab === "decisiones" && <Decisiones project={project} />}
                 {tab === "colaboracion" && <Colaboracion project={project} />}
               </Suspense>
+              </PanelSlotContext.Provider>
             </TabPanel>
           </div>
           <ProjectAside detail={detail} company={company} narrow={narrow} onPanel={openPanel} />
         </div>
       </div>
 
+      {/* Zona de paneles de las pestañas (Tareas, Decisiones, Colaboración); oculta mientras haya un `?panel=` de la ficha. */}
+      <div ref={setPanelSlot} style={{ display: "contents" }} />
       {panel === "details" && <DetailsPanel project={project} onClose={() => openPanel(null)} />}
       {panel === "link" && <LinkPanel project={project} links={detail.links} onClose={() => openPanel(null)} />}
       {panel === "history" && <HistoryPanel detail={detail} onClose={() => openPanel(null)} />}
