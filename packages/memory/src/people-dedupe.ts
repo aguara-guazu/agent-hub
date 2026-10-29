@@ -192,15 +192,15 @@ export async function dedupePeople(store: MemoryStore, ai: MemoryAI, config: AIC
     })
     await progress({ dedupe_current_batch: Math.floor(offset / size) + 1, request_started_at: new Date().toISOString() })
     let malformed = 0
-    const result = await ai.extract(`Decidí si cada par de perfiles corresponde a la misma persona real. Cada perfil trae nombre, email, origen del email, tipo de identidad
-      (meet_user: cuenta de Google en Meet; docs_label: etiqueta de hablante copiada de un documento; meet_anonymous: participante sin cuenta), reuniones, cantidad de intervenciones y muestras.
-      Señales calculadas: both_speak_in_same_transcript=true significa que ambos hablan como personas distintas en la misma transcripción y casi seguro son distintos.
-      appear_in_linked_sources=true significa que uno habla en un documento vinculado a la reunión donde habla el otro: si además comparten nombre, probablemente es la misma persona registrada dos veces.
-      Homónimos existen: un nombre parecido por sí solo no alcanza para confianza alta. Emails verificados distintos pueden ser dos cuentas de la misma persona (por ejemplo dos dominios de la misma empresa), pero eso requiere revisión humana: máximo confianza media.
-      Bots, grabadores o notetakers (nombres de servicios, sin intervenciones humanas) no son personas: marcá same=false.
-      La confianza alta con same=true se aplica automáticamente sin revisión humana; usala sólo cuando el nombre coincide y el contexto lo respalda.
-      Con confianza media, el sistema unifica por su cuenta únicamente si los nombres completos son idénticos y un lado es una etiqueta de documento sin email; en cualquier otro caso una persona revisa.
-      Copiá literalmente pair_id d1/d2/etc y evidence_ids f1/f2/etc de la entrada. En reason usá nombres legibles, sin códigos p1/f1, y explicá evidencia y dudas en una o dos frases.`,
+    const result = await ai.extract('Decide if each profile pair is the same real person. Profiles: name, email, email origin, identity kind '
+      + '(meet_user: Google account in Meet; docs_label: speaker label copied from a document; meet_anonymous: participant without account), meetings, utterance count, samples. '
+      + 'Signals: both_speak_in_same_transcript=true: both speak as distinct people in one transcript, almost surely different. '
+      + 'appear_in_linked_sources=true: one speaks in a document linked to the meeting where the other speaks; with a shared name, likely one person recorded twice. '
+      + 'Namesakes exist: similar name alone never justifies high confidence. Distinct verified emails may be two accounts of one person (e.g. two domains of one company) but need human review: medium at most. '
+      + 'Bots, recorders, notetakers (service names, no human utterances) are not people: same=false. '
+      + 'High confidence with same=true auto-applies without human review: only if the name matches and context supports it. '
+      + 'At medium, the system merges alone only if full names are identical and one side is a document label without email; otherwise a person reviews. '
+      + 'Copy pair_id d1/d2/etc and evidence_ids f1/f2/etc verbatim. Write reason in neutral Spanish (no voseo): 1-2 sentences on evidence and doubts, readable names, no p1/f1 codes.',
     { pairs: payload }, responseSchema, raw => raw as z.infer<typeof responseSchema>)
     signal.throwIfAborted()
     const verdicts = lenientItems(result.value, 'pairs', verdictSchema, () => { malformed++ })

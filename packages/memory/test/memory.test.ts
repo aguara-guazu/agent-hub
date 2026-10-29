@@ -463,7 +463,7 @@ describe('memoria con SQLite', () => {
     await operations.call('create_rule', { name: 'Horarios', collection_id: demo.collection, instructions: 'Guardar horarios mencionados.', project_ids: [demo.projects[0]] })
     const config = { ...defaultAI, extraction: 'ollama' as const, extraction_model: 'fixture' }
     const model = new MemoryAI(async () => config, vault, async (_url, options) => {
-      const body = JSON.parse(String(options?.body)), isRule = body.messages[0].content.includes('Regla del usuario')
+      const body = JSON.parse(String(options?.body)), isRule = body.messages[0].content.includes('User rule:')
       return new Response(JSON.stringify({ message: { content: JSON.stringify(isRule ? { records: [{ values: { horario: 'Martes de 14 a 17' }, evidence_ids: [evidence] }] } : { facts: [] }) } }))
     })
     await processVersion(store, model, source.current_version_id, config, async () => {}, new AbortController().signal)

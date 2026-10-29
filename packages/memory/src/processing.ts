@@ -105,7 +105,7 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
       if (completed.has(batchKey)) { processedFragments += batch.length; continue }
       await progress({ stage: 'extraction', current_batch: batchNumber + 1, request_started_at: new Date().toISOString() })
       let malformed = 0
-      const result = await ai.extract('Extraé hechos y resúmenes breves. Asociá proyectos sólo si la evidencia los identifica. Las propuestas serán revisables. Incluí IDs de evidencia exactos. Usá únicamente las categorías del esquema.',
+      const result = await ai.extract('Extract facts and brief summaries. Link projects only on identifying evidence. Proposals are reviewable. Exact evidence IDs; schema categories only.',
         { title: source.title, projects, fragments: batch.map(({ ordinal: _ordinal, ...fragment }) => fragment) }, extractionSchema, raw => raw as z.infer<typeof extractionSchema>)
       signal.throwIfAborted()
       const facts = lenientItems(result.value, 'facts', factSchema, () => { malformed++ })
@@ -158,7 +158,7 @@ export async function runRule(store: MemoryStore, ai: MemoryAI, rule: Record<str
     signal.throwIfAborted()
     const current = (await store.db.query('SELECT enabled,revision FROM rules WHERE id=$1', [rule.id]))[0]
     if (!current?.enabled || current.revision !== rule.revision) return
-    const result = await ai.extract(`Completá registros de la colección. Campos: ${JSON.stringify(fields)}. Regla del usuario: ${rule.instructions}`, { fragments: batch }, ruleResult)
+    const result = await ai.extract(`Fill collection records. Fields: ${JSON.stringify(fields)}. User rule: ${rule.instructions}`, { fragments: batch }, ruleResult)
     signal.throwIfAborted()
     const allowed = new Set(batch.map(f => f.id))
     for (const record of result.value.records) {

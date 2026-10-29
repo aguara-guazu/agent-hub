@@ -79,14 +79,14 @@ export async function inferIdentities(store: MemoryStore, ai: MemoryAI, source: 
     const evidenceRefs = new Map(fragments.map((f, index) => [`f${index + 1}`, f.id as string]))
     await progress({ stage: 'identity_inference', identity_current_batch: Math.floor(i / 8) + 1, request_started_at: new Date().toISOString() })
     let malformed = 0
-    const result = await ai.extract(`Proponé asociaciones entre hablantes sin email y candidatos conocidos. Elegí exclusivamente candidate_id de la entrada.
-      Usá nombres, alias, presentaciones y contexto para inferir, sin tratar la inferencia como identidad confirmada. Los invitados de Calendar pueden no haber asistido.
-      Un nombre parecido, el dominio o la eliminación de otros invitados por sí solos no bastan para confianza alta. Considerá homónimos, bots y salas compartidas.
-      Si hay varias opciones plausibles, bajá la confianza o abstenete. Una propuesta por hablante; citá al menos una intervención de ese hablante y explicá la evidencia y las dudas.
-      Copiá literalmente speaker_id s1/s2/etc, candidate_id c1/c2/etc y evidence_ids f1/f2/etc de la entrada. Si un hablante no tiene candidato, omitilo en lugar de devolver null.
-      En reason usá nombres y correos legibles, sin códigos s1/c1/f1.
-      La confianza alta se aplica automáticamente sin revisión humana: reservala para evidencia directa (se presenta con ese nombre, lo nombran así, o el candidato es una persona conocida con el mismo nombre completo).
-      No inventes correos ni personas. Las propuestas existentes, confirmadas o descartadas no son prueba de identidad.`,
+    const result = await ai.extract('Match speakers without email to known candidates; candidate_id only from input. '
+      + 'Infer from names, aliases, introductions, context; inference is not confirmed identity. Calendar invitees may not have attended. '
+      + 'Similar name, domain or ruling out other invitees never alone justify high confidence; consider namesakes, bots, shared rooms. '
+      + 'If several are plausible, lower confidence or abstain. One proposal per speaker, citing at least one of its utterances. '
+      + 'Copy speaker_id s1/s2/etc, candidate_id c1/c2/etc, evidence_ids f1/f2/etc verbatim; omit speakers with no candidate, never null. '
+      + 'High confidence auto-applies without human review: only for direct evidence (introduces self or is called by that name, or candidate is a known person with the same full name). '
+      + 'Existing, confirmed or dismissed proposals do not prove identity. '
+      + 'Write reason in neutral Spanish (no voseo): evidence and doubts, readable names and emails, no s1/c1/f1 codes.',
     { title: source.title, meetings: context.meetings,
       speakers: speakers.map((p, index) => ({ id: `s${index + 1}`, name: p.title })),
       candidates: context.candidates.map((c, index) => ({ ...c, id: `c${index + 1}` })),

@@ -54,7 +54,7 @@ const projectStatus: ScheduleTemplateDefinition<Record<string, never>> = {
   async collect(ctx, deps) {
     // Facts are always filtered as for a remote model: the runtime decides the engine after collecting, and the project-level opt-out is reported in remote_allowed.
     const inputs = await collectStatusInputs(deps.store, ctx.project_id!, deps.now(), true, ctx.covered_since)
-    return packageOf([inputs.project.id], [section('status_inputs', 'Estado del proyecto', inputs, inputs.now)], inputs.project.remote_processing)
+    return packageOf([inputs.project.id], [section('status_inputs', 'Project status', inputs, inputs.now)], inputs.project.remote_processing)
   },
   synthesize: { system: STATUS_SYSTEM, output: z.toJSONSchema(statusSynthesisSchema) as Record<string, unknown>, max_input_chars: MAX_SYNTHESIS_INPUT, when: pkg => hasActivity(dataOf<StatusInputs>(pkg, 'status_inputs')) },
   render(_ctx, pkg, synthesis, meta) {
@@ -88,7 +88,7 @@ const dailyClose: ScheduleTemplateDefinition<Record<string, never>> = {
     const pkg = await collectClose(dailyDeps(deps), { scheduledFor: ctx.scheduled_for, extendFrom: ctx.extend_from })
     // The model sees only the hour inputs of projects a remote model may receive; the full package stays out of its reach.
     const visible = closePayload(pkg, true)
-    return packageOf(pkg.projects.map(project => project.project_id), [section('hours', 'Horas por proyecto', visible, pkg.window.until), section('close', 'Cierre', pkg, pkg.window.until, false)],
+    return packageOf(pkg.projects.map(project => project.project_id), [section('hours', 'Hours by project', visible, pkg.window.until), section('close', 'Cierre', pkg, pkg.window.until, false)],
       visible.projects.some(project => project.tasks.length > 0))
   },
   synthesize: { system: CLOSE_SYSTEM, output: z.toJSONSchema(closeSynthesisSchema) as Record<string, unknown>, max_input_chars: MAX_SYNTHESIS_INPUT, when: pkg => closeNeedsSynthesis(dataOf<ClosePackage>(pkg, 'close'), true) },

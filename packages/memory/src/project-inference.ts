@@ -69,12 +69,13 @@ export async function inferProject(store: MemoryStore, ai: MemoryAI, source: Rec
   const sample = [...picked].sort((a, b) => a - b).map(index => fragments[index]!)
   const projectRefs = new Map(projects.map((p, index) => [`p${index + 1}`, p.id as string]))
   const evidenceRefs = new Map(sample.map((f, index) => [`f${index + 1}`, f.id as string]))
-  const result = await ai.extract(`Decide a qué proyecto existente pertenece esta fuente (reunión o documento), comparando su contenido con cada proyecto.
-    Devuelve exactamente un veredicto. project_ref es p1/p2/etc de la lista, o "none" si ninguno corresponde.
-    Confianza alta sólo con evidencia directa: se nombra el proyecto, su cliente o su clave de Jira; la serie recurrente del calendario ya pertenece a ese proyecto (same_calendar_series); o participan las mismas personas externas habituales del proyecto hablando del mismo trabajo.
-    Coincidencias genéricas (mismo equipo interno, temas comunes, un nombre parecido) son confianza media o baja. Si puede ser de varios proyectos, baja la confianza.
-    Si no corresponde a ninguno y trata un trabajo concreto con un cliente o una iniciativa, propón en suggested_title un nombre breve de proyecto y en suggested_description una descripción de una o dos oraciones; si es una reunión suelta (1:1, social, organizativa general) déjalos vacíos.
-    Cita en evidence_ids hasta 5 fragmentos f1/f2/etc que respalden el veredicto. En reason explica la evidencia y las dudas con nombres legibles, sin códigos p1/f1.`,
+  const result = await ai.extract('Match this source (meeting or document) to an existing project by comparing its content with each project. '
+    + 'Exactly one verdict; project_ref: p1/p2/etc from the list, or "none" if none fits. '
+    + 'High confidence only on direct evidence: the project, its client or Jira key is named; the recurring calendar series already belongs to it (same_calendar_series); or its usual external people discuss the same work. '
+    + 'Generic matches (same internal team, common topics, similar name): medium or low. If several may fit, lower confidence. '
+    + 'If none fits but it is concrete work with a client or an initiative, suggest a short project name (suggested_title) and a 1-2 sentence suggested_description; leave both empty for one-off meetings (1:1, social, general organizational). '
+    + 'evidence_ids: up to 5 supporting fragments f1/f2/etc. '
+    + 'Write text fields in neutral Spanish (no voseo); reason: evidence and doubts, readable names, no p1/f1 codes.',
   { source: { title: source.title, kind: source.kind ?? source.data?.kind, occurred_at: source.data?.occurred_at ?? null, participants: people },
     extracted_facts: facts,
     projects: projects.map((p, index) => ({ id: `p${index + 1}`, title: p.title, description: p.description ?? '', company: p.company ?? '', status: p.status ?? '',

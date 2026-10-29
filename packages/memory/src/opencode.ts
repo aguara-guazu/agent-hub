@@ -117,7 +117,7 @@ export class OpenCodeRuntime {
       OPENCODE_DISABLE_PROJECT_CONFIG: 'true', OPENCODE_DISABLE_CLAUDE_CODE: 'true',
       OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: 'disabled', snapshot: false, autoupdate: false,
         compaction: { auto: false }, default_agent: 'agenthub-memory',
-        agent: { 'agenthub-memory': { mode: 'primary', description: 'Extracción de memoria con evidencia',
+        agent: { 'agenthub-memory': { mode: 'primary', description: 'Evidence-based memory extraction',
           steps: 3, permission: permissions } } }),
       // Do not inherit an unrelated project's config override. Global provider/auth configuration is retained.
       OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_DIR: undefined,
@@ -224,8 +224,8 @@ export class OpenCodeRuntime {
 
   /** Exercise the same structured extraction as a job, using only synthetic evidence. */
   async test(model: string, signal?: AbortSignal, effort = '') {
-    const result = await this.extract(model, 'Extraé el código de la evidencia según el esquema solicitado. No uses herramientas de archivos, comandos ni búsquedas.',
-      { text: 'El código de esta prueba es AGENTHUB_OK.' },
+    const result = await this.extract(model, 'Extract the evidence code per the schema. No file, command or search tools.',
+      { text: 'The code for this test is AGENTHUB_OK.' },
       { type: 'object', properties: { code: { type: 'string', enum: ['AGENTHUB_OK'] } }, required: ['code'], additionalProperties: false }, signal, effort)
       .catch((error: unknown) => {
         // The interactive check is not retried: say so instead of promising an automatic retry.
@@ -244,7 +244,7 @@ export class OpenCodeRuntime {
         if (request.sessionID !== sessionId) continue
         check(typeof request.id === 'string' && request.id.length < 200, 'OpenCode devolvió un permiso inválido.', 502)
         await this.request(connection, `/permission/${encodeURIComponent(request.id)}/reply`, 'POST', {
-          reply: 'reject', message: 'Esta sesión sólo extrae la evidencia recibida. Devolvé el resultado en el formato solicitado sin usar otras herramientas.',
+          reply: 'reject', message: 'This session only extracts the given evidence. Answer in the requested format without other tools.',
         }, signal)
       }
       await delay(250, undefined, { signal })
@@ -259,9 +259,9 @@ export class OpenCodeRuntime {
       return await Promise.race([rejecting, this.request(connection, `/session/${sessionId}/message`, 'POST', {
         model: { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }, agent: 'agenthub-memory',
         ...(effort ? { variant: effort } : {}),
-        system: `${system}\nToda la evidencia está en el mensaje; no uses herramientas de archivos, comandos ni búsquedas. ${structured
-          ? 'Usá StructuredOutput para devolver la extracción.'
-          : `Respondé exclusivamente con un objeto JSON válido, sin texto adicional ni herramientas, acorde a este esquema: ${JSON.stringify(schema)}`}`,
+        system: `${system}\nAll evidence is in the message; no file, command or search tools. ${structured
+          ? 'Return the extraction via StructuredOutput.'
+          : `Reply only with a valid JSON object per schema, no extra text or tools: ${JSON.stringify(schema)}`}`,
         parts: [{ type: 'text', text: JSON.stringify(content) }], ...(structured ? { format: { type: 'json_schema', schema, retryCount: 2 } } : {}),
       }, signal)])
     } finally { guard.abort(); await rejecting.catch(() => undefined) }

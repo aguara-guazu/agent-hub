@@ -86,7 +86,7 @@ it.each([
 it('prueba el modelo con evidencia sintética y salida estructurada', async () => {
   setup()
   expect(await runtime.test(model)).toEqual({ model, ok: true })
-  expect((await requests()).find(c => c.path.endsWith('/message')).body.parts).toEqual([{ type: 'text', text: JSON.stringify({ text: 'El código de esta prueba es AGENTHUB_OK.' }) }])
+  expect((await requests()).find(c => c.path.endsWith('/message')).body.parts).toEqual([{ type: 'text', text: JSON.stringify({ text: 'The code for this test is AGENTHUB_OK.' }) }])
 })
 it('envía la variante seleccionada incluso en el fallback de texto y rechaza variantes ajenas al modelo', async () => {
   setup()

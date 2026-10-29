@@ -48,7 +48,7 @@ it.skipIf(!binary).each([false, true])('OpenCode real extrae JSON sin ejecutar h
     expect(requests).toHaveLength(tryRead ? 2 : 1)
     expect(requests[0].tools.map((t: any) => t.function.name)).toEqual(expect.arrayContaining(['StructuredOutput', 'bash', 'read', 'glob', 'grep']))
     expect(JSON.stringify(requests)).not.toContain('PRIVATE_FIXTURE_CONTENT')
-    if (tryRead) expect(requests[1].messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content).join('\n')).toMatch(/reject|denied|Esta sesión sólo extrae/i)
+    if (tryRead) expect(requests[1].messages.filter((m: any) => m.role === 'tool').map((m: any) => m.content).join('\n')).toMatch(/reject|denied|This session only extracts/i)
     // Simulate the parent disappearing: the guardian's pipe closes even without an explicit stop request.
     child!.stdin!.end()
     await new Promise<void>(resolve => child!.once('exit', () => resolve()))

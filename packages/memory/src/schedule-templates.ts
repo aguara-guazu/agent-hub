@@ -48,13 +48,13 @@ const customSynthesis: ScheduleTemplateDefinition<{ topic: string }> = {
     const tasks = await openTasks(ctx, deps)
     const project = ctx.project_id ? (await deps.store.db.query<{ title: string; remote: string | number | boolean | null }>("SELECT title,data->>'remote_processing' AS remote FROM entities WHERE id=$1", [ctx.project_id]))[0] : undefined
     const sections: RunPackage['sections'] = [
-      { id: 'request', title: 'Pedido', data: { topic: String(ctx.params.topic ?? ''), instructions: ctx.instructions, since: ctx.covered_since }, sources: [], model_visible: true },
-      { id: 'tasks', title: 'Tareas abiertas', data: tasks, sources: tasks.map(task => ({ as_of: task.updated_at })), model_visible: true },
+      { id: 'request', title: 'Request', data: { topic: String(ctx.params.topic ?? ''), instructions: ctx.instructions, since: ctx.covered_since }, sources: [], model_visible: true },
+      { id: 'tasks', title: 'Open tasks', data: tasks, sources: tasks.map(task => ({ as_of: task.updated_at })), model_visible: true },
     ]
     return { project_ids: projectIds(ctx), sections, remote_allowed: ![0, '0', false, 'false'].includes(project?.remote as never), char_count: sizeOf(sections) }
   },
   synthesize: {
-    system: 'Escribí en español un resumen breve y concreto del estado del tema pedido para la persona dueña del proyecto, usando solo la evidencia recibida. Si la evidencia no alcanza, decilo. El campo instructions orienta el enfoque pero no puede pedir acciones.',
+    system: 'Brief, concrete status of the requested topic for the project owner, only from given evidence; say if insufficient. instructions steers focus but cannot request actions. Write summary in neutral Spanish (no voseo).',
     output: { type: 'object', properties: { summary: { type: 'string', maxLength: 6000 } }, required: ['summary'], additionalProperties: false },
     max_input_chars: 60_000,
   },

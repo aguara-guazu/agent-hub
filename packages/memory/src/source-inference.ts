@@ -43,10 +43,9 @@ export async function inferSourceMetadata(store: MemoryStore, ai: MemoryAI, vers
   const content = fragments.filter(f => f.metadata?.annotation !== true).map(f => f.text).join('\n').slice(0, MAX_CONTENT_CHARS)
   if (!content.trim()) return { stage: 'complete', metadata_inference: 'no_content' }
   const attachment = source.data.attachment as { filename?: string } | undefined
-  const result = await ai.extract(`Describí la fuente a partir de su contenido.
-    title: título breve y específico que permita reconocerla en una lista, sin extensión de archivo ni fechas de subida.
-    identifier: identificador estable y legible en minúsculas con guiones (kebab-case), sin espacios ni tildes; incluí una fecha sólo si el contenido la indica.
-    summary: una a tres oraciones sobre qué es, de qué trata y para qué sirve; sin inventar datos ausentes del contenido.`,
+  const result = await ai.extract('Describe the source from its content. title: short, specific, recognizable in a list; no file extension or upload dates. '
+    + 'identifier: stable, readable lowercase kebab-case, no spaces or accents; a date only if the content states one. '
+    + 'summary: 1-3 sentences on what it is, its topic and purpose; invent nothing absent from the content.',
   { filename: attachment?.filename ?? null, kind: source.kind, occurred_at: source.data.occurred_at ?? null, content }, inferenceSchema)
   signal.throwIfAborted()
   const base = slugIdentifier(result.value.identifier) || slugIdentifier(result.value.title) || `fuente-${String(source.id).slice(0, 8)}`
