@@ -11,16 +11,16 @@ import { useT } from "./i18n"
 import { AuthProvider, useAuth } from "./lib/auth"
 import { useTheme } from "./lib/theme"
 import { DeliveriesPage, DeliveryDetailPage, SchedulesPage } from "./pages/Automations"
-import { HubActivity, HubSettings } from "./pages/Hub"
+import { HubActivity } from "./pages/Hub"
 import MemoryPage from "./pages/memory/MemoryPage"
 import MemoryEntityView from "./pages/memory/EntityPage"
 import ProjectPage from "./pages/project/ProjectPage"
 import ProjectsPage from "./pages/projects/ProjectsPage"
 import { MemoryLocalCollaboration } from "./pages/MemoryLocalCollaboration"
 import { MemoryProcessing } from "./pages/MemoryProcessing"
+import SettingsPage from "./pages/settings/SettingsPage"
 import SkillsPage from "./pages/skills/SkillsPage"
 import ClientsPage from "./pages/clients/ClientsPage"
-import { MemorySettings } from "./pages/MemorySettings"
 import ServersPage from "./pages/servers/ServersPage"
 import HomePage from "./pages/home/HomePage"
 
@@ -64,7 +64,7 @@ export function App() {
               <Route path="skills" element={<SkillsPage />} />
               <Route path="clients" element={<ClientsPage />} />
               <Route path="activity" element={legacy(<BySearchParam name="tab" cases={{ procesamiento: <MemoryProcessing /> }} fallback={<HubActivity />} />)} />
-              <Route path="settings" element={legacy(<BySearchParam name="section" cases={{ fuentes: <MemorySettings /> }} fallback={<HubSettings />} />)} />
+              <Route path="settings" element={<SettingsPage />} />
 
               <Route path="catalog" element={<Redirect to="/servers" />} />
               <Route path="schedules" element={<Redirect to="/automations" />} />
