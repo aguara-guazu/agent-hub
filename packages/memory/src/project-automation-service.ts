@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { realpath } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
 import { childEnv } from '@agenthub/gateway/platform'
@@ -264,7 +265,7 @@ export class ProjectAutomationService {
     const url = push[0]!
     if (/[\s\x00-\x1f\x7f]/.test(url) || url.startsWith('-') || /^[a-z][a-z0-9+.-]*:\/\/[^/@]*:[^/@]*@/i.test(url) || !(/^(https:\/\/|ssh:\/\/)/.test(url) || /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:(?!\/\/)\S+$/.test(url)))
       fail(422, 'remote_not_allowed', 'El remoto debe usar https o ssh y no puede llevar credenciales.')
-    const probe = await this.git(['ls-remote', '--symref', url, 'HEAD'], repo)
+    const probe = await this.git(['ls-remote', '--symref', url, 'HEAD'], tmpdir())
     const head = probe.code === 0 ? /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(probe.stdout)?.[1] : undefined
     if (!head) fail(422, 'repository_unavailable', 'No se pudo determinar la rama principal del remoto.')
     if (!entry.allowed_branches.length) fail(422, 'branch_invalid', 'Cada repositorio necesita al menos una rama permitida.')
@@ -385,7 +386,7 @@ export class ProjectAutomationService {
       if (!allowed || base.branch === snapshot.default_branch) { out.push({ ...base, executable: false, not_executable_reason: 'branch_not_allowed' }); continue }
       const tip = await this.git(['rev-parse', '--verify', '--quiet', `refs/heads/${base.branch}^{commit}`], snapshot.repo_path)
       if (tip.code !== 0 || tip.stdout.trim() !== base.local_sha) { out.push({ ...base, executable: false, not_executable_reason: 'local_branch_moved' }); continue }
-      const remote = await this.git(['ls-remote', snapshot.canonical_remote_url, `refs/heads/${base.branch}`], snapshot.repo_path)
+      const remote = await this.git(['ls-remote', snapshot.canonical_remote_url, `refs/heads/${base.branch}`], tmpdir())
       if (remote.code !== 0) { out.push({ ...base, executable: false, not_executable_reason: 'remote_unreachable' }); continue }
       const expected = /^([0-9a-f]{40,64})\trefs\/heads\/\S+$/m.exec(remote.stdout)?.[1] ?? null
       if (expected === base.local_sha) { out.push({ ...base, executable: false, not_executable_reason: 'already_pushed' }); continue }
