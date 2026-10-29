@@ -23,21 +23,23 @@ export const googleScopes = (config: Record<string, unknown>): readonly string[]
   return config.gmail_send_enabled === true ? [...base, GMAIL_SEND_SCOPE] : base
 }
 export class GoogleAuth {
-  private pending = new Map<string, { connector: string; verifier: string; expires: number }>()
+  private pending = new Map<string, { connector: string; verifier: string; expires: number; gmailSend: boolean }>()
   private refreshes = new Map<string, Promise<string>>()
   constructor(private vault: Vault, readonly redirectUrl: string, private fetcher: typeof fetch = fetch) {}
-  start(connector: string, scopes: readonly string[] = GOOGLE_SCOPES): string {
+  /** `gmailSend` records that this consent asked for the send scope, so the callback can tell a refusal from a grant. */
+  start(connector: string, scopes: readonly string[] = GOOGLE_SCOPES, options: { gmailSend?: boolean } = {}): string {
     const credentials = this.vault.read('google-client')
     check(credentials?.client_id, 'Configurá el client ID de una aplicación OAuth de escritorio de Google', 409)
     for (const [key, value] of this.pending) if (value.expires < Date.now()) this.pending.delete(key)
     const state = randomBytes(32).toString('base64url'), verifier = randomBytes(48).toString('base64url')
-    this.pending.set(state, { connector, verifier, expires: Date.now() + 600_000 })
+    this.pending.set(state, { connector, verifier, expires: Date.now() + 600_000, gmailSend: options.gmailSend === true })
     const params = new URLSearchParams({ client_id: credentials.client_id, redirect_uri: this.redirectUrl,
       response_type: 'code', scope: scopes.join(' '), state, access_type: 'offline', prompt: 'consent',
       code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url') })
     return `https://accounts.google.com/o/oauth2/v2/auth?${params}`
   }
-  async finish(state: string, code: string): Promise<string> {
+  async finish(state: string, code: string): Promise<string> { return (await this.complete(state, code)).connector }
+  async complete(state: string, code: string): Promise<{ connector: string; gmail_send_requested: boolean }> {
     const pending = this.pending.get(state)
     this.pending.delete(state)
     check(pending && pending.expires > Date.now(), 'La autorización venció o no corresponde a este hub', 400)
@@ -45,7 +47,7 @@ export class GoogleAuth {
     const tokens = await this.exchange({ client_id: credentials.client_id, ...(credentials.client_secret ? { client_secret: credentials.client_secret } : {}),
       code, code_verifier: pending.verifier, redirect_uri: this.redirectUrl, grant_type: 'authorization_code' })
     this.vault.save(pending.connector, { ...tokens, expires_at: Date.now() + Number(tokens.expires_in ?? 3600) * 1000 })
-    return pending.connector
+    return { connector: pending.connector, gmail_send_requested: pending.gmailSend }
   }
   /** Reads the scopes Google reported with the last token exchange or refresh. */
   granted(connector: string, scope: string): boolean {

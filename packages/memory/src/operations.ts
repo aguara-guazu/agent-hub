@@ -379,10 +379,13 @@ export class MemoryOperations {
       }
       case 'timeline': return store.list({ project_id: input.project_id, limit: input.limit, offset: input.offset })
       case 'list_connectors': {
-        const rows = await db.query('SELECT id,provider,name,config,project_ids,enabled,interval_minutes,last_success_at,last_error,created_at FROM connectors ORDER BY created_at')
-        return rows.map(row => {
-          if (row.provider !== 'google' || !this.google) return row
-          return { ...row, ...(row.config.gmail_enabled !== false ? { gmail_authorized: this.google.granted(row.id, GMAIL_SCOPE) } : {}),
+        // `mailbox` is the address Gmail reported for the account on a sync; until then there is none to show and nothing is inferred.
+        const rows = await db.query("SELECT id,provider,name,config,project_ids,enabled,interval_minutes,last_success_at,last_error,created_at,json_extract(cursor,'$.gmail.mailbox') AS mailbox FROM connectors ORDER BY created_at")
+        return rows.map(({ mailbox, ...row }) => {
+          if (row.provider !== 'google') return row
+          const account = { account_email: typeof mailbox === 'string' && mailbox ? mailbox : null }
+          if (!this.google) return { ...row, ...account }
+          return { ...row, ...account, ...(row.config.gmail_enabled !== false ? { gmail_authorized: this.google.granted(row.id, GMAIL_SCOPE) } : {}),
             ...(row.config.gmail_send_enabled === true ? { gmail_send_authorized: this.google.granted(row.id, GMAIL_SEND_SCOPE) } : {}) }
         })
       }
