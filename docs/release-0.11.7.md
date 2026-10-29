@@ -67,8 +67,10 @@ miembros esperan y la persona recibe un aviso.
   mientras corre una programación.
 - El permiso de envío por Gmail se pide en el mismo consentimiento de Google y
   solo se habilita si Google lo concede. Si la cuenta de Google ya está
-  conectada, la acción «Canales» de cada automatización ofrece «Autorizar»; Slack
-  requiere agregar su servidor MCP en el Catálogo.
+  conectada, Automatizaciones muestra un aviso que abre un asistente: explica el
+  permiso, abre Google y, cuando el envío queda autorizado, agrega Gmail a las
+  automatizaciones elegidas. También se autoriza desde la acción «Canales» de
+  cada automatización. Slack requiere agregar su servidor MCP en el Catálogo.
 - Al hacer clic en la notificación del brief o del cierre se abre su entrega.
 
 ## Otros cambios
