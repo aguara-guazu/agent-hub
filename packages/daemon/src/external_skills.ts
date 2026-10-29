@@ -15,7 +15,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, watch, type FSWatcher } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { canonicalJson, sha256, SKILL_FILENAME } from '@agenthub/shared'
+import { canonicalJson, parseFrontmatter, sha256, SKILL_FILENAME } from '@agenthub/shared'
 
 import { regionDigest, TREE_REGION } from './adapters/atomic.js'
 
@@ -52,63 +52,7 @@ export function externalSkillsRoot(home: string): string {
   return join(home, EXTERNAL_SKILLS_DIR)
 }
 
-export interface Frontmatter {
-  fields: Record<string, string>
-  body: string
-}
-
-function unquote(raw: string): string {
-  const value = raw.trim()
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
-  }
-  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
-    return value.slice(1, -1).replace(/''/g, "'")
-  }
-  return value
-}
-
-/**
- * Frontmatter YAML de un SKILL.md, con lo justo para `name`, `description` y afines:
- * escalares planos o entrecomillados, bloques `>`/`|` (con `-` opcional) y continuaciones
- * indentadas. Cualquier otra estructura queda como texto plano en su clave.
- */
-export function parseFrontmatter(raw: string): Frontmatter {
-  const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
-  const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text)
-  if (match === null) return { fields: {}, body: text }
-  const lines = match[1]!.split(/\r?\n/)
-  const fields: Record<string, string> = {}
-  let index = 0
-  while (index < lines.length) {
-    const line = lines[index]!
-    const keyMatch = /^([A-Za-z0-9_-]+):(.*)$/.exec(line)
-    if (keyMatch === null) {
-      index += 1
-      continue
-    }
-    const key = keyMatch[1]!
-    const rest = keyMatch[2]!.trim()
-    const continuation: string[] = []
-    let next = index + 1
-    while (next < lines.length && (/^\s+\S/.test(lines[next]!) || lines[next]!.trim() === '')) {
-      if (lines[next]!.trim() === '' && !(next + 1 < lines.length && /^\s+\S/.test(lines[next + 1]!))) break
-      continuation.push(lines[next]!)
-      next += 1
-    }
-    const block = /^([>|])([+-]?)$/.exec(rest)
-    if (block !== null) {
-      const dedented = continuation.map((item) => item.replace(/^\s+/, ''))
-      fields[key] = block[1] === '>' ? dedented.join(' ').replace(/\s+/g, ' ').trim() : dedented.join('\n').trim()
-    } else if (continuation.length > 0 && rest !== '' && !rest.startsWith('"') && !rest.startsWith("'")) {
-      fields[key] = [rest, ...continuation.map((item) => item.trim())].join(' ').trim()
-    } else {
-      fields[key] = unquote(rest)
-    }
-    index = next
-  }
-  return { fields, body: text.slice(match[0].length) }
-}
+export { parseFrontmatter, type Frontmatter } from "@agenthub/shared"
 
 function readLock(home: string): Record<string, string> {
   const path = join(home, SKILL_LOCK_FILE)
