@@ -117,6 +117,20 @@ describe('cierre', () => {
     expect(beta).toMatch(/^3\. WEB-1/m)
     expect(beta).toMatch(/^4\. push de feature\/x/m)
   })
+  it('dos cierres de la misma ventana con otros segundos repiten la operation_key y cambian el digest', () => {
+    const comment = { id: 'note-c', task_id: 't1', key: 'APP-1', title: 'Tarea APP-1', text: 'bloqueado por acceso', at: SCHEDULED, assignment: 'verified' as const }
+    const push = { project_id: 'p1', kind: 'git_push' as const, summary: 'push de feature/x', effect: { kind: 'git_push', branch: 'feature/x' }, effect_digest: 'd' }
+    const pkg = closePackage([closeProject('p1', 'Alfa', [worked('t1', 'APP-1')], { comments: [comment] })], [push])
+    const first = renderClose(pkg, { estimates: [estimate('t1', 3600, { to_category: 'done', basis: 'PR mergeada' })] }, 'modelo', 'run-1')
+    const second = renderClose(pkg, { estimates: [estimate('t1', 7200, { to_category: 'done', basis: 'PR mergeada' })] }, 'modelo', 'run-2')
+    const since = pkg.projects[0]!.hours!.window.since
+    expect(first.items.map(item => item.operation_key)).toEqual([
+      `jira_worklog:https://empresa.atlassian.net:APP-1:${since}`, 'jira_transition:https://empresa.atlassian.net:APP-1:done',
+      'jira_comment:https://empresa.atlassian.net:APP-1:note-c', undefined,
+    ])
+    expect(second.items.map(item => item.operation_key)).toEqual(first.items.map(item => item.operation_key))
+    expect(second.items[0]!.effect_digest).not.toBe(first.items[0]!.effect_digest)
+  })
 })
 
 describe('espejo de Jira', () => {
