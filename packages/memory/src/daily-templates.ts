@@ -3,6 +3,7 @@ import type { AttentionLine, AttentionReaders, CollectDeps, RunPackage, Schedule
 import type { DailyDeps, OwnerAttentionReaders, ProposedItem } from './daily-types.js'
 import { DEFAULT_WORKDAY_HOURS } from './daily-types.js'
 import { hash } from './store.js'
+import { registerScheduleTemplate } from './schedule-templates.js'
 import { collectBrief, projectBlock, renderBrief, type BriefPackage } from './daily-brief.js'
 import { CLOSE_SYSTEM, closeNeedsSynthesis, closePayload, closeSynthesisSchema, collectClose, renderClose, type ClosePackage } from './daily-close.js'
 import { collectStatusInputs, finishSnapshot, snapshotWriter, statusSynthesisSchema, STATUS_SYSTEM, type StatusInputs } from './project-status.js'
@@ -99,3 +100,5 @@ const dailyClose: ScheduleTemplateDefinition<Record<string, never>> = {
 
 /** Registered by the scheduler's template registry. */
 export const dailyTemplates: ScheduleTemplateDefinition<any>[] = [projectStatus, dailyBrief, dailyClose]
+
+for (const template of dailyTemplates) registerScheduleTemplate(template)

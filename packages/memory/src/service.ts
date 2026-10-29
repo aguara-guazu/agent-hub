@@ -25,6 +25,7 @@ import { ScheduleRuntime } from './schedule-runtime.js'
 import { EngineSynthesizer } from './schedule-synthesizer.js'
 import type { AttentionReaders, ScheduleAutomation } from './schedule-contract.js'
 import './schedule-templates.js'
+import './daily-templates.js'
 import { createFleetRecovery } from './fleet-recovery.js'
 
 const REPLY_TICK_MS = 60_000
