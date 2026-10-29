@@ -54,9 +54,15 @@ export function Layer({ children }: { children: ReactNode }) {
   const [root] = useState(() => document.createElement("div"))
   root.className = `ah ${className}`
   root.style.background = "transparent"
+  const mounted = useRef(false)
   useLayoutEffect(() => {
-    document.body.appendChild(root)
-    return () => root.remove()
+    mounted.current = true
+    // StrictMode ejecuta setup → cleanup → setup: reinsertar el nodo en el body le quita el foco al contenido.
+    if (!root.isConnected) document.body.appendChild(root)
+    return () => {
+      mounted.current = false
+      queueMicrotask(() => { if (!mounted.current) root.remove() })
+    }
   }, [root])
   return createPortal(children, root)
 }
