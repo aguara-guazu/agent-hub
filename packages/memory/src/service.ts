@@ -31,10 +31,12 @@ const REPLY_TICK_MS = 60_000
 export function summarizeReplyTick(result: unknown): Record<string, unknown> | null {
   if (!result || typeof result !== 'object') return null
   const summary: Record<string, unknown> = {}, errors: string[] = []
+  // Only outcomes count: a request left open makes every cycle inspect, which is not activity.
+  const outcome = (key: string) => ['expired', 'consumed', 'rejected'].includes(key)
   for (const [key, value] of Object.entries(result as Record<string, unknown>)) {
-    if (typeof value === 'number' && value > 0) summary[key] = value
+    if (typeof value === 'number' && value > 0 && outcome(key)) summary[key] = value
     else if (value && typeof value === 'object') {
-      const counts = Object.fromEntries(Object.entries(value).filter(([, count]) => typeof count === 'number' && count > 0))
+      const counts = Object.fromEntries(Object.entries(value).filter(([name, count]) => outcome(name) && typeof count === 'number' && count > 0))
       const error = (value as { error?: unknown }).error
       if (typeof error === 'string') errors.push(`${key}:${error.slice(0, 60)}`)
       if (Object.keys(counts).length) summary[key] = counts

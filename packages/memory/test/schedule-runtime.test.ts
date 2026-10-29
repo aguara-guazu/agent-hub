@@ -171,6 +171,20 @@ it('al apagar el interruptor revoca las solicitudes de decisión antes de cancel
   expect(await runsOf(s.id)).toEqual([])
 })
 
+it('un periódico que no termina no impide lanzar un run vencido ni se solapa consigo mismo', async () => {
+  let started = 0, release!: () => void
+  runtime.addPeriodic('colgada', () => new Promise<void>(resolve => { started++; release = resolve }), 0)
+  const s = await schedule()
+  await runtime.start()
+  for (let i = 0; i < 100 && !(await runsOf(s.id)).some(r => r.state === 'succeeded'); i++) await new Promise(resolve => setTimeout(resolve, 20))
+  expect((await runsOf(s.id))[0]).toMatchObject({ state: 'succeeded' })
+  await runtime.tick()
+  expect(started).toBe(1)
+  release(); await new Promise(resolve => setTimeout(resolve, 10))
+  await runtime.tick()
+  expect(started).toBe(2); release()
+})
+
 it('una tarea periódica corre una vez por ventana y su fallo no detiene el reloj', async () => {
   let calls = 0
   runtime.addPeriodic('lenta', async () => { calls++; throw new Error('falla') }, 60_000)

@@ -73,7 +73,7 @@ export class ScheduleRuntime {
   private stopped = true
   private automationsWere: boolean | undefined
   private inFlight = new Map<string, { controller: AbortController; done: Promise<void> }>()
-  private periodic = new Map<string, { task: () => Promise<unknown>; everyMs: number; last: number }>()
+  private periodic = new Map<string, { task: () => Promise<unknown>; everyMs: number; last: number; running?: Promise<void> | undefined }>()
   private lastActive = ''
   constructor(private o: ScheduleRuntimeOptions) {}
 
@@ -93,6 +93,7 @@ export class ScheduleRuntime {
     this.stopped = true; clearInterval(this.timer); this.o.signals?.off('change', this.kick)
     for (const entry of this.inFlight.values()) entry.controller.abort()
     await Promise.allSettled([...this.inFlight.values()].map(entry => entry.done)); await this.ticking
+    await Promise.allSettled([...this.periodic.values()].map(entry => entry.running))
   }
   /** Resolves when no tick or run is in progress. */
   async idle() {
@@ -121,10 +122,11 @@ export class ScheduleRuntime {
     const now = this.now()
     for (const schedule of await this.store.expiredSchedules(isoAt(now))) { await this.store.touchSchedule(schedule.id, { state: 'expired', next_run_at: null }); this.events.emit('schedule.changed', { schedule_id: schedule.id, type: 'schedule.cancelled' }) }
     for (const schedule of await this.store.dueSchedules(isoAt(now))) await this.fire(schedule, now)
+    // Periodic tasks may wait on the network: they run in the background, never overlap themselves and never delay launching a due run.
     for (const entry of this.periodic.values()) {
-      if (now - entry.last < entry.everyMs) continue
+      if (entry.running || now - entry.last < entry.everyMs) continue
       entry.last = now
-      await entry.task().catch(() => undefined)
+      entry.running = entry.task().then(() => undefined, () => undefined).finally(() => { entry.running = undefined })
     }
     await this.wakeDeferred(now)
     for (const run of await this.store.runnable(isoAt(now))) this.launch(run)
