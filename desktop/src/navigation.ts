@@ -21,23 +21,28 @@ export function allowedRoute(input: unknown): string | null {
 }
 
 export class NavigationRelay {
-  private listening = false
+  private attached = false
   private pending: string | null = null
 
   constructor(private readonly send: (route: string) => void) {}
+
+  /** El renderer se declaró listo desde la última carga de la página. */
+  get listening(): boolean {
+    return this.attached
+  }
 
   /** `false` si la ruta no está permitida. Sólo se conserva la última ruta pendiente. */
   request(route: unknown): boolean {
     const allowed = allowedRoute(route)
     if (!allowed) return false
-    if (this.listening) this.send(allowed)
+    if (this.attached) this.send(allowed)
     else this.pending = allowed
     return true
   }
 
   /** El renderer ya escucha: devuelve la ruta que quedó pendiente, si la hay. */
   attach(): string | null {
-    this.listening = true
+    this.attached = true
     const route = this.pending
     this.pending = null
     return route
@@ -45,6 +50,6 @@ export class NavigationRelay {
 
   /** La página se recarga: hasta que el renderer vuelva a declararse listo, las rutas quedan pendientes. */
   detach(): void {
-    this.listening = false
+    this.attached = false
   }
 }

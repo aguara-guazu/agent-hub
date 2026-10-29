@@ -209,6 +209,8 @@ function showRetained(notification: Notification): void {
   }
   notification.once('click', release)
   notification.once('failed', release)
+  notification.on('click', () => coreLog.write(`[notification] clic: ${notification.title}`))
+  notification.on('failed', (_event, error) => coreLog.write(`[notification] falló: ${notification.title}: ${error}`))
   liveNotifications.push(notification)
   if (liveNotifications.length > LIVE_NOTIFICATIONS_LIMIT) liveNotifications.shift()
   notification.show()
@@ -227,7 +229,9 @@ function notifyOpening(notice: Notice): void {
 }
 
 function openRoute(route: string): void {
-  if (!navigation.request(route)) return
+  const accepted = navigation.request(route)
+  coreLog.write(`[navigation] pedido ${route}: ${accepted ? navigation.listening ? 'renderer escuchando' : 'pendiente hasta que el renderer escuche' : 'ruta no permitida'}`)
+  if (!accepted) return
   showWindow()
 }
 
@@ -616,8 +620,14 @@ function createWindow(token: string, hidden: boolean): void {
   win.on('session-end', () => { void quit() })
   win.on('show', refreshTray)
   win.on('hide', refreshTray)
-  // Una recarga (reinicio del core) vacía el renderer: las rutas pedidas hasta que vuelva a declararse listo quedan pendientes.
-  win.webContents.on('did-start-loading', () => navigation.detach())
+  // Una recarga (reinicio del core) vacía el renderer: las rutas pedidas hasta que vuelva a declararse listo quedan pendientes. Solo cuenta un
+  // documento nuevo: `did-start-loading` también se emite en la navegación por hash del HashRouter, dentro del mismo documento, y el preload
+  // no vuelve a declararse listo, así que las rutas quedarían pendientes hasta la próxima recarga.
+  win.webContents.on('did-start-navigation', details => {
+    if (!details.isMainFrame || details.isSameDocument) return
+    coreLog.write('[navigation] carga de documento: rutas pendientes hasta que el renderer escuche')
+    navigation.detach()
+  })
   win.webContents.on('will-navigate', (event, url) => {
     if (!isAllowedNavigation(win.webContents.getURL(), url)) {
       event.preventDefault()
@@ -660,7 +670,11 @@ function registerIpc(): void {
       restartingClient = false
     }
   })
-  ipcMain.handle(IPC.attachNavigation, () => navigation.attach())
+  ipcMain.handle(IPC.attachNavigation, () => {
+    const pending = navigation.attach()
+    coreLog.write(`[navigation] renderer escuchando${pending ? `; entrega la ruta pendiente ${pending}` : ''}`)
+    return pending
+  })
   ipcMain.handle(IPC.getAutostart, safeAutostart)
   ipcMain.handle(IPC.setAutostart, (_event, enabled: boolean) => {
     autostart.setEnabled(Boolean(enabled))
