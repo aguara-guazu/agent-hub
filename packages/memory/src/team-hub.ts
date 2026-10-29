@@ -394,7 +394,7 @@ export class HubTeamRuntime implements TeamOrca {
       return { handle, kind: 'hub_process', prompt_outcome: 'input-accepted', runtime: status, continuity: plan! }
     } catch (error) {
       if (!attempted) throw error
-      const failure = error instanceof MemoryError ? error : new MemoryError(503, 'El Hub no confirmó la reanudación del agente. Inspeccioná su estado antes de reintentar.')
+      const failure = error instanceof MemoryError ? error : new MemoryError(503, 'El Hub no confirmó la reanudación del agente. Inspecciona su estado antes de reintentar.')
       throw Object.assign(failure, { launch_handle: handle, continuity: plan, resume_outcome: 'launch_uncertain' as const })
     } finally { this.launching.delete(handle); this.nextGenerations.delete(handle) }
   }
