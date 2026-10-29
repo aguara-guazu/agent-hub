@@ -214,6 +214,18 @@ it('los efectos validados se persisten con el artefacto, se pasan una vez a la d
   expect(r).toMatchObject({ state: 'succeeded' })
 })
 
+it('una negativa estable del módulo de decisiones termina el run sin reintentarlo ni entregarlo', async () => {
+  registerScheduleTemplate(closeTemplate())
+  let calls = 0
+  runtime = build({ automation: { enabled: () => enabled, effects: { deliveries: undefined as never, actions: undefined as never, decisions: { prepareDecision: async () => { calls++; throw Object.assign(new Error('sin autoridad'), { name: 'DecisionAuthorityUnavailable' }) } } } } })
+  const s = await schedule({ template: 'daily_close', scope: 'owner', project_id: null, delivery: ['hub_inbox'] })
+  await run(); await runtime.tick(); await runtime.idle()
+  const [r] = await runsOf(s.id)
+  expect(r).toMatchObject({ state: 'failed', error_code: 'hub_restart' })
+  expect(calls).toBe(1)
+  expect(await store.deliveriesOf(String(r!.id))).toEqual([])
+})
+
 it('un artefacto restaurado sin autoridad no crea una solicitud nueva ni se entrega', async () => {
   registerScheduleTemplate(closeTemplate())
   const s = await schedule({ template: 'daily_close', scope: 'owner', project_id: null, delivery: ['hub_inbox'] })

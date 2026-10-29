@@ -54,6 +54,13 @@ export interface ScheduleRuntimeOptions {
   tickMs?: number
 }
 
+/** Stable refusals of the decision module; matched by code or class name so the memory package does not import the core's error classes. */
+function decisionRefusal(error: unknown): 'hub_restart' | 'delivery_unavailable' | null {
+  const { name, code } = (error ?? {}) as { name?: string; code?: string }
+  if (name === 'DecisionAuthorityUnavailable' || code === 'authority_unavailable') return 'hub_restart'
+  if (name === 'NoActionableItems' || code === 'no_actionable_items') return 'delivery_unavailable'
+  return null
+}
 const isoAt = (ms: number) => new Date(ms).toISOString()
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
@@ -348,8 +355,17 @@ export class ScheduleRuntime {
       const full = await this.store.artifactOfRun(run.id)
       const effects = artifact.effects as Array<{ ordinal: number; effect: unknown }>
       const items = (full!.items as Array<{ ordinal: number; kind: PublicItem['kind']; project_id: string; summary: string }>).map(item => ({ ...item, effect: effects.find(entry => entry.ordinal === item.ordinal)?.effect }))
-      const { decision_request_ref } = await decisions.prepareDecision({ run_id: run.id, artifact_id: artifact.id, owner_id: this.o.ownerId ?? 'owner',
-        project_ids: [...new Set(items.map(item => item.project_id))], items, expires_at: isoAt(this.now() + DECISION_TTL_MS) })
+      let decision_request_ref: string
+      try {
+        ({ decision_request_ref } = await decisions.prepareDecision({ run_id: run.id, artifact_id: artifact.id, owner_id: this.o.ownerId ?? 'owner',
+          project_ids: [...new Set(items.map(item => item.project_id))], items, expires_at: isoAt(this.now() + DECISION_TTL_MS) }))
+      } catch (error) {
+        // A refusal by the decision module is final for this artifact: retrying cannot make it live again.
+        const refusal = decisionRefusal(error)
+        if (!refusal) throw error
+        await this.finish(run, 'failed', { error_code: refusal })
+        return 'blocked'
+      }
       await this.o.db.transaction(async () => {
         await this.store.setDecisionRef(artifact.id, decision_request_ref)
         await this.store.recordPhase({ run_id: run.id, phase: 'persist', generation, state: 'done', receipt: { decision_request: 'set' } })
