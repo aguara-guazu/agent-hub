@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events'
 import { createHash, randomUUID } from 'node:crypto'
 import { inspectNativeProcess } from '@agenthub/gateway'
-import type { UsageQuotaAvailability } from '@agenthub/shared'
+import type { UsageQuotaAvailability, UsageQuotaState } from '@agenthub/shared'
+import { isRestored } from './usage-quotas.js'
 import type { MemoryDatabase } from './database.js'
 import type { MemoryStore } from './store.js'
 import type { ArtifactDraft, CollectDeps, DeliveryReceipt, PublicItem, RunContext, RunEvents, RunPackage, ScheduleAutomation, ScheduleTemplateDefinition } from './schedule-contract.js'
@@ -325,16 +326,16 @@ export class ScheduleRuntime {
       status: availability?.status ?? 'unknown', ...(resets[0] ? { resets_at: resets[0] } : {}), observed_at: isoAt(now), source_adapter: pools[0]?.observation.source.adapter ?? 'cli', backoff_index: index } })
     await this.store.addEvent({ type: 'run.deferred', schedule_id: run.schedule_id, run_id: run.id, actor_kind: 'system', payload: { reason: 'quota', next_attempt_at: isoAt(next) } })
   }
-  /** A deferred run wakes early when its pool is no longer exhausted, without waiting for the observed reset time. */
+  /** A deferred run wakes early when its pool is observed leaving exhaustion, by the same predicate the fleet recovery uses, without waiting for the observed reset time. */
   private async wakeDeferred(now: number) {
     if (!this.o.usage) return
     for (const run of await this.store.deferredForQuota()) {
       if (!run.next_attempt_at || Date.parse(run.next_attempt_at) <= now) continue
-      const quota = run.quota as { cli?: string; model?: string } | null
-      // Only a pool observed as exhausted can be observed as recovered; a limit reported by the CLI waits out its backoff.
-      if (!quota?.cli || !['exhausted', 'cooldown'].includes(String((run.quota as { status?: string } | null)?.status))) continue
-      const status = (await this.o.usage.forCli(quota.cli, quota.model)).status
-      if (status === 'available' || status === 'low') await this.store.setRun(run.id, run.generation, { next_attempt_at: isoAt(now) })
+      const quota = run.quota as { cli?: string; model?: string; status?: UsageQuotaState; pool_ids?: string[]; binding_ids?: string[] } | null
+      // Only a pool observed as exhausted can be observed as restored; a limit reported by the CLI waits out its backoff.
+      if (!quota?.cli || !quota.status) continue
+      const current = (await this.o.usage.forCli(quota.cli, quota.model)).status
+      if (isRestored({ before: quota.status, after: current, pool_key: quota.pool_ids?.[0] ?? '', clis: [quota.cli], binding_ids: quota.binding_ids ?? [] }).restored) await this.store.setRun(run.id, run.generation, { next_attempt_at: isoAt(now) })
     }
   }
 
