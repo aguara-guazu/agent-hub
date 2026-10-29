@@ -112,6 +112,8 @@ export class TeamOrchestration {
   private derived?: DerivedPorts
   /** Wired once by the service owner; without it launchDerived is unavailable. */
   attachAutomation(ports: DerivedPorts) { this.derived = ports }
+  /** True only when a derived plan could launch right now: ports attached, a Hub runtime that applies the action profile and an issuer for it. */
+  derivedAvailable() { return Boolean(this.derived?.actionProfile && this.orca.provider==='hub' && this.orca.supportsProfiles && this.collaborationEnabled()) }
 
   async call(operation:string, raw:unknown, agent?:AgentContext):Promise<any> {
     const definition=teamDefinitions[operation as keyof typeof teamDefinitions]
