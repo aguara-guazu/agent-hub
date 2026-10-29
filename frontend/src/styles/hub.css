@@ -1,3 +1,5 @@
+/* Estilos previos al rediseño: capa legacy, por debajo de ah.css. Se eliminan al migrar las vistas que los usan. */
+@layer legacy {
 /* The desktop workspace uses quiet surfaces, a green connection accent and generous spacing. */
 :root {
   color-scheme: dark;
@@ -234,4 +236,6 @@
 @container (max-width: 760px) {
   .hub-usage-quotas .hub-client-grid { grid-template-columns: minmax(0, 1fr); }
   .hub-usage-quotas .hub-list-toolbar { align-items: flex-start; flex-direction: column; }
+}
+
 }

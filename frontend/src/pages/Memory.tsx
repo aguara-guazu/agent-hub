@@ -201,7 +201,7 @@ function MergePerson({ person }: { person: MemoryEntity }) {
 
 export function MemorySearch() { return <MemoryFrame><Search /></MemoryFrame> }
 function Search() {
-  const [params] = useSearchParams(), [query, setQuery] = useState(''), [submitted, setSubmitted] = useState(''), [person, setPerson] = useState(params.get('person') ?? '')
+  const [params] = useSearchParams(), [query, setQuery] = useState(params.get('q') ?? ''), [submitted, setSubmitted] = useState(params.get('q') ?? ''), [person, setPerson] = useState(params.get('person') ?? '')
   const [project, setProject] = useState(params.get('project') ?? ''), [kind, setKind] = useState(''), [from, setFrom] = useState(''), [to, setTo] = useState(''), [offset, setOffset] = useState(0)
   const projects = useMemory<Page<MemoryEntity>>('list_entities', { kind: 'project', limit: 200 }), people = useMemory<Page<MemoryEntity>>('list_entities', { kind: 'person', limit: 200 })
   const result = useMemory<any>('search', { query: submitted, ...(project ? { project_id: project } : {}), ...(person ? { person_id: person } : {}), ...(kind ? { kind } : {}),

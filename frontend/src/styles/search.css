@@ -1,3 +1,5 @@
+/* Estilos previos al rediseño: capa legacy, por debajo de ah.css. Se eliminan al migrar las vistas que los usan. */
+@layer legacy {
 .hub-topbar { gap: 20px; }
 .hub-navigation-controls { flex: 0 0 auto; }
 .hub-back-button, .global-search-icon-button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-muted); cursor: pointer; }
@@ -103,3 +105,5 @@
   .global-search-key-hints { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .global-search-dialog[open], .global-search-skeleton i { animation: none; } .hub-search-trigger { transition: none; } }
+
+}

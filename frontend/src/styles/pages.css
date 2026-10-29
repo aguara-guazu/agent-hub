@@ -1,3 +1,5 @@
+/* Estilos previos al rediseño: capa legacy, por debajo de ah.css. Se eliminan al migrar las vistas que los usan. */
+@layer legacy {
 /* Piezas propias de las pantallas de gestión: catálogo, skills, máquinas,
  *  personas y auditoría. Lo compartido vive en tokens.css y app.css.
  */
@@ -106,4 +108,6 @@
   line-height: 1.5;
   word-break: break-all;
   user-select: all;
+}
+
 }

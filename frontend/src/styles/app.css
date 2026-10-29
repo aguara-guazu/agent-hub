@@ -1,3 +1,5 @@
+/* Estilos previos al rediseño: capa legacy, por debajo de ah.css. Se eliminan al migrar las vistas que los usan. */
+@layer legacy {
 /* Composición de la consola: marco, navegación, encabezados, tablas y avisos.
  *
  *  Los colores, medidas y tiempos salen de tokens.css. Acá sólo se compone.
@@ -706,3 +708,5 @@ table.table tbody tr.row-denied td { background: var(--off-weak); }
 .page-toolbar > .field:first-child { flex: 1 1 280px; }
 .toolbar > .field:first-child input,
 .page-toolbar > .field:first-child input { width: 100%; }
+
+}
