@@ -276,6 +276,17 @@ describe('FleetProcessManager', () => {
       if (!cause) { expect(manager.status('one')).not.toHaveProperty('error_cause'); expect(manager.status('one')).not.toHaveProperty('error_evidence') }
     }
   })
+  it.skipIf(process.platform === 'win32')('records the pid and start time of the owned child and carries them in later events', async () => {
+    const { manager, input, events } = await setup('normal')
+    await manager.start(input)
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(events[0]).toMatchObject({ state: 'starting', pid: expect.any(Number) })
+    await until(() => typeof manager.status('one')?.process_started === 'string')
+    await manager.send('one', 'again')
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(events.at(-1)).toMatchObject({ pid: events[0]!.pid, process_started: manager.status('one')!.process_started })
+    expect(JSON.stringify(events)).not.toMatch(/PRIVATE/)
+  })
   it('never infers a quota cause from a Claude result failure', async () => {
     const { manager, input } = await setup('failed')
     await manager.start({ ...input, cli: 'claude_code' })

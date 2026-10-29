@@ -37,6 +37,9 @@ export interface FleetStatus {
   effort?: string
   native_id?: string
   turn_id?: string
+  /** Identity of the owned child, persisted with the runtime so a restarted Hub can tell its orphan from a reused PID. */
+  pid?: number
+  process_started?: string
   error_code?: string
   /** Set only with protocol evidence of the CLI itself; absent means the failure is generic. */
   error_cause?: FleetErrorCause
@@ -52,6 +55,11 @@ export interface FleetProcessOptions {
 }
 const FORK_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type Packet = Record<string, any>
+/** Start time exactly as the OS reports it; undefined where it cannot be read, which keeps the PID unverifiable. */
+function processStarted(pid: number): Promise<string | undefined> {
+  if (process.platform === 'win32') return Promise.resolve(undefined)
+  return new Promise(resolve => execFile('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 1_000, env: { ...process.env, LC_ALL: 'C' } }, (error, stdout) => resolve(error ? undefined : stdout.trim() || undefined)))
+}
 const codexCause = (error: Packet | null | undefined): FleetErrorCause | undefined => error?.codexErrorInfo === 'usageLimitExceeded' ? 'quota_exhausted' : undefined
 type Pending = { resolve: (value: Packet) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
 type PendingQuestion = {
@@ -443,12 +451,15 @@ export class FleetProcessManager {
     for (const key of Object.keys(env)) if (/^(AGENTHUB_|ORCA_|ELECTRON_RUN_AS_NODE$|CLAUDECODE$|CLAUDE_CODE_ENTRYPOINT$|CODEX_THREAD_ID$)/i.test(key)) delete env[key]
     const launcher = this.options.launcher ?? ((command, argv, options) => spawn(command, argv, { ...options, stdio: 'pipe' }))
     const child = launcher(input.cli === 'claude_code' ? 'claude' : input.cli === 'kiro' ? 'kiro-cli' : 'codex', args, { cwd: input.cwd, env, detached: process.platform !== 'win32', windowsHide: true })
-    const status: FleetStatus = { id: input.id, cli: input.cli, cwd: input.cwd, model: input.model, state: 'starting', ...(input.effort ? { effort: input.effort } : {}) }
+    const status: FleetStatus = { id: input.id, cli: input.cli, cwd: input.cwd, model: input.model, state: 'starting', ...(input.effort ? { effort: input.effort } : {}),
+      ...(typeof child.pid === 'number' ? { pid: child.pid } : {}) }
     let closed!: () => void
     const s: Session = { status, activity: new FleetActivityBuffer(input.prompt), acpSegment: 0, child, closed: new Promise(resolve => { closed = resolve }), exited: false, stopping: false, seq: 0,
       pending: new Map(), questions: new Map(), expectedNative, forkOf: input.fork ? input.resume_id : undefined, ready: undefined, submitting: false, completedTurns: new Set(), eventQueue: Promise.resolve(), cleanup: undefined }
     this.sessions.set(input.id, s)
     this.publish(s, 'starting')
+    // Read after the first event so no listener is missed; the next published state carries it.
+    if (typeof child.pid === 'number') void processStarted(child.pid).then(started => { if (started && this.sessions.get(input.id) === s) s.status.process_started = started })
     child.stdin.on('error', () => this.fail(s, 'fleet_stdin_failed'))
     child.stderr.resume() // Drain without retaining or exposing output.
     let buffer = ''
