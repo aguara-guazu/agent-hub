@@ -280,6 +280,7 @@ const settings = {
         ollama: "Ollama",
       },
       state: {
+        missing: "No instalado",
         ready: "Listo",
         downloading: "Descargando",
         downloadingPercent: "Descargando {{percent}} %",

@@ -237,7 +237,7 @@ function CliRows({ provider, ai, apply, missingModel }: { provider: CliProvider;
   </>
 }
 
-type NativeState = "ready" | "downloading" | "pending" | "paused" | "error"
+type NativeState = "ready" | "downloading" | "pending" | "paused" | "error" | "missing"
 const NATIVE_KEY = ["memory-native-embeddings"] as const
 
 function EmbeddingRows({ ai, apply, commit }: { ai: AiConfig; apply: (patch: Partial<AiConfig>, commit?: boolean) => void; commit: () => void }) {
