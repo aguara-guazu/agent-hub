@@ -77,7 +77,7 @@ export function SharedProjectDialog({ mode, onClose }: { mode: SharedMode | null
       {mode === "restore" && (
         <Field label={t("restore.file")} hint={archive ? undefined : t("restore.fileHint")}>
           <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-2)", minWidth: 0 }}>
-            <Button icon="document" onClick={() => input.current?.click()} disabled={busy}>{t(archive ? "restore.change" : "restore.choose")}</Button>
+            <Button icon="add" onClick={() => input.current?.click()} disabled={busy}>{t(archive ? "restore.change" : "restore.choose")}</Button>
             {archive && <span className="mono xs t2 trunc" title={archive.name}>{archive.name}</span>}
             <input ref={input} type="file" accept=".hubproject,.json" hidden tabIndex={-1} aria-hidden="true" onChange={event => { pick(event.target.files?.[0]); event.target.value = "" }} />
           </div>

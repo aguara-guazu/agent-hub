@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import type { CSSProperties } from "react"
 import { useSearchParams } from "react-router-dom"
 import {
   Avatar, Banner, Button, Empty, EmptyFiltered, ErrorState, List, RowHead, RowLink, SearchInput, Seg, Select, SkeletonRows, SplitButton,
@@ -15,6 +16,8 @@ import { SuggestionDialog, usePendingSuggestions } from "./SuggestionDialog"
 type View = "active" | "completed" | "all"
 type Sort = "recent" | "name"
 const NO_COMPANY = "none"
+/** tokens.css (previo al rediseño) define `.col` como columna flex; se fija la dirección para que los chips no se estiren. */
+const col = (width: number, end = false): CSSProperties => ({ width, display: "flex", flexDirection: "row", alignItems: "center", gap: 0, justifyContent: end ? "flex-end" : "flex-start" })
 
 /** Etapa «completada»: el resto (incluida «pausado») cuenta como activo. */
 function isCompleted(project: MemoryEntity) {
@@ -139,9 +142,9 @@ export default function ProjectsPage() {
           <List>
             <RowHead>
               <span style={{ flex: 1 }}>{t("columns.project")}</span>
-              <span className="col" style={{ width: 150 }}>{t("columns.stage")}</span>
-              {!narrow && <span className="col" style={{ width: 120 }}>{t("columns.content")}</span>}
-              <span className="col" style={{ width: 96, textAlign: "right" }}>{t("columns.activity")}</span>
+              <span className="col" style={col(150)}>{t("columns.stage")}</span>
+              {!narrow && <span className="col" style={col(120)}>{t("columns.content")}</span>}
+              <span className="col" style={col(96, true)}>{t("columns.activity")}</span>
             </RowHead>
             {visible.map(project => <ProjectRow key={project.id} project={project} company={companyOf(project)} showContent={!narrow} />)}
           </List>
@@ -163,9 +166,9 @@ function ProjectRow({ project, company, showContent }: { project: MemoryEntity; 
       title={project.title}
       sub={company ?? t("row.noCompany")}
       meta={<>
-        <span className="col" style={{ width: 150 }}><StageChip stage={projectStage(project)} /></span>
-        {showContent && <span className="col xs t2 num" style={{ width: 120 }}><ContentCount projectId={project.id} plural={plural} empty={t("row.noContent")} /></span>}
-        <span className="col" style={{ width: 96, textAlign: "right" }}><ListDate value={projectActivity(project)} /></span>
+        <span className="col" style={col(150)}><StageChip stage={projectStage(project)} /></span>
+        {showContent && <span className="col xs t2 num" style={col(120)}><ContentCount projectId={project.id} plural={plural} empty={t("row.noContent")} /></span>}
+        <span className="col" style={col(96, true)}><ListDate value={projectActivity(project)} /></span>
       </>}
     />
   )

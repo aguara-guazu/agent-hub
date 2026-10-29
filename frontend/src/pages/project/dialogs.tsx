@@ -44,6 +44,12 @@ export function NoteDialog({ open, projectId, onClose }: { open: boolean; projec
   )
 }
 
+/** Ejemplo del formato con la fecha y hora actuales. */
+function dateExample() {
+  const now = new Date(), pad = (value: number) => String(value).padStart(2, "0")
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
+}
+
 type SourceKind = "document" | "meeting" | "note"
 const fileKey = (file: File) => `${file.name}:${file.size}:${file.lastModified}`
 
@@ -136,7 +142,7 @@ export function AttachDialog({ open, projectId, onClose }: { open: boolean; proj
           onDrop={onDrop}
         >
           <span className="t2 xs">{t("header.attach.drop")}</span>
-          <Button small icon="document" disabled={busy} onClick={() => picker.current?.click()}>{t("header.attach.choose")}</Button>
+          <Button small icon="add" disabled={busy} onClick={() => picker.current?.click()}>{t("header.attach.choose")}</Button>
           <input ref={picker} type="file" multiple hidden tabIndex={-1} aria-hidden="true" onChange={event => { add(event.target.files); event.target.value = "" }} />
         </div>
       </Field>
@@ -160,7 +166,7 @@ export function AttachDialog({ open, projectId, onClose }: { open: boolean; proj
         <Select bare label={t("header.attach.kind")} value={kind} options={kinds} onChange={setKind} disabled={busy} />
       </Field>
       <Field label={t("header.attach.date")} hint={t("header.attach.dateHint")} error={dateError}>
-        <Input mono value={when} placeholder="2026-10-29 14:30" disabled={busy} onChange={event => setWhen(event.target.value)} />
+        <Input mono value={when} placeholder={dateExample()} disabled={busy} onChange={event => setWhen(event.target.value)} />
       </Field>
     </Dialog>
   )

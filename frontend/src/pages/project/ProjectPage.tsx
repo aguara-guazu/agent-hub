@@ -8,7 +8,7 @@ import {
 import { useFormat, useT } from "../../i18n"
 import { entityPath, useMemory, type MemoryEntity, type Page } from "../../lib/memory"
 import { useProjectAutomation } from "../../lib/project-automation"
-import { STAGE_CHOICES, isRelation, projectActivity, projectStage, useProjectContentCount, type Stage } from "../../lib/projects"
+import { STAGE_CHOICES, isRelation, listDate, projectActivity, projectStage, useProjectContentCount, type Stage } from "../../lib/projects"
 import { AttachDialog, NoteDialog } from "./dialogs"
 import { AutomationPanel, CollectionPanel, DetailsPanel, HistoryPanel, LinkPanel, type EntityLink, type ProjectDetail } from "./panels"
 import { StageChip, useErrorText, useMemoryAction, useNarrow } from "./shared"
@@ -140,7 +140,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
                 <div className="xs t3" style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)", flexWrap: "wrap" }}>
                   <StageMenu project={project} />
                   {company && <Link to={entityPath(company)}>{company.title}</Link>}
-                  <span title={format.date(updated, "datetime")}>{t("header.updated", { when: format.relative(updated) })}</span>
+                  <span title={format.date(updated, "datetime")}>{t("header.updated", { when: listDate(updated, format.language, format.relative) })}</span>
                 </div>
               </div>
             </div>
