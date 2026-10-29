@@ -7,7 +7,7 @@ import {
 import { useT } from "../../i18n"
 import { api } from "../../lib/api"
 import { useMemory, type Page } from "../../lib/memory"
-import { AGENT_PAGE, AGENT_TONE, Pager, SCOPE, agentState, capabilityKey, useCliLabel, visibleAgents } from "./shared"
+import { AGENT_PAGE, AGENT_TONE, Pager, SCOPE, agentState, capabilityKey, useCliLabel, visibleAgents, TRUNC } from "./shared"
 import type { Channel, Participant } from "./types"
 
 // Motivos que el Hub guarda en el historial; son datos de la API, no texto de la interfaz.
@@ -129,8 +129,8 @@ export function ChannelPanel(props: ChannelPanelProps) {
       />
       <PanelBody>
         <Dl items={[
-          { label: t("channel.path"), value: <span className="mono trunc" title={channel.path}>{channel.path}</span> },
-          { label: t("channel.branch"), value: channel.branch ? <span className="mono trunc" title={channel.branch}>{channel.branch}</span> : null },
+          { label: t("channel.path"), value: <span className="mono trunc" style={TRUNC} title={channel.path}>{channel.path}</span> },
+          { label: t("channel.branch"), value: channel.branch ? <span className="mono trunc" style={TRUNC} title={channel.branch}>{channel.branch}</span> : null },
           { label: t("channel.threads"), value: channel.threads },
           { label: t("channel.leader"), value: leader?.label },
         ]} />

@@ -5,7 +5,7 @@ import {
 } from "../../components/ui"
 import { useT } from "../../i18n"
 import { api } from "../../lib/api"
-import { EFFORTS, PLAN_TONE, QUOTA_TONE, memberQuota, planState, useCliLabel, type Effort } from "./shared"
+import { EFFORTS, PLAN_TONE, QUOTA_TONE, memberQuota, planState, useCliLabel, type Effort, TRUNC } from "./shared"
 import type { Member, Plan } from "./types"
 
 type WorkState = "delivered" | "waiting" | "progress" | "report" | "none"
@@ -85,8 +85,8 @@ export function PlanPanel({ planId, onThread, onClose }: PlanPanelProps) {
             { label: t("plan.processes"), value: t("plan.ratio", { done: value.progress.processes_accepted, total: value.progress.total }) },
             { label: t("plan.workspaces"), value: t("plan.ratio", { done: value.progress.workspaces_created, total: value.progress.total }) },
             { label: t("plan.permissions"), value: value.plan.permissions === "full_access" ? t("plan.permissionsFull") : t("plan.permissionsClient") },
-            { label: t(virtual ? "plan.virtualSpace" : "plan.repository"), value: <span className="mono trunc" title={value.parent.path}>{value.parent.path}</span> },
-            { label: t("plan.base"), value: <span className="mono trunc" title={value.base_revision}>{value.base_revision}</span> },
+            { label: t(virtual ? "plan.virtualSpace" : "plan.repository"), value: <span className="mono trunc" style={TRUNC} title={value.parent.path}>{value.parent.path}</span> },
+            { label: t("plan.base"), value: <span className="mono trunc" style={TRUNC} title={value.base_revision}>{value.base_revision}</span> },
             { label: t("plan.digest"), value: <span className="mono xs" style={{ overflowWrap: "anywhere" }}>{value.digest}</span> },
           ]} />
           {virtual && <span className="xs t3">{t("plan.virtualNote")}</span>}
@@ -96,8 +96,8 @@ export function PlanPanel({ planId, onThread, onClose }: PlanPanelProps) {
             <div className="section-h"><span className="h3">{t("plan.approval")}</span><Chip tone={APPROVAL_TONE[approval]}>{t(`approval.${approval}`)}</Chip></div>
             <Dl items={[
               { label: t("plan.instruction"), value: authorization?.instruction ? <span className="t2" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{authorization.instruction}</span> : null },
-              { label: t("plan.approvedBy"), value: authorization?.approved_by_user_id ? <span className="mono trunc" title={authorization.approved_by_user_id}>{authorization.approved_by_user_id}</span> : null },
-              { label: t("plan.coordinator"), value: authorization?.coordinator_id ? <span className="mono trunc" title={authorization.coordinator_id}>{authorization.coordinator_id}</span> : null },
+              { label: t("plan.approvedBy"), value: authorization?.approved_by_user_id ? <span className="mono trunc" style={TRUNC} title={authorization.approved_by_user_id}>{authorization.approved_by_user_id}</span> : null },
+              { label: t("plan.coordinator"), value: authorization?.coordinator_id ? <span className="mono trunc" style={TRUNC} title={authorization.coordinator_id}>{authorization.coordinator_id}</span> : null },
               { label: t("plan.delegation"), value: authorization?.delegation ? t("plan.delegationVersion", { version: authorization.delegation.version }) : null },
               { label: t("plan.launchStarted"), value: value.launch?.started_at ? absoluteTime(value.launch.started_at) : null },
               { label: t("plan.launchAccepted"), value: value.launch?.accepted_at ? absoluteTime(value.launch.accepted_at) : null },
@@ -164,7 +164,7 @@ function MemberDetail({ member, plan, prompt, onThread }: { member: Member; plan
         { label: t("member.task"), value: member.task },
         { label: t("member.process"), value: <Chip tone={RUNTIME_TONE[runtime]}>{t(`runtime.${runtime}`)}</Chip> },
         { label: t("member.quota"), value: quota ? <Chip tone={QUOTA_TONE[quota]}>{t(`quota.${quota}`)}</Chip> : null },
-        { label: t("member.workspace"), value: member.workspace_path ? <span className="mono trunc" title={member.workspace_path}>{member.workspace_path}</span> : t("member.workspacePending") },
+        { label: t("member.workspace"), value: member.workspace_path ? <span className="mono trunc" style={TRUNC} title={member.workspace_path}>{member.workspace_path}</span> : t("member.workspacePending") },
         { label: t("member.summary"), value: member.work?.summary },
       ]} />
       {member.last_report && (

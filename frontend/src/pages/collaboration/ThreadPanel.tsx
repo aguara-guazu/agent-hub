@@ -1,7 +1,7 @@
 import { Avatar, Button, Chip, Dl, ErrorState, Loading, Panel, PanelBody, PanelHeader, absoluteTime } from "../../components/ui"
 import { useT } from "../../i18n"
 import { useMemory, type Page } from "../../lib/memory"
-import { MESSAGE_PAGE, Pager, RECEIPT_TONE, planState, receiptState } from "./shared"
+import { MESSAGE_PAGE, Pager, RECEIPT_TONE, planState, receiptState, TRUNC } from "./shared"
 import type { Message, Thread } from "./types"
 
 export interface ThreadPanelProps {
@@ -37,11 +37,11 @@ export function ThreadPanel({ threadId, messageOffset, onMessageOffset, onOpenPl
             </div>
           )}
           <Dl items={[
-            { label: t("thread.channel"), value: <span className="trunc" title={thread.channel_name}>#{thread.channel_name}</span> },
+            { label: t("thread.channel"), value: <span className="trunc" style={TRUNC} title={thread.channel_name}>#{thread.channel_name}</span> },
             { label: t("thread.author"), value: thread.author_label },
             { label: t("thread.participants"), value: thread.participants },
             { label: t("thread.awaiting"), value: thread.awaiting_labels },
-            { label: t("thread.task"), value: thread.task_id ? <span className="mono trunc" title={thread.task_id}>{thread.task_id}</span> : null },
+            { label: t("thread.task"), value: thread.task_id ? <span className="mono trunc" style={TRUNC} title={thread.task_id}>{thread.task_id}</span> : null },
             { label: t("thread.updated"), value: absoluteTime(thread.updated_at) },
           ]} />
           <hr className="divider" />

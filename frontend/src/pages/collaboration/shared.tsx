@@ -12,6 +12,9 @@ export const MESSAGE_PAGE = 40
 export const CHANNEL_PAGE = 40
 export const AGENT_PAGE = 40
 
+/** Valor de `.dl` que se corta con elipsis: el `dd` es un ítem de grid y necesita un hijo de bloque. */
+export const TRUNC = { display: "block", minWidth: 0, maxWidth: "100%" } as const
+
 export type ListView = "threads" | "channels" | "trash"
 export type ThreadState = "open" | "resolved"
 
