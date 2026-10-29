@@ -111,6 +111,15 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
     const existing = (await this.db.query<{ seq: number; id: string }>('SELECT seq,id FROM schedule_events WHERE actor_ref=$1 AND request_id=$2', [input.actor_ref, input.request_id]))[0]!
     return { seq: existing.seq, id: existing.id, replayed: true }
   }
+  async lastEvent(scheduleId: string, type: ScheduleEventType): Promise<Row | undefined> {
+    return (await this.db.query<Row>('SELECT * FROM schedule_events WHERE schedule_id=$1 AND type=$2 ORDER BY seq DESC LIMIT 1', [scheduleId, type]))[0]
+  }
+  async constraintExists(id: string): Promise<boolean> { return (await this.db.query('SELECT 1 FROM schedule_constraints WHERE id=$1', [id])).length > 0 }
+  /** Runs that a cancellation at or after `since` skipped or aborted; a restore does not bring them back. */
+  async runsStoppedByCancel(scheduleId: string, since: string): Promise<string[]> {
+    return (await this.db.query<{ id: string }>(`SELECT id FROM schedule_runs WHERE schedule_id=$1 AND finished_at>=$2
+      AND (skip_reason='schedule_cancelled' OR error_code='schedule_cancelled') ORDER BY scheduled_for`, [scheduleId, since])).map(row => row.id)
+  }
   async eventByRequest(actorRef: string, requestId: string) { return (await this.db.query<Row>('SELECT * FROM schedule_events WHERE actor_ref=$1 AND request_id=$2', [actorRef, requestId]))[0] }
   async maxSeq(): Promise<number> { return Number((await this.db.query<{ seq: number | null }>('SELECT max(seq) AS seq FROM schedule_events'))[0]?.seq ?? 0) }
   async eventsAfter(after: number, limit = 200) {

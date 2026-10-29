@@ -69,6 +69,11 @@ export function registerScheduleRoutes(app: FastifyInstance, service: MemoryServ
     const principal = await human(request), body = parse(z.object({ expected_revision: revision, scope: z.enum(['target', 'template_project']).optional(), reason: z.string().trim().max(300).optional() }).strict(), request.body)
     return (await (await scheduler()).admin.cancel(principal, scheduleId(request), body.expected_revision, { scope: body.scope, reason: body.reason })).schedule
   })
+  app.post("/api/memory/schedules/:id/restore", { preHandler: auth, bodyLimit: 4096 }, async request => {
+    const principal = await human(request), { expected_revision } = parse(z.object({ expected_revision: revision }).strict(), request.body)
+    const { schedule, restore } = await (await scheduler()).admin.restoreCancelled(principal, scheduleId(request), expected_revision)
+    return { ...schedule, restore }
+  })
   app.post('/api/memory/schedules/:id/run_now', { preHandler: auth, bodyLimit: 4096 }, async request => {
     const principal = await human(request), { request_id } = parse(z.object({ request_id: z.string().min(1).max(200).default(() => randomUUID()) }).strict(), request.body ?? {})
     const { run_id } = await (await scheduler()).admin.runNow(principal, scheduleId(request), request_id)

@@ -62,6 +62,7 @@ import {
   type SyncOutcome,
 } from './sync.js'
 import { DaemonState, type Credentials } from './state.js'
+import { readUnmanaged } from "./unmanaged.js"
 
 export class DaemonError extends Error {
   constructor(message: string) {
@@ -556,11 +557,13 @@ export class DaemonApp {
     if (credentials) {
       const allDrift = [...drift, ...applied.drift]
       const accountSkills = this.accountSkillsFor(agent, snapshot, base.snapshotHash)
+      const unmanaged = readUnmanaged(agent.cliKind, adapter, this.home)
       await this.clientFor(credentials).report(agent.id, {
         driftDetected: allDrift.length > 0,
         driftDetail: allDrift.map(d => `${d.path}: ${d.reason}`).join('\n'),
         syncedHash: allDrift.length === 0 ? base.snapshotHash : '',
         ...(accountSkills !== null ? { accountSkills } : {}),
+        unmanaged,
       }).catch(() => undefined)
     }
     return { ...base, changes, drift, applied, skipped: '' }

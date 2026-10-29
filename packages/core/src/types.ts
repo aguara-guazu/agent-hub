@@ -5,7 +5,7 @@
  * vienen parseados (args, env, headers, secret_refs, input_schema, detail, payload) y
  * los timestamps como texto ISO-8601 UTC.
  */
-import type { CliKind, ResourceType, RuleState, ServerAuth, SkillSource, Transport } from '@agenthub/shared'
+import type { CliKind, ResourceType, RuleState, ServerAuth, SkillSource, Transport, UnmanagedInventory } from '@agenthub/shared'
 
 export type OrgRole = 'owner' | 'admin' | 'member'
 export type SquadRole = 'lead' | 'member'
@@ -83,6 +83,8 @@ export interface AgentInstance {
   drift_detail: string
   /** `null` mientras el daemon no haya reportado la caché (clientes sin cuenta de claude.ai). */
   account_skills: AccountSkillsReport | null
+  /** `null` mientras el daemon no haya reportado inventario (versiones anteriores). */
+  unmanaged: UnmanagedInventory | null
 }
 
 export interface ApiToken {

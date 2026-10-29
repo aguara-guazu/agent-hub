@@ -16,7 +16,7 @@ import cors from '@fastify/cors'
 import { loadSettings, type Settings } from './config.js'
 import { Database } from './db/database.js'
 import { runMigrations } from './db/migrations.js'
-import { Store } from './store.js'
+import { DELETE_PURGE_INTERVAL_MS, DELETE_RETENTION_MS, Store } from './store.js'
 import { record as auditRecord, verify as auditVerify } from './audit/ledger.js'
 import { buildMatrix, hotReload } from './matrix.js'
 import { diffSnapshots, hasChanges, type PendingRestart } from './restart.js'
@@ -27,7 +27,8 @@ import { applyStarterCatalog } from './catalog/starter.js'
 import { applyFactorySkill, type FactorySkill } from './catalog/factory-skills.js'
 import { hubSkill } from './catalog/hub-skill.js'
 import { skillContentHash } from './hashing.js'
-import { buildZip, collectFiles } from './zip.js'
+import { buildZip, collectFiles, ZipReadError } from './zip.js'
+import { skillDraftFromZip, type SkillZipDraft } from "./catalog/skill-import.js"
 import { computeSnapshot, explain } from './policy/resolver.js'
 import { ensureLocalOwner } from './local.js'
 import {
@@ -66,6 +67,7 @@ import {
 } from './security.js'
 import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, SkillRow, User } from './types.js'
 import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
+import { SKILL_ZIP_MAX_BYTES, UNMANAGED_MAX_ITEMS, UNMANAGED_MAX_NAME, UNMANAGED_MAX_PATH, type LocalUnmanaged, type SkillZipImportExtras, type UnmanagedInventory } from "@agenthub/shared"
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
 import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
@@ -177,6 +179,35 @@ function optionalString(body: Record<string, unknown>, field: string, fallback =
   return value
 }
 
+/** Inventario `unmanaged` de `POST /api/sync/report`, validado estricto: un campo de más o fuera de tope rechaza el reporte entero. */
+function readUnmanagedReport(raw: unknown): UnmanagedInventory {
+  const fail = (detail: string): never => { throw new HttpError(422, `unmanaged: ${detail}`) }
+  if (!isObject(raw)) fail("debe ser un objeto")
+  const body = raw as Record<string, unknown>
+  for (const key of Object.keys(body)) if (!["checked_at", "servers", "skills", "errors", "truncated"].includes(key)) fail(`campo desconocido: ${key}`)
+  const text = (value: unknown, field: string, max: number): string => {
+    if (typeof value !== "string" || value.length === 0 || value.length > max) fail(`${field} debe ser texto de 1 a ${max} caracteres`)
+    return value as string
+  }
+  const list = (value: unknown, field: string, keys: string[]): Record<string, unknown>[] => {
+    if (value === undefined) return []
+    if (!Array.isArray(value) || value.length > UNMANAGED_MAX_ITEMS || !value.every(isObject)) fail(`${field} debe ser una lista de hasta ${UNMANAGED_MAX_ITEMS} objetos`)
+    for (const item of value as Record<string, unknown>[]) for (const key of Object.keys(item)) if (!keys.includes(key)) fail(`${field}[]: campo desconocido: ${key}`)
+    return value as Record<string, unknown>[]
+  }
+  const checkedAt = text(body.checked_at, "checked_at", 40)
+  if (Number.isNaN(Date.parse(checkedAt))) fail("checked_at no es una fecha ISO")
+  if (body.truncated !== undefined && typeof body.truncated !== "boolean") fail("truncated debe ser booleano")
+  const servers = list(body.servers, "servers", ["name", "path"]).map((item) => ({ name: text(item.name, "servers[].name", UNMANAGED_MAX_NAME), path: text(item.path, "servers[].path", UNMANAGED_MAX_PATH) }))
+  const skills = list(body.skills, "skills", ["slug", "path", "linked"]).map((item) => {
+    if (typeof item.linked !== "boolean") fail("skills[].linked debe ser booleano")
+    return { slug: text(item.slug, "skills[].slug", UNMANAGED_MAX_NAME), path: text(item.path, "skills[].path", UNMANAGED_MAX_PATH), linked: item.linked as boolean }
+  })
+  const errors = list(body.errors, "errors", ["path", "reason"]).map((item) => ({ path: text(item.path, "errors[].path", UNMANAGED_MAX_PATH), reason: text(item.reason, "errors[].reason", 300) }))
+  if (servers.length + skills.length > UNMANAGED_MAX_ITEMS) fail(`servers y skills suman más de ${UNMANAGED_MAX_ITEMS}`)
+  return { checked_at: new Date(checkedAt).toISOString(), servers, skills, errors, truncated: body.truncated === true }
+}
+
 export interface CoreApp {
   fastify: FastifyInstance
   store: Store
@@ -202,6 +233,15 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   // Credenciales OAuth de los MCP servers: archivos 0600 fuera de la base.
   const oauthStore = new OAuthStore(settings.oauthDir)
   const probeOptions = { oauthStore, redirectUrl: settings.oauthRedirectUrl }
+  // El archivo OAuth de un server borrado vive solo durante la ventana de Deshacer.
+  store.onServerPurged = (serverId) => oauthStore.delete(serverId)
+  const purgeDeleted = (): void => {
+    const purged = store.purgeDeleted(new Date(Date.now() - DELETE_RETENTION_MS).toISOString())
+    if (purged.servers || purged.skills) console.error(`[catalog] purga de borrados: ${purged.servers} servers, ${purged.skills} skills`)
+  }
+  purgeDeleted()
+  const purgeTimer = setInterval(purgeDeleted, DELETE_PURGE_INTERVAL_MS)
+  purgeTimer.unref()
 
   if (options.ensureOwner ?? settings.localMode) {
     const owner = ensureLocalOwner(store)
@@ -216,6 +256,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   }
 
   const fastify = Fastify({ logger: false })
+  fastify.addHook('onClose', async () => { clearInterval(purgeTimer) })
 
   // El cuerpo de las respuestas 204 no lleva contenido.
   fastify.setErrorHandler((error, _request, reply) => {
@@ -692,6 +733,21 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     }
   }
 
+  /** Inventario del cliente cruzado con el catálogo por slug; `null` si su daemon no lo reportó. */
+  function unmanagedView(user: User, agent: AgentInstance): LocalUnmanaged | null {
+    const report = agent.unmanaged
+    if (report === null) return null
+    const servers = new Map(store.serversOfUser(user.id).map((server) => [server.slug, server.id]))
+    const skills = new Map(store.skillsOfUser(user.id).map((skill) => [skill.slug, skill.id]))
+    return {
+      checked_at: report.checked_at,
+      servers: report.servers.map((item) => ({ ...item, catalog_server_id: servers.get(item.name) ?? null })),
+      skills: report.skills.map((item) => ({ ...item, catalog_skill_id: skills.get(item.slug) ?? null })),
+      errors: report.errors,
+      truncated: report.truncated,
+    }
+  }
+
   fastify.get('/api/local/overview', async (request) => {
     const user = await currentUser(request)
     const matrix = buildMatrix(store, user)
@@ -705,6 +761,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
         server_count: snapshot.servers.length, skill_count: snapshot.skills.length,
         restart_pending: pending !== null,
         pending: pending?.changes ?? null,
+        unmanaged: unmanagedView(user, agent),
       }
     })
     return { hostname: hostname(), clients, rows: matrix.rows }
@@ -831,17 +888,29 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     return serverView(fresh)
   })
 
+  // Borrado suave: sale de catálogo, snapshots y daemon igual que antes; `restore` lo devuelve dentro de DELETE_RETENTION_MS.
   fastify.delete('/api/catalog/servers/:id', async (request, reply) => {
     const user = await currentUser(request)
     const { id } = request.params as { id: string }
     const server = serverOr404(user, id)
-    const toolIds = store.toolsOfServer(server.id).map((t) => t.id)
-    store.forgetResource('mcp_tool', toolIds)
-    store.forgetResource('mcp_server', [server.id])
-    store.deleteServer(server.id)
-    oauthStore.delete(server.id)
+    store.softDeleteServer(server.id)
     notifyAfterCommit('user', user.id)
     return reply.code(204).send()
+  })
+
+  fastify.post('/api/catalog/servers/:id/restore', async (request) => {
+    const user = await currentUser(request)
+    const { id } = request.params as { id: string }
+    const deleted = store.deletedServer(id)
+    if (!deleted || deleted.user_id !== user.id) {
+      const live = store.server(id)
+      if (live && live.user_id === user.id) throw new HttpError(409, 'el MCP server no está eliminado')
+      throw new HttpError(404, 'el MCP server no existe o ya venció el plazo para restaurarlo')
+    }
+    if (store.serverBySlug(user.id, deleted.slug)) throw new HttpError(409, `ya tenes otro MCP server con el slug ${deleted.slug}`)
+    store.restoreServer(deleted.id)
+    notifyAfterCommit('user', user.id)
+    return serverView(store.server(deleted.id)!)
   })
 
   fastify.post('/api/catalog/servers/:id/probe', async (request) => {
@@ -1054,14 +1123,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       .send(archive)
   })
 
-  fastify.post('/api/catalog/skills', async (request, reply) => {
-    const user = await currentUser(request)
-    const body = requireObject(request.body)
-    rejectUnknown(body, ['slug', 'display_name', 'description', 'body'])
-    const slug = validateCatalogSlug(requireString(body, 'slug'))
-    const displayName = requireString(body, 'display_name')
-    const description = optionalString(body, 'description')
-    const skillBody = optionalString(body, 'body')
+  function createHubSkill(user: User, slug: string, displayName: string, description: string, skillBody: string): SkillRow {
     if (store.skillBySlug(user.id, slug)) throw new HttpError(409, `ya tenes una skill con el slug ${slug}`)
     const skill = store.insertSkill({
       user_id: user.id,
@@ -1072,7 +1134,44 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       content_hash: skillContentHash(displayName, description, skillBody),
     })
     notifyAfterCommit('user', user.id)
-    return reply.code(201).send(skillView(user, skill))
+    return skill
+  }
+
+  fastify.post('/api/catalog/skills', async (request, reply) => {
+    const user = await currentUser(request)
+    const body = requireObject(request.body)
+    rejectUnknown(body, ['slug', 'display_name', 'description', 'body'])
+    const slug = validateCatalogSlug(requireString(body, 'slug'))
+    const displayName = requireString(body, 'display_name')
+    const description = optionalString(body, 'description')
+    const skillBody = optionalString(body, 'body')
+    return reply.code(201).send(skillView(user, createHubSkill(user, slug, displayName, description, skillBody)))
+  })
+
+  // Parser binario solo en este ámbito: el resto de la API sigue aceptando únicamente JSON.
+  void fastify.register(async (scope) => {
+    scope.addContentTypeParser(["application/zip", "application/x-zip-compressed", "application/octet-stream"], { parseAs: "buffer" },
+      (_request, body, done) => done(null, body))
+
+    scope.post("/api/catalog/skills/import", { bodyLimit: SKILL_ZIP_MAX_BYTES }, async (request, reply) => {
+      const user = await currentUser(request)
+      const query = (request.query ?? {}) as Record<string, unknown>
+      rejectUnknown(query, ["slug", "display_name"])
+      const archive = request.body
+      if (!Buffer.isBuffer(archive) || archive.length === 0) throw new HttpError(422, "el cuerpo debe ser un archivo ZIP")
+      let draft: SkillZipDraft
+      try {
+        draft = skillDraftFromZip(archive)
+      } catch (error) {
+        if (error instanceof ZipReadError) throw new HttpError(error.status, error.message)
+        throw error
+      }
+      const slug = validateCatalogSlug(optionalString(query, "slug") || draft.name)
+      const displayName = optionalString(query, "display_name").trim() || draft.displayName
+      const skill = createHubSkill(user, slug, displayName, draft.description, draft.body)
+      const extras: SkillZipImportExtras = { ignored_files: draft.ignoredFiles }
+      return reply.code(201).send({ ...skillView(user, skill), ...extras })
+    })
   })
 
   fastify.patch('/api/catalog/skills/:id', async (request) => {
@@ -1105,10 +1204,25 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const { id } = request.params as { id: string }
     const skill = skillOr404(user, id)
     rejectExternal(skill, 'se quita')
-    store.forgetResource('skill', [skill.id])
-    store.deleteSkill(skill.id)
+    store.softDeleteSkill(skill.id)
     notifyAfterCommit('user', user.id)
     return reply.code(204).send()
+  })
+
+  fastify.post('/api/catalog/skills/:id/restore', async (request) => {
+    const user = await currentUser(request)
+    const { id } = request.params as { id: string }
+    const deleted = store.deletedSkill(id)
+    if (!deleted || deleted.user_id !== user.id) {
+      const live = store.skill(id)
+      if (live && live.user_id === user.id) throw new HttpError(409, 'la skill no está eliminada')
+      throw new HttpError(404, 'la skill no existe o ya venció el plazo para restaurarla')
+    }
+    rejectExternal(deleted, 'se restaura')
+    if (store.skillBySlug(user.id, deleted.slug)) throw new HttpError(409, `ya tenes otra skill con el slug ${deleted.slug}`)
+    store.restoreSkill(deleted.id)
+    notifyAfterCommit('user', user.id)
+    return skillView(user, store.skill(deleted.id)!)
   })
 
   // ============================================================ policy
@@ -1403,6 +1517,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
           .filter((item) => item.slug !== ''),
       }
     }
+    if (body.unmanaged !== undefined) fields.unmanaged = readUnmanagedReport(body.unmanaged)
     store.updateAgent(agent.id, fields)
     if (typeof body.synced_hash === 'string') {
       db.run(`INSERT INTO local_client_sync (agent_id, snapshot_hash, synced_at) VALUES (?, ?, ?)

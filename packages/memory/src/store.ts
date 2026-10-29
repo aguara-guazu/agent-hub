@@ -8,6 +8,7 @@ import { check, parse, id, instant, entityInput, entityPatch, fieldsSchema, impo
 import { parseTranscript, splitText } from './transcript.js'
 import { isPlaceholderName, unifyByEmail } from './people.js'
 import { effectiveJiraSite, jiraSiteUrl } from './jira-settings.js'
+import { ENTITY_SUMMARY_PEOPLE, type EntityListInclude, type EntityRef, type EntitySummary, type FactSummary, type ProjectSummary } from "@agenthub/shared"
 
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -151,8 +152,8 @@ export class MemoryStore {
     })
   }
 
-  /** `unassigned` keeps sources, notes and facts that belong to no project; projects, companies, people and collections are excluded from that scope. */
-  async list(input: { kind?: EntityKind; project_id?: string; query?: string; unassigned?: boolean; limit?: number; offset?: number } = {}) {
+  /** `unassigned` keeps sources, notes and facts that belong to no project; projects, companies, people and collections are excluded from that scope. `include: ["summary"]` adds `summary` (EntitySummary) to each item. */
+  async list(input: { kind?: EntityKind; project_id?: string; query?: string; unassigned?: boolean; limit?: number; offset?: number; include?: EntityListInclude[] } = {}) {
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200), offset = Math.max(input.offset ?? 0, 0)
     if (input.project_id) await requireEntity(this.db, input.project_id, 'project')
     const params = [input.kind ?? null, input.project_id ?? null, input.query ?? '', Boolean(input.unassigned), limit, offset]
@@ -163,7 +164,60 @@ export class MemoryStore {
         AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project')))`
     const rows = await this.db.query<Entity>(`SELECT e.* FROM entities e WHERE ${where} ORDER BY COALESCE(e.data->>'occurred_at',e.created_at) DESC,e.id LIMIT $5 OFFSET $6`, params)
     const count = (await this.db.query(`SELECT count(*) AS total FROM entities e WHERE ${where}`, params.slice(0, 4)))[0]!
-    return { items: rows, total: count.total as number, limit, offset }
+    const items = input.include?.includes("summary") ? await this.withSummaries(rows) : rows
+    return { items, total: count.total as number, limit, offset }
+  }
+
+  /** `summary` por ítem en un número fijo de consultas para toda la página (≤ 200 ids). */
+  private async withSummaries(rows: Entity[]): Promise<Array<Entity & { summary: EntitySummary }>> {
+    const projects = rows.filter(row => row.kind === "project").map(row => row.id)
+    const facts = rows.filter(row => row.kind === "fact")
+    const companyIds = [...new Set(rows.filter(row => row.kind === "project" && typeof row.data.company_id === "string" && row.data.company_id).map(row => String(row.data.company_id)))]
+    const [companies, content, people, derived, declared] = await Promise.all([
+      companyIds.length ? this.db.query("SELECT id,title FROM entities WHERE kind='company' AND id IN (SELECT value FROM json_each($1))", [companyIds]) : [],
+      projects.length ? this.db.query(`SELECT l.to_id AS project_id,e.kind,count(DISTINCT e.id) AS n FROM links l JOIN entities e ON e.id=l.from_id
+        WHERE l.type='project' AND l.to_id IN (SELECT value FROM json_each($1)) AND e.data->>'memory_state' IS NOT 'archived' GROUP BY l.to_id,e.kind`, [projects]) : [],
+      projects.length ? this.db.query(`WITH member AS (
+          SELECT l.to_id AS project_id,l.from_id AS person_id,l.from_id AS via FROM links l JOIN entities p ON p.id=l.from_id AND p.kind='person'
+            WHERE l.type='project' AND l.to_id IN (SELECT value FROM json_each($1))
+          UNION ALL
+          SELECT pl.to_id,pa.to_id,pa.from_id FROM links pl JOIN entities s ON s.id=pl.from_id AND s.data->>'memory_state' IS NOT 'archived'
+            JOIN links pa ON pa.from_id=pl.from_id AND pa.type='participant' JOIN entities p ON p.id=pa.to_id AND p.kind='person'
+            WHERE pl.type='project' AND pl.to_id IN (SELECT value FROM json_each($1)))
+        SELECT m.project_id,m.person_id,p.title,count(DISTINCT m.via) AS shared FROM member m JOIN entities p ON p.id=m.person_id
+        GROUP BY m.project_id,m.person_id,p.title ORDER BY m.project_id,shared DESC,p.title,m.person_id`, [projects]) : [],
+      facts.length ? this.db.query(`SELECT l.from_id AS fact_id,e.id,e.kind,e.title FROM links l JOIN entities e ON e.id=l.to_id
+        WHERE l.type='derived_from' AND l.from_id IN (SELECT value FROM json_each($1)) ORDER BY l.created_at,l.id`, [facts.map(row => row.id)]) : [],
+      facts.some(row => row.data.source_entity_id) ? this.db.query("SELECT id,kind,title FROM entities WHERE id IN (SELECT value FROM json_each($1))",
+        [[...new Set(facts.map(row => row.data.source_entity_id).filter((value): value is string => typeof value === "string" && value !== ""))]]) : [],
+    ])
+    const companyById = new Map(companies.map(row => [row.id as string, { id: row.id as string, title: row.title as string }]))
+    const contentBy = new Map<string, Record<string, number>>()
+    for (const row of content) (contentBy.get(row.project_id) ?? contentBy.set(row.project_id, {}).get(row.project_id)!)[row.kind] = Number(row.n)
+    const peopleBy = new Map<string, Array<{ id: string; title: string }>>()
+    for (const row of people) (peopleBy.get(row.project_id) ?? peopleBy.set(row.project_id, []).get(row.project_id)!).push({ id: row.person_id, title: row.title })
+    const sourceBy = new Map<string, EntityRef>()
+    for (const row of derived) if (!sourceBy.has(row.fact_id)) sourceBy.set(row.fact_id, { id: row.id, kind: row.kind, title: row.title })
+    const declaredById = new Map(declared.map(row => [row.id as string, { id: row.id as string, kind: row.kind as string, title: row.title as string }]))
+    return rows.map(row => {
+      if (row.kind === "project") {
+        const byKind = contentBy.get(row.id) ?? {}
+        const members = peopleBy.get(row.id) ?? []
+        const project: ProjectSummary = {
+          company: companyById.get(String(row.data.company_id ?? "")) ?? null,
+          content_by_kind: byKind,
+          content_total: Object.values(byKind).reduce((total, n) => total + n, 0),
+          people: members.slice(0, ENTITY_SUMMARY_PEOPLE),
+          people_count: members.length,
+        }
+        return { ...row, summary: { project } }
+      }
+      if (row.kind === "fact") {
+        const fact: FactSummary = { source: sourceBy.get(row.id) ?? declaredById.get(String(row.data.source_entity_id ?? "")) ?? null }
+        return { ...row, summary: { fact } }
+      }
+      return { ...row, summary: {} }
+    })
   }
 
   async detail(entityId: string) {
