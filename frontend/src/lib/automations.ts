@@ -85,8 +85,8 @@ export interface PublicItem {
   state?: ItemState
   /** Referencia a la estimación de horas (`hour_estimates`); sus partes no viajan en el detalle del run. */
   estimate_id?: string
-  /** Partes de la estimación (valor, base, confianza, supuestos) cuando el backend las entregue. */
-  estimate?: { seconds: number; basis: string; confidence: 'low' | 'medium' | 'high'; assumptions?: string[]; would_change?: string } | null
+  /** Estimación del agente: lo estimado, lo aprobado y lo enviado se guardan y se muestran por separado. */
+  estimate?: { seconds: number; basis: string; confidence: 'low' | 'medium' | 'high'; assumptions?: string[]; would_change?: string; approved_seconds?: number; sent_seconds?: number } | null
   receipt_url?: string | null
   failure_reason?: string | null
 }
@@ -108,8 +108,11 @@ export interface RunListItem {
   deferred_reason: string | null
   read_at: string | null
   deliveries?: DeliveryView[]
-  decision?: { state: string; expires_at: string | null; approved: number; total: number } | null
+  decision?: DecisionSummary
 }
+
+/** Resumen público de la decisión de un run, derivado de los estados de sus ítems. */
+export interface DecisionSummary { state: 'none' | 'pending' | 'dispatching' | 'uncertain' | 'expired' | 'done'; expires_at: string | null; approved: number; total: number }
 
 /** Detalle de una entrega: artefacto markdown, ítems públicos con su estado y entregas por canal. */
 export interface RunDetail extends RunListItem {
@@ -126,11 +129,16 @@ interface RawRun {
 }
 export interface RawRunListItem extends RawRun {
   schedule_title?: string | null; project_id?: string | null; artifact_kind?: RunListItem['artifact_kind']; title?: string | null; read_at?: string | null
-  deliveries?: DeliveryView[]; decision?: RunListItem['decision']
+  deliveries?: DeliveryView[]; decision?: DecisionSummary
 }
+/** Fila de `hour_estimates` tal como la entrega el detalle del run. */
+interface RawEstimate { estimated_seconds: number | null; basis: string | null; confidence: 'low' | 'medium' | 'high' | null; assumptions: unknown; approved_seconds?: number | null; sent_seconds?: number | null }
+type RawArtifactItem = Omit<PublicItem, 'state' | 'estimate'> & { estimate?: RawEstimate }
 export interface RawRunDetail {
   run: RawRun
-  artifact: { id: string; kind: NonNullable<RunListItem['artifact_kind']>; title: string; body_md: string; items: Omit<PublicItem, 'state'>[]; read_at: string | null } | null
+  project_id?: string | null
+  decision?: DecisionSummary
+  artifact: { id: string; kind: NonNullable<RunListItem['artifact_kind']>; title: string; body_md: string; items: RawArtifactItem[]; read_at: string | null } | null
   items: { ordinal: number; kind: ItemKind; state: ItemState; estimate_id?: string | null }[]
   deliveries: DeliveryView[]
   incidents?: RunDetail['incidents']
@@ -140,17 +148,25 @@ export function normalizeRunList(raw: { items: RawRunListItem[] } & Page): { ite
   return { ...raw, items: raw.items.map(item => ({
     run_id: item.id, schedule_id: item.schedule_id, artifact_kind: item.artifact_kind ?? null, title: item.title ?? item.schedule_title ?? 'Entrega', project_id: item.project_id ?? null,
     scheduled_for: item.scheduled_for, started_at: item.started_at ?? null, state: item.state, trigger: item.trigger, skip_reason: item.skip_reason ?? null, deferred_reason: item.deferred_reason ?? null,
-    read_at: item.read_at ?? null, ...(item.deliveries ? { deliveries: item.deliveries } : {}), ...(item.decision !== undefined ? { decision: item.decision } : {}),
+    read_at: item.read_at ?? null, ...(item.deliveries ? { deliveries: item.deliveries } : {}), ...(item.decision ? { decision: item.decision } : {}),
   })) }
+}
+
+function normalizeEstimate(raw: RawEstimate | undefined): PublicItem['estimate'] {
+  if (!raw || typeof raw.estimated_seconds !== 'number' || !raw.basis || !raw.confidence) return undefined
+  const assumptions = Array.isArray(raw.assumptions) ? raw.assumptions.filter((entry): entry is string => typeof entry === 'string') : []
+  return { seconds: raw.estimated_seconds, basis: raw.basis, confidence: raw.confidence, ...(assumptions.length ? { assumptions } : {}),
+    ...(typeof raw.approved_seconds === 'number' ? { approved_seconds: raw.approved_seconds } : {}), ...(typeof raw.sent_seconds === 'number' ? { sent_seconds: raw.sent_seconds } : {}) }
 }
 
 export function normalizeRunDetail(raw: RawRunDetail): RunDetail {
   const states = new Map(raw.items.map(item => [item.ordinal, item.state]))
-  const items: PublicItem[] = (raw.artifact?.items ?? []).map(item => ({ ...item, state: states.get(item.ordinal) ?? 'proposed' }))
+  const items: PublicItem[] = (raw.artifact?.items ?? []).map(({ estimate, ...item }) => { const parts = normalizeEstimate(estimate); return { ...item, state: states.get(item.ordinal) ?? 'proposed', ...(parts ? { estimate: parts } : {}) } })
   return {
-    run_id: raw.run.id, schedule_id: raw.run.schedule_id, artifact_kind: raw.artifact?.kind ?? null, title: raw.artifact?.title ?? 'Entrega', project_id: null,
+    run_id: raw.run.id, schedule_id: raw.run.schedule_id, artifact_kind: raw.artifact?.kind ?? null, title: raw.artifact?.title ?? 'Entrega', project_id: raw.project_id ?? null,
     scheduled_for: raw.run.scheduled_for, started_at: raw.run.started_at ?? null, state: raw.run.state, trigger: raw.run.trigger, skip_reason: raw.run.skip_reason ?? null, deferred_reason: raw.run.deferred_reason ?? null,
-    read_at: raw.artifact?.read_at ?? null, deliveries: raw.deliveries, body_md: raw.artifact?.body_md ?? '', items, has_decision: items.some(item => item.kind !== 'info'),
+    read_at: raw.artifact?.read_at ?? null, deliveries: raw.deliveries, ...(raw.decision ? { decision: raw.decision } : {}), body_md: raw.artifact?.body_md ?? '', items,
+    has_decision: (raw.decision?.total ?? 0) > 0 || items.some(item => item.kind !== 'info'),
     ...(raw.incidents ? { incidents: raw.incidents } : {}),
   }
 }
@@ -227,23 +243,28 @@ export function useRun(runId: string) {
 export interface DecisionView {
   request_id: string
   revision: number
-  state: string
+  state: RequestState
   expires_at: string | null
   /** Digest exacto que se envía al aprobar. */
   digest: string
   authority: 'verified' | 'authority_unavailable'
-  items: { ordinal: number; kind: ItemKind; summary: string; state: ItemState; effect_digest: string }[]
+  items: { ordinal: number; kind: ItemKind; summary: string; state: StoreItemState; effect_digest: string }[]
 }
+
+/** Estados de la solicitud y de sus ítems en el almacén de decisiones; los de los ítems no son los estados públicos del run. */
+export type RequestState = 'open' | 'locked' | 'expired' | 'revoked' | 'superseded' | 'closed'
+export type StoreItemState = 'pending' | 'approved' | 'rejected' | 'expired' | 'revoked' | 'superseded' | 'blocked_uncertain'
+export const STORE_ITEM_TO_PUBLIC: Record<StoreItemState, ItemState> = { pending: 'proposed', approved: 'approved', rejected: 'rejected', expired: 'expired', revoked: 'superseded', superseded: 'superseded', blocked_uncertain: 'uncertain' }
 
 export interface DecisionResult {
   request_id: string
   revision: number
-  state: string
+  state: RequestState
   approved?: number[]
   rejected?: number[]
   blocked_uncertain?: number[]
   digest?: string
-  items: { ordinal: number; kind: ItemKind; summary: string; state: ItemState }[]
+  items: { ordinal: number; kind: ItemKind; summary: string; state: StoreItemState }[]
 }
 
 /** Motivo legible de los errores cerrados de la aprobación. */

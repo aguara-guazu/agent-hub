@@ -16,7 +16,7 @@ import { useToast } from '../components/Toast'
 import { api } from '../lib/api'
 import { useMemory } from '../lib/memory'
 import type { MemoryEntity, Page } from '../lib/memory'
-import { automationKeys, CHANNEL_REASONS, useAutomationSettings, useConstraints, useDeliveryChannels, useDecision, useDecisionActions, useRun, useRuns, useScheduleActions, useSchedules } from '../lib/automations'
+import { automationKeys, CHANNEL_REASONS, STORE_ITEM_TO_PUBLIC, DECISION_ERRORS, useAutomationSettings, useConstraints, useDeliveryChannels, useDecision, useDecisionActions, useRun, useRuns, useScheduleActions, useSchedules } from '../lib/automations'
 import type { DeliveryAvailability, DeliveryTarget, DeliveryView, ItemState, PublicItem, Recurrence, RunListItem, RunState, ScheduleView } from '../lib/automations'
 
 const TEMPLATE_LABELS: Record<string, string> = {
@@ -231,11 +231,14 @@ function deliverySummary(deliveries: DeliveryView[] | undefined): ReactNode {
 function decisionSummary(run: RunListItem): string {
   const decision = run.decision
   if (decision === undefined) return '—'
-  if (!decision) return 'sin acciones'
-  if (decision.state === 'open') return `pendiente${decision.expires_at ? ` hasta ${formatDateTime(decision.expires_at)}` : ''}`
-  if (decision.state === 'expired') return 'vencido'
-  if (decision.state === 'rejected') return 'rechazado'
-  return `aprobado ${decision.approved} de ${decision.total}`
+  switch (decision.state) {
+    case 'none': return 'sin acciones'
+    case 'pending': return `pendiente${decision.expires_at ? ` hasta ${formatDateTime(decision.expires_at)}` : ''}`
+    case 'dispatching': return `ejecutando ${decision.approved} de ${decision.total}`
+    case 'uncertain': return 'en reconciliación'
+    case 'expired': return 'vencido'
+    case 'done': return decision.approved === 0 ? 'rechazado' : `aprobado ${decision.approved} de ${decision.total}`
+  }
 }
 
 /** Encabezado de tiempos: «generado» solo cuando hubo retraso real o un disparo especial. */
@@ -269,6 +272,7 @@ export function DeliveriesPage() {
   </>
 }
 
+const hoursText = (seconds: number): string => `${(seconds / 3600).toLocaleString('es', { maximumFractionDigits: 1 })} h`
 const PROPOSAL_ITEM_STATES: readonly ItemState[] = ['proposed']
 /** Ítems cuyo efecto no se deshace con una corrección de horas: se confirman viendo el efecto exacto. */
 const SENSITIVE_KINDS: readonly PublicItem['kind'][] = ['git_push', 'jira_transition', 'jira_comment']
@@ -278,7 +282,14 @@ function ItemsBlock({ runId, items, hasDecision }: { runId: string; items: Publi
   const decision = useDecision(runId, hasDecision)
   const actions = useDecisionActions(runId)
   const toast = useToast()
-  const merged: { ordinal: number; kind: PublicItem['kind']; summary: string; state: ItemState }[] = decision.data?.items ?? items.map(item => ({ ordinal: item.ordinal, kind: item.kind, summary: item.summary, state: item.state ?? 'proposed' }))
+  // El estado público del run manda; el del almacén solo corrige un ítem que el run aún marca como propuesto. Un propuesto que la solicitud cargada no contiene no se puede aprobar.
+  const stored = new Map((decision.data?.items ?? []).map(item => [item.ordinal, item]))
+  const merged: { ordinal: number; kind: PublicItem['kind']; summary: string; state: ItemState }[] = items.map(item => {
+    const live = stored.get(item.ordinal)
+    const published = item.state ?? 'proposed'
+    const unmatched = published === 'proposed' && decision.data !== undefined && !live
+    return { ordinal: item.ordinal, kind: live?.kind ?? item.kind, summary: live?.summary ?? item.summary, state: unmatched ? 'unverifiable' : published === 'proposed' && live && live.state !== 'pending' ? STORE_ITEM_TO_PUBLIC[live.state] : published }
+  })
   const estimates = new Map(items.map(item => [item.ordinal, item.estimate]))
   const [selected, setSelected] = useState<Set<number> | null>(null)
   const [hours, setHours] = useState<Record<number, string>>({})
@@ -293,12 +304,13 @@ function ItemsBlock({ runId, items, hasDecision }: { runId: string; items: Publi
   const open = decision.data?.state === 'open'
   const expired = decision.data?.state === 'expired'
   return <section className="automations-items"><h2>Acciones propuestas</h2>
+    {decision.data && ['locked', 'revoked', 'superseded'].includes(decision.data.state) && <p className="automations-warning">{DECISION_ERRORS[decision.data.state]}</p>}
     {decision.data?.authority === 'authority_unavailable' && <p className="automations-warning">No se puede verificar la autoridad de esta solicitud; no se puede aprobar ni volver a proponer hasta reconciliar.</p>}
     <ul>{merged.map(item => { const estimate = estimates.get(item.ordinal); const mutable = item.state === 'proposed' && open
       return <li key={item.ordinal} className={`automations-item state-${item.state}`}>
         <label><input type="checkbox" disabled={!mutable} checked={mutable && chosen.has(item.ordinal)} onChange={() => toggle(item.ordinal)} /><strong>{item.ordinal}.</strong> {item.summary}</label>
         <Badge tone={item.state === 'succeeded' ? 'on' : item.state === 'uncertain' || item.state === 'unverifiable' ? 'stale' : item.state === 'rejected' || item.state === 'expired' ? 'off' : 'neutral'}>{ITEM_STATE_LABELS[item.state]}</Badge>
-        {estimate && <small className="automations-muted">Estimación del agente, no medición: {(estimate.seconds / 3600).toLocaleString('es', { maximumFractionDigits: 1 })} h · confianza {estimate.confidence === 'high' ? 'alta' : estimate.confidence === 'medium' ? 'media' : 'baja'} · Base: {estimate.basis}{estimate.assumptions?.length ? ` · Supuestos: ${estimate.assumptions.join('; ')}` : ''}{estimate.would_change ? ` · Cambiaría si: ${estimate.would_change}` : ''}</small>}
+        {estimate && <small className="automations-muted">Estimación del agente, no medición: {(estimate.seconds / 3600).toLocaleString('es', { maximumFractionDigits: 1 })} h · confianza {estimate.confidence === 'high' ? 'alta' : estimate.confidence === 'medium' ? 'media' : 'baja'} · Base: {estimate.basis}{estimate.assumptions?.length ? ` · Supuestos: ${estimate.assumptions.join('; ')}` : ''}{estimate.would_change ? ` · Cambiaría si: ${estimate.would_change}` : ''}{estimate.approved_seconds !== undefined ? ` · Aprobado: ${hoursText(estimate.approved_seconds)}` : ''}{estimate.sent_seconds !== undefined ? ` · Enviado: ${hoursText(estimate.sent_seconds)}` : ''}</small>}
         {mutable && item.kind === 'jira_worklog' && <span className="automations-revise"><input type="number" min={0.5} step={0.5} aria-label={`Horas del ítem ${item.ordinal}`} value={hours[item.ordinal] ?? ''} placeholder="h" onChange={event => setHours(current => ({ ...current, [item.ordinal]: event.target.value }))} />
           <button className="btn btn-sm" disabled={actions.revise.isPending || !(Number(hours[item.ordinal]) >= 0.5)} onClick={() => actions.revise.mutate({ ordinal: item.ordinal, seconds: Math.round(Number(hours[item.ordinal]) * 3600) }, { onSuccess: () => { setSelected(null); setHours({}); toast.info('Corrección registrada', 'Aprueba desde la app: el código enviado por el canal deja de valer.') } })}>Corregir</button></span>}
       </li> })}</ul>

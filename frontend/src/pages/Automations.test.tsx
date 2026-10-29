@@ -180,7 +180,7 @@ describe('Entregas', () => {
 
   it('lista las entregas con el estado por canal y la decisión', async () => {
     installFetch({ user, handle: call => {
-      if (call.path === '/memory/schedules/runs') return jsonResponse({ items: [run({ deliveries: [{ target: 'app_window', state: 'sent' }, { target: 'gmail_self', state: 'failed', error_code: 'token_expired' }], decision: { state: 'open', expires_at: '2026-10-28T23:59:00Z', approved: 0, total: 2 } })], total: 1, limit: 50, offset: 0 })
+      if (call.path === '/memory/schedules/runs') return jsonResponse({ items: [run({ deliveries: [{ target: 'app_window', state: 'sent' }, { target: 'gmail_self', state: 'failed', error_code: 'token_expired' }], decision: { state: 'pending', expires_at: '2026-10-28T23:59:00Z', approved: 0, total: 2 } })], total: 1, limit: 50, offset: 0 })
       return undefined
     } })
     const { container } = await renderWithProviders(<DeliveriesPage />, { route: '/deliveries' })
@@ -190,6 +190,14 @@ describe('Entregas', () => {
     expect(text).toContain('Gmail falló: token_expired')
     expect(text).toContain('pendiente hasta')
     expect(q(container, '.automations-unread')).not.toBeNull()
+  })
+
+  it('resume la decisión de cada fila con los estados reales del run', async () => {
+    const rows = [['pending', 'pendiente hasta'], ['dispatching', 'ejecutando 1 de 2'], ['uncertain', 'en reconciliación'], ['expired', 'vencido'], ['done', 'aprobado 2 de 2'], ['none', 'sin acciones']] as const
+    installFetch({ user, handle: call => call.path === '/memory/schedules/runs' ? jsonResponse({ items: rows.map(([state], index) => run({ id: `r${index}`, title: `Entrega ${state}`, decision: { state, expires_at: '2026-10-28T23:59:00Z', approved: state === 'dispatching' ? 1 : 2, total: 2 } })), total: rows.length, limit: 50, offset: 0 }) : undefined })
+    const { container } = await renderWithProviders(<DeliveriesPage />, { route: '/deliveries' })
+    const lines = qa(container, 'tbody tr').map(row => textOf(row))
+    rows.forEach(([state, text], index) => expect(lines[index], state).toContain(text))
   })
 
   it('el filtro de proyecto se manda al core', async () => {
@@ -213,7 +221,8 @@ describe('Entregas', () => {
 })
 
 describe('Detalle de una entrega', () => {
-  const estimate = { seconds: 5400, basis: 'notas 10:15–12:40', confidence: 'medium', assumptions: ['sin pruebas manuales'], would_change: 'hubo pruebas en staging' }
+  /** Fila de `hour_estimates` con la que el backend completa el ítem. */
+  const estimate = { id: 'e1', estimated_seconds: 5400, basis: 'notas 10:15–12:40', confidence: 'medium', assumptions: ['sin pruebas manuales'], approved_seconds: 3600, sent_seconds: null, state: 'approved', label: 'estimación' }
   /** Detalle tal como lo devuelve `GET …/runs/:runId`: run, artefacto, estados públicos de los ítems y entregas por separado. */
   const detail = {
     run: { id: 'r1', schedule_id: 's1', scheduled_for: '2026-10-28T11:00:00Z', trigger: 'clock', state: 'succeeded', started_at: '2026-10-28T11:00:05Z', finished_at: null, skip_reason: null, deferred_reason: null },
@@ -222,8 +231,8 @@ describe('Detalle de una entrega', () => {
     items: [{ ordinal: 1, kind: 'jira_worklog', state: 'proposed', estimate_id: 'e1' }, { ordinal: 2, kind: 'jira_transition', state: 'proposed' }],
     deliveries: [{ target: 'app_window', state: 'sent' }, { target: 'gmail_self', state: 'failed', error_code: 'token_expired' }], incidents: [],
   } as unknown as RawRunDetail
-  const decision = { request_id: 'q1', revision: 1, state: 'open', expires_at: '2026-10-28T23:59:00Z', digest: 'd'.repeat(64), authority: 'verified', reply_line: 'aprobar K7P4-M2XN 1,2',
-    items: [{ ordinal: 1, kind: 'jira_worklog', summary: 'ABC-1 worklog 2 h', state: 'proposed', effect_digest: 'e1' }, { ordinal: 2, kind: 'jira_transition', summary: 'ABC-2 → En revisión', state: 'proposed', effect_digest: 'e2' }] }
+  const decision = { request_id: 'q1', revision: 1, state: 'open', expires_at: '2026-10-28T23:59:00Z', digest: 'd'.repeat(64), authority: 'verified',
+    items: [{ ordinal: 1, kind: 'jira_worklog', summary: 'ABC-1 worklog 2 h', state: 'pending', effect_digest: 'e1' }, { ordinal: 2, kind: 'jira_transition', summary: 'ABC-2 → En revisión', state: 'pending', effect_digest: 'e2' }] }
 
   function mockDetail(overrides: { decision?: object } = {}) {
     return installFetch({ user, handle: call => {
@@ -246,7 +255,7 @@ describe('Detalle de una entrega', () => {
     expect(api.callsTo('/memory/schedules/runs/r1/read', 'PUT')).toHaveLength(1)
   })
 
-  it('muestra la estimación con sus partes y decimales en español cuando el artefacto las trae', async () => {
+  it('muestra la estimación del backend con lo estimado y lo aprobado por separado y decimales en español', async () => {
     mockDetail()
     const { container } = await mount()
     const text = textOf(container)
@@ -254,7 +263,8 @@ describe('Detalle de una entrega', () => {
     expect(text).toContain('confianza media')
     expect(text).toContain('Base: notas 10:15–12:40')
     expect(text).toContain('Supuestos: sin pruebas manuales')
-    expect(text).toContain('Cambiaría si: hubo pruebas en staging')
+    expect(text).toContain('Aprobado: 1 h')
+    expect(text).not.toContain('Enviado')
   })
 
   it('aprueba los ítems seleccionados con el digest exacto de la solicitud', async () => {
@@ -304,7 +314,7 @@ describe('Detalle de una entrega', () => {
   })
 
   it('aprobar un push muestra el efecto exacto y exige confirmar antes de enviar el digest', async () => {
-    const withPush = { ...decision, items: [{ ordinal: 1, kind: 'git_push', summary: 'feat/x a1b2c3d → origin', state: 'proposed', effect_digest: 'e1' }, { ordinal: 2, kind: 'jira_worklog', summary: 'ABC-1 worklog 2 h', state: 'proposed', effect_digest: 'e2' }] }
+    const withPush = { ...decision, items: [{ ordinal: 1, kind: 'git_push', summary: 'feat/x a1b2c3d → origin', state: 'pending', effect_digest: 'e1' }, { ordinal: 2, kind: 'jira_worklog', summary: 'ABC-1 worklog 2 h', state: 'pending', effect_digest: 'e2' }] }
     const api = installFetch({ user, handle: call => {
       if (call.path === '/memory/schedules/runs/r1') return jsonResponse(detail)
       if (call.path === '/memory/schedules/runs/r1/decision') return jsonResponse(withPush)
@@ -326,6 +336,25 @@ describe('Detalle de una entrega', () => {
     mockDetail()
     const { container } = await mount()
     expect(textOf(container)).toContain('tras corregir, aprueba desde la app; el código enviado por el canal deja de valer')
+  })
+
+  it('un ítem en reconciliación del almacén no se puede seleccionar ni aprobar', async () => {
+    const items = [{ ...decision.items[0]!, state: 'blocked_uncertain' }, decision.items[1]!]
+    const api = mockDetail({ decision: { items } })
+    const { container } = await mount()
+    const boxes = qa<HTMLInputElement>(container, '.automations-item input[type="checkbox"]')
+    expect(boxes[0]!.disabled).toBe(true)
+    expect(textOf(container)).toContain('en reconciliación')
+    await click(buttonByText(container, 'Aprobar seleccionados'))
+    await click(buttonByText(need(document.body, '[role="dialog"]'), 'Aprobar'))
+    expect(api.lastCall('/memory/schedules/runs/r1/approve', 'POST')?.body).toEqual({ ordinals: [2], digest: 'd'.repeat(64) })
+  })
+
+  it('una solicitud bloqueada se explica y no ofrece aprobar', async () => {
+    mockDetail({ decision: { state: 'locked' } })
+    const { container } = await mount()
+    expect(textOf(container)).toContain('bloqueada por demasiados intentos fallidos')
+    expect(qa(container, 'button').some(button => button.textContent?.includes('Aprobar seleccionados'))).toBe(false)
   })
 
   it('aprobar solo horas no pide confirmación adicional', async () => {
