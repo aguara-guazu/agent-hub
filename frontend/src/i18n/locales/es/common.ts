@@ -1,0 +1,75 @@
+const common = {
+  app: {
+    name: "Agent Hub",
+  },
+  actions: {
+    add: "Agregar",
+    back: "Volver",
+    cancel: "Cancelar",
+    close: "Cerrar",
+    confirm: "Confirmar",
+    copy: "Copiar",
+    create: "Crear",
+    createNamed: "Crear «{{name}}»",
+    delete: "Eliminar",
+    discard: "Descartar",
+    edit: "Editar",
+    pause: "Pausar",
+    resume: "Reanudar",
+    retry: "Reintentar",
+    runNow: "Ejecutar ahora",
+    saveChanges: "Guardar cambios",
+    search: "Buscar",
+    undo: "Deshacer",
+    clearFilters: "Quitar filtros",
+    showMore: "Ver más",
+    viewAll_one: "Ver {{count}}",
+    viewAll_other: "Ver las {{count, number}}",
+  },
+  a11y: {
+    moreActions: "Más acciones",
+    closePanel: "Cerrar panel",
+    removeFilter: "Quitar filtro {{name}}",
+    openMenu: "Abrir menú",
+  },
+  states: {
+    loading: "Cargando…",
+    saving: "Guardando…",
+    saved: "Cambios guardados",
+    autosave: "Los cambios se guardan solos",
+    unsaved: "Cambios sin guardar",
+    on: "Activado",
+    off: "Desactivado",
+  },
+  empty: {
+    noResults: "Sin resultados",
+    noResultsHint: "Probá con otra búsqueda o quitá los filtros.",
+  },
+  error: {
+    title: "No se pudo cargar",
+    hint: "Revisá que Agent Hub siga abierto y volvé a intentar.",
+  },
+  confirm: {
+    deleteTitle: "¿Eliminar «{{name}}»?",
+    irreversible: "No se puede deshacer.",
+  },
+  toast: {
+    deleted: "Se eliminó «{{name}}»",
+    paused: "Se pausó «{{name}}»",
+    resumed: "Se reanudó «{{name}}»",
+    copied: "Copiado",
+    saveFailed: "No se guardó el cambio",
+  },
+  count: {
+    items_one: "{{count, number}} elemento",
+    items_other: "{{count, number}} elementos",
+  },
+  language: {
+    label: "Idioma",
+    auto: "Automático",
+    es: "Español",
+    en: "English",
+  },
+}
+
+export default common
