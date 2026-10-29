@@ -65,7 +65,7 @@ export async function chatFolder(path: string) {
     // Never let a Git environment inherited by the Hub redirect another session's worktree.
     const env = { ...process.env }
     for (const name of ['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR']) delete env[name]
-    const run = (args: string[]) => exec('git', ['-C', root, ...args], { env, timeout:1500, maxBuffer:8192 }).then(r=>r.stdout.trim())
+    const run = (args: string[]) => exec('git', ['-C', root, ...args], { env, timeout:5000, maxBuffer:8192 }).then(r=>r.stdout.trim())
     check(await run(['rev-parse','--is-inside-work-tree'])==='true', 'No es un worktree',409)
     root = await realpath(await run(['rev-parse','--show-toplevel']))
     const branch = await run(['symbolic-ref','--short','HEAD']).catch(()=>null)
@@ -87,7 +87,7 @@ export async function virtualFolder(path: string) {
   const env:NodeJS.ProcessEnv = { ...process.env, LC_ALL:'C' }
   for (const name of ['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR']) delete env[name]
   try {
-    await exec('git',['-C',root,'rev-parse','--git-dir'],{env,timeout:1500,maxBuffer:8192})
+    await exec('git',['-C',root,'rev-parse','--git-dir'],{env,timeout:5000,maxBuffer:8192})
     check(false,'La ruta pertenece a un repositorio Git pero no es un worktree disponible.',409)
   } catch (error) {
     if ((error as {statusCode?:number}).statusCode) throw error

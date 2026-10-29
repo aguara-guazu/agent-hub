@@ -10,6 +10,7 @@ import { MemoryStore } from '../src/store.js'
 import { MemoryService } from '../src/service.js'
 import { LocalChat } from '../src/local-chat.js'
 import { LocalWatchdog } from '../src/local-watchdog.js'
+import { MemoryError } from '../src/contracts.js'
 import { TeamOrchestration,type TeamCatalog,type TeamOrca,type TeamWorkspace } from '../src/team-orchestration.js'
 import { exportMemory,readBackup,restoreMemory } from '../src/backup.js'
 import type { AgentContext } from '../src/agents.js'
@@ -605,6 +606,31 @@ it('tras un reinicio sólo relanza un runtime desconocido con la salida registra
   const restarted=await teams.call('team_control',{...input,action:'start'},master.agent)
   expect(restarted.members[0].runtime.generation).not.toBe(slot.runtime.generation)
   expect(backend.launch).toHaveBeenCalledTimes(2)
+})
+
+it('una relanzada del Hub que falla antes de crear el proceso queda reintentable',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  await teams.initialize()
+  backend.stop.mockImplementation(async()=>{throw new Error('fleet_unknown_id')})
+  await db.query(`INSERT INTO process_incidents(id,subject_kind,subject_id,generation,cause,action,observed_at,detail) VALUES('i3','fleet_member',$1,$2,'hub_restart','already_exited',$3,'{}')`,
+    [slot.id,slot.runtime.generation,new Date().toISOString()])
+  backend.launch.mockImplementationOnce(async()=>{throw new MemoryError(503,'No se pudo ejecutar Git para verificar la carpeta.')})
+  const input={session_key:master.key,plan_id:plan.id,member_id:slot.id,expected_generation:slot.runtime.generation}
+  await expect(teams.call('team_control',{...input,action:'start'},master.agent)).rejects.toThrow('Git')
+  const failed=(await db.query('SELECT launch_handle,runtime FROM chat_team_members WHERE id=$1',[slot.id]))[0]!
+  expect(failed.launch_handle).toBeNull()
+  expect(failed.runtime).toMatchObject({generation:slot.runtime.generation,state:'unknown'})
+  const restarted=await teams.call('team_control',{...input,action:'start'},master.agent)
+  expect(restarted.members[0].runtime.generation).not.toBe(slot.runtime.generation)
+})
+
+it('un runtime sin handle y sin salida registrada sigue sin relanzarse',async()=>{
+  const {master,backend,teams,plan,slot}=await hubTeam()
+  await teams.initialize()
+  await db.query("UPDATE chat_team_members SET launch_handle=NULL WHERE id=$1",[slot.id])
+  const input={session_key:master.key,plan_id:plan.id,member_id:slot.id,expected_generation:slot.runtime.generation}
+  await expect(teams.call('team_control',{...input,action:'start'},master.agent)).rejects.toThrow('recibo verificable')
+  expect(backend.launch).toHaveBeenCalledTimes(1)
 })
 
 it('rechaza controles de participantes y cambios de modelo fuera de otro plan confirmado',async()=>{

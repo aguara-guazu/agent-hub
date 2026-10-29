@@ -958,7 +958,13 @@ export class TeamOrchestration {
         await this.checkQuota([item],who)
         if(plan.delegation_project_id)await this.assertDerivedLaunchable(plan)
         item=await load()
-        check(item.launch_handle || !item.runtime || ['stopped','failed'].includes(item.runtime.state),
+        const exitRecorded=async()=>{
+          const generation=item.runtime?.generation ?? null
+          return generation!==null && Boolean((await this.db.query(`SELECT 1 FROM process_incidents WHERE subject_kind='fleet_member' AND subject_id=$1 AND generation=$2
+            AND action IN ('terminated','already_exited') LIMIT 1`,[item.id,generation]))[0])
+        }
+        // A Hub relaunch that failed before spawning leaves no handle; the exit recorded for this generation still proves nothing is running.
+        check(item.launch_handle || !item.runtime || ['stopped','failed'].includes(item.runtime.state) || (this.orca.provider==='hub' && await exitRecorded()),
           'El runtime no tiene un recibo verificable para confirmar su detención. No se lanzará un reemplazo de un proceso desconocido.',409)
         // An unknown process may still exist. Stop the owned handle before replacing it.
         if(item.launch_handle) {
@@ -966,10 +972,7 @@ export class TeamOrchestration {
           let stopped:unknown
           try {stopped=await this.orca.stop(item.launch_handle)} catch {
             // After a Hub restart the handle is unknown to the runtime; the exit the restart reconciliation recorded for this generation is the evidence instead.
-            const generation=item.runtime?.generation ?? null
-            const recorded=generation!==null && Boolean((await this.db.query(`SELECT 1 FROM process_incidents WHERE subject_kind='fleet_member' AND subject_id=$1 AND generation=$2
-              AND action IN ('terminated','already_exited') LIMIT 1`,[item.id,generation]))[0])
-            check(recorded,'El Hub no pudo confirmar la detención de este runtime. Conservá el estado desconocido; no se lanzará un reemplazo ni se adoptarán procesos ajenos.',409)
+            check(await exitRecorded(),'El Hub no pudo confirmar la detención de este runtime. Conservá el estado desconocido; no se lanzará un reemplazo ni se adoptarán procesos ajenos.',409)
             stopped={state:'stopped'}
           }
           check(stopped && typeof stopped==='object' && ['stopped','failed'].includes(String((stopped as {state?:unknown}).state)),
