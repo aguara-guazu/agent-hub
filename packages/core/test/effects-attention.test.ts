@@ -77,3 +77,17 @@ it('carryover_items ignora lo que no viene de un cierre, de modo que lo arrastra
   decisions.expireDue()
   expect(await effects.attention!.carryover_items!()).toEqual([])
 })
+
+it('carryover_items no vuelve a ofrecer el ítem del cierre que el brief ya arrastró y venció', async () => {
+  const effects = build()
+  closeRuns = ['run-close']
+  await propose(effects, 'run-close', 120)
+  await sleep(250)
+  const { store: decisions } = await effects.ready()
+  decisions.expireDue()
+  expect(await effects.attention!.carryover_items!()).toHaveLength(1)
+  await propose(effects, 'run-brief', 120)
+  await sleep(250)
+  decisions.expireDue()
+  expect(await effects.attention!.carryover_items!()).toEqual([])
+})

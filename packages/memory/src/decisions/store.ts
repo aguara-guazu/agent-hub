@@ -680,7 +680,7 @@ export class DecisionStore {
   /**
    * Ítems que una solicitud vencida dejó sin despachar desde `since`: los vencidos sin intención y los aprobados cuya intención venció antes de salir.
    * Mismo predicado que `reproposeRequest` (nunca una operación con intención viva o incierta, por digest u `operation_key`) y, además, nada que otra solicitud más nueva
-   * ya haya retomado o decidido. De varias copias de una misma operación queda la más reciente. El efecto es la copia aprobada, sin reinterpretar.
+   * ya haya retomado, en cualquier estado salvo `superseded`: la copia más reciente manda aunque haya vencido. De varias copias de una misma operación queda la más reciente. El efecto es la copia aprobada, sin reinterpretar.
    */
   carryoverItems(since: string, limit: number): Array<{ request_id: string; run_id: string; ordinal: number; kind: DecisionItemKind; project_id: string; summary: string; effect: unknown; operation_key: string; expires_at: string }> {
     const rows = this.all<ItemRow & { run_id: string; request_created_at: string; expires_at: string }>(
@@ -696,7 +696,7 @@ export class DecisionStore {
       seen.add(item.operation_key)
       if (this.operationLive(item)) continue
       if (this.get(`SELECT 1 FROM decision_items o JOIN decision_requests q ON q.request_id = o.request_id
-        WHERE o.operation_key = ? AND q.created_at > ? AND o.state IN ('pending','approved','rejected','blocked_uncertain')`, item.operation_key, item.request_created_at)) continue
+        WHERE o.operation_key = ? AND q.created_at > ? AND o.state <> 'superseded'`, item.operation_key, item.request_created_at)) continue
       out.push({ request_id: item.request_id, run_id: item.run_id, ordinal: item.ordinal, kind: item.kind, project_id: item.project_id, summary: item.summary, effect: JSON.parse(item.exact_effect), operation_key: item.operation_key, expires_at: item.expires_at })
       if (out.length >= limit) break
     }

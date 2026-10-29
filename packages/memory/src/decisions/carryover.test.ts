@@ -98,6 +98,17 @@ describe('ítems que una solicitud vencida dejó sin despachar', () => {
     expect(store.carryoverItems(SINCE, 10)).toEqual([])
   })
 
+  it('lo que una solicitud posterior retomó y también venció no se ofrece de nuevo desde la original', () => {
+    const { store, prepare } = setup()
+    prepare('run-close', [{ n: 1, operation_key: 'op-1' }], 30)
+    advance(31)
+    store.expireDue()
+    prepare('run-brief', [{ n: 1, operation_key: 'op-1' }], 30)
+    advance(31)
+    store.expireDue()
+    expect(store.carryoverItems(SINCE, 10).map(item => item.run_id)).toEqual(['run-brief'])
+  })
+
   it('respeta la ventana y el límite', () => {
     const { store, prepare } = setup()
     prepare('run-1', [{ n: 1 }, { n: 2 }, { n: 3 }])
