@@ -733,4 +733,32 @@ ALTER TABLE schedules ADD COLUMN human_override JSON NOT NULL DEFAULT '[]';
 `, String.raw`
 -- When the model of a session was last reported by a hook (session start or a model switch).
 ALTER TABLE chat_sessions ADD COLUMN model_observed_at TIMESTAMP;
+`, String.raw`
+-- Append-only audit of leadership and read-access decisions. No foreign keys: the record outlives sessions and channels.
+CREATE TABLE chat_authority_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+ channel_id TEXT, project_id TEXT, actor_session_id TEXT, actor_user_id TEXT, target_session_id TEXT,
+ reason TEXT NOT NULL, evidence JSON NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX chat_authority_events_project ON chat_authority_events(project_id,seq);
+CREATE INDEX chat_authority_events_channel ON chat_authority_events(channel_id,seq);
+CREATE INDEX chat_authority_events_kind ON chat_authority_events(kind,seq);
+-- Cross-project reads: an agent asks, its leader elevates, only the authenticated person grants.
+CREATE TABLE chat_read_requests (
+ id TEXT PRIMARY KEY, requester_session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ requester_channel_id TEXT NOT NULL, requester_project_id TEXT, target_project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+ leader_session_id TEXT, team_id TEXT, reason TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending_leader','pending_person','granted','rejected','cancelled')),
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, elevated_at TIMESTAMP, elevated_by TEXT, elevation_note TEXT,
+ decided_at TIMESTAMP, decided_by_user TEXT, decision_note TEXT, confirmation_phrase TEXT
+);
+CREATE UNIQUE INDEX chat_read_requests_open ON chat_read_requests(requester_session_id,target_project_id) WHERE state IN ('pending_leader','pending_person');
+CREATE INDEX chat_read_requests_state ON chat_read_requests(state,created_at);
+CREATE TABLE chat_read_grants (
+ id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE REFERENCES chat_read_requests(id) ON DELETE CASCADE,
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+ granted_by_user TEXT NOT NULL, granted_at TIMESTAMP NOT NULL DEFAULT ${NOW}, expires_at TIMESTAMP NOT NULL,
+ revoked_at TIMESTAMP, revoke_reason TEXT
+);
+CREATE INDEX chat_read_grants_session ON chat_read_grants(session_id,revoked_at);
 `]
