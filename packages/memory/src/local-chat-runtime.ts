@@ -65,6 +65,7 @@ export class LocalChatRuntime {
     }
     await this.chat.processTurnAlerts()
     await this.chat.processResponseAlerts()
+    await this.chat.sweepReadAccess()
     // Native queue addresses the exact conversation and verifies it at delivery time.
     // A managed app-server may not expose a per-TUI PID to hooks; its idle lease is
     // advisory presence, not a reason to silently suppress durable notifications.

@@ -13,6 +13,8 @@ import { projectForPath, orcaWorkspaceSchema, type AgentContext } from './agents
 import type { MemoryStore } from './store.js'
 import type { Sql } from './database.js'
 import { teamGuidance, teamGuidanceVersion } from './local-chat-team.js'
+import { canReadChannel, readAccessDefinitions, readDenied, readElevate, readInterest, readNoticeValid, readRequest, readScope, sweepReadAccess,
+  confirmReadRequest, rejectReadRequest, revokeReadGrant, personReadGrants, personReadRequests, type ReadScope } from './chat-read-access.js'
 
 const exec = promisify(execFile)
 const key = z.string().min(32).max(200)
@@ -32,14 +34,15 @@ export const chatDefinitions = {
   chat_close_channel: ['Close this session channel on explicit person request. Leader only. Keeps history, blocks new joins.', z.object({ ...session }).strict()],
   chat_delete_channel: ['Trash your own channel on explicit person request. Leader only (the person deletes others in the UI). Closes sessions, cancels its teams, revokes deliveries; the Hub tries to stop its workers and reports uncertain stops. Keeps files/worktrees. History leaves search; the person can restore from trash.',chatDeleteChannelInput.extend(session).strict()],
   chat_set_nick: ['Pick and register your nickname (2–40 chars); if taken, pick another. Unlocks collaboration context. Changes only your session; keeps identity and history.', z.object({ ...session, nickname }).strict()],
-  chat_channels: ['Browse active or past local channels. unassigned=true: only projectless channels; pending virtual ones stay hidden. deleted=true: trash. Worker spaces group under their team channel; include_workers=true adds them for audit.', z.object({ ...session, ...scope, ...page,deleted:z.boolean().default(false),include_workers:z.boolean().default(false) }).strict()],
-  chat_agents: ['Find session identities to mention. Coordinator channel_id includes linked team members. Default excludes kicked, closed and nickless sessions; stable order by registration. connection_state/last_seen_at = connection, not work. state=unknown + state_reason=activity_stale = unconfirmed activity: ask status via the Hub, never infer working or done. include_team_history shows disconnected past-team members with real state. include_removed/include_closed/include_pending: audit only. unassigned=true: projectless channels only.', z.object({ ...session, ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), include_closed: z.boolean().default(false), include_team_history: z.boolean().default(false), include_pending: z.boolean().default(false), ...page }).strict()],
-  chat_threads: ['Search past threads/messages by text, channel, project, author or state. unassigned=true: projectless channels only. History outlives agents.', z.object({ ...session, ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
-  chat_read: ['Read thread messages. With session_key: by default only messages pending for it (not its own), marking only those returned as read; page pending with offset: 0. unread_only=false: history. Without session_key: anonymous read-only history; unread_only=true needs session_key.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
-  chat_send: ['Create a task thread (channel_id,title), a short linked-team thread (team_root_thread_id,title), or reply (thread_id). Outside your channel: only the root or threads persistently bound to a current team; mentions only its members. A stable request_id makes retries duplicate-free. Linked-worker new topics auto-post to the team channel. Report in your assigned work_thread_id. To request an action/decision: response_required=true plus recipients. Reply via reply_to: notifies the author, handles only your request. Requires collaboration authorization.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), response_required: z.boolean().optional(), request_id: z.string().min(1).max(200) }).strict()],
+  chat_channels: ['Browse active or past local channels you can read: your project, your own and team channels, and projects with a person-granted read permission. unassigned=true: only projectless channels; pending virtual ones stay hidden. deleted=true: trash. Worker spaces group under their team channel; include_workers=true adds them for audit.', z.object({ ...session, ...scope, ...page,deleted:z.boolean().default(false),include_workers:z.boolean().default(false) }).strict()],
+  chat_agents: ['Find session identities to mention, within the channels you can read. Coordinator channel_id includes linked team members. Default excludes kicked, closed and nickless sessions; stable order by registration. connection_state/last_seen_at = connection, not work. state=unknown + state_reason=activity_stale = unconfirmed activity: ask status via the Hub, never infer working or done. include_team_history shows disconnected past-team members with real state. include_removed/include_closed/include_pending: audit only. unassigned=true: projectless channels only.', z.object({ ...session, ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), include_closed: z.boolean().default(false), include_team_history: z.boolean().default(false), include_pending: z.boolean().default(false), ...page }).strict()],
+  chat_threads: ['Search past threads/messages by text, channel, project, author or state, within your project, your own and team channels and person-granted projects. Reading a channel never lets you write there. unassigned=true: projectless channels only. History outlives agents.', z.object({ ...session, ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
+  chat_read: ['Read thread messages. With session_key: by default only messages pending for it (not its own), marking only those returned as read; page pending with offset: 0. unread_only=false: history. Without session_key: read-only history that marks nothing. Only threads of channels you can read (same scope as chat_threads); another project needs memory_chat_read_request.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
+  chat_send: ['Create a task thread (channel_id,title), a short linked-team thread (team_root_thread_id,title), or reply (thread_id). Only in channels you belong to: your own, or the root and threads bound to a current team; mentions only its members. Read access never grants writing. A stable request_id makes retries duplicate-free. Linked-worker new topics auto-post to the team channel. Report in your assigned work_thread_id. To request an action/decision: response_required=true plus recipients. Reply via reply_to: notifies the author, handles only your request. Requires collaboration authorization.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), response_required: z.boolean().optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Read your pending mentions and private notices. Private notices have no thread; ask the agent for status via work_thread_id. Read is not handled; unhandled items stay visible. No model polling: the Hub notifies.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
   chat_kick: ['Kick a session from the channel when the person orders it. Recognized leader only; give the reason. Keeps history, cancels notices, blocks rejoin. Does not close its terminal or stop running work.', chatKickInput.extend(session).strict()],
   chat_ack: ['Mark your own mention/private notice handled (message_id=item id) after resolving or answering. Reading alone is not acceptance.', z.object({ ...session, message_id: id }).strict()],
+  ...readAccessDefinitions,
   chat_resolve: ['Close/reopen a thread in your channel. Keeps history; never marks messages of others handled.', z.object({ ...session, thread_id: id, state: z.enum(['open','resolved']) }).strict()],
 } satisfies Record<string, [string, z.ZodType]>
 export const chatReadOperations = ['chat_work_list','chat_channels','chat_agents','chat_threads','chat_read']
@@ -181,6 +184,27 @@ export class LocalChat {
       return {channel_id:channel.id,leader_id:target.id,affected_plans:plans.map(p=>String(p.id))}
     })
     this.events.emit('change')
+    return result
+  }
+  /** Owner route only. The phrase is the person's own confirmation; no MCP operation reaches this. */
+  async confirmReadRequest(requestId:string,phrase:string,userId:string) {
+    const result=await this.db.transaction(sql=>confirmReadRequest(sql,requestId,phrase,userId))
+    this.events.emit('change');return result
+  }
+  async rejectReadRequest(requestId:string,userId:string,note?:string) {
+    const result=await this.db.transaction(sql=>rejectReadRequest(sql,requestId,userId,note))
+    this.events.emit('change');return result
+  }
+  async revokeReadGrant(grantId:string,userId:string,reason='Revocado por la persona') {
+    const grant=await this.db.transaction(sql=>revokeReadGrant(sql,grantId,reason,{user_id:userId}))
+    check(grant,'El permiso no existe o ya terminó.',404)
+    this.events.emit('change');return {grant_id:grant.id,revoked:true}
+  }
+  readRequests(filter:Parameters<typeof personReadRequests>[1]) { return personReadRequests(this.db,filter) }
+  readGrants(filter:Parameters<typeof personReadGrants>[1]) { return personReadGrants(this.db,filter) }
+  async sweepReadAccess(now=Date.now()) {
+    const result=await this.db.transaction(sql=>sweepReadAccess(sql,now))
+    if(result.revoked || result.cancelled)this.events.emit('change')
     return result
   }
   private async project(...paths: string[]) {
@@ -614,6 +638,10 @@ export class LocalChat {
     await this.db.transaction(async sql=>{
       const pending=await sql.query('SELECT * FROM chat_status_notices WHERE handled_at IS NULL AND cancelled_at IS NULL')
       for(const alert of pending) {
+        if(String(alert.cause).startsWith('read_')) {
+          if(await readNoticeValid(sql,alert))continue
+          await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Pedido de lectura resuelto o alcance revocado' WHERE id=$1",[alert.id]);continue
+        }
         if(alert.cause==='response_due') {
           if(await this.responseAlertValid(sql,alert))continue
           await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Pedido respondido o alcance cerrado' WHERE id=$1",[alert.id]);continue
@@ -639,7 +667,7 @@ export class LocalChat {
       if(operation==='chat_inbox' || operation==='chat_ack')await this.cancelInvalidTurnAlerts()
       return this.callInner(operation,raw,agent,receipt)
     }
-    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick']
+    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick','chat_read_interest','chat_read_request','chat_read_elevate']
     // UI/history polling has no routing key and must remain a true read: no writer lock or wake-up event.
     const identifiedRead=operation==='chat_read' && typeof (raw as any)?.session_key==='string'
     const result=await (writes.includes(operation) || identifiedRead ?this.db.transaction(execute):execute())
@@ -650,7 +678,10 @@ export class LocalChat {
     const definition = chatDefinitions[operation as keyof typeof chatDefinitions]
     check(definition, 'Operación de chat inexistente', 404)
     const input = parse(definition[1] as z.ZodType, raw ?? {}) as any
-    if(agent && !['chat_join','chat_set_nick'].includes(operation)) await this.requireNickname(agent,input.session_key)
+    const caller=agent && !['chat_join','chat_set_nick'].includes(operation) ? await this.requireNickname(agent,input.session_key) : undefined
+    // Agents read within their scope; the person (no agent identity) is never scoped.
+    const scope:ReadScope|null=caller && ['chat_channels','chat_agents','chat_threads','chat_read'].includes(operation) ? await readScope(this.db,caller.id) : null
+    const scopeProjects=scope?JSON.stringify(scope.projects):null,scopeChannels=scope?JSON.stringify(scope.channels):null
     if(operation==='chat_kick'){check(agent,'Sólo el líder puede usar esta herramienta; la persona usa el control de la UI',403);return this.kick(input,{agent,session_key:input.session_key},false)}
     if(operation==='chat_delete_channel'){check(agent,'Usá el control de la UI para eliminar canales como persona.',403);return this.deleteChannel(input,{agent,session_key:input.session_key})}
     if (operation === 'chat_join') {
@@ -675,7 +706,10 @@ export class LocalChat {
         (SELECT p.id FROM chat_team_plans p WHERE p.master_channel_id=c.id ORDER BY p.created_at DESC,p.id DESC LIMIT 1) AS team_plan_id,
         (SELECT p.master_channel_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id WHERE m.channel_id=c.id LIMIT 1) AS parent_channel_id,
         (SELECT label FROM chat_sessions WHERE id=c.leader_id) AS leader_label,(SELECT count(*) FROM chat_threads t WHERE t.channel_id=c.id AND t.archived_notice=0) AS threads FROM chat_channels c WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3=0 OR c.project_id IS NULL) AND (($4=1 AND c.deleted_at IS NOT NULL) OR ($4=0 AND c.deleted_at IS NULL))
-        AND ($5=1 OR $2 IS NOT NULL OR NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=c.id))`, [input.project_id ?? null,input.channel_id ?? null,input.unassigned ? 1 : 0,input.deleted?1:0,input.include_workers?1:0], 'updated_at DESC,id', input)
+        AND ($5=1 OR $2 IS NOT NULL OR NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=c.id))
+        AND ($6 IS NULL OR c.id IN (SELECT value FROM json_each($7)) OR COALESCE((SELECT master.project_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+          JOIN chat_channels master ON master.id=p.master_channel_id WHERE m.channel_id=c.id ORDER BY p.created_at DESC LIMIT 1),c.project_id) IN (SELECT value FROM json_each($6)))`,
+        [input.project_id ?? null,input.channel_id ?? null,input.unassigned ? 1 : 0,input.deleted?1:0,input.include_workers?1:0,scopeProjects,scopeChannels], 'updated_at DESC,id', input)
       return { ...result,items:await Promise.all(result.items.map(async c=>({...c,read_only:await this.channelReadOnly(c)}))) }
     }
     if (operation === 'chat_agents') {
@@ -691,8 +725,9 @@ export class LocalChat {
         AND c.deleted_at IS NULL AND master.deleted_at IS NULL AND s.cli_kind<>'hub'
         AND ($3=0 OR (c.closed_at IS NULL AND s.closed_at IS NULL AND s.lease_until>now()))
         AND ($4=1 OR s.removed_at IS NULL) AND ($5=0 OR COALESCE(master.project_id,c.project_id) IS NULL)
-        AND ($6=1 OR ($8=1 AND m.team_id IS NOT NULL) OR (s.closed_at IS NULL AND c.closed_at IS NULL)) AND ($7=1 OR (s.nickname IS NOT NULL AND trim(s.nickname)<>''))`,
-      [input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0,input.include_removed ? 1 : 0,input.unassigned ? 1 : 0,input.include_closed || input.include_removed ? 1 : 0,input.include_pending ? 1 : 0,input.include_team_history ? 1 : 0], 'created_at ASC,id',input)
+        AND ($6=1 OR ($8=1 AND m.team_id IS NOT NULL) OR (s.closed_at IS NULL AND c.closed_at IS NULL)) AND ($7=1 OR (s.nickname IS NOT NULL AND trim(s.nickname)<>''))
+        AND ($9 IS NULL OR c.id IN (SELECT value FROM json_each($10)) OR p.master_channel_id IN (SELECT value FROM json_each($10)) OR COALESCE(master.project_id,c.project_id) IN (SELECT value FROM json_each($9)))`,
+      [input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0,input.include_removed ? 1 : 0,input.unassigned ? 1 : 0,input.include_closed || input.include_removed ? 1 : 0,input.include_pending ? 1 : 0,input.include_team_history ? 1 : 0,scopeProjects,scopeChannels], 'created_at ASC,id',input)
       return { ...result, items: result.items.map(s=>({...publicSession(s),role:s.team_id?'team_member':s.role,team_id:s.team_id,team_role:s.team_role,team_state:s.team_state,member_state:s.member_state,work_thread_id:s.work_thread_id,master_channel_id:s.master_channel_id})) }
     }
     if (operation === 'chat_threads') return this.page(`SELECT t.*,c.name AS channel_name,s.label AS author_label,
@@ -707,8 +742,9 @@ export class LocalChat {
       LEFT JOIN chat_channels parent ON parent.id=(SELECT p.master_channel_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id WHERE m.channel_id=c.id LIMIT 1)
       WHERE c.deleted_at IS NULL AND parent.deleted_at IS NULL AND t.archived_notice=0 AND ($1 IS NULL OR COALESCE(parent.project_id,c.project_id)=$1) AND ($2 IS NULL OR (c.id=$2 OR parent.id=$2)) AND ($3 IS NULL OR t.state=$3)
       AND ($4='' OR instr(lower(t.title),lower($4))>0 OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND instr(lower(m.text),lower($4))>0))
-      AND ($5 IS NULL OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.author_id=$5)) AND ($6=0 OR COALESCE(parent.project_id,c.project_id) IS NULL)`,
-    [input.project_id ?? null,input.channel_id ?? null,input.state ?? null,input.query,input.author_id ?? null,input.unassigned ? 1 : 0], 'updated_at DESC,id',input)
+      AND ($5 IS NULL OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.author_id=$5)) AND ($6=0 OR COALESCE(parent.project_id,c.project_id) IS NULL)
+      AND ($7 IS NULL OR c.id IN (SELECT value FROM json_each($8)) OR COALESCE(parent.project_id,c.project_id) IN (SELECT value FROM json_each($7)))`,
+    [input.project_id ?? null,input.channel_id ?? null,input.state ?? null,input.query,input.author_id ?? null,input.unassigned ? 1 : 0,scopeProjects,scopeChannels], 'updated_at DESC,id',input)
     if (operation === 'chat_read') {
       check(!(input.unread_only===true && !input.session_key),'unread_only=true requiere session_key; sin identidad chat_read sólo permite historial read-only.',400)
       // A routing key is the explicit reader identity. Native/UI reads without it remain historical and never write receipts.
@@ -720,6 +756,7 @@ export class LocalChat {
         FROM chat_threads t WHERE t.id=$1`,[input.thread_id]))[0]
       check(thread, 'Hilo inexistente',404)
       check(!(await this.db.query('SELECT 1 FROM chat_channels WHERE id=$1 AND deleted_at IS NOT NULL',[thread.channel_id])).length,'El canal está en la papelera.',404)
+      if(caller)check(await canReadChannel(this.db,caller.id,thread.channel_id,scope ?? undefined),readDenied,403)
       if(input.project_id) check((await this.db.query('SELECT id FROM chat_channels WHERE id=$1 AND project_id=$2',[thread.channel_id,input.project_id])).length,'El hilo no pertenece al proyecto',404)
       const query=unreadOnly
         ? `SELECT m.*,s.label AS author_label,s.cli_kind,CASE WHEN s.agent_id='agenthub-system' AND s.cli_kind='hub' THEN 'hub' ELSE 'agent' END AS author_source FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id
@@ -743,6 +780,9 @@ export class LocalChat {
     check(who && !who.closed_at, 'Sólo una sesión de agente abierta puede participar',403)
     if (!['chat_set_nick','chat_inbox','chat_ack','chat_work_list'].includes(operation))
       check(who.nickname, 'Elegí tu propio nick con chat_set_nick antes de participar.',409)
+    if (operation === 'chat_read_interest') return readInterest(this.db,who,input)
+    if (operation === 'chat_read_request') return readRequest(this.db,who,input)
+    if (operation === 'chat_read_elevate') return readElevate(this.db,who,input)
     if (operation === 'chat_work_update' || operation === 'chat_work_list') {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread,'Hilo inexistente',404)
