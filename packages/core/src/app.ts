@@ -74,7 +74,7 @@ import { createPoolCallAudit } from './effects/call-audit.js'
 import { createCoreScheduleEffects } from './effects/wiring.js'
 import { createJiraAdapters } from './effects/jira.js'
 import { createGitPushAdapter } from './effects/git-push-adapter.js'
-import { readJiraServerId } from './effects/jira-server.js'
+import { readJiraServerId, readJiraServerSelection, saveJiraServerId } from './effects/jira-server.js'
 
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
 const ORG_ROLES = ['owner', 'admin', 'member']
@@ -352,6 +352,24 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       // A switch change takes effect now: the runtime cancels what has not started and stops what runs.
       if ('automations_enabled' in input) await memory.service.kickSchedules()
       return readAutomationSettings(store)
+    })
+    // Solo la sesión de la app del dueño: un token de daemon o de agente no decodifica como sesión y `currentUser` lo rechaza con 401.
+    fastify.get('/api/automations/jira-server', async request => {
+      const user = await currentUser(request)
+      if (user.id !== owner.id) throw new HttpError(403, 'La configuración pertenece al dueño local del hub')
+      return readJiraServerSelection(store, owner.id)
+    })
+    fastify.put('/api/automations/jira-server', async request => {
+      const user = await currentUser(request)
+      if (user.id !== owner.id) throw new HttpError(403, 'La configuración pertenece al dueño local del hub')
+      const input = request.body as Record<string, unknown> | null
+      const serverId = input && typeof input === 'object' ? input['server_id'] : undefined
+      if (!input || Array.isArray(input) || Object.keys(input).some(key => key !== 'server_id') || (serverId !== null && typeof serverId !== 'string'))
+        throw new HttpError(422, 'Se requiere server_id como texto o null')
+      const rejected = saveJiraServerId(store, owner.id, serverId)
+      if (rejected === 'unknown_server') throw new HttpError(422, 'El servidor no existe o no pertenece al dueño')
+      if (rejected === 'not_usable') throw new HttpError(422, 'El servidor no publica atlassianUserInfo y getJiraIssue')
+      return readJiraServerSelection(store, owner.id)
     })
     const registerCatalog = () => {
       const installedId = store.setting(MEMORY_CATALOG_SERVER_SETTING)

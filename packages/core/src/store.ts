@@ -649,6 +649,10 @@ export class Store {
     )
   }
 
+  deleteSetting(key: string): void {
+    this.db.run('DELETE FROM app_settings WHERE key = ?', key)
+  }
+
   /** Todos los servers de todas las personas; lo usa el reintento de sondeo. */
   allServers(): McpServerRow[] {
     return this.db
