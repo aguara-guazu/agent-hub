@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
-import { check, id } from "./contracts.js"
+import { check, id, MemoryError } from "./contracts.js"
 import type { Sql } from "./database.js"
 import { ACTIVE_TEAM_STATES, channelMembership, channelProjectId, recordAuthorityEvent, sessionProjectId, teamChannelIds } from "./chat-access.js"
 
@@ -198,17 +198,17 @@ async function pendingForPerson(sql: Sql, requestId: string) {
     FROM chat_read_requests r JOIN chat_sessions s ON s.id=r.requester_session_id JOIN entities dst ON dst.id=r.target_project_id
     LEFT JOIN entities src ON src.id=r.requester_project_id WHERE r.id=$1`, [requestId]))[0]
   check(request, "Pedido inexistente.", 404)
-  check(request.state === "pending_person", request.state === "pending_leader" ? "El líder todavía no elevó este pedido." : "El pedido ya fue resuelto.", 409)
+  if (request.state !== "pending_person") throw new MemoryError(409, request.state === "pending_leader" ? "El líder todavía no elevó este pedido." : "El pedido ya fue resuelto.", false, "request_not_pending")
   return request
 }
 
 export async function confirmReadRequest(sql: Sql, requestId: string, phrase: string, userId: string, now = Date.now()) {
   const request = await pendingForPerson(sql, requestId)
-  check(!request.closed_at && !request.removed_at, "La sesión que pidió acceso ya no está activa; el pedido no puede otorgarse.", 409)
+  if (request.closed_at || request.removed_at) throw new MemoryError(409, "La sesión que pidió acceso ya no está activa; el pedido no puede otorgarse.", false, "requester_inactive")
   const verdict = validateGrantPhrase(phrase, { target: request.target_title, nickname: request.nickname, requesterProject: request.requester_title })
-  check(verdict.ok, verdict.ok ? "" : phraseErrors[verdict.code]!, 400)
+  if (!verdict.ok) throw new MemoryError(400, phraseErrors[verdict.code]!, false, `phrase_${verdict.code}`)
   const decided = await sql.query("UPDATE chat_read_requests SET state='granted',decided_at=now(),decided_by_user=$2,confirmation_phrase=$3 WHERE id=$1 AND state='pending_person' RETURNING id", [request.id, userId, phrase.trim()])
-  check(decided.length, "El pedido ya fue resuelto.", 409)
+  if (!decided.length) throw new MemoryError(409, "El pedido ya fue resuelto.", false, "request_not_pending")
   const grantId = randomUUID(), expiresAt = new Date(now + READ_GRANT_MAX_TTL_MS).toISOString()
   await sql.query("INSERT INTO chat_read_grants(id,request_id,session_id,project_id,granted_by_user,granted_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
     [grantId, request.id, request.requester_session_id, request.target_project_id, userId, new Date(now).toISOString(), expiresAt])
