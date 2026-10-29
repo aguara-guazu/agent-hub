@@ -1,3 +1,5 @@
+/* Estilos previos al rediseño: capa legacy, por debajo de ah.css. Se eliminan al migrar las vistas que los usan. */
+@layer legacy {
 /* Programaciones y Entregas: lo propio de las automatizaciones. Lo compartido vive en tokens.css y hub.css. */
 
 .automations-tabs { display: flex; gap: 4px; margin: 0 0 18px; border-bottom: 1px solid var(--border); }
@@ -59,3 +61,5 @@
 .project-automation-roster { display: flex; gap: 12px; border: 0; padding: 0; }
 .project-automation-repos { display: flex; flex-direction: column; gap: 8px; padding-left: 22px; }
 .project-automation-repo-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+
+}

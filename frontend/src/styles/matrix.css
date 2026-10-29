@@ -1,3 +1,5 @@
+/* Estilos previos al rediseño: capa legacy, por debajo de ah.css. Se eliminan al migrar las vistas que los usan. */
+@layer legacy {
 /* La matriz de exposición.
  *
  *  Es la pantalla central y la más densa: decenas de recursos por varios agentes
@@ -476,3 +478,5 @@ table.matrix-table tbody td { padding-block: 3px; }
 /* La columna de recurso no debe crecer para llenar la tabla: el ancho sobrante
    es más útil en las columnas de agente. */
 table.matrix-table thead th.matrix-col-resource { width: 300px; }
+
+}
