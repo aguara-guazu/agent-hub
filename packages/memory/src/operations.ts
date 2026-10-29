@@ -7,7 +7,7 @@ import { UsageNotices } from './usage-notices.js'
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
 import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
 import { callScheduleTool, scheduleDefinitions, scheduleReadOperations } from './schedule-tools.js'
-import { callProjectAutomationTool, projectAutomationDefinitions } from './project-automation-tools.js'
+import { callProjectAutomationTool, projectAutomationDefinitions, projectAutomationReadOperations } from './project-automation-tools.js'
 import { ProjectAutomationService } from './project-automation-service.js'
 import type { ScheduleAdmin } from './schedule-admin.js'
 import type { TeamCatalog } from './team-catalog.js'
@@ -123,7 +123,7 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...teamReadOperations,...scheduleReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
   readonly usage: UsageQuotas

@@ -156,6 +156,8 @@ export class ProjectAutomationService {
     const automation = (await this.db.query('SELECT enabled,delegation_version,channel_id FROM project_automation WHERE project_id=$1', [project.id]))[0]
     const latest = (await this.db.query('SELECT version,document,revoked_at FROM project_delegations WHERE project_id=$1 ORDER BY version DESC LIMIT 1', [project.id]))[0]
     const currentVersion: number | null = automation?.enabled && latest && !latest.revoked_at && latest.version === automation.delegation_version ? latest.version : null
+    // An agent's instruction cannot be verified, so it must have read the state in force; the owner's screen may omit it.
+    if (principal.kind === 'agent') check(input.expected_version !== undefined, 'La activación por un agente exige expected_version: léelo con memory_project_automation_status (null si el proyecto no está activado).', 422)
     if (input.expected_version !== undefined && input.expected_version !== currentVersion) fail(409, 'stale_version', 'La activación cambió desde que se leyó; vuelve a cargarla.')
 
     if (!input.enabled) return this.deactivate(project.id, actor, currentVersion)
@@ -393,6 +395,11 @@ export class ProjectAutomationService {
       out.push({ ...base, executable: true, effect: { repo_id: snapshot.repo_id, repo_path: snapshot.repo_path, canonical_remote_url: snapshot.canonical_remote_url, ref: `refs/heads/${base.branch}`, local_sha: base.local_sha, expected_remote_sha: expected } })
     }
     return out
+  }
+
+  /** Open candidates as recorded, with no network access; `pushCandidates` is what judges them against the remote. */
+  async openPushCandidates(projectId: string) {
+    return (await this.db.query("SELECT id AS candidate_id,branch,local_sha,reason FROM push_candidates WHERE project_id=$1 AND state='open' ORDER BY created_at,id", [projectId])) as Array<{ candidate_id: string; branch: string; local_sha: string; reason: string }>
   }
 
   /** The close run turned these candidates into items of that run; they stop being offered. */

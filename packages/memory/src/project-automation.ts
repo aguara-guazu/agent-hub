@@ -44,9 +44,12 @@ export const activateInput = z.object({
   delegation: delegationDocument.optional(),
   human_instruction: z.string().trim().min(1).max(2000),
   channel: z.object({ name: z.string().trim().min(1).max(200), objective: z.string().trim().min(1).max(2000) }).strict().optional(),
+  /** Version in force that this call was written against (null: the project is not activated). An agent must read it first, so it never replaces what a person just changed. */
+  expected_version: z.number().int().min(1).nullable(),
   request_id: z.string().min(1).max(200),
   session_key: z.string().min(32).max(200).optional(),
 }).strict().refine(value => !value.enabled || value.delegation, { message: 'Activar un proyecto requiere el documento de delegación.', path: ['delegation'] })
+export const automationStatusInput = z.object({ project_id: id, session_key: z.string().min(32).max(200).optional() }).strict()
 export const pushProposeInput = z.object({
   project_id: id,
   repo_path: z.string().min(1).max(4000),

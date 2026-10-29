@@ -32,8 +32,11 @@ describe('delegationDocument', () => {
 
 describe('activation and proposal inputs', () => {
   it('requires the literal human instruction and rejects unknown fields', () => {
-    const base = { project_id: projectId, delegation: document(), human_instruction: 'Activa el proyecto Acme', request_id: 'r1' }
+    const base = { project_id: projectId, delegation: document(), human_instruction: 'Activa el proyecto Acme', expected_version: null, request_id: 'r1' }
     expect(activateInput.safeParse(base).success).toBe(true)
+    expect(activateInput.safeParse({ ...base, expected_version: 3 }).success).toBe(true)
+    expect(activateInput.safeParse({ ...base, expected_version: undefined }).success).toBe(false)
+    expect(activateInput.safeParse({ ...base, expected_version: 0 }).success).toBe(false)
     expect(activateInput.safeParse({ ...base, human_instruction: '   ' }).success).toBe(false)
     expect(activateInput.parse(base).enabled).toBe(true)
     expect(activateInput.safeParse({ ...base, delegation: undefined }).success).toBe(false)

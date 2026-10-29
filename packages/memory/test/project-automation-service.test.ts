@@ -86,19 +86,21 @@ it('reuses existing schedules, respects a human cancellation and reports a templ
 
 it('lets an agent activate only with the words of the person, anchored to its own project channel, and records them as provenance', async () => {
   const { agent, key } = await agentIn(channelId)
-  const call = (over: Record<string, unknown> = {}) => callProjectAutomationTool(service, 'project_automation_activate', { project_id: projectId, delegation: document(), human_instruction: 'Sí, activa el brief de este proyecto', session_key: key, request_id: 'r-1', ...over }, agent)
+  const call = (over: Record<string, unknown> = {}) => callProjectAutomationTool(service, 'project_automation_activate', { project_id: projectId, delegation: document(), human_instruction: 'Sí, activa el brief de este proyecto', expected_version: null, session_key: key, request_id: 'r-1', ...over }, agent)
   expect((await error(call({ human_instruction: undefined })))?.statusCode).toBe(422)
+  expect((await error(call({ expected_version: undefined })))?.statusCode).toBe(422)
   const without = await call()
   expect(without).toMatchObject({ coordinator_state: 'no_channel', automation_channel: null, delegation: { approval_source: 'coordinator_declaration', instruction: 'Sí, activa el brief de este proyecto' }, channel: { id: channelId } })
-  const withChannel = await call({ channel: { name: 'Automatización: Ñandú', objective: 'Coordinar seguimiento' } })
+  expect((await error(call({ expected_version: 7 })))?.code).toBe('stale_version')
+  const withChannel = await call({ expected_version: 1, channel: { name: 'Automatización: Ñandú', objective: 'Coordinar seguimiento' } })
   expect(withChannel).toMatchObject({ coordinator_state: 'ready', automation_channel: { name: 'Automatización: Ñandú', objective: 'Coordinar seguimiento' }, changed: true })
   expect(withChannel.delegation!.version).toBe(2)
   expect(withChannel.delegation!.document).not.toHaveProperty('channel')
   const unrelated = await agentIn(null)
-  const elsewhere = await callProjectAutomationTool(service, 'project_automation_activate', { project_id: otherProject, delegation: document(), human_instruction: 'Activa también el otro', session_key: unrelated.key, request_id: 'r-2', channel: { name: 'x', objective: 'y' } }, unrelated.agent)
+  const elsewhere = await callProjectAutomationTool(service, 'project_automation_activate', { project_id: otherProject, delegation: document(), human_instruction: 'Activa también el otro', expected_version: null, session_key: unrelated.key, request_id: 'r-2', channel: { name: 'x', objective: 'y' } }, unrelated.agent)
   expect(elsewhere).toMatchObject({ channel: null, coordinator_state: 'no_channel' })
   const profile: AgentContext = { agent_id: 'run', session_id: 'native:run', cli_kind: 'hub_run_action', client: 'Hub', cwd: dir }
-  expect((await error(callProjectAutomationTool(service, 'project_automation_activate', { project_id: projectId, delegation: document(), human_instruction: 'x', request_id: 'r-3' }, profile)))?.statusCode).toBe(403)
+  expect((await error(callProjectAutomationTool(service, 'project_automation_activate', { project_id: projectId, delegation: document(), human_instruction: 'x', expected_version: null, request_id: 'r-3' }, profile)))?.statusCode).toBe(403)
 })
 
 it('creates a new version only when the delegation changed, retiring plans and the old leader, and honors expected_version', async () => {
@@ -256,4 +258,17 @@ it('exposes the policy of a delegated repository only while the delegation in fo
   expect(await delegatedPushPolicy(db, repoId)).not.toBeNull()
   await service.activate(owner, { project_id: projectId, enabled: false, channel_id: null })
   expect(await delegatedPushPolicy(db, repoId)).toBeNull()
+})
+
+it('lets an agent read the state it must echo back, with the open push candidates and without any effect or code', async () => {
+  const { agent, key } = await agentIn(channelId)
+  const status = (over: Record<string, unknown> = {}) => callProjectAutomationTool(service, 'project_automation_status', { project_id: projectId, session_key: key, ...over }, agent)
+  expect(await status()).toMatchObject({ enabled: false, delegation: null, push_candidates: [] })
+  const repoId = await repositories()
+  await service.activate(owner, { project_id: projectId, enabled: true, delegation: document({ item_kinds: ['git_push'], repository_ids: [repoId] }), channel_id: null })
+  await propose(agent, key)
+  const view = await status()
+  expect(view).toMatchObject({ enabled: true, delegation: { version: 1, approval_source: 'owner_ui' }, push_candidates: [{ branch: 'feature/x', local_sha: SHA, reason: 'Corrección de hoy' }] })
+  expect(view.push_candidates[0]).not.toHaveProperty('effect')
+  expect((await error(status({ extra: 1 })))?.statusCode).toBeGreaterThanOrEqual(400)
 })
