@@ -1041,9 +1041,10 @@ export class LocalChat {
       // Server-enforced write rule: leader or non-displaced member of the thread's channel, or a linked team thread.
       if(teamRoot || !(await writeAssociation(sql,who.id,thread.channel_id))) {
         linkedTeam=await this.teamForThread(sql,who,thread)
+        check(linkedTeam || teamRoot,'No estás asociado a este canal (o fuiste desplazado de su liderazgo): podés leerlo, no escribir. Para recuperar un canal tomado usá memory_chat_take_leadership.',403)
         check(linkedTeam,'Sólo el master y miembros vinculados pueden escribir en un hilo activo de su equipo.',403)
         if(leadsElsewhere)await this.writableChannel(who.channel_id)
-      } else if(leadsElsewhere)await this.writableChannel(thread.channel_id)
+      } else await this.writableChannel(thread.channel_id)
       const channelLeadership=(await sql.query('SELECT leader_id,displaced_leader_id FROM chat_channels WHERE id=$1',[thread.channel_id]))[0]!
       const recipients=new Set<string>(input.mentions)
       let replied:Record<string,any>|undefined
