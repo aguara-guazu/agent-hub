@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { LanguagePreference } from "./i18n.js"
 import { IPC, type AgentHubBridge, type ClientRestartResult, type CoreStatus, type OpenFileResult } from './ipc.js'
 
 /**
@@ -35,6 +36,8 @@ const bridge: AgentHubBridge = {
       ipcRenderer.removeListener(IPC.navigate, handler)
     }
   },
+  getLanguage: () => ipcRenderer.invoke(IPC.getLanguage) as Promise<LanguagePreference>,
+  setLanguage: (preference: LanguagePreference) => ipcRenderer.invoke(IPC.setLanguage, preference) as Promise<LanguagePreference>,
 }
 
 /**

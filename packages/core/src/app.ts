@@ -79,6 +79,63 @@ import { jiraWriteServerId, readJiraServerSelection, saveJiraServerId } from './
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
 const ORG_ROLES = ['owner', 'admin', 'member']
 
+/**
+ * Idioma de las páginas HTML del retorno de OAuth. El navegador vuelve a `redirect_uri`, que el proveedor compara
+ * exacta con la registrada: no admite un parámetro de idioma. Se toma el `Accept-Language` de `oauth/start` (el
+ * escritorio lo fija al idioma activo de la app), después el del navegador que vuelve, y por último `es`.
+ */
+type OAuthLanguage = "es" | "en"
+
+const OAUTH_TEXTS: Record<OAuthLanguage, Record<
+  "close" | "unknownTitle" | "unknownDetail" | "goneTitle" | "goneDetail" | "deniedTitle" | "missingCodeTitle" | "missingCodeDetail"
+  | "exchangeFailedTitle" | "authorizedTitle" | "toolsOne" | "toolsOther" | "probeFailed", string>> = {
+  es: {
+    close: "Podés cerrar esta pestaña y volver a Agent Hub.",
+    unknownTitle: "Solicitud desconocida o vencida",
+    unknownDetail: "Volvé a Agent Hub y usá «Autorizar cuenta» otra vez.",
+    goneTitle: "El servidor ya no existe",
+    goneDetail: "Se eliminó del catálogo mientras autorizabas.",
+    deniedTitle: "La autorización no se completó",
+    missingCodeTitle: "Falta el código de autorización",
+    missingCodeDetail: "El servidor volvió sin el parámetro code.",
+    exchangeFailedTitle: "No se pudo completar la autorización",
+    authorizedTitle: "Cuenta autorizada",
+    toolsOne: "{name}: {count} herramienta disponible.",
+    toolsOther: "{name}: {count} herramientas disponibles.",
+    probeFailed: "{name} quedó autorizado, pero la verificación falló: {error}",
+  },
+  en: {
+    close: "You can close this tab and go back to Agent Hub.",
+    unknownTitle: "Unknown or expired request",
+    unknownDetail: "Go back to Agent Hub and use “Authorize account” again.",
+    goneTitle: "The server no longer exists",
+    goneDetail: "It was removed from the catalog while you were authorizing.",
+    deniedTitle: "Authorization was not completed",
+    missingCodeTitle: "Authorization code missing",
+    missingCodeDetail: "The server returned without the code parameter.",
+    exchangeFailedTitle: "Could not complete the authorization",
+    authorizedTitle: "Account authorized",
+    toolsOne: "{name}: {count} tool available.",
+    toolsOther: "{name}: {count} tools available.",
+    probeFailed: "{name} is authorized, but the check failed: {error}",
+  },
+}
+
+/** Primer idioma soportado de un `Accept-Language` (en orden de aparición; los `q` que manda Chromium ya vienen decrecientes). */
+function oauthLanguage(header: string | string[] | undefined): OAuthLanguage | null {
+  const value = Array.isArray(header) ? header.join(",") : header ?? ""
+  for (const part of value.split(",")) {
+    const base = part.trim().split(";")[0]!.toLowerCase().split("-")[0]
+    if (base === "es" || base === "en") return base
+  }
+  return null
+}
+
+/** Interpolación de `{nombre}` con reemplazo por función: los valores (nombres de servidor, errores) no interpretan `$`. */
+function fillText(template: string, vars: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (match, name: string) => name in vars ? String(vars[name]) : match)
+}
+
 /** Error HTTP con código explícito, como las `HTTPException` del backend. */
 export class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -801,7 +858,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   // ------------------------------------------------------------ oauth
   // Flujos en curso: `state` -> server. Viven en memoria y vencen solos. El navegador
   // vuelve a `/api/oauth/callback` sin sesión de la consola: el `state` es la prueba.
-  const pendingOAuth = new Map<string, { serverId: string; expiresAt: number }>()
+  const pendingOAuth = new Map<string, { serverId: string; expiresAt: number; language: OAuthLanguage | null }>()
   const OAUTH_PENDING_TTL_MS = 10 * 60_000
   function prunePendingOAuth(): void {
     const now = Date.now()
@@ -823,10 +880,10 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
     return text.replace(/[&<>"']/g, (c) => map[c] ?? c)
   }
-  function oauthPage(title: string, detail: string): string {
-    return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} · Agent Hub</title>
+  function oauthPage(language: OAuthLanguage, title: string, detail: string): string {
+    return `<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} · Agent Hub</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;background:#0f1412;color:#e8ede9;display:grid;place-items:center;min-height:100vh;margin:0}main{max-width:32rem;padding:2rem}h1{font-size:1.4rem}p{color:#a7b0aa;line-height:1.5}</style></head>
-<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p><p>Podés cerrar esta pestaña y volver a Agent Hub.</p></main></body></html>`
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p><p>${escapeHtml(OAUTH_TEXTS[language].close)}</p></main></body></html>`
   }
   async function probeAndApply(server: McpServerRow) {
     const result = await probeServer(server, PROBE_TIMEOUT_MS, probeOptions)
@@ -857,7 +914,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const state = provider.pendingState()
     if (!url || !state) throw new HttpError(502, 'el servidor de autorización no devolvió una URL utilizable')
     prunePendingOAuth()
-    pendingOAuth.set(state, { serverId: server.id, expiresAt: Date.now() + OAUTH_PENDING_TTL_MS })
+    pendingOAuth.set(state, { serverId: server.id, expiresAt: Date.now() + OAUTH_PENDING_TTL_MS, language: oauthLanguage(request.headers['accept-language']) })
     return { status: 'redirect', authorization_url: url.toString() }
   })
 
@@ -866,18 +923,20 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const state = query.state ?? ''
     prunePendingOAuth()
     const pending = state ? pendingOAuth.get(state) : undefined
+    const language = pending?.language ?? oauthLanguage(request.headers['accept-language']) ?? 'es'
+    const text = OAUTH_TEXTS[language]
     reply.type('text/html; charset=utf-8')
-    if (!pending) return reply.code(400).send(oauthPage('Solicitud desconocida o vencida', 'Volvé a Agent Hub y usá «Conectar cuenta» otra vez.'))
+    if (!pending) return reply.code(400).send(oauthPage(language, text.unknownTitle, text.unknownDetail))
     pendingOAuth.delete(state)
     const server = store.server(pending.serverId)
-    if (!server) return reply.code(404).send(oauthPage('El server ya no existe', 'Se eliminó del catálogo mientras autorizabas.'))
+    if (!server) return reply.code(404).send(oauthPage(language, text.goneTitle, text.goneDetail))
     if (query.error) {
       const detail = query.error_description || query.error
       store.updateServer(server.id, { last_probe_error: `autorización rechazada: ${detail}` })
       notifyAfterCommit('user', server.user_id)
-      return reply.code(400).send(oauthPage('La autorización no se completó', detail))
+      return reply.code(400).send(oauthPage(language, text.deniedTitle, detail))
     }
-    if (!query.code) return reply.code(400).send(oauthPage('Falta el código de autorización', 'El servidor volvió sin el parámetro code.'))
+    if (!query.code) return reply.code(400).send(oauthPage(language, text.missingCodeTitle, text.missingCodeDetail))
     try {
       const outcome = await oauthAuthorize(oauthProvider(server), { serverUrl: server.url, authorizationCode: query.code })
       if (outcome !== 'AUTHORIZED') throw new Error('el servidor no entregó tokens')
@@ -885,12 +944,12 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       const detail = describeError(error)
       store.updateServer(server.id, { last_probe_error: `no se pudo canjear la autorización: ${detail}` })
       notifyAfterCommit('user', server.user_id)
-      return reply.code(502).send(oauthPage('No se pudo completar la conexión', detail))
+      return reply.code(502).send(oauthPage(language, text.exchangeFailedTitle, detail))
     }
     const result = await probeAndApply(server)
-    return reply.send(oauthPage('Cuenta conectada', result.ok
-      ? `${server.display_name}: ${result.tools.length} herramientas disponibles.`
-      : `${server.display_name} quedó autorizado, pero el sondeo falló: ${result.error}`))
+    return reply.send(oauthPage(language, text.authorizedTitle, result.ok
+      ? fillText(result.tools.length === 1 ? text.toolsOne : text.toolsOther, { name: server.display_name, count: result.tools.length })
+      : fillText(text.probeFailed, { name: server.display_name, error: String(result.error) })))
   })
 
   fastify.get('/api/oauth/settings', async (request) => {

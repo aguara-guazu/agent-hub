@@ -47,8 +47,13 @@ export function applyLanguage(language: Language): void {
   if (i18n.language !== language) void i18n.changeLanguage(language)
 }
 
-/** Guarda la preferencia, la aplica y avisa a los suscriptores. */
+/** Guarda la preferencia, la aplica, avisa a los suscriptores y, en escritorio, la pasa al proceso principal. */
 export function setLanguagePreference(preference: LanguagePreference): void {
+  storePreference(preference)
+  void window.agentHub?.setLanguage?.(preference).catch(() => undefined)
+}
+
+function storePreference(preference: LanguagePreference): void {
   try {
     if (preference === "auto") localStorage.removeItem(LANGUAGE_STORAGE_KEY)
     else localStorage.setItem(LANGUAGE_STORAGE_KEY, preference)
@@ -74,11 +79,26 @@ export function useLanguagePreference(): [LanguagePreference, (preference: Langu
 }
 
 /**
+ * En escritorio manda la preferencia que guarda el proceso principal; localStorage queda como copia para el arranque
+ * síncrono. Si el escritorio no tiene ninguna (`auto`) y localStorage sí, es una elección previa al puente: se le pasa.
+ */
+function syncFromDesktop(): void {
+  const bridge = window.agentHub
+  if (!bridge?.getLanguage) return
+  void bridge.getLanguage().then(stored => {
+    if (!isLanguagePreference(stored)) return
+    if (stored === "auto" && current !== "auto") void bridge.setLanguage?.(current).catch(() => undefined)
+    else if (stored !== current) storePreference(stored)
+  }).catch(() => undefined)
+}
+
+/**
  * Sigue cambios externos: el idioma del sistema (si la preferencia es `auto`) y
  * otra ventana del mismo origen que modifique la preferencia guardada.
  */
 export function watchLanguageSources(): () => void {
   if (typeof window === "undefined") return () => undefined
+  syncFromDesktop()
   const onSystemChange = () => { if (current === "auto") applyLanguage(systemLanguage()) }
   const onStorage = (event: StorageEvent) => {
     if (event.key !== LANGUAGE_STORAGE_KEY) return

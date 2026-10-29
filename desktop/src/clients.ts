@@ -23,6 +23,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { win32 } from 'node:path'
+import { t } from "./i18n.js"
 
 export const CLAUDE_DESKTOP_BUNDLE_ID = 'com.anthropic.claudefordesktop'
 const CLAUDE_DESKTOP_PROCESS_MAC = 'Claude'
@@ -109,7 +110,7 @@ export function windowsLaunchCandidates(env: NodeJS.ProcessEnv): string[] {
 /** Cierra Claude Desktop con cortesía y la vuelve a abrir. Con la app cerrada, sólo la abre. */
 export async function restartClient(cliKind: string, deps: ClientDeps = defaultClientDeps()): Promise<RestartOutcome> {
   if (!supportsClientRestart(cliKind, deps.platform)) {
-    return { ok: false, detail: `el hub no sabe reiniciar ${cliKind} en ${deps.platform}` }
+    return { ok: false, detail: t("clientRestart.unsupported", { client: cliKind, platform: deps.platform }) }
   }
   const running = await isClientRunning(cliKind, deps)
   if (running) {
@@ -124,16 +125,16 @@ export async function restartClient(cliKind: string, deps: ClientDeps = defaultC
       ])
     }
     if (!(await waitUntilClosed(cliKind, deps))) {
-      return { ok: false, detail: 'Claude Desktop no se cerró sola en 15 segundos; cerrala a mano y volvé a abrirla para que cargue los cambios' }
+      return { ok: false, detail: t("clientRestart.didNotClose") }
     }
   }
   if (deps.platform === 'darwin') {
     const opened = await deps.run('open', ['-b', CLAUDE_DESKTOP_BUNDLE_ID])
-    if (opened.code !== 0) return { ok: false, detail: 'Claude Desktop se cerró pero no se pudo volver a abrir; abrila desde Aplicaciones' }
-    return { ok: true, detail: running ? 'Claude Desktop se cerró y se volvió a abrir.' : 'Claude Desktop no estaba abierta; se abrió.' }
+    if (opened.code !== 0) return { ok: false, detail: t("clientRestart.reopenFailed") }
+    return { ok: true, detail: t(running ? "clientRestart.reopened" : "clientRestart.opened") }
   }
   const executable = windowsLaunchCandidates(deps.env).find((path) => deps.exists(path))
   if (executable) deps.launch(executable, [])
   else deps.launch('cmd', ['/c', 'start', '', 'claude://'])
-  return { ok: true, detail: running ? 'Claude Desktop se cerró y se volvió a abrir.' : 'Claude Desktop no estaba abierta; se abrió.' }
+  return { ok: true, detail: t(running ? "clientRestart.reopened" : "clientRestart.opened") }
 }
