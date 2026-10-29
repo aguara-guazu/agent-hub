@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { isAbsolute } from 'node:path'
+import { basename, isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
 import { childEnv } from '@agenthub/gateway/platform'
 import { check, MemoryError } from './contracts.js'
@@ -11,7 +11,7 @@ import type { AgentContext } from './agents.js'
 import type { LocalChat } from './local-chat.js'
 import type { ScheduleAdmin } from './schedule-admin.js'
 import type { TeamOrchestration } from './team-orchestration.js'
-import { isRunProfileAgent } from './schedule-contract.js'
+import { isRunProfileAgent, type AttentionLine } from './schedule-contract.js'
 import { hash } from './store.js'
 import { delegationDocument, snapshotDelegation, type DelegationDocument, type RepositorySnapshot, type StoredDelegation } from './project-automation.js'
 
@@ -378,10 +378,10 @@ export class ProjectAutomationService {
    */
   async pushCandidates(projectId: string) {
     const delegation = await this.currentDelegation(projectId)
-    const rows = await this.db.query("SELECT id,repo_id,branch,local_sha,reason FROM push_candidates WHERE project_id=$1 AND state='open' ORDER BY created_at,id", [projectId])
-    const out: Array<{ candidate_id: string; branch: string; local_sha: string; reason: string; executable: boolean; not_executable_reason?: string; effect?: PushEffectView }> = []
+    const rows = await this.db.query("SELECT id,repo_id,branch,local_sha,reason,created_at FROM push_candidates WHERE project_id=$1 AND state='open' ORDER BY created_at,id", [projectId])
+    const out: Array<{ candidate_id: string; branch: string; local_sha: string; reason: string; created_at: string; executable: boolean; not_executable_reason?: string; effect?: PushEffectView }> = []
     for (const row of rows) {
-      const base = { candidate_id: row.id as string, branch: row.branch as string, local_sha: row.local_sha as string, reason: row.reason as string }
+      const base = { candidate_id: row.id as string, branch: row.branch as string, local_sha: row.local_sha as string, reason: row.reason as string, created_at: String(row.created_at) }
       const snapshot = delegation?.document.item_kinds.includes('git_push') ? delegation.document.repositories.find(entry => entry.repo_id === row.repo_id) : undefined
       if (!snapshot) { out.push({ ...base, executable: false, not_executable_reason: 'repository_not_delegated' }); continue }
       const allowed = snapshot.allowed_branches.some(entry => entry.endsWith('/*') ? base.branch.startsWith(entry.slice(0, -1)) && base.branch.length > entry.length - 1 : entry === base.branch)
@@ -400,6 +400,36 @@ export class ProjectAutomationService {
   /** Open candidates as recorded, with no network access; `pushCandidates` is what judges them against the remote. */
   async openPushCandidates(projectId: string) {
     return (await this.db.query("SELECT id AS candidate_id,branch,local_sha,reason FROM push_candidates WHERE project_id=$1 AND state='open' ORDER BY created_at,id", [projectId])) as Array<{ candidate_id: string; branch: string; local_sha: string; reason: string }>
+  }
+
+  /** Projects whose delegation is in force: automation enabled and the recorded version not revoked, the same predicate as `currentDelegation` and `delegatedPushPolicy`. */
+  async activatedProjects(): Promise<Array<{ project_id: string; title: string; since: string }>> {
+    return (await this.db.query(`SELECT a.project_id,e.title,d.created_at AS since FROM project_automation a
+      JOIN project_delegations d ON d.project_id=a.project_id AND d.version=a.delegation_version AND d.revoked_at IS NULL
+      JOIN entities e ON e.id=a.project_id AND e.kind='project' WHERE a.enabled=1 ORDER BY e.title,e.id`)).map(row => ({ project_id: String(row.project_id), title: String(row.title), since: String(row.since) }))
+  }
+
+  /**
+   * Readers the daily close consumes. A push line carries its kind apart from the effect, which stays exactly the canonical `git_push` effect the
+   * executor parses; only candidates judged executable now are offered, so a moved branch, an already pushed SHA or an unreachable remote never reach the person.
+   */
+  attentionReaders(): { activated_projects: () => Promise<AttentionLine[]>; push_candidates: () => Promise<Array<AttentionLine & { kind: 'git_push' }>> } {
+    return {
+      activated_projects: async () => (await this.activatedProjects()).map(row => ({ ref: row.project_id, summary: `Automatización activa en ${row.title}`, at: row.since, project_id: row.project_id })),
+      push_candidates: async () => {
+        const lines: Array<AttentionLine & { kind: 'git_push' }> = []
+        for (const project of await this.activatedProjects()) {
+          const repositories = new Map((await this.repositories(project.project_id)).map(entry => [entry.id, basename(entry.repo_path)]))
+          for (const candidate of await this.pushCandidates(project.project_id)) {
+            if (!candidate.executable || !candidate.effect) continue
+            const reason = candidate.reason.replace(/\s+/g, ' ').trim().slice(0, 200)
+            lines.push({ ref: candidate.candidate_id, kind: 'git_push', project_id: project.project_id, at: candidate.created_at, effect: candidate.effect,
+              summary: `Empujar ${candidate.branch} de ${repositories.get(candidate.effect.repo_id) ?? basename(candidate.effect.repo_path)} (${candidate.local_sha.slice(0, 7)})${reason ? `: ${reason}` : ''}` })
+          }
+        }
+        return lines
+      },
+    }
   }
 
   /** The close run turned these candidates into items of that run; they stop being offered. */

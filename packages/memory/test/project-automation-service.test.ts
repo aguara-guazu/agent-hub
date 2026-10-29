@@ -272,3 +272,39 @@ it('lets an agent read the state it must echo back, with the open push candidate
   expect(view.push_candidates[0]).not.toHaveProperty('effect')
   expect((await error(status({ extra: 1 })))?.statusCode).toBeGreaterThanOrEqual(400)
 })
+
+it('lists as activated only the projects whose delegation is in force, for any item kind', async () => {
+  const readers = service.attentionReaders()
+  expect(await readers.activated_projects()).toEqual([])
+  await service.activate(owner, { project_id: projectId, enabled: true, delegation: document(), channel_id: null })
+  await service.activate(owner, { project_id: otherProject, enabled: true, delegation: document(), channel_id: null })
+  const lines = await readers.activated_projects()
+  expect(lines.map(line => line.project_id)).toEqual([otherProject, projectId])
+  expect(lines[1]).toMatchObject({ ref: projectId, summary: 'Automatización activa en Proyecto Ñandú' })
+  expect(Number.isNaN(Date.parse(lines[1]!.at))).toBe(false)
+  await service.activate(owner, { project_id: otherProject, enabled: false, channel_id: null })
+  expect((await readers.activated_projects()).map(line => line.project_id)).toEqual([projectId])
+  await service.activate(owner, { project_id: projectId, enabled: false, channel_id: null })
+  expect(await readers.activated_projects()).toEqual([])
+})
+
+it('offers only executable push candidates as lines whose effect is the canonical effect and whose kind travels apart', async () => {
+  const repoId = await activatedForPush()
+  const readers = service.attentionReaders()
+  expect(await readers.push_candidates()).toEqual([])
+  const { agent, key } = await agentIn(channelId)
+  await propose(agent, key, { reason: '  Corrección\n de hoy  ' })
+  remoteTip = OLD
+  const [line] = await readers.push_candidates()
+  expect(line).toMatchObject({ kind: 'git_push', project_id: projectId, summary: `Empujar feature/x de app (${SHA.slice(0, 7)}): Corrección de hoy` })
+  expect(line!.effect).toEqual({ repo_id: repoId, repo_path: repo, canonical_remote_url: URL, ref: 'refs/heads/feature/x', local_sha: SHA, expected_remote_sha: OLD })
+  expect(line!.ref).toBe((await service.pushCandidates(projectId))[0]!.candidate_id)
+  for (const [mutate, restore] of [[() => { remoteTip = SHA }, () => { remoteTip = OLD }], [() => { remoteTip = undefined as unknown as string }, () => { remoteTip = OLD }], [() => { tip = OLD }, () => { tip = SHA }]] as const) {
+    mutate()
+    expect(await readers.push_candidates()).toEqual([])
+    restore()
+  }
+  expect(await readers.push_candidates()).toHaveLength(1)
+  await service.activate(owner, { project_id: projectId, enabled: false, channel_id: null })
+  expect(await readers.push_candidates()).toEqual([])
+})
