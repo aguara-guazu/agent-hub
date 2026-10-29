@@ -10,3 +10,16 @@ it('resume solo conteos y nombres de error y calla los ciclos sin actividad', ()
   expect(summarizeReplyTick({ slack: { inspected: 2, rejected: 1 } })).toEqual({ slack: { rejected: 1 } })
   expect(summarizeReplyTick({ gmail: { inspected: 2, rejected: { not_sent: 2, wrong_thread: 1 } }, slack: { rejected: {} } })).toEqual({ gmail: { rejected: 3 } })
 })
+
+it('el barrido de recuperación de la flota corre después de que el reloj registre los incidentes de reinicio, aunque el reloj falle', async () => {
+  const { startClockThenRecover } = await import('../src/service.js')
+  const order: string[] = []
+  await startClockThenRecover({ start: async () => { await new Promise(resolve => setTimeout(resolve, 20)); order.push('reloj') } }, { recover: async () => { order.push('barrido') } })
+  expect(order).toEqual(['reloj', 'barrido'])
+  order.length = 0
+  const quiet = (await import('vitest')).vi.spyOn(console, 'error').mockImplementation(() => undefined)
+  await startClockThenRecover({ start: async () => { throw new Error('falla') } }, { recover: async () => { order.push('barrido') } })
+  expect(order).toEqual(['barrido'])
+  await startClockThenRecover({ start: async () => undefined }, undefined)
+  quiet.mockRestore()
+})

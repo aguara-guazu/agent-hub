@@ -28,6 +28,14 @@ import './schedule-templates.js'
 import { createFleetRecovery } from './fleet-recovery.js'
 
 const REPLY_TICK_MS = 60_000
+/**
+ * The fleet sweep decides a resume from the restart incidents the clock writes when it starts, so it must run after them: a sweep that came first would
+ * skip every member and nothing would trigger it again once the quota was already back.
+ */
+export async function startClockThenRecover(runtime: { start(): Promise<void> }, recovery: { recover(): Promise<unknown> } | undefined) {
+  await runtime.start().catch(error => console.error('[schedules]', error instanceof Error ? error.message : 'falló'))
+  await recovery?.recover().catch(error => console.error('[fleet-recovery]', error instanceof Error ? error.message : 'falló'))
+}
 /** Counts and error names only; a cycle without activity leaves no event. */
 export function summarizeReplyTick(result: unknown): Record<string, unknown> | null {
   if (!result || typeof result !== 'object') return null
@@ -110,9 +118,6 @@ export class MemoryService {
       { catalog: new TeamCatalog(this.cliExtraction), orca: chat => new HubTeamRuntime(chat,this.directory,this.collaborationEnabled) }, this.collaborationEnabled)
     operations.chat.usageEnabled=this.usageEnabled
     if (this.orchestrationOwner) await operations.teams?.initialize()
-    // Members that stopped on an exhausted quota while the Hub was down are looked at once the quota state is readable.
-    if (this.orchestrationOwner) void createFleetRecovery(db, operations.usage, operations.fleet, operations.usageNotices)?.recover()
-      .catch(error => console.error('[fleet-recovery]', error instanceof Error ? error.message : 'falló'))
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     this.current = { db, store, ai, operations, runner, network: new SharedNetwork(operations.sharing) }
     if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
@@ -142,8 +147,12 @@ export class MemoryService {
   }
   /** Applies an automations switch change now instead of at the next tick. */
   async kickSchedules() { (await this.get()).schedules?.runtime.kick() }
-  /** Starts the clock; independent of the collaboration switch. */
-  async startSchedules() { await (await this.get()).schedules?.runtime.start() }
+  /** Starts the clock, independent of the collaboration switch, and then looks at members that stopped on an exhausted quota while the Hub was down. */
+  async startSchedules() {
+    const { schedules, db, operations } = await this.get()
+    if (!schedules) return
+    await startClockThenRecover(schedules.runtime, createFleetRecovery(db, operations.usage, operations.fleet, operations.usageNotices))
+  }
   async status() {
     const configuration = { database_configured: true, google_client_configured: this.vault.has('google-client'),
       deepseek_configured: this.vault.has('deepseek'), google_redirect_url: this.google.redirectUrl }
