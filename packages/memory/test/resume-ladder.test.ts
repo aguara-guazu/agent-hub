@@ -154,3 +154,29 @@ it('accepts only restorable native IDs', () => {
   expect(restorableNativeId('3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11')).toBe(true)
   for (const id of ['tui:abc', 'last', '', 'a b', 'a\nb', 42, undefined, 'x'.repeat(301)]) expect(restorableNativeId(id)).toBe(false)
 })
+
+it('resumes the same conversation without forking only when the Hub proves the child process exited', () => {
+  const flags = { version: '2.1.300', flags: ['--print', '--resume'] }
+  const claudeOrigin = origin({ cli: 'claude_code', surface: 'fleet', native_id: '3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11' })
+  const same = target({ cli: 'claude_code', same_conversation: true })
+  expect(planResume(claudeOrigin, same, flags)).toMatchObject({ rung: 'linked_new', reason: 'no_fork_or_exclusive_resume' })
+  const proven = planResume(claudeOrigin, same, flags, { exclusive_by: 'hub_process_exit' })
+  expect(proven).toMatchObject({ rung: 'exclusive_resume', native_id: '3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11', headless: true })
+  expect(proven.evidence).toContain('exclusive_by=hub_process_exit')
+  expect(proven.downgrades.some(item => item.startsWith('fork_'))).toBe(false)
+  expect(planResume(claudeOrigin, same, flags, { exclusive_by: 'hub_process_exit', process_alive: true }).rung).toBe('linked_new')
+})
+
+it('keeps the Hub-proven resume conditional on installed evidence, account and directory', () => {
+  const proof = { exclusive_by: 'hub_process_exit' as const }
+  const base = origin({ cli: 'claude_code', surface: 'fleet', native_id: '3f9d2b6a-1c64-4b0e-8a77-0d5f2f6c9e11' })
+  const same = target({ cli: 'claude_code', same_conversation: true })
+  expect(planResume(base, same, undefined, proof).rung).toBe('linked_new')
+  const flags = { version: '2.1.300', flags: ['--print', '--resume'] }
+  expect(planResume(base, { ...same, account: 'account-b' }, flags, proof)).toMatchObject({ rung: 'linked_new', reason: 'account_mismatch' })
+  expect(planResume(base, { ...same, cwd: '/elsewhere' }, flags, proof)).toMatchObject({ rung: 'linked_new', reason: 'cwd_incompatible' })
+  const { account: _omitted, ...unknown } = same
+  expect(planResume(base, unknown, flags, proof)).toMatchObject({ rung: 'linked_new', reason: 'account_unverified' })
+  const kiro = planResume(origin({ cli: 'kiro', surface: 'fleet', native_id: 'kiro-1' }), target({ cli: 'kiro', same_conversation: true }), { flags: [] }, proof)
+  expect(kiro.rung).toBe('linked_new')
+})

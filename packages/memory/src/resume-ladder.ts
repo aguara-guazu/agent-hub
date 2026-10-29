@@ -32,9 +32,14 @@ export interface ResumeTarget {
   profile: { restricted: boolean; verified: boolean }
   project_id?: string | null
   account?: string | null
+  /** Continue the very same conversation (a member that failed in place): skips the fork rung. */
+  same_conversation?: boolean
 }
-/** Diagnostic only: absence of a process, lease or Watch never proves that nobody else can write to the session. */
-export interface OriginObservation { process_alive?: boolean | null; lease_active?: boolean | null; watch_active?: boolean | null }
+/**
+ * process_alive, lease_active and watch_active are diagnostic only: their absence never proves that nobody else can write
+ * to the session. exclusive_by is the one accepted proof: the Hub owns the child process and confirmed its exit.
+ */
+export interface OriginObservation { process_alive?: boolean | null; lease_active?: boolean | null; watch_active?: boolean | null; exclusive_by?: 'hub_process_exit' }
 export interface ResumePlan {
   rung: ResumeRung
   reason: string
@@ -75,11 +80,14 @@ export function planResume(origin: ResumeOrigin, target: ResumeTarget, installed
 
   const nativeId = origin.native_id!
   const forkName: ResumeCapabilityName = target.headless ? 'fork_headless' : 'fork_interactive'
-  const fork = status(forkName)
-  if (fork === 'supported') return { rung: 'fork', reason: forkName, downgrades, evidence, native_id: nativeId, headless: target.headless }
-  downgrades.push(`${forkName}_${fork}`)
+  if (!target.same_conversation) {
+    const fork = status(forkName)
+    if (fork === 'supported') return { rung: 'fork', reason: forkName, downgrades, evidence, native_id: nativeId, headless: target.headless }
+    downgrades.push(`${forkName}_${fork}`)
+  }
 
-  const resume = status('resume_by_id'), headless = target.headless ? status('headless_resume') : 'supported', lock = status('exclusive_resume')
+  const resume = status('resume_by_id'), headless = target.headless ? status('headless_resume') : 'supported'
+  const lock: CapabilityStatus = observed.exclusive_by === 'hub_process_exit' ? 'supported' : status('exclusive_resume')
   const active = observed.process_alive === true || observed.lease_active === true || observed.watch_active === true
   if (resume === 'supported' && headless === 'supported' && lock === 'supported' && !active) {
     return { rung: 'exclusive_resume', reason: 'adapter_exclusive_resume', downgrades, evidence, native_id: nativeId, headless: target.headless }
