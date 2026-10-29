@@ -5,7 +5,7 @@ import {
 } from "../../components/ui"
 import { useFormat, useT } from "../../i18n"
 import { relativeTime } from "../../components/ui"
-import { useAutomationSettings, useAutomationSettingsMutation, useRuns, useScheduleActions, useSchedules } from "../../lib/automations"
+import { restoreErrorCode, useAutomationSettings, useAutomationSettingsMutation, useRuns, useScheduleActions, useSchedules } from "../../lib/automations"
 import type { RunListItem, ScheduleView } from "../../lib/automations"
 import { DeliveryPanel } from "./DeliveryPanel"
 import { SchedulePanel } from "./SchedulePanel"
@@ -120,15 +120,31 @@ export default function AutomationsPage() {
     toast.show({ kind: "info", message: t("toast.runQueued", { name: item.title }), undo: () => { cancel(key) }, onCommit: () => { void commit(key) } })
   }
 
+  /** Cancela en el acto; «Deshacer» la restaura con la revisión que devolvió el cancel (ventana de 10 min en el servidor). */
   function remove(item: ScheduleView) {
-    const key = `cancel-${item.id}`
     const unhide = () => setHidden(current => { const next = new Set(current); next.delete(item.id); return next })
     setHidden(current => new Set(current).add(item.id))
     setSelectedId(current => (current === item.id ? null : current))
-    deferAction(key, `/memory/schedules/${encodeURIComponent(item.id)}/cancel`, { expected_revision: item.revision },
-      error => { unhide(); fail(t("toast.deleteFailed", { name: item.title }), error) },
-      () => { void schedules.refetch() })
-    toast.show({ message: t("toast.deleted", { name: item.title }), undo: () => { cancel(key); unhide() }, onCommit: () => { void commit(key) } })
+    actions.cancel.mutate({ id: item.id, revision: item.revision }, {
+      onSuccess: cancelled => {
+        unhide()
+        toast.show({ message: t("toast.deleted", { name: item.title }), undo: () => restore(item, cancelled.revision) })
+      },
+      onError: error => { unhide(); fail(t("toast.deleteFailed", { name: item.title }), error) },
+    })
+  }
+
+  function restore(item: ScheduleView, revision: number) {
+    actions.restore.mutate({ id: item.id, revision }, {
+      onSuccess: restored => {
+        const aborted = restored.restore.aborted_runs.length
+        if (aborted > 0) toast.show({ kind: "info", message: t("toast.restored", { name: item.title }), detail: plural("toast.abortedRuns", aborted), duration: 10000 })
+      },
+      onError: error => {
+        const code = restoreErrorCode(error)
+        toast.error(t("toast.restoreFailed", { name: item.title }), code ? t(`restoreErrors.${code}`) : actionError(error))
+      },
+    })
   }
 
   function enableAutomations() {

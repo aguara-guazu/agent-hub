@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import type { ScheduleRestoreInfo } from "@agenthub/shared"
 import { api, ApiError } from "./api"
 import { useToast } from "../components/Toast"
 import { useT } from "../i18n"
@@ -221,7 +222,23 @@ export function useScheduleActions() {
     reschedule: useMutation(make(({ id, revision, recurrence }: { id: string; revision: number; recurrence: Recurrence }) => api.put<ScheduleView>(`${base(id)}/recurrence`, { expected_revision: revision, recurrence }))),
     delivery: useMutation(make(({ id, revision, delivery }: { id: string; revision: number; delivery: DeliveryTarget[] }) => api.put<ScheduleView>(`${base(id)}/delivery`, { expected_revision: revision, delivery }))),
     cancel: useMutation(make(({ id, revision }: { id: string; revision: number }) => api.post<ScheduleView>(`${base(id)}/cancel`, { expected_revision: revision }))),
+    /** Deshace una cancelación hecha por la persona dentro de SCHEDULE_RESTORE_WINDOW_MS; `revision` es la que devolvió el cancel. */
+    restore: useMutation(make(({ id, revision }: { id: string; revision: number }) => api.post<RestoredSchedule>(`${base(id)}/restore`, { expected_revision: revision }))),
   }
+}
+
+export type RestoredSchedule = ScheduleView & { restore: ScheduleRestoreInfo }
+
+/** Códigos cerrados de `POST /api/memory/schedules/:id/restore` (catalog-restore.ts de shared). */
+export const RESTORE_ERROR_CODES = [
+  "restore_human_only", "schedule_not_cancelled", "stale_revision", "schedule_not_restorable", "restore_window_expired",
+  "schedule_target_taken", "automations_disabled", "schedule_not_found",
+] as const
+export type RestoreErrorCode = typeof RESTORE_ERROR_CODES[number]
+
+export function restoreErrorCode(error: unknown): RestoreErrorCode | null {
+  const code = error instanceof ApiError ? error.code : undefined
+  return (RESTORE_ERROR_CODES as readonly string[]).includes(code ?? "") ? code as RestoreErrorCode : null
 }
 
 /** El core rechaza una revisión vieja con `stale_revision` en el mensaje o con 409. */

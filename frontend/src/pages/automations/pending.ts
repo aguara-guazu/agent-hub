@@ -1,7 +1,7 @@
 import { api, getToken } from "../../lib/api"
 
 /**
- * Acciones de automatizaciones que la API aplica en el acto y sin vuelta atrás (`cancel`, `run_now`): la llamada se difiere
+ * `run_now` arranca una entrega en el acto y sin vuelta atrás: la llamada se difiere
  * hasta que vence el aviso con Deshacer. Viven fuera de React para sobrevivir al desmontaje; al desmontar la vista se envían
  * y en pagehide/beforeunload salen con `keepalive`.
  */

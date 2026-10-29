@@ -92,6 +92,10 @@ const automations = {
     failed: "No se pudo completar",
     stale: "La automatización cambió mientras la editabas. Revisá el valor actual.",
     deleteFailed: "No se pudo eliminar «{{name}}»",
+    restored: "Se restauró «{{name}}»",
+    abortedRuns_one: "La entrega que la cancelación detuvo no se reanuda; esperá la próxima o ejecutala ahora.",
+    abortedRuns_other: "Las {{count}} entregas que la cancelación detuvo no se reanudan; esperá la próxima o ejecutala ahora.",
+    restoreFailed: "No se pudo restaurar «{{name}}»",
     runFailed: "No se pudo ejecutar «{{name}}»",
   },
   panel: {
@@ -339,6 +343,16 @@ const automations = {
       repository_in_use: "La delegación vigente usa ese repositorio. Quitalo de la delegación antes de cambiarlo.",
       stale_repositories: "La lista de repositorios cambió. Cerrá el panel y volvé a intentar.",
     },
+  },
+  restoreErrors: {
+    restore_human_only: "Solo podés deshacer una cancelación desde la app.",
+    schedule_not_cancelled: "Ya no está cancelada. Recargá para ver su estado.",
+    stale_revision: "Cambió mientras tanto. Recargá y volvé a intentar.",
+    schedule_not_restorable: "Esta cancelación no se puede deshacer. Pedile al agente que la vuelva a crear.",
+    restore_window_expired: "Pasaron más de 10 minutos y ya no se puede deshacer.",
+    schedule_target_taken: "Ya hay otra automatización igual activa para el mismo proyecto.",
+    automations_disabled: "Las automatizaciones están desactivadas. Activalas en Ajustes y volvé a intentar.",
+    schedule_not_found: "Ya no existe. Puede que se haya eliminado desde otro cliente.",
   },
 }
 
