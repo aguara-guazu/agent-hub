@@ -636,6 +636,44 @@ export class DecisionStore {
     })
   }
 
+  /**
+   * Nueva revisión con los ítems VENCIDOS que nunca llegaron al ejecutor. Quedan fuera los aprobados, rechazados, los que tienen intención y los cuya operación
+   * sigue viva o incierta en otra solicitud: reproponer nunca duplica un efecto que pudo haber ocurrido. La anterior queda `superseded`; la nueva tiene código propio.
+   */
+  reproposeRequest(requestId: string, expiresAt: string): { request_id: string; revision: number; items: number } {
+    return this.tx(() => {
+      const old = this.request(requestId)
+      if (old.state !== 'expired') throw new DecisionError('not_reproposable')
+      const items = this.all<ItemRow>('SELECT * FROM decision_items WHERE request_id = ? ORDER BY ordinal', requestId)
+      const eligible = items.filter(item => item.state === 'expired'
+        && !this.get('SELECT 1 FROM action_intents WHERE request_id = ? AND item_id = ?', requestId, item.item_id)
+        && !this.get(`SELECT 1 FROM action_intents WHERE (effect_digest = ? OR operation_key = ?) AND state IN ${LIVE_INTENT}`, item.effect_digest, item.operation_key))
+      if (!eligible.length) throw new DecisionError('not_reproposable')
+      const next = eligible.map(item => ({ item_id: randomUUID(), ordinal: item.ordinal, kind: item.kind, project_id: item.project_id, summary: item.summary, exact: item.exact_effect, digest: item.effect_digest, operation_key: item.operation_key }))
+      const revision = (this.get<{ r: number }>('SELECT MAX(revision) AS r FROM decision_requests WHERE run_id = ?', old.run_id)?.r ?? old.revision) + 1, request_id = randomUUID()
+      this.run('UPDATE decision_requests SET state = \'superseded\', updated_at = ? WHERE request_id = ?', this.iso(), requestId)
+      for (const item of eligible) this.setItemState(item, 'superseded')
+      this.insertRequest({ request_id, owner_id: old.owner_id, run_id: old.run_id, artifact_id: old.artifact_id, revision,
+        canonical_digest: this.requestDigest(old.owner_id, old.run_id, old.artifact_id, revision, expiresAt, next), project_ids: JSON.parse(old.project_ids) as string[], expires_at: expiresAt, items: next })
+      return { request_id, revision, items: next.length }
+    })
+  }
+
+  /**
+   * Decisión humana de reintentar una entrega incierta: la entrega `uncertain` pasa a `failed` y su binding se cierra para poder reservar otra. El mensaje anterior
+   * pudo haber llegado, por eso la app avisa «puede llegar dos veces». No es una prueba de no-envío: es una decisión explícita de la persona.
+   */
+  closeUncertainDeliveries(requestId: string, integration: Integration): number {
+    return this.tx(() => {
+      const rows = this.all<OutboxRow>('SELECT * FROM outbox WHERE request_id = ? AND integration = ? AND state = \'uncertain\'', requestId, integration)
+      for (const row of rows) {
+        this.run('UPDATE outbox SET state = \'failed\', updated_at = ? WHERE delivery_id = ?', this.iso(), row.delivery_id)
+        this.run('UPDATE channel_bindings SET state = \'closed\', updated_at = ? WHERE id = ?', this.iso(), row.binding_id)
+      }
+      return rows.length
+    })
+  }
+
   /** Efecto canónico de un ítem para que la app lo muestre o lo corrija. Solo lectura; nunca sale por una vista pública. */
   itemEffect(requestId: string, ordinal: number): { kind: DecisionItemKind; state: ItemState; effect: unknown } | undefined {
     const row = this.get<ItemRow>('SELECT * FROM decision_items WHERE request_id = ? AND ordinal = ?', requestId, ordinal)

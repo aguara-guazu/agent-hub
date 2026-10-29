@@ -140,6 +140,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       decide: async (runId, input) => (await review()).decide(runId, input),
       revise: async (runId, input) => (await review()).revise(runId, input),
       repropose: async runId => (await review()).repropose(runId),
+      releaseDelivery: async (runId, integration) => (await review()).releaseDelivery(runId, integration),
     },
     ready: async () => { const { store, service } = await resolve(); return { store, service } },
     /**

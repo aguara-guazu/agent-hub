@@ -121,3 +121,75 @@ describe('revisión del dueño desde la app', () => {
     expect(store.requestsOfRun('run-1')).toHaveLength(1)
   })
 })
+
+describe('reproponer y reintentar entregas', () => {
+  const expire = () => { clock = new Date('2099-06-01T00:00:00.000Z'); store.expireDue() }
+
+  it('reproponer una solicitud vencida crea una nueva con código propio, reapunta el artefacto y anula la anterior', async () => {
+    const { request_id } = open()
+    const oldCode = store.codeFor(request_id)
+    expire()
+    expect(store.publicRequest(request_id).state).toBe('expired')
+    const proposed = await review.repropose('run-1')
+    expect(proposed.request_id).not.toBe(request_id)
+    expect(proposed).toMatchObject({ revision: 2, state: 'open' })
+    expect(proposed.items.map(item => [item.ordinal, item.state])).toEqual([[2, 'pending'], [3, 'pending']])
+    expect(store.codeFor(proposed.request_id)).not.toBe(oldCode)
+    expect(store.publicRequest(request_id).state).toBe('superseded')
+    expect(refs).toEqual([['run-1', request_id, proposed.request_id]])
+    expect(Date.parse(proposed.expires_at)).toBeGreaterThan(clock.getTime())
+  })
+
+  it('una solicitud abierta o sin ítems elegibles no se repropone', async () => {
+    const { request_id } = open()
+    expect(await refusal(review.repropose('run-1'))).toMatchObject({ status: 409, code: 'not_reproposable' })
+    store.revokeRequest(request_id)
+    expect(await refusal(review.repropose('run-1'))).toMatchObject({ code: 'not_reproposable' })
+  })
+
+  it('un ítem con intención (aprobado o incierto) nunca se vuelve a proponer; solo los vencidos sin despachar', async () => {
+    const { request_id } = open()
+    const digest = (await review.view('run-1'))!.digest
+    await review.decide('run-1', { kind: 'approve', ordinals: [2], digest })
+    const intentId = store.pendingIntents()[0]!.intent_id
+    const claim = store.claimIntent(intentId, 0) as { generation: number }
+    expect(store.markDispatching(intentId, claim.generation)).toBe('ok')
+    store.completeIntent(intentId, claim.generation, { state: 'uncertain', error_code: 'timeout' })
+    expire()
+    const proposed = await review.repropose('run-1')
+    expect(proposed.items.map(item => item.ordinal)).toEqual([3])
+    expect(store.getApprovedItems(request_id)[0]).toMatchObject({ ordinal: 2, state: 'uncertain' })
+  })
+
+  it('un ítem cuya operación sigue incierta en otra solicitud queda fuera', async () => {
+    store.prepareDecision({ run_id: 'run-a', artifact_id: 'a', owner_id: 'o', project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z', items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p1', summary: 's', exact_effect: effect('ABC-1'), operation_key: 'k' }] })
+    await review.decide('run-a', { kind: 'approve', ordinals: [1], digest: (await review.view('run-a'))!.digest })
+    const uncertain = store.pendingIntents()[0]!
+    const claim = store.claimIntent(uncertain.intent_id, 0) as { generation: number }
+    store.markDispatching(uncertain.intent_id, claim.generation)
+    store.completeIntent(uncertain.intent_id, claim.generation, { state: 'uncertain', error_code: 'timeout' })
+    store.prepareDecision({ run_id: 'run-b', artifact_id: 'b', owner_id: 'o', project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z', items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p1', summary: 's', exact_effect: effect('ABC-1', 3600), operation_key: 'k' }] })
+    clock = new Date('2099-06-01T00:00:00.000Z'); store.expireDue()
+    expect(await refusal(review.repropose('run-b'))).toMatchObject({ code: 'not_reproposable' })
+  })
+
+  it('sin autoridad vigente no se repropone', async () => {
+    open(); expire(); authority = 'unavailable'
+    expect(await refusal(review.repropose('run-1'))).toMatchObject({ code: 'authority_unavailable' })
+  })
+
+  it('cerrar una entrega incierta permite reservar otra; una enviada o en otra integración no se toca', async () => {
+    const { request_id } = open()
+    const reserve = (integration: 'gmail' | 'slack', correlation: string) => store.reserveDelivery({ request_id, integration, account: 'me', correlation, provenance: 'test' })
+    const gmail = await reserve('gmail', '<g1@hub>')
+    store.beginSend(gmail.delivery_id); store.markDeliveryUncertain(gmail.delivery_id)
+    const slack = await reserve('slack', 's1')
+    store.beginSend(slack.delivery_id); await store.recordNative(slack.delivery_id, { native_id: '1.1', delivery_ref: '1.1' })
+    await expect(reserve('gmail', '<g2@hub>')).rejects.toThrow(/delivery_already_dispatched/)
+    expect(await review.releaseDelivery('run-1', 'gmail')).toBe(1)
+    expect((await reserve('gmail', '<g2@hub>')).delivery_id).not.toBe(gmail.delivery_id)
+    expect(await review.releaseDelivery('run-1', 'slack')).toBe(0)
+    expect(store.bindingsOf(request_id).find(binding => binding.integration === 'slack')).toMatchObject({ state: 'active', delivery_state: 'sent' })
+    expect(await review.releaseDelivery('run-sin-solicitud', 'gmail')).toBe(0)
+  })
+})

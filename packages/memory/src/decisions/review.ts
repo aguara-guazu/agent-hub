@@ -27,7 +27,7 @@ export interface DecisionMutation {
   blocked_uncertain?: number[]
 }
 
-/** `code` es cerrado: digest_mismatch | expired | revoked | superseded | locked | authority_unavailable | bad_selection | not_revisable | no_decision | not_reproposable. */
+/** `code` es cerrado: digest_mismatch | expired | revoked | superseded | locked | authority_unavailable | bad_selection | not_revisable | no_decision | not_reproposable | not_retryable. */
 export class DecisionReviewError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); this.name = 'DecisionReviewError' }
 }
@@ -39,4 +39,6 @@ export interface DecisionReview {
   revise(runId: string, input: { ordinal: number; seconds: number }): Promise<DecisionMutation>
   /** Solo ítems vencidos o nunca despachados; los inciertos se excluyen y se reconcilian. */
   repropose(runId: string): Promise<DecisionMutation>
+  /** Decisión humana de reintentar una entrega incierta: cierra la entrega anterior para poder reservar otra. Devuelve cuántas cerró. */
+  releaseDelivery(runId: string, integration: 'gmail' | 'slack'): Promise<number>
 }

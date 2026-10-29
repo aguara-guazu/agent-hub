@@ -10,7 +10,10 @@ export interface DecisionReviewDeps {
   schedules: { replaceDecisionRef(runId: string, oldRef: string, newRef: string): Promise<boolean> }
   /** Se llama tras aprobar ítems para que su despacho no espere al siguiente ciclo del reloj. */
   onApproved?: () => void
+  /** Vigencia de una solicitud reproducida; por defecto la misma que usa el runtime al crearla. */
+  proposeTtlMs?: number
 }
+const DEFAULT_TTL_MS = 36 * 60 * 60_000
 
 const REFUSALS: Partial<Record<ConsumeResult['outcome'], string>> = {
   expired: 'expired', revoked: 'revoked', superseded: 'superseded', locked: 'locked', digest_mismatch: 'digest_mismatch',
@@ -74,6 +77,21 @@ export function createDecisionReview(deps: DecisionReviewDeps): DecisionReview {
       return mutation(revised.request_id)
     },
 
-    async repropose() { throw new DecisionReviewError(501, 'not_reproposable') },
+    async repropose(runId) {
+      const request = require(runId)
+      if (!(await service.live(request.request_id))) throw new DecisionReviewError(409, 'authority_unavailable')
+      let proposed: { request_id: string }
+      try { proposed = store.reproposeRequest(request.request_id, new Date(store.clock().getTime() + (deps.proposeTtlMs ?? DEFAULT_TTL_MS)).toISOString()) } catch (error) {
+        if ((error as { code?: string }).code === 'not_reproposable') throw new DecisionReviewError(409, 'not_reproposable')
+        throw error
+      }
+      if (!(await deps.schedules.replaceDecisionRef(runId, request.request_id, proposed.request_id))) throw new DecisionReviewError(409, 'authority_unavailable')
+      return mutation(proposed.request_id)
+    },
+
+    async releaseDelivery(runId, integration) {
+      const request = latest(runId)
+      return request ? store.closeUncertainDeliveries(request.request_id, integration) : 0
+    },
   }
 }

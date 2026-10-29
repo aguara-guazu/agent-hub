@@ -151,7 +151,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   app.addHook('onListen', async () => { void runtime().catch(() => {}) })
   app.addHook('onListen', async () => { void service.startSchedules().catch(() => {}) })
   registerScheduleRoutes(app, service, options.authorize)
-  registerDecisionRoutes(app, options.scheduleEffects, options.authorize)
+  registerDecisionRoutes(app, options.scheduleEffects, options.authorize, { service, ...(options.automationsEnabled ? { automationsEnabled: options.automationsEnabled } : {}) })
   sharingRoutes(app, service, options.authorize)
   // Human owner authorization only: never register activity in the MCP operation dispatcher.
   app.get('/api/memory/chat/agents/:sessionId/activity', { preHandler: auth }, async (request, reply) => {

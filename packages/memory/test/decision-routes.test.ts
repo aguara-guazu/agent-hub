@@ -9,16 +9,24 @@ const DIGEST = 'a'.repeat(64)
 const view = { request_id: 'req', revision: 1, state: 'open', expires_at: '2099-01-01T00:00:00.000Z', digest: DIGEST, items: [] }
 
 let app: FastifyInstance, review: { [K in keyof DecisionReview]: ReturnType<typeof vi.fn> }, authorized: boolean
-let reconcile: ReturnType<typeof vi.fn>, available: ReturnType<typeof vi.fn>
+let reconcile: ReturnType<typeof vi.fn>, available: ReturnType<typeof vi.fn>, executeDelivery: ReturnType<typeof vi.fn>
+let deliveries: Array<{ id: string; run_id: string; target: string; state: string; attempts: number; artifact_id: string }>
+let setDelivery: ReturnType<typeof vi.fn>, enabled: boolean
+const DELIVERY = '33333333-3333-4333-8333-333333333333'
 
 beforeEach(async () => {
   authorized = true
-  review = { view: vi.fn(async () => ({ ...view, authority: 'verified' })), decide: vi.fn(async () => ({ ...view, approved: [1] })), revise: vi.fn(async () => view), repropose: vi.fn(async () => view) }
+  review = { view: vi.fn(async () => ({ ...view, authority: 'verified' })), decide: vi.fn(async () => ({ ...view, approved: [1] })), revise: vi.fn(async () => view), repropose: vi.fn(async () => view), releaseDelivery: vi.fn(async () => 1) }
+  enabled = true
+  deliveries = [{ id: DELIVERY, run_id: RUN, target: 'gmail_self', state: 'uncertain', attempts: 1, artifact_id: 'art-1' }]
+  executeDelivery = vi.fn(async () => ({ state: 'sent', outbox_ref: 'out-1' }))
+  setDelivery = vi.fn(async () => undefined)
   reconcile = vi.fn(async (intent_id: string) => ({ intent_id, state: 'uncertain', error_code: 'no_conclusive_evidence' }))
   available = vi.fn(async () => ({ gmail_self: { available: true }, slack_self: { available: false, reason: 'tool_off' } }))
-  const effects = { review, actions: { reconcile }, deliveries: { available } } as unknown as ScheduleEffects
+  const effects = { review, actions: { reconcile }, deliveries: { available, executeDelivery } } as unknown as ScheduleEffects
+  const service = { get: async () => ({ db: { query: async (sql: string, params: unknown[]) => deliveries.filter(row => (sql.includes('d.id = $1') ? row.id === params[0] : row.run_id === params[0])) }, schedules: { store: { setDelivery } } }) } as never
   app = Fastify()
-  registerDecisionRoutes(app, effects, async () => { if (!authorized) throw Object.assign(new Error('no'), { statusCode: 401 }); return { id: 'owner' } })
+  registerDecisionRoutes(app, effects, async () => { if (!authorized) throw Object.assign(new Error('no'), { statusCode: 401 }); return { id: 'owner' } }, { service, automationsEnabled: () => enabled })
   await app.ready()
 })
 afterEach(() => app.close())
@@ -93,5 +101,46 @@ describe('rutas humanas de decisión', () => {
     expect(response.json()).toMatchObject({ code: 'decisions_unavailable' })
     expect((await bare.inject({ method: 'GET', url: '/api/memory/schedules/delivery-channels' })).json().items[1]).toMatchObject({ channel: 'gmail', available: false })
     await bare.close()
+  })
+
+  it('reintentar una entrega incierta cierra la anterior, reenvía, actualiza la fila y avisa que puede llegar dos veces', async () => {
+    const response = await post(`/api/memory/schedules/deliveries/${DELIVERY}/retry`, {})
+    expect(response.json()).toEqual({ delivery_id: DELIVERY, state: 'sent', may_duplicate: true })
+    expect(review.releaseDelivery).toHaveBeenCalledWith(RUN, 'gmail')
+    expect(executeDelivery).toHaveBeenCalledWith({ delivery_id: DELIVERY, run_id: RUN, artifact_id: 'art-1', target: 'gmail_self', expected_generation: 1 })
+    expect(setDelivery.mock.calls.map(call => call[1])).toEqual([{ state: 'sending', attempts: 2 }, { state: 'sent', outbox_ref: 'out-1', error_code: null }])
+    expect(review.releaseDelivery.mock.invocationCallOrder[0]).toBeLessThan(executeDelivery.mock.invocationCallOrder[0]!)
+  })
+
+  it('una entrega fallida se reintenta sin advertir duplicado y un resultado ambiguo queda incierto', async () => {
+    deliveries[0]!.state = 'failed'
+    executeDelivery.mockResolvedValueOnce({ state: 'uncertain', error_code: 'network' })
+    expect((await post(`/api/memory/schedules/deliveries/${DELIVERY}/retry`, {})).json()).toEqual({ delivery_id: DELIVERY, state: 'uncertain', error_code: 'network', may_duplicate: false })
+    executeDelivery.mockRejectedValueOnce(new Error('boom'))
+    expect((await post(`/api/memory/schedules/deliveries/${DELIVERY}/retry`, {})).json()).toMatchObject({ state: 'uncertain', error_code: 'retry_failed' })
+  })
+
+  it('solo se reintentan entregas fallidas o inciertas por canal propio, existentes y con las automatizaciones encendidas', async () => {
+    const url = `/api/memory/schedules/deliveries/${DELIVERY}/retry`
+    deliveries[0]!.state = 'sent'
+    expect((await post(url, {})).json()).toMatchObject({ code: 'not_retryable' })
+    deliveries[0]!.state = 'failed'; deliveries[0]!.target = 'app_window'
+    expect((await post(url, {})).statusCode).toBe(409)
+    deliveries[0]!.target = 'gmail_self'
+    expect((await post('/api/memory/schedules/deliveries/44444444-4444-4444-8444-444444444444/retry', {})).statusCode).toBe(404)
+    enabled = false
+    expect((await post(url, {})).json()).toMatchObject({ code: 'automations_off' })
+    expect(executeDelivery).not.toHaveBeenCalled()
+  })
+
+  it('reproponer reenvía solo por los canales que ya se habían enviado', async () => {
+    deliveries = [{ id: DELIVERY, run_id: RUN, target: 'gmail_self', state: 'sent', attempts: 1, artifact_id: 'art-1' },
+      { id: '55555555-5555-4555-8555-555555555555', run_id: RUN, target: 'slack_self', state: 'failed', attempts: 1, artifact_id: 'art-1' },
+      { id: '66666666-6666-4666-8666-666666666666', run_id: RUN, target: 'app_window', state: 'sent', attempts: 1, artifact_id: 'art-1' }]
+    const response = await post(`/api/memory/schedules/runs/${RUN}/repropose`, {})
+    expect(response.json()).toMatchObject({ request_id: 'req', redelivered: [{ target: 'gmail_self', state: 'sent' }] })
+    expect(executeDelivery).toHaveBeenCalledTimes(1)
+    enabled = false
+    expect((await post(`/api/memory/schedules/runs/${RUN}/repropose`, {})).json().redelivered).toEqual([])
   })
 })
