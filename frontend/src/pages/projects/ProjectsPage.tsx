@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import type { CSSProperties } from "react"
 import { useSearchParams } from "react-router-dom"
 import {
   Avatar, Banner, Button, Empty, EmptyFiltered, ErrorState, List, RowHead, RowLink, SearchInput, Seg, Select, SkeletonRows, SplitButton,
-  hasBlockingLayer, type MenuItem,
+  hasBlockingLayer, hueFor, initials, type MenuItem,
 } from "../../components/ui"
-import { useT } from "../../i18n"
+import { useFormat, useT } from "../../i18n"
 import type { MemoryEntity } from "../../lib/memory"
-import { projectActivity, projectStage, useAllProjects, useCompanies, useProjectContentCount } from "../../lib/projects"
+import { projectActivity, projectStage, useAllProjects, useCompanies, type ProjectWithSummary } from "../../lib/projects"
 import { ListDate, StageChip, useNarrow } from "../project/shared"
 import { NewProjectDialog } from "./NewProjectDialog"
 import { SharedProjectDialog, type SharedMode } from "./SharedProjectDialog"
@@ -39,6 +39,7 @@ export default function ProjectsPage() {
   const companies = useCompanies()
   const suggestions = usePendingSuggestions()
   const narrow = useNarrow()
+  const medium = useNarrow(1279)
 
   const update = useCallback((values: Record<string, string>) => setParams(current => {
     const next = new URLSearchParams(current)
@@ -68,7 +69,9 @@ export default function ProjectsPage() {
 
   const companyNames = useMemo(() => new Map((companies.data?.items ?? []).map(company => [company.id, company.title])), [companies.data])
   const items = projects.data?.items ?? []
-  const companyOf = useCallback((project: MemoryEntity) => {
+  const companyOf = useCallback((project: ProjectWithSummary) => {
+    const summary = project.summary?.project
+    if (summary) return summary.company?.title
     const id = project.data.company_id
     return typeof id === "string" ? companyNames.get(id) : undefined
   }, [companyNames])
@@ -143,10 +146,11 @@ export default function ProjectsPage() {
             <RowHead>
               <span style={{ flex: 1 }}>{t("columns.project")}</span>
               <span className="col" style={col(150)}>{t("columns.stage")}</span>
-              {!narrow && <span className="col" style={col(120)}>{t("columns.content")}</span>}
+              {!narrow && <span className="col" style={col(200)}>{t("columns.content")}</span>}
+              {!medium && <span className="col" style={col(84)}>{t("columns.people")}</span>}
               <span className="col" style={col(96, true)}>{t("columns.activity")}</span>
             </RowHead>
-            {visible.map(project => <ProjectRow key={project.id} project={project} company={companyOf(project)} showContent={!narrow} />)}
+            {visible.map(project => <ProjectRow key={project.id} project={project} company={companyOf(project)} showContent={!narrow} showPeople={!medium} />)}
           </List>
         )}
 
@@ -157,8 +161,9 @@ export default function ProjectsPage() {
   )
 }
 
-function ProjectRow({ project, company, showContent }: { project: MemoryEntity; company?: string; showContent: boolean }) {
-  const { t, plural } = useT("projects")
+function ProjectRow({ project, company, showContent, showPeople }: { project: ProjectWithSummary; company?: string; showContent: boolean; showPeople: boolean }) {
+  const { t } = useT("projects")
+  const summary = project.summary?.project
   return (
     <RowLink
       to={`/projects/${project.id}`}
@@ -167,25 +172,52 @@ function ProjectRow({ project, company, showContent }: { project: MemoryEntity; 
       sub={company ?? t("row.noCompany")}
       meta={<>
         <span className="col" style={col(150)}><StageChip stage={projectStage(project)} /></span>
-        {showContent && <span className="col xs t2 num" style={col(120)}><ContentCount projectId={project.id} plural={plural} empty={t("row.noContent")} /></span>}
+        {showContent && <span className="col xs t2 num" style={col(200)}><ContentCount summary={summary} /></span>}
+        {showPeople && <span className="col" style={col(84)}><People summary={summary} /></span>}
         <span className="col" style={col(96, true)}><ListDate value={projectActivity(project)} /></span>
       </>}
     />
   )
 }
 
-/** El conteo se pide recién cuando la fila entra en pantalla (y queda en caché), con el tope de concurrencia de `useProjectContentCount`. */
-function ContentCount({ projectId, plural, empty }: { projectId: string; plural: ReturnType<typeof useT<"projects">>["plural"]; empty: string }) {
-  const ref = useRef<HTMLSpanElement>(null)
-  const [seen, setSeen] = useState(false)
-  useEffect(() => {
-    const element = ref.current
-    if (!element || seen) return
-    if (typeof IntersectionObserver === "undefined") { setSeen(true); return }
-    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) setSeen(true) }, { rootMargin: "200px" })
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [seen])
-  const count = useProjectContentCount(projectId, undefined, seen)
-  return <span ref={ref}>{count.data === undefined ? "—" : count.data ? plural("row.content", count.data) : empty}</span>
+/** Tipos con etiqueta plural propia; el resto suma en «N más». */
+const CONTENT_KINDS = ["meeting", "document", "note", "collection", "message", "issue", "event", "fact", "person"] as const
+type ContentKind = typeof CONTENT_KINDS[number]
+const isContentKind = (kind: string): kind is ContentKind => (CONTENT_KINDS as readonly string[]).includes(kind)
+
+/** Los dos tipos con más elementos y el resto agrupado; el desglose completo queda en el tooltip. */
+function ContentCount({ summary }: { summary?: NonNullable<ProjectWithSummary["summary"]>["project"] }) {
+  const { t, plural } = useT("projects")
+  if (!summary) return <span>—</span>
+  if (summary.content_total === 0) return <span>{t("row.noContent")}</span>
+  const parts = Object.entries(summary.content_by_kind).filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1])
+  const label = ([kind, count]: [string, number]) => isContentKind(kind) ? plural(`row.kinds.${kind}`, count) : plural("row.content", count)
+  const shown = parts.slice(0, 2)
+  const rest = parts.slice(2).reduce((total, [, count]) => total + count, 0)
+  const text = [...shown.map(label), ...(rest ? [plural("row.more", rest)] : [])].join(" · ")
+  return <span className="trunc" title={parts.map(label).join(" · ")}>{text}</span>
 }
+
+const AVATAR_STACK = { boxShadow: "0 0 0 2px var(--surface)" } satisfies CSSProperties
+const AVATAR_OVERLAP = { ...AVATAR_STACK, marginLeft: "calc(-1 * var(--sp-1) - 2px)" } satisfies CSSProperties
+
+/** Dos avatares y «+N» con el resto, como en el ejemplo de la plantilla; los nombres completos en el tooltip. */
+function People({ summary }: { summary?: NonNullable<ProjectWithSummary["summary"]>["project"] }) {
+  const { t, plural } = useT("projects")
+  const { list } = useFormat()
+  if (!summary || summary.people_count === 0) return <span className="xs t3">—</span>
+  const shown = summary.people.slice(0, 2)
+  const rest = summary.people_count - shown.length
+  const names = summary.people.map(person => person.title)
+  const hiddenCount = summary.people_count - names.length
+  const title = hiddenCount > 0 ? `${list(names)} ${plural("row.morePeople", hiddenCount)}` : list(names)
+  return (
+    <span style={{ display: "flex" }} title={title} aria-label={plural("row.people", summary.people_count)}>
+      {shown.map((person, index) => (
+        <span key={person.id} style={index ? AVATAR_OVERLAP : AVATAR_STACK} className={`av av-sm av-round hue${hueFor(person.title)}`} aria-hidden="true">{initials(person.title)}</span>
+      ))}
+      {rest > 0 && <span style={AVATAR_OVERLAP} className={`av av-sm av-round hue${hueFor(`+${rest}`)}`} aria-hidden="true">{t("row.restPeople", { count: rest })}</span>}
+    </span>
+  )
+}
+

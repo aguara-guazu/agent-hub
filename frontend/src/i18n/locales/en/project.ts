@@ -363,6 +363,7 @@ const project = {
       risk: "Risk",
     },
     pendingReview: "Needs review",
+    source: "{{kind}} “{{title}}”",
     loading: "Loading decisions",
     errorTitle: "Couldn't load the decisions",
     emptyTitle: "No decisions yet",
