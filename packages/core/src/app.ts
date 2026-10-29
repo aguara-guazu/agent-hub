@@ -27,7 +27,8 @@ import { applyStarterCatalog } from './catalog/starter.js'
 import { applyFactorySkill, type FactorySkill } from './catalog/factory-skills.js'
 import { hubSkill } from './catalog/hub-skill.js'
 import { skillContentHash } from './hashing.js'
-import { buildZip, collectFiles } from './zip.js'
+import { buildZip, collectFiles, ZipReadError } from './zip.js'
+import { skillDraftFromZip, type SkillZipDraft } from "./catalog/skill-import.js"
 import { computeSnapshot, explain } from './policy/resolver.js'
 import { ensureLocalOwner } from './local.js'
 import {
@@ -66,6 +67,7 @@ import {
 } from './security.js'
 import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, SkillRow, User } from './types.js'
 import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
+import { SKILL_ZIP_MAX_BYTES, type SkillZipImportExtras } from "@agenthub/shared"
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
 import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
@@ -1054,14 +1056,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       .send(archive)
   })
 
-  fastify.post('/api/catalog/skills', async (request, reply) => {
-    const user = await currentUser(request)
-    const body = requireObject(request.body)
-    rejectUnknown(body, ['slug', 'display_name', 'description', 'body'])
-    const slug = validateCatalogSlug(requireString(body, 'slug'))
-    const displayName = requireString(body, 'display_name')
-    const description = optionalString(body, 'description')
-    const skillBody = optionalString(body, 'body')
+  function createHubSkill(user: User, slug: string, displayName: string, description: string, skillBody: string): SkillRow {
     if (store.skillBySlug(user.id, slug)) throw new HttpError(409, `ya tenes una skill con el slug ${slug}`)
     const skill = store.insertSkill({
       user_id: user.id,
@@ -1072,7 +1067,44 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       content_hash: skillContentHash(displayName, description, skillBody),
     })
     notifyAfterCommit('user', user.id)
-    return reply.code(201).send(skillView(user, skill))
+    return skill
+  }
+
+  fastify.post('/api/catalog/skills', async (request, reply) => {
+    const user = await currentUser(request)
+    const body = requireObject(request.body)
+    rejectUnknown(body, ['slug', 'display_name', 'description', 'body'])
+    const slug = validateCatalogSlug(requireString(body, 'slug'))
+    const displayName = requireString(body, 'display_name')
+    const description = optionalString(body, 'description')
+    const skillBody = optionalString(body, 'body')
+    return reply.code(201).send(skillView(user, createHubSkill(user, slug, displayName, description, skillBody)))
+  })
+
+  // Parser binario solo en este ámbito: el resto de la API sigue aceptando únicamente JSON.
+  void fastify.register(async (scope) => {
+    scope.addContentTypeParser(["application/zip", "application/x-zip-compressed", "application/octet-stream"], { parseAs: "buffer" },
+      (_request, body, done) => done(null, body))
+
+    scope.post("/api/catalog/skills/import", { bodyLimit: SKILL_ZIP_MAX_BYTES }, async (request, reply) => {
+      const user = await currentUser(request)
+      const query = (request.query ?? {}) as Record<string, unknown>
+      rejectUnknown(query, ["slug", "display_name"])
+      const archive = request.body
+      if (!Buffer.isBuffer(archive) || archive.length === 0) throw new HttpError(422, "el cuerpo debe ser un archivo ZIP")
+      let draft: SkillZipDraft
+      try {
+        draft = skillDraftFromZip(archive)
+      } catch (error) {
+        if (error instanceof ZipReadError) throw new HttpError(error.status, error.message)
+        throw error
+      }
+      const slug = validateCatalogSlug(optionalString(query, "slug") || draft.name)
+      const displayName = optionalString(query, "display_name").trim() || draft.displayName
+      const skill = createHubSkill(user, slug, displayName, draft.description, draft.body)
+      const extras: SkillZipImportExtras = { ignored_files: draft.ignoredFiles }
+      return reply.code(201).send({ ...skillView(user, skill), ...extras })
+    })
   })
 
   fastify.patch('/api/catalog/skills/:id', async (request) => {
