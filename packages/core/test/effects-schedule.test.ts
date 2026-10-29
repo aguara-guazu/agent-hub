@@ -94,3 +94,32 @@ describe('ScheduleEffects: numeración y apagado', () => {
     expect(new DecisionAuthorityUnavailable().code).toBe('authority_unavailable')
   })
 })
+
+describe('ScheduleEffects: identidad semántica de la operación', () => {
+  it('el operation_key del ítem llega al almacén: un segundo cierre del mismo día con otros segundos queda bloqueado por duplicado', async () => {
+    const store = new DecisionStore(':memory:', { key: randomBytes(32), exclusions: { async add() {} } })
+    const eff = createScheduleEffects(parts(store, 'live'))
+    const key = 'jira_worklog:site:ABC-1:2026-10-28T08:00:00Z'
+    const request = (run: string, seconds: number) => eff.decisions.prepareDecision({ run_id: run, artifact_id: `a-${run}`, owner_id: 'o', project_ids: ['p1'], expires_at: '2099-01-01T00:00:00.000Z',
+      items: [{ ordinal: 1, kind: 'jira_worklog', project_id: 'p1', summary: 'cierre', effect: { issue: 'ABC-1', seconds }, operation_key: key }] }).then(async ({ decision_request_ref }) => {
+      const reserved = await store.reserveDelivery({ request_id: decision_request_ref, integration: 'gmail', account: 'me@example.com', correlation: `<${run}@hub>`, provenance: 'test' })
+      store.beginSend(reserved.delivery_id)
+      await store.recordNative(reserved.delivery_id, { native_id: `n-${run}`, thread_id: `t-${run}` })
+      return store.consumeReply({ integration: 'gmail', account: 'me@example.com', native_message_id: `m-${run}`, binding_id: reserved.binding_id,
+        parsed: { kind: 'approve', code: store.codeFor(decision_request_ref).replace(/-/g, ''), items: 'all' } })
+    })
+    expect(await request('run-1', 1800)).toMatchObject({ outcome: 'approved', approved: [{ ordinal: 1 }] })
+    const second = await request('run-2', 3600)
+    expect(second.approved ?? []).toEqual([])
+    expect(second.blocked_uncertain).toEqual([1])
+  })
+
+  it('sin operation_key el almacén usa el digest del efecto, como antes', async () => {
+    const store = new DecisionStore(':memory:', { key: randomBytes(32), exclusions: { async add() {} } })
+    const eff = createScheduleEffects(parts(store, 'live'))
+    const { decision_request_ref } = await eff.decisions.prepareDecision(input)
+    const items = store.getApprovedItems(decision_request_ref)
+    expect(items).toEqual([])
+    expect(store.publicRequest(decision_request_ref).items).toHaveLength(2)
+  })
+})
