@@ -47,6 +47,7 @@ import type { ExposedSkill, PolicyStore, SnapshotView } from './policy.js'
 import { DECISION_ALLOW, DECISION_DENY, argsDigest, denialMessage, serverOffMessage, unknownToolMessage } from './policy.js'
 import { ConnectionPool, UpstreamError, resultText, type CallResult, type UpstreamSpec } from './runtime.js'
 import { JIRA_REREADS, MEMORY_META_KEY, isJiraTool, isJiraWrite, isMemorySpec, issuesIn, rereadArgs, siteFromArgs, writtenKey } from './memory-bridge.js'
+import { accountOf, assigneeOf, assigneeReadArgs, isJiraExistingWrite, jiraIdentityTool, targetIssue } from "./memory-bridge.js"
 import { MemoryOutbox } from './memory-outbox.js'
 import { nativeSession, sessionForCall, type NativeSession } from './memory-lifecycle.js'
 import type { FSWatcher } from 'node:fs'
@@ -322,6 +323,34 @@ export class GatewayServer {
     return spec && view.tools.some((tool) => tool.serverSlug === spec.slug && tool.toolName === toolName) ? spec : undefined
   }
 
+  /**
+   * Regla permanente del dueño: solo se escribe en issues asignados a él. Antes de reenviar una escritura sobre un issue existente
+   * se leen, por el mismo server y con la misma credencial, la cuenta que escribe (`atlassianUserInfo`) y el asignado (`getJiraIssue`).
+   * Devuelve `null` si coinciden o `{ code, message }` para rechazar. Cualquier duda rechaza; no se guardan ni registran cuerpos.
+   */
+  private async verifyJiraOwner(view: SnapshotView, spec: UpstreamSpec, args: Record<string, unknown>): Promise<{ code: string; message: string } | null> {
+    const reject = (code: string, message: string) => ({ code, message: `${message} Agent Hub solo escribe en tickets de Jira asignados a vos (${code}).` })
+    const issue = targetIssue(args)
+    if (!issue) return reject("issue_unverified", "La escritura no indica el ticket (issueIdOrKey o issue_key), así que no se puede verificar el asignado.")
+    const ofServer = view.tools.filter((tool) => tool.serverSlug === spec.slug)
+    const identity = ofServer.find((tool) => jiraIdentityTool(tool.toolName))
+    const reader = ofServer.find((tool) => JIRA_REREADS.includes(tool.toolName.toLowerCase()))
+    if (!identity) return reject("identity_unverified", `El server ${spec.slug} no tiene habilitada una herramienta de identidad (atlassianUserInfo); no se escribió en ${issue}.`)
+    const readArgs = reader ? assigneeReadArgs(reader.toolName, args, issue) : undefined
+    if (!reader || !readArgs) return reject("assignee_unverified", `No hay una lectura del ticket habilitada (getJiraIssue con cloudId) en ${spec.slug}; no se escribió en ${issue}.`)
+    const call = async (name: string, input: Record<string, unknown>) => {
+      try { const result = await this.pool.callTool(this.agentInstanceId, spec, name, input); return result.is_error ? undefined : result } catch { return undefined }
+    }
+    const [who, read] = await Promise.all([call(identity.toolName, {}), call(reader.toolName, readArgs)])
+    const account = who ? accountOf(who) : undefined
+    if (!account) return reject("identity_unverified", `No se pudo leer la cuenta con la que escribe ${spec.slug}; no se escribió en ${issue}.`)
+    const assignee = read ? assigneeOf(read, issue) : undefined
+    if (!assignee) return reject("assignee_unverified", `No se pudo leer el asignado de ${issue}; no se escribió.`)
+    if (assignee.account === null) return reject("issue_unassigned", `${issue} no tiene asignado. Asignátelo en Jira y reintentá.`)
+    if (assignee.account !== account) return reject("assignee_mismatch", `${issue} está asignado a ${assignee.name ?? "otra persona"}, no a vos: no se escribió.`)
+    return null
+  }
+
   private async mirrorJira(view: SnapshotView, spec: UpstreamSpec, toolName: string, args: Record<string, unknown>, result: CallResult, native?: NativeSession): Promise<void> {
     const memory = this.memoryFor(view, 'sync_tasks')
     const issues = issuesIn(result)
@@ -517,6 +546,14 @@ export class GatewayServer {
     try {
       const native = this.outbox ? await sessionForCall(this.outbox.directory, name, args) : undefined
       const meta = isMemorySpec(spec) ? await this.memoryMeta(view, native) : undefined
+      if (!meta && isJiraExistingWrite(tool.toolName)) {
+        const refused = await this.verifyJiraOwner(view, spec, args)
+        if (refused) {
+          await this.report({ agent_id: this.agentInstanceId, server_slug: tool.serverSlug, tool_name: tool.toolName, exposed_name: name,
+            decision: DECISION_DENY, args_digest: digest, duration_ms: elapsedMs(started), denial_reason: `jira_owner_guard:${refused.code}`, error: "" })
+          return errorResult(refused.message)
+        }
+      }
       const result = await this.pool.callTool(this.agentInstanceId, spec, tool.toolName, args, meta)
       if (!result.is_error && !meta && isJiraTool(tool.toolName)) {
         // Preserve the successful Jira result, but never silently claim the local mirror is current.
