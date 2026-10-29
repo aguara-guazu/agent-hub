@@ -146,8 +146,6 @@ const home = {
     title: "Today",
     viewAll: "View all",
     empty: "Nothing scheduled for today",
-    inMinutes: "In {{count, number}} min",
-    inHours: "In {{count, number}} h",
   },
   recent: {
     title: "Recent projects",
