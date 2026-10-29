@@ -78,6 +78,8 @@ export class CoreActionExecutor implements ActionExecutor {
 
   /** El servidor fijado por el efecto, o el único que publica las herramientas. `null` si no hay ninguno habilitado; `'ambiguous'` si hay varios y nada fija uno. */
   private serverFor(adapter: ActionAdapter<any>, effect: unknown): string | 'ambiguous' | null {
+    // An adapter that publishes no MCP tools (a local effect such as git push) is bound to its fixed server id and needs no catalog entry.
+    if (!adapter.tools.length) return adapter.server?.(effect) ?? 'local'
     const candidates = this.options.tools.candidates(adapter.tools)
     const bound = adapter.server?.(effect)
     if (bound) return candidates.includes(bound) ? bound : null

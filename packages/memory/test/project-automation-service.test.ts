@@ -9,6 +9,7 @@ import { LocalChat } from '../src/local-chat.js'
 import { MemoryError } from '../src/contracts.js'
 import { ProjectAutomationService, type GitProbe } from '../src/project-automation-service.js'
 import { callProjectAutomationTool } from '../src/project-automation-tools.js'
+import { delegatedPushPolicy } from '../src/project-push-policy.js'
 import type { DelegationDocument } from '../src/project-automation.js'
 import type { AgentContext } from '../src/agents.js'
 
@@ -212,4 +213,19 @@ it('turns open candidates into exact effects with the observed remote tip, and e
   await service.activate(owner, { project_id: projectId, enabled: false, channel_id: null })
   await db.query("UPDATE push_candidates SET state='open'")
   expect((await service.pushCandidates(projectId))[0]).toMatchObject({ executable: false, not_executable_reason: 'repository_not_delegated' })
+})
+
+it('exposes the policy of a delegated repository only while the delegation in force permits pushes and names that repository', async () => {
+  const repoId = await repositories()
+  expect(await delegatedPushPolicy(db, repoId)).toBeNull()
+  await service.activate(owner, { project_id: projectId, enabled: true, delegation: document({ item_kinds: ['git_push'], repository_ids: [repoId] }), channel_id: null })
+  expect(await delegatedPushPolicy(db, repoId)).toEqual({ project_id: projectId, repo_id: repoId, repo_path: repo,
+    policy: { canonical_remote_url: URL, default_branch: 'main', allowed_branches: ['feature/*'], remote_name: 'origin' } })
+  expect(await delegatedPushPolicy(db, randomUUID())).toBeNull()
+  await service.activate(owner, { project_id: projectId, enabled: true, delegation: document({ item_kinds: ['jira_worklog'], repository_ids: [repoId] }), channel_id: null })
+  expect(await delegatedPushPolicy(db, repoId)).toBeNull()
+  await service.activate(owner, { project_id: projectId, enabled: true, delegation: document({ item_kinds: ['git_push'], repository_ids: [repoId] }), channel_id: null })
+  expect(await delegatedPushPolicy(db, repoId)).not.toBeNull()
+  await service.activate(owner, { project_id: projectId, enabled: false, channel_id: null })
+  expect(await delegatedPushPolicy(db, repoId)).toBeNull()
 })
