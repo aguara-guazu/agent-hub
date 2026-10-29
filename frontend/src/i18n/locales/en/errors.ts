@@ -18,6 +18,13 @@ const errors = {
   actionFailed: "Couldn’t complete the action. Try again.",
   loadFailed: "Couldn’t load. Try again.",
   saveFailed: "Change not saved. Try again.",
+  jira: {
+    issue_unassigned: "The issue has no assignee, and Agent Hub only writes to issues assigned to you. Assign it to yourself in Jira and try again.",
+    assignee_mismatch: "The issue is assigned to someone else, so nothing was written to Jira. Ask them to assign it to you if you need to update it.",
+    account_mismatch: "The Jira connector token belongs to another account. Add your own token in Settings › Integrations.",
+    assignee_unverified: "Couldn't read the issue's assignee in Jira, so nothing was written. Check that the issue exists and that you have access.",
+    identity_unverified: "Couldn't confirm your Jira account, so nothing was written. Check the connector in Settings › Integrations.",
+  },
   field: {
     required: "Fill in this field.",
     invalidUrl: "Enter a URL that starts with http:// or https://.",
