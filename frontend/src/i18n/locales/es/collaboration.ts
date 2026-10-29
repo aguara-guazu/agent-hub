@@ -258,7 +258,6 @@ const collaboration = {
     staleNote: "La conexión sigue activa; no confirma que esté trabajando",
     wakeError: "Aviso: {{error}}",
     output: "Salida en vivo",
-    outputPending: "Sin salida en vivo",
     client: "Cliente",
     role: "Rol",
     notices: "Avisos",

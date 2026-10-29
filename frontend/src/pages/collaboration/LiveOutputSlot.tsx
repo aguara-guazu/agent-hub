@@ -1,8 +1,6 @@
-import { Empty } from "../../components/ui"
-import { useT } from "../../i18n"
+import { AgentOutput } from "../activity/AgentOutput"
 
-/** Punto de conexión de la salida en vivo de un agente. Al integrar se reemplaza por AgentOutput de pages/activity. */
+/** Salida en vivo de solo lectura de un agente; el componente vive en Actividad y se monta en el panel del agente. */
 export function LiveOutputSlot({ agentId }: { agentId: string }) {
-  const { t } = useT("collaboration")
-  return <div data-agent-output={agentId}><Empty icon="activity" title={t("agent.outputPending")} /></div>
+  return <AgentOutput agentId={agentId} />
 }
