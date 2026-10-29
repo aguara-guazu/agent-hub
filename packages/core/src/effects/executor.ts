@@ -33,8 +33,8 @@ export interface ActionAdapter<E = unknown> {
   prepare(ctx: ActionContext, effect: E): Promise<unknown>
   /** La única fase con efectos. Una excepción se trata como resultado incierto. */
   execute(ctx: ActionContext, prepared: unknown): Promise<Omit<ActionReceipt, 'intent_id'>>
-  /** Solo lectura. `null` cuando no hay prueba concluyente en ningún sentido. */
-  reconcile(ctx: ActionContext, intentId: string): Promise<Omit<ActionReceipt, 'intent_id'> | null>
+  /** Solo lectura. `null` cuando no hay prueba concluyente en ningún sentido. Recibe el efecto canónico ya validado de la intención. */
+  reconcile(ctx: ActionContext, intentId: string, effect: E): Promise<Omit<ActionReceipt, 'intent_id'> | null>
 }
 
 export interface CoreActionExecutorOptions {
@@ -140,7 +140,7 @@ export class CoreActionExecutor implements ActionExecutor {
     try {
       const serverId = this.serverFor(adapter, effect)
       if (!serverId || serverId === 'ambiguous') return uncertain(intentId, serverId ?? 'tool_off')
-      const result = await adapter.reconcile(this.context(intent, serverId), intentId)
+      const result = await adapter.reconcile(this.context(intent, serverId), intentId, effect)
       return result ? { ...result, intent_id: intentId } : uncertain(intentId, 'no_conclusive_evidence')
     } catch { return uncertain(intentId, 'reconcile_failed') }
   }
