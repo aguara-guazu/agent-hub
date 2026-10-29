@@ -48,6 +48,12 @@ export interface HubContinuation {
   /** A restricted profile cannot be applied to a fleet child yet, so asking for one blocks every rung. */
   profile?: { restricted: boolean }
 }
+export interface HubResumeRequest {
+  /** Fixed instruction delivered as the first message of the resumed conversation. */
+  prompt: string
+  /** Pool that was exhausted when the member failed: stands for the account of both the failed run and the restarted one. */
+  pool_key: string
+}
 export interface HubTeamLaunchReceipt extends TeamLaunchReceipt { runtime: HubTeamStatus; continuity?: ResumePlan }
 type ManagedChat = LocalChat & {
   managedLifecycle(sessionId: string, event: string, at: string, turnId?: string): Promise<unknown>
@@ -319,6 +325,54 @@ export class HubTeamRuntime implements TeamOrca {
       throw Object.assign(failure, { launch_handle: id, ...(plan ? { continuity: plan } : {}), ...(plan?.rung === 'fork' ? { resume_outcome: 'launch_uncertain' as const } : {}) })
     } finally { this.launching.delete(id); this.nextGenerations.delete(id) }
   }
+  /**
+   * Restarts, in the same conversation, a member that failed in place. The caller supplies the quota evidence; this method
+   * verifies the authority, the identity of the conversation and that the previous child is gone, and it never starts a
+   * different conversation: anything short of an exclusive resume is refused with the plan that explains why.
+   */
+  async resumeMember(handle: string, request: HubResumeRequest): Promise<HubTeamLaunchReceipt> {
+    this.requireEnabled()
+    check(safeId(handle) && handle.length <= 200, 'Identificador de miembro inválido.', 400)
+    check(request.prompt.length > 0 && request.prompt.length <= 24_000 && !request.prompt.includes('\0'), 'Instrucción de reanudación inválida.', 400)
+    check(!this.launching.has(handle), 'El miembro ya tiene un lanzamiento en curso.', 409)
+    this.launching.add(handle)
+    let attempted = false, plan: ResumePlan | undefined
+    try {
+      await this.queues.get(handle)
+      const member = (await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE id=$1', [handle]))[0]
+      const runtime = this.runtime(member?.runtime)
+      check(member?.session_id && runtime?.state === 'failed' && runtime.native_id, 'El miembro no tiene una conversación fallida que reanudar.', 409)
+      await this.assertAuthorized(handle, String(member.session_id), true)
+      const owned = this.manager.status(handle)
+      const exited = owned ? this.generations.get(handle) === runtime.generation && this.manager.exitConfirmed(handle)
+        : Boolean((await this.chat.db.query(`SELECT id FROM process_incidents WHERE subject_kind='fleet_member' AND subject_id=$1 AND generation=$2
+          AND action IN ('terminated','already_exited') LIMIT 1`, [handle, runtime.generation]))[0])
+      const current = await this.workspace(runtime.cwd)
+      const project = await projectForPath(this.chat.db, runtime.cwd)
+      const installed = await this.installedEvidence(runtime.cli)
+      plan = planResume(
+        { native_id: runtime.native_id!, cli: runtime.cli, surface: 'fleet', cwd: runtime.cwd, live: false, id_authentic: true, project_id: project?.id ?? null, account: request.pool_key },
+        { cli: runtime.cli, surface: 'fleet', cwd: current.path, headless: true, profile: { restricted: false, verified: true }, project_id: project?.id ?? null,
+          account: request.pool_key, same_conversation: true },
+        installed, exited ? { exclusive_by: 'hub_process_exit' } : {})
+      this.requireEnabled()
+      if (plan.rung !== 'exclusive_resume') throw Object.assign(new MemoryError(409, 'El Hub no puede reanudar la misma conversación con evidencia suficiente; no se lanzó nada.'), { continuity: plan })
+      await this.preflight([{ cli: runtime.cli, model: runtime.model, ...(runtime.effort ? { effort: runtime.effort } : {}) }])
+      this.nextGenerations.set(handle, randomUUID())
+      attempted = true
+      const result = await this.manager.start({ id: handle, cli: runtime.cli, cwd: current.path, model: runtime.model, prompt: request.prompt,
+        ...(runtime.effort ? { effort: runtime.effort } : {}), resume_id: plan.native_id! })
+      await this.verifyLaunchEnabled(handle)
+      if (!['busy', 'idle', 'waiting_input'].includes(result.state)) throw new MemoryError(503, 'El agente del Hub no confirmó la reanudación.')
+      const status = await this.status(handle)
+      check(status, 'El Hub no confirmó los metadatos del agente reanudado.', 503)
+      return { handle, kind: 'hub_process', prompt_outcome: 'input-accepted', runtime: status, continuity: plan }
+    } catch (error) {
+      if (!attempted) throw error
+      const failure = error instanceof MemoryError ? error : new MemoryError(503, 'El Hub no confirmó la reanudación del agente. Inspeccioná su estado antes de reintentar.')
+      throw Object.assign(failure, { launch_handle: handle, continuity: plan, resume_outcome: 'launch_uncertain' as const })
+    } finally { this.launching.delete(handle); this.nextGenerations.delete(handle) }
+  }
   private async verifyLaunchEnabled(id: string): Promise<void> {
     if (this.enabled()) return
     await this.manager.stop(id)
@@ -384,6 +438,22 @@ export class HubTeamRuntime implements TeamOrca {
     if (!owned || this.generations.get(handle) !== runtime.generation) return { ...runtime, state: 'unknown', error_code: 'fleet_process_not_owned' }
     return { ...runtime }
   }
+  /** Same guards as a delivery: live plan, human instruction, current leader, open channels and the member's own workspace. */
+  private async assertAuthorized(handle: string, sessionId: string, allowClosedSession = false): Promise<void> {
+    const authorized = (await this.chat.db.query(`SELECT m.id FROM chat_team_members m
+        JOIN chat_team_plans t ON t.id=m.team_id
+        JOIN chat_channels master ON master.id=t.master_channel_id
+        JOIN chat_sessions leader ON leader.id=t.created_by
+        JOIN chat_sessions participant ON participant.id=m.session_id
+        JOIN chat_channels child ON child.id=m.channel_id
+        WHERE m.id=$1 AND m.session_id=$2 AND m.state='joined'
+        AND t.state NOT IN ('paused','cancelled','completed','prepared') AND t.human_instruction IS NOT NULL
+        AND master.closed_at IS NULL AND master.leader_id=t.created_by
+        AND leader.channel_id=master.id AND leader.closed_at IS NULL AND leader.removed_at IS NULL
+        AND participant.channel_id=child.id AND (participant.closed_at IS NULL OR $3=1) AND participant.removed_at IS NULL
+        AND child.closed_at IS NULL AND child.path=m.workspace_path`, [handle, sessionId, allowClosedSession ? 1 : 0]))[0]
+    check(authorized, 'El equipo o sus sesiones ya no están autorizados para recibir el aviso.', 403)
+  }
   /** False permits another wake provider; an owned but unavailable worker must be retried. */
   async wake(sessionId: string, text: string): Promise<boolean> {
     const members = await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE session_id=$1', [sessionId])
@@ -394,19 +464,7 @@ export class HubTeamRuntime implements TeamOrca {
       if (!runtime || !owned || this.generations.get(handle) !== runtime.generation) continue
       this.requireEnabled()
       check(owned.state === 'idle' || (owned.state === 'busy' && this.manager.supportsMidTurn(handle)), 'El agente del Hub todavía no está disponible para recibir el aviso. Reintentá después.', 409)
-      const authorized = (await this.chat.db.query(`SELECT m.id FROM chat_team_members m
-        JOIN chat_team_plans t ON t.id=m.team_id
-        JOIN chat_channels master ON master.id=t.master_channel_id
-        JOIN chat_sessions leader ON leader.id=t.created_by
-        JOIN chat_sessions participant ON participant.id=m.session_id
-        JOIN chat_channels child ON child.id=m.channel_id
-        WHERE m.id=$1 AND m.session_id=$2 AND m.state='joined'
-        AND t.state NOT IN ('paused','cancelled','completed','prepared') AND t.human_instruction IS NOT NULL
-        AND master.closed_at IS NULL AND master.leader_id=t.created_by
-        AND leader.channel_id=master.id AND leader.closed_at IS NULL AND leader.removed_at IS NULL
-        AND participant.channel_id=child.id AND participant.closed_at IS NULL AND participant.removed_at IS NULL
-        AND child.closed_at IS NULL AND child.path=m.workspace_path`, [handle, sessionId]))[0]
-      check(authorized, 'El equipo o sus sesiones ya no están autorizados para recibir el aviso.', 403)
+      await this.assertAuthorized(handle, sessionId)
       const result = await this.send(handle, text)
       check(result.state === 'busy' || result.state === 'idle', 'El agente del Hub no confirmó la entrega del aviso. Reintentá después.', 503)
       return true

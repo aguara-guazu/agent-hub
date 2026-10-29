@@ -33,6 +33,7 @@ createInterface({input:process.stdin}).on('line',line=>{
  } else {
   if(p.method==='initialize')out({id:p.id,result:{}});
   if(p.method==='thread/start')out({id:p.id,result:{thread:{id:'native'}}});
+  if(p.method==='thread/resume')out({id:p.id,result:{thread:{id:p.params.threadId}}});
   if(p.method==='thread/fork')out({id:p.id,result:{thread:{id:'native-fork',sessionId:'root-session'}}});
   if(p.method==='turn/start') {
    if(require('node:fs').realpathSync(p.params.cwd)!==process.cwd())process.exit(20);
@@ -40,7 +41,7 @@ createInterface({input:process.stdin}).on('line',line=>{
    out({id:p.id,result:{turn:{id:turn,status:'inProgress'}}});
    out({method:'item/agentMessage/delta',params:{threadId:'native',delta:'PRIVATE output'}});
    if(mode==='question')out({method:'item/tool/requestUserInput',id:42,params:{threadId:'native',turnId:turn,isBlocking:true,questions:[{id:'choice',header:'Choice',question:'What should I do?',options:[{label:'Yes',description:'Proceed'},{label:'No',description:'Wait'}]}]}});
-   if(!['hold','question'].includes(mode))setTimeout(()=>out({method:'turn/completed',params:{threadId:'native',turn:{id:turn,status:'completed'}}}),10);
+   if(!['hold','question'].includes(mode)){const failing=mode==='failSecond'&&n===2;setTimeout(()=>out({method:'turn/completed',params:{threadId:'native',turn:{id:turn,status:failing?'failed':'completed',...(failing?{error:{message:'PRIVATE',codexErrorInfo:'usageLimitExceeded'}}:{})}}}),10);}
   }
   if(p.method==='turn/steer') {
    if(p.params.expectedTurnId!==turn)out({id:p.id,error:{message:'PRIVATE stale turn'}});
@@ -56,11 +57,13 @@ function mockChat() {
   const rows = new Map<string, { id: string; session_id: string | null; runtime: HubTeamStatus | null }>()
   const sessions = new Map<string, Record<string, unknown>>()
   let authorized = true
+  const incidents = new Set<string>()
   const managedQuestions = vi.fn(async (_sender: string, _questions: unknown[], _generation: string) => {})
   const lifecycle = vi.fn(async (_session: string, _event: string, _at: string, _turn?: string) => {})
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     if (sql.startsWith('SELECT * FROM chat_sessions WHERE id=$1')) return sessions.has(String(params[0])) ? [{ ...sessions.get(String(params[0])) }] : []
     if (sql.startsWith("SELECT id,title,data FROM entities WHERE kind='project'")) return []
+    if (sql.includes('FROM process_incidents')) return incidents.has(`${params[0]}:${params[1]}`) ? [{ id: 'incident' }] : []
     if (sql.startsWith('SELECT m.id FROM chat_team_members')) return authorized && rows.get(String(params[0]))?.session_id === params[1] ? [{ id: params[0] }] : []
     if (sql.startsWith('SELECT id,session_id,runtime') && sql.includes('WHERE session_id=$1')) return [...rows.values()].filter(row => row.session_id === params[0]).map(row => ({ ...row }))
     if (sql.startsWith('SELECT id,session_id,runtime')) {
@@ -71,7 +74,7 @@ function mockChat() {
     }
     throw new Error('Unexpected test SQL')
   })
-  return { chat: { db: { query }, managedLifecycle: lifecycle, managedQuestions } as unknown as LocalChat, rows, sessions, lifecycle, managedQuestions, query, setAuthorized: (value: boolean) => { authorized = value } }
+  return { chat: { db: { query }, managedLifecycle: lifecycle, managedQuestions } as unknown as LocalChat, rows, sessions, lifecycle, managedQuestions, query, incidents, setAuthorized: (value: boolean) => { authorized = value } }
 }
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'hub-team-runtime-'))
@@ -466,5 +469,68 @@ describe('HubTeamRuntime lifecycle', () => {
       await backend.launch(parent, { member_id: id, cli: 'codex_cli', model: 'test', prompt: 'PRIVATE' })
     } finally { if (previous === undefined) delete process.env.AGENTHUB_CHAT_SESSION_KEY; else process.env.AGENTHUB_CHAT_SESSION_KEY = previous }
     expect(Object.keys(launched.mock.calls[0]![2].env).some(key => /^(AGENTHUB_|ORCA_|GIT_)/.test(key))).toBe(false)
+  })
+})
+
+describe('HubTeamRuntime same-conversation resume', () => {
+  const schema = '{"methods":["thread/fork","thread/resume"]}'
+  const options: HubTeamOptions = {
+    run: async (command, args, runOptions) => {
+      if (command === 'git') return exec(command, args, runOptions)
+      const out = args.indexOf('--out')
+      if (args.includes('generate-json-schema') && out >= 0) await writeFile(join(args[out + 1]!, 'schema.json'), schema)
+      return { stdout: help }
+    },
+  }
+  const request = { prompt: 'FIXED PROMPT', pool_key: 'pool-a' }
+  async function failedMember(mode = 'failSecond') {
+    const set = setup(mode, options)
+    const parent = await set.backend.workspace(join(directory, 'repo'))
+    set.rows.get(set.id)!.session_id = 'member-session'
+    await set.backend.launch(parent, { member_id: set.id, cli: 'codex_cli', model: 'exact-model', prompt: 'PRIVATE' })
+    await until(() => set.rows.get(set.id)!.runtime?.state === 'idle')
+    await set.backend.send(set.id, 'again')
+    await until(() => set.rows.get(set.id)!.runtime?.state === 'failed')
+    await until(() => (set.backend as unknown as { manager: { exitConfirmed(id: string): boolean } }).manager.exitConfirmed(set.id))
+    return { ...set, parent }
+  }
+  it('restarts the failed Codex thread in place once the Hub confirmed the child exit', async () => {
+    const { backend, rows, id, launched } = await failedMember()
+    const before = rows.get(id)!.runtime!
+    expect(before).toMatchObject({ state: 'failed', error_cause: 'quota_exhausted', error_evidence: 'protocol', native_id: 'native' })
+    const receipt = await backend.resumeMember(id, request)
+    expect(receipt.continuity).toMatchObject({ rung: 'exclusive_resume', native_id: 'native' })
+    expect(receipt.runtime).toMatchObject({ native_id: 'native', cli: 'codex_cli', model: 'exact-model' })
+    expect(receipt.runtime.generation).not.toBe(before.generation)
+    expect(launched).toHaveBeenCalledTimes(2)
+  })
+  it('refuses a failed member whose process exit nobody confirmed, then accepts the recorded incident', async () => {
+    const { backend, rows, id, incidents, launched } = setup('hold', options)
+    const workspace = await backend.workspace(join(directory, 'repo'))
+    rows.get(id)!.session_id = 'member-session'
+    rows.get(id)!.runtime = { id, cli: 'codex_cli', cwd: workspace.path, model: 'exact-model', state: 'failed', native_id: 'thread-old', provider: 'hub', generation: 'old-generation', updated_at: new Date().toISOString() } as HubTeamStatus
+    await expect(backend.resumeMember(id, request)).rejects.toMatchObject({ continuity: { rung: 'linked_new' } })
+    expect(launched).not.toHaveBeenCalled()
+    incidents.add(`${id}:old-generation`)
+    const receipt = await backend.resumeMember(id, request)
+    expect(receipt.continuity).toMatchObject({ rung: 'exclusive_resume', native_id: 'thread-old' })
+    expect(receipt.runtime.native_id).toBe('thread-old')
+  })
+  it('does not resume a member that did not fail, lost its authority or has no installed resume evidence', async () => {
+    const { backend, rows, id, setAuthorized, launched } = setup('hold', options)
+    rows.get(id)!.session_id = 'member-session'
+    await expect(backend.resumeMember(id, request)).rejects.toMatchObject({ statusCode: 409 })
+    const workspace = await backend.workspace(join(directory, 'repo'))
+    rows.get(id)!.runtime = { id, cli: 'codex_cli', cwd: workspace.path, model: 'exact-model', state: 'failed', native_id: 'thread-old', provider: 'hub', generation: 'g', updated_at: new Date().toISOString() } as HubTeamStatus
+    setAuthorized(false)
+    await expect(backend.resumeMember(id, request)).rejects.toMatchObject({ statusCode: 403 })
+    setAuthorized(true)
+    const bare = setup('hold', { run: async (command, args, runOptions) => command === 'git' ? exec(command, args, runOptions) : { stdout: help } })
+    bare.rows.get(bare.id)!.session_id = 'member-session'
+    bare.rows.get(bare.id)!.runtime = { ...rows.get(id)!.runtime!, id: bare.id } as HubTeamStatus
+    bare.incidents.add(`${bare.id}:g`)
+    await expect(bare.backend.resumeMember(bare.id, request)).rejects.toMatchObject({ continuity: { rung: 'linked_new' } })
+    expect(launched).not.toHaveBeenCalled()
+    expect(bare.launched).not.toHaveBeenCalled()
   })
 })

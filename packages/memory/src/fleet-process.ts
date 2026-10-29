@@ -99,6 +99,11 @@ export class FleetProcessManager {
     const s = this.sessions.get(id)
     return s ? s.activity.read(s.status.state, after) : unavailableActivity()
   }
+  /** True only for a child this manager launched whose exit was observed; a restarted Hub has no such evidence. */
+  exitConfirmed(id: string): boolean {
+    const s = this.sessions.get(id)
+    return Boolean(s && s.exited && ['failed', 'stopped'].includes(s.status.state))
+  }
   list(): FleetStatus[] { return [...this.sessions.values()].map(s => this.snapshot(s.status)) }
 
   private snapshot(value: FleetStatus): FleetStatus {
