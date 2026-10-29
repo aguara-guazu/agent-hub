@@ -11,13 +11,13 @@ export * from './identities.js'
 /** La autoridad del artefacto no está vigente: la solicitud de decisión no se prepara. `code` es estable para que el runtime lo compare. */
 export class DecisionAuthorityUnavailable extends Error {
   readonly code = 'authority_unavailable'
-  constructor() { super('authority_unavailable') }
+  constructor() { super('authority_unavailable'); this.name = 'DecisionAuthorityUnavailable' }
 }
 
 /** El artefacto solo trae ítems informativos: no hay nada que aprobar. */
 export class NoActionableItems extends Error {
   readonly code = 'no_actionable_items'
-  constructor() { super('no_actionable_items') }
+  constructor() { super('no_actionable_items'); this.name = 'NoActionableItems' }
 }
 
 /**
