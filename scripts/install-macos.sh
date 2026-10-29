@@ -86,11 +86,12 @@ end tell
 APPLESCRIPT
 fi
 
-# 4. Abrir la app instalada.
+# 4. Abrir la app instalada. `open` pasa el entorno de quien lo llama: con
+#    ELECTRON_RUN_AS_NODE=1 heredado, la app arrancaría como Node y saldría sin ventana.
 log "== Abriendo $TARGET"
 if [[ "${AGENTHUB_INSTALL_HIDDEN:-0}" == "1" ]]; then
-  open -gj "$TARGET" --args --hidden --updated
+  env -u ELECTRON_RUN_AS_NODE open -gj "$TARGET" --args --hidden --updated
 else
-  open "$TARGET"
+  env -u ELECTRON_RUN_AS_NODE open "$TARGET"
 fi
 log "Listo. Agent Hub vive en la barra de menú; no aparece en el Dock."
