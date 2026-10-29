@@ -24,3 +24,9 @@ it('conserva la distinción entre proceso ausente e inspección no disponible',a
   exec.mockRejectedValueOnce(Object.assign(new Error('timeout'),{code:'ETIMEDOUT'}))
   expect(await inspectNativeProcess(123)).toBeUndefined()
 })
+
+it('consulta la hora de inicio con el locale neutro para que el texto no dependa del idioma del sistema',async()=>{
+  exec.mockResolvedValueOnce({stdout:'1 Wed Oct 28 21:00:00 2026 node server.js\n'})
+  expect(await inspectNativeProcess(123)).toMatchObject({parent:1,started:'Wed Oct 28 21:00:00 2026'})
+  if(process.platform!=='win32')expect(exec.mock.calls[0]![2].env).toMatchObject({LC_ALL:'C'})
+})

@@ -1,5 +1,6 @@
 import { spawn, execFile, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { inspectNativeProcess } from '@agenthub/gateway'
 import { isAbsolute } from 'node:path'
 import { FleetActivityBuffer, unavailableActivity, type FleetActivity } from './fleet-activity.js'
 
@@ -55,11 +56,6 @@ export interface FleetProcessOptions {
 }
 const FORK_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type Packet = Record<string, any>
-/** Start time exactly as the OS reports it; undefined where it cannot be read, which keeps the PID unverifiable. */
-function processStarted(pid: number): Promise<string | undefined> {
-  if (process.platform === 'win32') return Promise.resolve(undefined)
-  return new Promise(resolve => execFile('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 1_000, env: { ...process.env, LC_ALL: 'C' } }, (error, stdout) => resolve(error ? undefined : stdout.trim() || undefined)))
-}
 const codexCause = (error: Packet | null | undefined): FleetErrorCause | undefined => error?.codexErrorInfo === 'usageLimitExceeded' ? 'quota_exhausted' : undefined
 type Pending = { resolve: (value: Packet) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
 type PendingQuestion = {
@@ -459,7 +455,7 @@ export class FleetProcessManager {
     this.sessions.set(input.id, s)
     this.publish(s, 'starting')
     // Read after the first event so no listener is missed; the next published state carries it.
-    if (typeof child.pid === 'number') void processStarted(child.pid).then(started => { if (started && this.sessions.get(input.id) === s) s.status.process_started = started })
+    if (typeof child.pid === 'number') void inspectNativeProcess(child.pid).then(live => { if (live && this.sessions.get(input.id) === s) s.status.process_started = live.started }).catch(() => {})
     child.stdin.on('error', () => this.fail(s, 'fleet_stdin_failed'))
     child.stderr.resume() // Drain without retaining or exposing output.
     let buffer = ''

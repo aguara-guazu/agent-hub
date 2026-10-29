@@ -276,7 +276,7 @@ describe('FleetProcessManager', () => {
       if (!cause) { expect(manager.status('one')).not.toHaveProperty('error_cause'); expect(manager.status('one')).not.toHaveProperty('error_evidence') }
     }
   })
-  it.skipIf(process.platform === 'win32')('records the pid and start time of the owned child and carries them in later events', async () => {
+  it('records the pid and start time of the owned child and carries them in later events', async () => {
     const { manager, input, events } = await setup('normal')
     await manager.start(input)
     await until(() => manager.status('one')?.state === 'idle')
