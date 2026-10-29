@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom"
-import { useT } from "../i18n/useT"
+import { useT } from "../i18n"
 import { Icon } from "./Icon"
 import { Badge, IconButton, Kbd } from "./ui/basics"
 import { relativeTime } from "./ui/time"

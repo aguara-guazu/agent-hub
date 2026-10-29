@@ -7,7 +7,7 @@ import { BySearchParam, LegacyPage, Redirect } from "./components/RouteFallbacks
 import { Button } from "./components/ui/basics"
 import { Empty, Loading } from "./components/ui/display"
 import { ToastProvider } from "./components/ui/Toast"
-import { useT } from "./i18n/useT"
+import { useT } from "./i18n"
 import { AuthProvider, useAuth } from "./lib/auth"
 import { useTheme } from "./lib/theme"
 import { DeliveriesPage, DeliveryDetailPage, SchedulesPage } from "./pages/Automations"

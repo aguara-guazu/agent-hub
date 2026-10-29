@@ -8,7 +8,7 @@ import { Icon, type IconName } from "./Icon"
 import { Avatar, Kbd, Tag } from "./ui/basics"
 import { Layer, trapTab, useLayer } from "./ui/layers"
 import { relativeTime } from "./ui/time"
-import { useT } from "../i18n/useT"
+import { useT } from "../i18n"
 import { DESTINATIONS, type useShellStatus } from "./useShellStatus"
 
 interface SearchRow { key: string; entity_id: string; title: string; kind: string; href: string; updated_at: string }

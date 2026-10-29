@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef } from "react"
 import type { FormEvent, ReactNode } from "react"
 import { Button, IconButton } from "./basics"
 import { Layer, focusableIn, hasBlockingLayer, trapTab, useLayer } from "./layers"
-import { useT } from "../../i18n/useT"
+import { useT } from "../../i18n"
 
 export interface DialogProps {
   open: boolean

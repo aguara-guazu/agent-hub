@@ -9,7 +9,7 @@ import { Menu, type MenuItem } from "../../components/ui/Menu"
 import { useToast } from "../../components/ui/Toast"
 import { relativeTime } from "../../components/ui/time"
 import { errorKey } from "../../i18n/errors"
-import { useFormat, useT } from "../../i18n/useT"
+import { useFormat, useT } from "../../i18n"
 import type { PendingInbox, ProjectSuggestion } from "../../lib/home"
 import { memoryCall, type MemoryEntity } from "../../lib/memory"
 

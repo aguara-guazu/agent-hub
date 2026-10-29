@@ -4,7 +4,7 @@ import { Icon, type IconName } from "../Icon"
 import { Button, IconButton } from "./basics"
 import { useTheme } from "../../lib/theme"
 import { cx } from "./layers"
-import { useT } from "../../i18n/useT"
+import { useT } from "../../i18n"
 
 export type ToastKind = "info" | "success" | "error"
 

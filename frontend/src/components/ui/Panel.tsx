@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef } from "react
 import type { ReactNode } from "react"
 import { Button, IconButton } from "./basics"
 import { useLayer } from "./layers"
-import { useT } from "../../i18n/useT"
+import { useT } from "../../i18n"
 
 export interface PanelProps {
   /** Nombre accesible del panel (normalmente el título del elemento). */

@@ -2,7 +2,7 @@ import type { ReactNode } from "react"
 import type { IconName } from "../Icon"
 import { BtnGroup, Button, IconButton } from "./basics"
 import { Menu, type MenuItem } from "./Menu"
-import { useT } from "../../i18n/useT"
+import { useT } from "../../i18n"
 
 /** El «…» de una vista, fila o panel. */
 export function MoreMenu({ items, label, small = false, ghost = false }: { items: readonly MenuItem[]; label?: string; small?: boolean; ghost?: boolean }) {

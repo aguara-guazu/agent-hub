@@ -6,7 +6,7 @@ import { memoryCall } from "../lib/memory"
 import { useServers } from "../lib/queries"
 import type { IconName } from "./Icon"
 import { useToast } from "./ui/Toast"
-import { useT } from "../i18n/useT"
+import { useT } from "../i18n"
 
 type DestinationLabel = "home" | "projects" | "memory" | "collaboration" | "automations" | "servers" | "skills" | "clients" | "activity" | "settings"
 type DestinationKeywords = "cmdk.keywordsHome" | "cmdk.keywordsSettings" | "cmdk.keywordsActivity"

@@ -3,7 +3,7 @@ import type { AnchorHTMLAttributes, CSSProperties, HTMLAttributes, KeyboardEvent
 import { Link, type LinkProps } from "react-router-dom"
 import i18n from "i18next"
 import { errorKey } from "../../i18n/errors"
-import { useT } from "../../i18n/useT"
+import { useT } from "../../i18n"
 import { Icon, type IconName } from "../Icon"
 import { Button } from "./basics"
 import { cx } from "./layers"

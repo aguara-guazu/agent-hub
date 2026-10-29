@@ -4,7 +4,7 @@ import { Icon } from "../Icon"
 import { Avatar } from "./basics"
 import { cx } from "./layers"
 import { Pop } from "./Menu"
-import { useT } from "../../i18n/useT"
+import { useT } from "../../i18n"
 
 interface FieldIds { id: string; hintId?: string; invalid: boolean }
 const FieldContext = createContext<FieldIds | null>(null)
