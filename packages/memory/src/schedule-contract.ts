@@ -155,6 +155,9 @@ export interface ScheduleAutomation { enabled(): boolean; effects?: ScheduleEffe
 export const RUN_PROFILE_CLI_KINDS: readonly string[] = ['hub_run_action', 'hub_effects']
 export function isRunProfileAgent(agent: { cli_kind: string }): boolean { return RUN_PROFILE_CLI_KINDS.includes(agent.cli_kind) }
 
+/** Public summary of the decision of a run, built from item states only; `expires_at` is when the request stops accepting replies. */
+export interface DecisionSummary { state: 'none' | 'pending' | 'dispatching' | 'uncertain' | 'expired' | 'done'; expires_at: string | null; approved: number; total: number }
+
 /** Fields of a schedule a person changed from the app; an agent cannot change them afterwards. */
 export type HumanOverrideField = 'recurrence' | 'delivery'
 

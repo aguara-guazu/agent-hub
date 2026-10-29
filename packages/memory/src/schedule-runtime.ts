@@ -367,9 +367,10 @@ export class ScheduleRuntime {
       const effects = artifact.effects as Array<{ ordinal: number; effect: unknown }>
       const items = (full!.items as Array<{ ordinal: number; kind: PublicItem['kind']; project_id: string; summary: string }>).map(item => ({ ...item, effect: effects.find(entry => entry.ordinal === item.ordinal)?.effect }))
       let decision_request_ref: string
+      const expiresAt = isoAt(this.now() + DECISION_TTL_MS)
       try {
         ({ decision_request_ref } = await decisions.prepareDecision({ run_id: run.id, artifact_id: artifact.id, owner_id: this.o.ownerId ?? 'owner',
-          project_ids: [...new Set(items.map(item => item.project_id))], items, expires_at: isoAt(this.now() + DECISION_TTL_MS) }))
+          project_ids: [...new Set(items.map(item => item.project_id))], items, expires_at: expiresAt }))
       } catch (error) {
         // A refusal by the decision module is final for this artifact: retrying cannot make it live again.
         const refusal = decisionRefusal(error)
@@ -379,7 +380,7 @@ export class ScheduleRuntime {
       }
       await this.o.db.transaction(async () => {
         await this.store.setDecisionRef(artifact.id, decision_request_ref)
-        await this.store.recordPhase({ run_id: run.id, phase: 'persist', generation, state: 'done', receipt: { decision_request: 'set' } })
+        await this.store.recordPhase({ run_id: run.id, phase: 'persist', generation, state: 'done', receipt: { decision_request: 'set', expires_at: expiresAt } })
         await this.store.setRun(run.id, generation, { phase: 'deliver' })
       })
       return 'ready'

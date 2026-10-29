@@ -8,7 +8,8 @@ import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
 import { ScheduleAdmin } from '../src/schedule-admin.js'
-import { ScheduleStore } from '../src/schedule-store.js'
+import { ScheduleStore, snapshotOf } from '../src/schedule-store.js'
+import { randomUUID } from 'node:crypto'
 import '../src/schedule-templates.js'
 
 let dir: string, db: MemoryDatabase, store: ScheduleStore, admin: ScheduleAdmin, projectId: string, enabled: boolean, gmail: boolean, stopped: string[]
@@ -142,4 +143,49 @@ it('un campo que la persona cambió desde la app queda protegido frente a los ag
   expect(both.schedule.human_override).toEqual(['recurrence', 'delivery'])
   expect(await code(admin.update(agent(), schedule.id, 4, { delivery: ['hub_inbox'] }))).toBe('human_override')
   expect(await code(admin.cancel(agent(), schedule.id, 4))).toBe('ok')
+})
+
+const finishedRun = async (scheduleId: string, state: 'succeeded' | 'failed' = 'succeeded') => {
+  const schedule = (await store.schedule(scheduleId))!
+  return (await store.insertRun({ schedule_id: scheduleId, scheduled_for: new Date().toISOString(), schedule_revision: 1, definition: snapshotOf(schedule), trigger: 'clock', state }))!
+}
+
+it('la lista de runs trae las entregas y el resumen de la decisión de cada run sin consultar run por run', async () => {
+  const { schedule } = await create()
+  const withItems = await finishedRun(schedule.id)
+  await store.insertArtifact({ id: randomUUID(), run_id: withItems, kind: 'close', title: 'Cierre', body_md: 'b', items: [{ ordinal: 1, kind: 'jira_worklog', project_id: projectId, summary: 'a' }], snapshot_refs: [], effects: [] })
+  await db.query("INSERT INTO schedule_run_phases(run_id,phase,generation,state,receipt) VALUES($1,'persist',1,'done','{\"expires_at\":\"2026-10-30T20:00:00.000Z\"}')", [withItems])
+  for (const [ordinal, state] of [[1, 'approved'], [2, 'proposed'], [3, 'rejected']] as const) await store.set({ run_id: withItems, ordinal, kind: 'jira_worklog', state })
+  const delivery = await store.ensureDelivery(withItems, 'hub_inbox'); await store.setDelivery(delivery.id, { state: 'sent' })
+  const empty = await finishedRun((await create({ params: { message: 'otro' } })).schedule.id)
+  const list = await admin.runList({ limit: 10, offset: 0 })
+  const byId = Object.fromEntries(list.items.map(row => [String(row.id), row]))
+  expect(byId[withItems]).toMatchObject({ deliveries: [{ target: 'hub_inbox', state: 'sent' }], decision: { state: 'dispatching', expires_at: '2026-10-30T20:00:00.000Z', approved: 1, total: 3 } })
+  expect(byId[empty]).toMatchObject({ deliveries: [], decision: { state: 'none', expires_at: null, approved: 0, total: 0 } })
+})
+
+it('el resumen de la decisión prioriza incierto, luego en despacho, pendiente, vencido y hecho', async () => {
+  const { schedule } = await create()
+  const cases: Array<[string[], string]> = [[['uncertain', 'proposed'], 'uncertain'], [['dispatching', 'proposed'], 'dispatching'], [['proposed', 'rejected'], 'pending'], [['expired', 'superseded'], 'expired'], [['succeeded', 'expired'], 'done']]
+  const runs: string[] = []
+  for (const [states] of cases) {
+    const run = await finishedRun(schedule.id); runs.push(run)
+    await db.query("UPDATE schedule_runs SET scheduled_for=$2 WHERE id=$1", [run, new Date(Date.now() - runs.length * 3_600_000).toISOString()])
+    for (const [i, state] of states.entries()) await store.set({ run_id: run, ordinal: i + 1, kind: 'info', state: state as never })
+  }
+  const summaries = await store.decisionSummaries(runs)
+  expect(runs.map(run => summaries.get(run)!.state)).toEqual(cases.map(([, expected]) => expected))
+})
+
+it('el detalle del run trae el proyecto y las partes de la estimación dentro de cada ítem', async () => {
+  const { schedule } = await create()
+  const run = await finishedRun(schedule.id), estimateId = randomUUID()
+  await db.query(`INSERT INTO hour_estimates(id,project_id,estimated_seconds,basis,confidence,assumptions,state,method,model) VALUES($1,$2,7200,'tareas hermanas','medium','["sin bloqueos"]','proposed','model_judgment','m')`, [estimateId, projectId])
+  await store.insertArtifact({ id: randomUUID(), run_id: run, kind: 'close', title: 'Cierre', body_md: 'b', snapshot_refs: [], effects: [],
+    items: [{ ordinal: 1, kind: 'jira_worklog', project_id: projectId, summary: 'Cargar 2h', estimate_id: estimateId }, { ordinal: 2, kind: 'info', project_id: projectId, summary: 'nota' }] })
+  const detail = await admin.runDetail(run)
+  expect(detail.project_id).toBe(projectId)
+  expect((detail.artifact!.items as any[])[0].estimate).toMatchObject({ estimated_seconds: 7200, basis: 'tareas hermanas', confidence: 'medium', assumptions: ['sin bloqueos'], label: 'estimación' })
+  expect((detail.artifact!.items as any[])[1].estimate).toBeUndefined()
+  expect(JSON.stringify(detail)).not.toContain('effects')
 })

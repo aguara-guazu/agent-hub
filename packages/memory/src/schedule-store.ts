@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { MemoryDatabase } from './database.js'
 import { MemoryError } from './contracts.js'
-import type { Actor, ArtifactAuthorityReader, AttemptState, DeliveryTarget, GracePolicy, HumanOverrideField, IncidentAction, IncidentCause, ItemState, PublicStateSink, Recurrence, RunPhase, RunState, RunTrigger,
+import type { Actor, ArtifactAuthorityReader, DecisionSummary, AttemptState, DeliveryTarget, GracePolicy, HumanOverrideField, IncidentAction, IncidentCause, ItemState, PublicStateSink, Recurrence, RunPhase, RunState, RunTrigger,
   ScheduleKind, ScheduleScope, ScheduleSnapshot, ScheduleState, ScheduleTemplate, ScheduleEventType } from './schedule-contract.js'
 
 type Row = Record<string, any>
@@ -188,6 +188,44 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
       s.title AS schedule_title,s.project_id,s.template,a.id AS artifact_id,a.kind AS artifact_kind,a.title,a.read_at
       FROM schedule_runs r JOIN schedules s ON s.id=r.schedule_id LEFT JOIN schedule_artifacts a ON a.run_id=r.id WHERE ${where} ORDER BY r.scheduled_for DESC,r.id LIMIT $6 OFFSET $7`, [...params, filter.limit, filter.offset])
     return { items, total: count }
+  }
+  // --- batched reads for the run list (no per-run queries from the app) ---------------------------------------------------------------------------
+  private placeholders(count: number, from = 1) { return Array.from({ length: count }, (_, i) => `$${i + from}`).join(',') }
+  async deliveriesForRuns(runIds: string[]): Promise<Map<string, Row[]>> {
+    const grouped = new Map<string, Row[]>()
+    if (!runIds.length) return grouped
+    for (const row of await this.db.query<Row>(`SELECT run_id,id,target,state,attempts,error_code,read_at FROM schedule_deliveries WHERE run_id IN (${this.placeholders(runIds.length)}) ORDER BY created_at`, runIds)) grouped.set(row.run_id, [...(grouped.get(row.run_id) ?? []), row])
+    return grouped
+  }
+  /**
+   * Public summary of the decision of each run, from the item states and the expiry recorded in the persist receipt; the private store is never read.
+   * `state` is the most pressing one: uncertain, dispatching (approved items included), pending, expired (nothing left to approve) or done.
+   */
+  async decisionSummaries(runIds: string[]): Promise<Map<string, DecisionSummary>> {
+    const summaries = new Map<string, DecisionSummary>()
+    if (!runIds.length) return summaries
+    const counts = new Map<string, Record<string, number>>()
+    for (const row of await this.db.query<{ run_id: string; state: string; n: number }>(`SELECT run_id,state,count(*) AS n FROM schedule_item_states WHERE run_id IN (${this.placeholders(runIds.length)}) GROUP BY run_id,state`, runIds)) {
+      counts.set(row.run_id, { ...(counts.get(row.run_id) ?? {}), [row.state]: Number(row.n) })
+    }
+    const expiries = new Map<string, string>()
+    for (const row of await this.db.query<{ run_id: string; expires_at: string | null }>(`SELECT run_id,receipt->>'expires_at' AS expires_at FROM schedule_run_phases WHERE phase='persist' AND state='done' AND run_id IN (${this.placeholders(runIds.length)}) ORDER BY generation`, runIds)) {
+      if (row.expires_at) expiries.set(row.run_id, row.expires_at)
+    }
+    for (const id of runIds) {
+      const c = counts.get(id) ?? {}, total = Object.values(c).reduce((sum, n) => sum + n, 0), has = (...states: string[]) => states.some(state => (c[state] ?? 0) > 0)
+      const state: DecisionSummary['state'] = !total ? 'none' : has('uncertain') ? 'uncertain' : has('dispatching', 'approved') ? 'dispatching' : has('proposed') ? 'pending'
+        : !has('succeeded', 'rejected') ? 'expired' : 'done'
+      summaries.set(id, { state, expires_at: expiries.get(id) ?? null, approved: (c.approved ?? 0) + (c.dispatching ?? 0) + (c.succeeded ?? 0) + (c.uncertain ?? 0), total })
+    }
+    return summaries
+  }
+  /** The parts of an hour estimate the app shows next to an item: value, basis, confidence and assumptions, with what was approved and sent. */
+  async estimatesById(ids: string[]): Promise<Map<string, Row>> {
+    const found = new Map<string, Row>()
+    if (!ids.length) return found
+    for (const row of await this.db.query<Row>(`SELECT id,estimated_seconds,basis,confidence,assumptions,approved_seconds,sent_seconds,state,method,model FROM hour_estimates WHERE id IN (${this.placeholders(ids.length)})`, ids)) found.set(row.id, row)
+    return found
   }
   async activeRuns() {
     return this.db.query<{ run_id: string; phase: string; deadline_at: string | null }>(`SELECT r.id AS run_id,r.phase,(SELECT max(deadline_at) FROM schedule_run_attempts t WHERE t.run_id=r.id AND t.generation=r.generation) AS deadline_at

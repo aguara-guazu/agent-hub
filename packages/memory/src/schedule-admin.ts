@@ -266,16 +266,27 @@ export class ScheduleAdmin {
     const run = await this.store.run(runId)
     if (!run) this.fail(404, 'run_not_found', 'La ejecución no existe.')
     const artifact = await this.store.artifactOfRun(runId)
-    return { run: this.publicRun(run), artifact: artifact ? { id: artifact.id, kind: artifact.kind, title: artifact.title, body_md: artifact.body_md, items: artifact.items, read_at: artifact.read_at } : null,
-      items: await this.store.itemStates(runId), deliveries: await this.store.deliveriesOf(runId), incidents: await this.store.incidents({ run_id: runId }) }
+    const artifactItems = (artifact?.items ?? []) as Array<{ estimate_id?: string }>
+    const estimates = await this.store.estimatesById(artifactItems.flatMap(item => item.estimate_id ? [item.estimate_id] : []))
+    // The estimate parts travel inside each item so the app needs no further request; a missing row leaves the item without them.
+    const items = artifactItems.map(item => item.estimate_id && estimates.has(item.estimate_id) ? { ...item, estimate: { ...estimates.get(item.estimate_id)!, label: 'estimación' } } : item)
+    return { run: this.publicRun(run), project_id: run.definition.project_id,
+      artifact: artifact ? { id: artifact.id, kind: artifact.kind, title: artifact.title, body_md: artifact.body_md, items, read_at: artifact.read_at } : null,
+      items: await this.store.itemStates(runId), decision: (await this.store.decisionSummaries([runId])).get(runId), deliveries: await this.store.deliveriesOf(runId), incidents: await this.store.incidents({ run_id: runId }) }
   }
   private publicRun(run: RunRow) {
     return { id: run.id, schedule_id: run.schedule_id, scheduled_for: run.scheduled_for, trigger: run.trigger, state: run.state, phase: run.phase, skip_reason: run.skip_reason, deferred_reason: run.deferred_reason,
       next_attempt_at: run.next_attempt_at, error_code: run.error_code, continuity: run.continuity, started_at: run.started_at, finished_at: run.finished_at }
   }
+  /** The page of runs with each run's deliveries and decision summary, read in batches. */
+  async runList(filter: Parameters<ScheduleStore['listRuns']>[0]) {
+    const page = await this.store.listRuns(filter), ids = page.items.map(row => String(row.id))
+    const [deliveries, decisions] = await Promise.all([this.store.deliveriesForRuns(ids), this.store.decisionSummaries(ids)])
+    return { total: page.total, items: page.items.map(row => ({ ...row, deliveries: deliveries.get(String(row.id)) ?? [], decision: decisions.get(String(row.id)) })) }
+  }
   async runs(filter: { schedule_id?: string | undefined; project_id?: string | undefined; state?: RunRow['state'] | undefined; run_id?: string | undefined; unread?: boolean | undefined; limit: number; offset: number }) {
     if (filter.run_id) return this.runDetail(filter.run_id)
-    const result = await this.store.listRuns(filter)
+    const result = await this.runList(filter)
     return { ...result, limit: filter.limit, offset: filter.offset, incidents: await this.store.incidents({ ...(filter.schedule_id ? { schedule_id: filter.schedule_id } : {}), ...(filter.project_id ? { project_id: filter.project_id } : {}) }) }
   }
   /**

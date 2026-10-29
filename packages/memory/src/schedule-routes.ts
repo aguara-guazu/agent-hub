@@ -27,7 +27,7 @@ export function registerScheduleRoutes(app: FastifyInstance, service: MemoryServ
     const query = parse(z.object({ kind: z.enum(['notice', 'brief', 'close', 'status', 'report']).optional(), project_id: id.optional(), schedule_id: id.optional(), state: z.enum(runStates).optional(),
       unread: z.enum(['true', 'false']).optional(), ...page }).strict(), request.query)
     const { unread, ...rest } = query
-    return (await scheduler()).store.listRuns({ ...rest, unread: unread === 'true' })
+    return (await scheduler()).admin.runList({ ...rest, unread: unread === 'true' })
   })
   app.get('/api/memory/schedules/runs/:runId', { preHandler: auth }, async request => {
     const { runId } = parse(z.object({ runId: id }).strict(), request.params)
