@@ -34,6 +34,11 @@ function modelScope(observation:UsageQuotaObservation):UsageQuotaModelScope {
   return observation.model_scope ?? (observation.model_ids?.length?'listed':'all')
 }
 
+/** The one definition of a quota coming back: leaving exhaustion or cooldown for a usable state. An unknown state is never a recovery. */
+export function isRestored(transition:Pick<UsageQuotaTransition,'before'|'after'|'pool_key'|'clis'|'binding_ids'>):{restored:boolean;clis:string[];binding_ids:string[];pool_ids:string[]} {
+  const restored=(transition.before==='exhausted' || transition.before==='cooldown') && (transition.after==='available' || transition.after==='low')
+  return restored?{restored,clis:[...transition.clis],binding_ids:[...transition.binding_ids],pool_ids:[transition.pool_key]}:{restored,clis:[],binding_ids:[],pool_ids:[]}
+}
 /** Most restrictive simultaneous constraint wins. An unknown window prevents a green result. */
 function reduce(states:UsageQuotaState[]):UsageQuotaState {
   for(const value of ['exhausted','cooldown','unknown','low','available'] as const)if(states.includes(value))return value

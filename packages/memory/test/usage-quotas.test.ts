@@ -6,7 +6,7 @@ import type {UsageQuotaObservation} from '@agenthub/shared'
 import {MemoryDatabase} from '../src/database.js'
 import {MemoryStore} from '../src/store.js'
 import {exportMemory,readBackup,restoreMemory} from '../src/backup.js'
-import {UsageQuotas} from '../src/usage-quotas.js'
+import {UsageQuotas,isRestored} from '../src/usage-quotas.js'
 
 let dir:string,db:MemoryDatabase,quotas:UsageQuotas,now:string
 const start='2026-10-20T10:00:00.000Z'
@@ -362,4 +362,14 @@ it('does not treat a pool of unknown model scope or an ambiguous account as exha
   await quotas.ingest(observation({account_ref:'account-a',observed_at:'2026-10-20T10:00:30.000Z',status:'exhausted'}),first)
   await quotas.ingest(observation({account_ref:'account-b',observed_at:'2026-10-20T10:00:30.000Z',status:'exhausted'}),second)
   expect(await quotas.exhaustedAt('codex_cli','any-model','2026-10-20T10:01:00.000Z')).toBeUndefined()
+})
+
+it('treats only a move out of exhaustion or cooldown into a usable state as a restoration',()=>{
+  const states=['available','low','exhausted','cooldown','unknown'] as const
+  for(const before of states)for(const after of states){
+    const result=isRestored({before,after,pool_key:'pool',clis:['codex_cli'],binding_ids:['binding']})
+    const expected=(before==='exhausted' || before==='cooldown') && (after==='available' || after==='low')
+    expect(result.restored,`${before} -> ${after}`).toBe(expected)
+    expect(result).toEqual(expected?{restored:true,clis:['codex_cli'],binding_ids:['binding'],pool_ids:['pool']}:{restored:false,clis:[],binding_ids:[],pool_ids:[]})
+  }
 })
