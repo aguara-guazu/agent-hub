@@ -40,6 +40,7 @@ You see one MCP server, \`hub\`, aggregating the tools the person's local Agent 
 - **Clients, projects, meetings, team members**: local memory (\`memory_*\`, per the \`memory\` skill if installed) before your own knowledge.
 - **Google for memory (Calendar, Meet, Drive, Docs)**: the \`google-setup\` skill if the Google client is missing or a source won't connect.
 - **Other providers with an enabled server** (Jira and Confluence via Atlassian Rovo, Notion, Supabase, Cloudflare, Datadog, etc.): their tools before web search or memory; cite the resource link.
+- **Jira writes** (comments, transitions, worklogs, edits): the hub doesn't restrict them. As a recommendation, prefer tickets assigned to the person; if a ticket is assigned to someone else or unassigned, ask the person before writing.
 
 ## Factory MCP servers
 

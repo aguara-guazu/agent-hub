@@ -6,7 +6,6 @@ import { check, id, MemoryError, parse } from './contracts.js'
 import { ProviderHttp, richText } from './connectors/http.js'
 import { requireEntity, validateEvidence, type MemoryStore } from './store.js'
 import { effectiveJiraSite, getJiraSettings } from './jira-settings.js'
-import type { JiraGuard } from "./schedule-contract.js"
 
 export const TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done', 'dropped'] as const
 export const taskStatus = z.enum(TASK_STATUSES)
@@ -197,51 +196,7 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
 }
 
 /** Pushes a transition or comment with the connector token, then refreshes the mirror from Jira. */
-const JIRA_ACCOUNT = /^[A-Za-z0-9:_-]{1,128}$/
-
-/** Rejection of a write to Jira; `code` is the API code and the only thing recorded with the account and issue key. */
-function jiraRejected(status: number, code: string, message: string): MemoryError { return new MemoryError(status, message, false, code) }
-
-/**
- * Permanent rule of the owner: Agent Hub writes only on issues assigned to the owner. Two live reads with the same token right before
- * writing: `/myself` (the account Jira will record as author) and the issue assignee. The mirror's assignee is not evidence. When the
- * effects server is selected, its account (`atlassianUserInfo`) must be the token's; without it the token account is the owner.
- * Any read error rejects: nothing is written unverified. Response bodies are not stored or logged.
- */
-async function verifyJiraOwner(access: JiraAccess, issueKey: string, fetcher: typeof fetch, owner?: JiraGuard): Promise<string> {
-  const read = async (path: string): Promise<{ status: number; body: any } | null> => {
-    try {
-      const response = await fetcher(`${access.origin}${path}`, { method: "GET", redirect: "error", headers: access.headers, signal: AbortSignal.timeout(15_000) })
-      return { status: response.status, body: response.ok ? await response.json() : null }
-    } catch { return null }
-  }
-  const me = await read("/rest/api/3/myself")
-  const account = me?.body?.accountId
-  if (typeof account !== "string" || !JIRA_ACCOUNT.test(account)) {
-    throw jiraRejected(me && (me.status === 401 || me.status === 403) ? 409 : 502, "identity_unverified",
-      `No se pudo verificar con qué cuenta escribe el conector de Jira (${me ? `HTTP ${me.status}` : "sin respuesta"}); no se escribió en ${issueKey}.`)
-  }
-  const guard = owner && (owner.configured?.() ?? true) ? owner : undefined
-  if (guard) {
-    const expected = await guard.ownerAccountId().catch(() => null)
-    if (expected === null) throw jiraRejected(502, "identity_unverified", `No se pudo leer tu cuenta de Jira en el servidor de efectos; no se escribió en ${issueKey}.`)
-    if (expected !== account) throw jiraRejected(409, "account_mismatch", `El token del conector de Jira pertenece a otra cuenta, no a la tuya; no se escribió en ${issueKey}.`)
-  }
-  const issue = await read(`/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=assignee`)
-  if (!issue?.body || String(issue.body.key ?? "").toUpperCase() !== issueKey.toUpperCase()) {
-    throw jiraRejected(issue && (issue.status === 401 || issue.status === 403 || issue.status === 404) ? 409 : 502, "assignee_unverified",
-      `No se pudo leer el asignado de ${issueKey} (${issue ? `HTTP ${issue.status}` : "sin respuesta"}); no se escribió.`)
-  }
-  const assignee = issue.body.fields?.assignee
-  if (assignee === null || assignee === undefined) throw jiraRejected(409, "issue_unassigned", `${issueKey} no tiene asignado: solo se escribe en tickets asignados a vos. Asignátelo en Jira y reintentá.`)
-  if (assignee.accountId !== account) {
-    const name = typeof assignee.displayName === "string" && assignee.displayName.trim() ? assignee.displayName.trim().slice(0, 200) : "otra persona"
-    throw jiraRejected(409, "assignee_mismatch", `${issueKey} está asignado a ${name}, no a vos: no se escribe.`)
-  }
-  return account
-}
-
-async function pushToJira(store: MemoryStore, vault: Vault, task: Record<string, any>, change: { transition?: string | undefined; comment?: string | undefined }, actor: string, fetcher: typeof fetch, owner?: JiraGuard) {
+async function pushToJira(store: MemoryStore, vault: Vault, task: Record<string, any>, change: { transition?: string | undefined; comment?: string | undefined }, actor: string, fetcher: typeof fetch) {
   const project = task.project_id ? await requireEntity(store.db, task.project_id, 'project') : null
   const projectSite = await effectiveJiraSite(store.db,project?.data.jira_site_url)
   check(!task.external_site || !projectSite || task.external_site === projectSite,
@@ -254,14 +209,6 @@ async function pushToJira(store: MemoryStore, vault: Vault, task: Record<string,
       headers: { ...access.headers, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30_000) })
     check(response.ok, `Jira rechazó el cambio en ${task.external_key} (HTTP ${response.status})`, response.status === 401 || response.status === 403 ? 409 : 502)
     return response.status === 204 ? null : response.json()
-  }
-  try {
-    await verifyJiraOwner(access, task.external_key, fetcher, owner)
-  } catch (error) {
-    // Audit only the rejection code and the issue key; never response bodies, display names or credentials.
-    if (error instanceof MemoryError && error.code) await store.db.query("INSERT INTO task_events(task_id,action,actor,detail) VALUES($1,'jira_rejected',$2,$3)",
-      [task.id, actor, JSON.stringify({ code: error.code, issue_key: task.external_key })])
-    throw error
   }
   if (change.transition) {
     const { transitions = [] } = await call('/transitions', 'GET')
@@ -276,7 +223,7 @@ async function pushToJira(store: MemoryStore, vault: Vault, task: Record<string,
   if (change.comment) await store.db.query("INSERT INTO task_events(task_id,action,actor,detail) VALUES($1,'jira_comment',$2,$3)", [task.id, actor, JSON.stringify({ text: change.comment.slice(0, 2000) })])
 }
 
-export async function saveTask(store: MemoryStore, vault: Vault, raw: unknown, actor: string, fetcher: typeof fetch = fetch, owner?: JiraGuard) {
+export async function saveTask(store: MemoryStore, vault: Vault, raw: unknown, actor: string, fetcher: typeof fetch = fetch) {
   const input = parse(saveTaskInput, raw)
   if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
   if (input.source_entity_id) await requireEntity(store.db, input.source_entity_id)
@@ -286,7 +233,7 @@ export async function saveTask(store: MemoryStore, vault: Vault, raw: unknown, a
     if (task.kind === 'jira') {
       const local = ['title', 'description', 'status', 'origin'] as const
       check(local.every(field => input[field] === undefined), `El título y el estado de ${task.external_key} vienen de Jira: cámbialos en Jira (jira.transition) y la tarea se actualiza sola`, 409)
-      if (input.jira) await pushToJira(store, vault, task, input.jira, actor, fetcher, owner)
+      if (input.jira) await pushToJira(store, vault, task, input.jira, actor, fetcher)
     } else check(!input.jira, 'Los pendientes internos no existen en Jira')
   }
   return store.db.transaction(async sql => {

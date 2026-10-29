@@ -16,13 +16,6 @@ const errors = {
   actionFailed: "No se pudo completar la acción. Volvé a intentar.",
   loadFailed: "No se pudo cargar. Volvé a intentar.",
   saveFailed: "No se guardó el cambio. Volvé a intentar.",
-  jira: {
-    issue_unassigned: "El ticket no tiene asignado y Agent Hub solo escribe en tickets tuyos. Asignátelo en Jira y volvé a intentar.",
-    assignee_mismatch: "El ticket está asignado a otra persona, así que no se escribió en Jira. Pedile que te lo asigne si tenés que actualizarlo.",
-    account_mismatch: "El token del conector de Jira es de otra cuenta. Cargá un token tuyo en Ajustes › Integraciones.",
-    assignee_unverified: "No se pudo leer el asignado del ticket en Jira, así que no se escribió. Revisá que el ticket exista y que tengas acceso.",
-    identity_unverified: "No se pudo confirmar tu cuenta de Jira, así que no se escribió. Revisá el conector en Ajustes › Integraciones.",
-  },
   field: {
     required: "Completá este campo.",
     invalidUrl: "Ingresá una URL que empiece con http:// o https://.",

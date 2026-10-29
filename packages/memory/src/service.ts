@@ -128,7 +128,6 @@ export class MemoryService {
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media,
       { catalog: new TeamCatalog(this.cliExtraction), orca: chat => new HubTeamRuntime(chat,this.directory,this.collaborationEnabled) }, this.collaborationEnabled)
     operations.chat.usageEnabled=this.usageEnabled
-    operations.ownerJira = () => this.automation.effects?.jira
     if (this.orchestrationOwner) await operations.teams?.initialize()
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     this.current = { db, store, ai, operations, runner, network: new SharedNetwork(operations.sharing) }

@@ -21,7 +21,6 @@ export function createJiraGuard(options: JiraGuardOptions): JiraGuard {
     return typeof account === 'string' && JIRA_ACCOUNT_ID.test(account) ? account : null
   }
   return {
-    configured: () => options.serverId() !== undefined,
     async ownerAccountId() {
       const ctx = context()
       if (!ctx) return null

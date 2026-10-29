@@ -134,8 +134,6 @@ export class MemoryOperations {
   /** Set by the service once the schedule runtime exists; absent in worker processes, where schedule tools are unavailable. */
   schedules: ScheduleAdmin | undefined
   readonly projectAutomation: ProjectAutomationService
-  /** Owner identity from the Jira effects server, read on every write; absent in processes without effects (token account only). */
-  ownerJira?: () => import("./schedule-contract.js").JiraGuard | undefined
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime,
@@ -236,7 +234,7 @@ export class MemoryOperations {
       case 'claim_work': return this.sharing.claim(input.project_id, input.key, agent)
       case 'list_tasks': return listTasks(store, input)
       case 'get_task': return taskDetail(store, input.id)
-      case "save_task": return saveTask(store, this.requireVault(), input, author, this.fetcher, this.ownerJira?.())
+      case "save_task": return saveTask(store, this.requireVault(), input, author, this.fetcher)
       case 'sync_tasks': return syncTasks(store, this.requireVault(), input, author, this.fetcher, this.jiraMcp, agent?.agent_id)
       case 'task_stats': return taskStats(store, input)
       case 'list_notes': return listNotes(store, input)
