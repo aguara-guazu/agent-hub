@@ -27,7 +27,7 @@ export * from './daily-templates.js'
 
 export * from './collaboration.js'
 
-export type { ScheduleEffects, ScheduleAutomation, DeliveryAdapters, DeliveryReceipt, ActionExecutor, ActionReceipt, DecisionRequests } from './schedule-contract.js'
+export type { ScheduleEffects, ScheduleAutomation, DeliveryAdapters, DeliveryReceipt, ActionExecutor, ActionReceipt, ActionTickResult, DecisionRequests } from './schedule-contract.js'
 export { DecisionStore, DecisionService } from './decisions/index.js'
 export type { IntentRow, ArtifactAuthorityReader as DecisionAuthorityReader, DecisionItemKind, ExclusionSink, Exclusion } from './decisions/index.js'
 export { renderDecisionFooter, deliverDecisionByGmail, MemoryExclusionSink, isExcludedAny } from './decisions/index.js'
