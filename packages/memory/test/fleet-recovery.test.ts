@@ -7,19 +7,20 @@ const failedAt = '2026-10-28T18:38:00.000Z'
 const runtime = (patch: Partial<HubTeamStatus> = {}): HubTeamStatus => ({ id: 'member-1', cli: 'codex_cli', cwd: '/work', model: 'model-a', state: 'failed', error_code: 'fleet_turn_failed',
   error_cause: 'quota_exhausted', error_evidence: 'protocol', native_id: 'thread-1', provider: 'hub', generation: 'gen-1', updated_at: failedAt, ...patch })
 const pool = (status = 'available') => ({ id: 'pool-a', status }) as never
-function setup(options: { members?: Array<{ id: string; runtime: HubTeamStatus; team_id?: string }>; exhausted?: { pool_key: string } | undefined; quota?: { status: string; pools: unknown[] }; claims?: boolean[]; resume?: () => Promise<unknown> } = {}, withNotices = false) {
+function setup(options: { members?: Array<{ id: string; runtime: HubTeamStatus; team_id?: string }>; exhausted?: { pool_key: string } | undefined; quota?: { status: string; pools: unknown[] }; claims?: boolean[]; resume?: () => Promise<unknown>; check?: { ready: boolean; kind: string; plan?: { rung?: string; reason?: string } } } = {}, withNotices = false) {
   const members = options.members ?? [{ id: 'member-1', runtime: runtime() }]
   const query = vi.fn(async () => members.map(member => ({ id: member.id, team_id: member.team_id ?? 'team-1', worktree_name: `tree-${member.id}`, session_id: `session-${member.id}`, runtime: JSON.stringify(member.runtime) })))
   const exhaustedAt = vi.fn(async () => 'exhausted' in options ? options.exhausted : { pool_key: 'pool-a' })
   const forCli = vi.fn(async () => (options.quota ?? { status: 'available', pools: [pool()] }) as never)
   const resumeMember = vi.fn(options.resume ?? (async () => ({})))
+  const checkResume = vi.fn(async () => options.check ?? { ready: true, kind: 'ready' })
   const queue = [...(options.claims ?? [])]
   const claim = vi.fn(async () => queue.length ? queue.shift()! : true)
   const settle = vi.fn(async () => {})
   const log: RecoveryIncidentLog = { claim, settle }
   const publishResumption = vi.fn(async () => true)
-  const recovery = new FleetQuotaRecovery({ query } as never, { exhaustedAt, forCli }, { resumeMember }, log, withNotices ? { publishResumption } : undefined)
-  return { recovery, exhaustedAt, forCli, resumeMember, claim, settle, publishResumption }
+  const recovery = new FleetQuotaRecovery({ query } as never, { exhaustedAt, forCli }, { resumeMember, checkResume }, log, withNotices ? { publishResumption } : undefined)
+  return { recovery, exhaustedAt, forCli, resumeMember, checkResume, claim, settle, publishResumption }
 }
 const transition = (patch: Partial<UsageQuotaTransition> = {}): UsageQuotaTransition => ({ id: 't', pool_key: 'pool-a', before: 'exhausted', after: 'available', observed_at: '2026-10-29T04:00:00.000Z', binding_ids: ['b'], clis: ['codex_cli'], ...patch })
 
@@ -102,4 +103,18 @@ it('tells each team leader once what was attempted, never about skipped members,
   const failing = setup({}, true)
   failing.publishResumption.mockRejectedValueOnce(new Error('db'))
   await expect(failing.recovery.recover()).resolves.toHaveLength(1)
+})
+
+it('keeps the single attempt when authority or the exit proof is missing, and spends it when the CLI cannot resume', async () => {
+  for (const kind of ['unauthorized', 'exit_unconfirmed', 'unavailable']) {
+    const waiting = setup({ check: { ready: false, kind } })
+    expect((await waiting.recovery.recover())[0]).toMatchObject({ result: 'skipped', reason: kind, evidence: 'protocol' })
+    expect(waiting.claim.mock.calls.map(call => (call[0] as { cause: string }).cause)).toEqual(['quota_exhausted'])
+    expect(waiting.resumeMember).not.toHaveBeenCalled()
+  }
+  const unsupported = setup({ check: { ready: false, kind: 'unsupported', plan: { rung: 'linked_new', reason: 'resume_by_id_unverified' } } })
+  expect((await unsupported.recovery.recover())[0]).toMatchObject({ result: 'unsupported', reason: 'resume_by_id_unverified' })
+  expect(unsupported.claim.mock.calls.map(call => (call[0] as { cause: string }).cause)).toEqual(['quota_exhausted', 'quota_resume'])
+  expect(unsupported.settle).toHaveBeenCalledWith(expect.objectContaining({ action: 'resume_unsupported' }))
+  expect(unsupported.resumeMember).not.toHaveBeenCalled()
 })

@@ -38,7 +38,10 @@ export interface FleetStatus {
   effort?: string
   native_id?: string
   turn_id?: string
-  /** Identity of the owned child, persisted with the runtime so a restarted Hub can tell its orphan from a reused PID. */
+  /**
+   * Identity of the owned child, persisted with the runtime so a restarted Hub can tell its orphan from a reused PID.
+   * process_started comes from inspectNativeProcess; a value stored in another format never matches and the process stays unverified.
+   */
   pid?: number
   process_started?: string
   error_code?: string

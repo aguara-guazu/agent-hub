@@ -510,8 +510,11 @@ describe('HubTeamRuntime same-conversation resume', () => {
     rows.get(id)!.session_id = 'member-session'
     rows.get(id)!.runtime = { id, cli: 'codex_cli', cwd: workspace.path, model: 'exact-model', state: 'failed', native_id: 'thread-old', provider: 'hub', generation: 'old-generation', updated_at: new Date().toISOString() } as HubTeamStatus
     await expect(backend.resumeMember(id, request)).rejects.toMatchObject({ continuity: { rung: 'linked_new' } })
+    expect(await backend.checkResume(id, request)).toMatchObject({ ready: false, kind: 'exit_unconfirmed' })
     expect(launched).not.toHaveBeenCalled()
     incidents.add(`${id}:old-generation`)
+    expect(await backend.checkResume(id, request)).toMatchObject({ ready: true, kind: 'ready', plan: { rung: 'exclusive_resume' } })
+    expect(launched).not.toHaveBeenCalled()
     const receipt = await backend.resumeMember(id, request)
     expect(receipt.continuity).toMatchObject({ rung: 'exclusive_resume', native_id: 'thread-old' })
     expect(receipt.runtime.native_id).toBe('thread-old')
@@ -523,12 +526,14 @@ describe('HubTeamRuntime same-conversation resume', () => {
     const workspace = await backend.workspace(join(directory, 'repo'))
     rows.get(id)!.runtime = { id, cli: 'codex_cli', cwd: workspace.path, model: 'exact-model', state: 'failed', native_id: 'thread-old', provider: 'hub', generation: 'g', updated_at: new Date().toISOString() } as HubTeamStatus
     setAuthorized(false)
+    expect(await backend.checkResume(id, request)).toMatchObject({ ready: false, kind: 'unauthorized' })
     await expect(backend.resumeMember(id, request)).rejects.toMatchObject({ statusCode: 403 })
     setAuthorized(true)
     const bare = setup('hold', { run: async (command, args, runOptions) => command === 'git' ? exec(command, args, runOptions) : { stdout: help } })
     bare.rows.get(bare.id)!.session_id = 'member-session'
     bare.rows.get(bare.id)!.runtime = { ...rows.get(id)!.runtime!, id: bare.id } as HubTeamStatus
     bare.incidents.add(`${bare.id}:g`)
+    expect(await bare.backend.checkResume(bare.id, request)).toMatchObject({ ready: false, kind: 'unsupported', plan: { rung: 'linked_new' } })
     await expect(bare.backend.resumeMember(bare.id, request)).rejects.toMatchObject({ continuity: { rung: 'linked_new' } })
     expect(launched).not.toHaveBeenCalled()
     expect(bare.launched).not.toHaveBeenCalled()

@@ -23,6 +23,10 @@ export interface RecoveryOutcome {
   reason: string
   evidence?: QuotaEvidence
 }
+export interface ResumeRuntime {
+  resumeMember(handle: string, request: HubResumeRequest): Promise<unknown>
+  checkResume(handle: string, request: HubResumeRequest): Promise<{ ready: boolean; kind: string; plan?: { rung?: string; reason?: string } }>
+}
 /** One attempt per member, generation and cause: claim() is the atomic gate and reports whether this call won it. */
 export interface RecoveryIncidentLog {
   claim(input: { member_id: string; team_id: string; session_id: string | null; generation: string; cause: 'quota_exhausted' | 'quota_resume'; detail: Record<string, unknown> }): Promise<boolean>
@@ -52,7 +56,7 @@ export class FleetQuotaRecovery {
   constructor(
     private readonly db: Pick<MemoryDatabase, 'query'>,
     private readonly usage: Pick<UsageQuotas, 'exhaustedAt' | 'forCli'>,
-    private readonly runtime: { resumeMember(handle: string, request: HubResumeRequest): Promise<unknown> },
+    private readonly runtime: ResumeRuntime,
     private readonly log: RecoveryIncidentLog,
     private readonly notices?: { publishResumption(event: ResumptionEvent): Promise<boolean> },
   ) {}
@@ -107,9 +111,17 @@ export class FleetQuotaRecovery {
     await this.log.claim({ ...base, cause: 'quota_exhausted', detail })
     const current = await this.usage.forCli(runtime.cli, runtime.model)
     if (!['available', 'low'].includes(current.status) || !current.pools.some(pool => pool.id === failure.pool_key && ['available', 'low'].includes(pool.status))) return skip('quota_not_recovered', failure.evidence)
+    const request: HubResumeRequest = { prompt: QUOTA_RESUME_PROMPT, pool_key: failure.pool_key }
+    // The single attempt is spent only when the outcome is final: a missing authority or exit proof can change in a minute.
+    const verdict = await this.runtime.checkResume(memberId, request)
+    if (!verdict.ready && verdict.kind !== 'unsupported') return skip(verdict.kind, failure.evidence)
     if (!await this.log.claim({ ...base, cause: 'quota_resume', detail })) return skip('already_attempted', failure.evidence)
+    if (!verdict.ready) {
+      await this.log.settle({ member_id: memberId, generation: runtime.generation, action: 'resume_unsupported', detail: { ...detail, ...(verdict.plan?.reason ? { reason: verdict.plan.reason } : {}) } })
+      return { ...named, result: 'unsupported', reason: verdict.plan?.reason ?? 'resume_unsupported', evidence: failure.evidence }
+    }
     try {
-      await this.runtime.resumeMember(memberId, { prompt: QUOTA_RESUME_PROMPT, pool_key: failure.pool_key })
+      await this.runtime.resumeMember(memberId, request)
       await this.log.settle({ member_id: memberId, generation: runtime.generation, action: 'resumed', detail })
       return { ...named, result: 'resumed', reason: 'exclusive_resume', evidence: failure.evidence }
     } catch (error) {
@@ -148,7 +160,7 @@ export class SqlRecoveryIncidentLog implements RecoveryIncidentLog {
 /** Builds the recovery over the Hub's own fleet runtime; absent when the runtime cannot resume members (another backend or no fleet). */
 export function createFleetRecovery(db: Pick<MemoryDatabase, 'query'>, usage: Pick<UsageQuotas, 'exhaustedAt' | 'forCli'>,
   fleet: unknown, notices?: { publishResumption(event: ResumptionEvent): Promise<boolean> }): FleetQuotaRecovery | undefined {
-  const runtime = fleet as { resumeMember?: unknown } | undefined
-  if (!runtime || typeof runtime.resumeMember !== 'function') return undefined
-  return new FleetQuotaRecovery(db, usage, runtime as { resumeMember(handle: string, request: HubResumeRequest): Promise<unknown> }, new SqlRecoveryIncidentLog(db), notices)
+  const runtime = fleet as Partial<ResumeRuntime> | undefined
+  if (!runtime || typeof runtime.resumeMember !== 'function' || typeof runtime.checkResume !== 'function') return undefined
+  return new FleetQuotaRecovery(db, usage, runtime as ResumeRuntime, new SqlRecoveryIncidentLog(db), notices)
 }
