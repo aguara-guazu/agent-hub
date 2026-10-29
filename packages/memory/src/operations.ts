@@ -7,6 +7,8 @@ import { UsageNotices } from './usage-notices.js'
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
 import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
 import { callScheduleTool, scheduleDefinitions, scheduleReadOperations } from './schedule-tools.js'
+import { callProjectAutomationTool, projectAutomationDefinitions } from './project-automation-tools.js'
+import { ProjectAutomationService } from './project-automation-service.js'
 import type { ScheduleAdmin } from './schedule-admin.js'
 import type { TeamCatalog } from './team-catalog.js'
 import type { TeamOrca } from './team-orca.js'
@@ -40,6 +42,7 @@ const definitions = {
   ...chatDefinitions,
   ...teamDefinitions,
   ...scheduleDefinitions,
+  ...projectAutomationDefinitions,
   shared_status: ['Ver miembros, permisos, identidad y versiones de un proyecto compartido; consultar la skill hub-collaboration al trabajar en él.', z.object({ project_id: id }).strict()],
   shared_version: ['Leer una versión compartida completa y su autor, agente y peer de procedencia antes de resolver un conflicto. No devuelve los bytes del adjunto.', z.object({ project_id: id, event_id: z.string().length(64) }).strict()],
   publish_source: ['Adelantar la publicación de una fuente (normalmente automática) o compartir una tarea o colección. Conserva procedencia y evita duplicados; sólo comparte fragmentos del proyecto.', z.object({ project_id: id, entity_id: id, key: z.string().max(1000).optional() }).strict()],
@@ -130,6 +133,7 @@ export class MemoryOperations {
   readonly fleet: TeamOrca | undefined
   /** Set by the service once the schedule runtime exists; absent in worker processes, where schedule tools are unavailable. */
   schedules: ScheduleAdmin | undefined
+  readonly projectAutomation: ProjectAutomationService
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime,
@@ -139,6 +143,7 @@ export class MemoryOperations {
     this.usageNotices = new UsageNotices(this.chat)
     this.fleet = typeof teamRuntime?.orca === 'function' ? teamRuntime.orca(this.chat) : teamRuntime?.orca
     this.teams = teamRuntime && this.fleet ? new TeamOrchestration(this.chat, teamRuntime.catalog, this.fleet, this.usage, () => this.collaborationEnabled()) : undefined
+    this.projectAutomation = new ProjectAutomationService({ db: store.db, chat: this.chat, teams: () => this.teams, schedules: () => this.schedules })
   }
   async collaborationNotice(operation: string, raw: unknown, result: any, agent?: AgentContext) {
     if (!this.collaborationEnabled()) return null
@@ -180,6 +185,7 @@ export class MemoryOperations {
       check(this.schedules, 'Los schedules no están disponibles en este servicio.', 503)
       return callScheduleTool(this.schedules, operation, raw, agent)
     }
+    if (operation in projectAutomationDefinitions) return callProjectAutomationTool(this.projectAutomation, operation, raw, agent)
     const definition = definitions[operation as keyof typeof definitions]
     check(definition, 'Operación de memoria inexistente', 404)
     const input = parse(definition[1] as z.ZodType, raw ?? {}) as any

@@ -35,6 +35,7 @@ import { agentFromMeta } from './agents.js'
 import { requestMigrationRetry } from './legacy-postgres.js'
 import { registerScheduleRoutes } from './schedule-routes.js'
 import { registerDecisionRoutes } from './decision-routes.js'
+import { registerProjectAutomationRoutes } from './project-automation-routes.js'
 
 const VERSION = String((createRequire(import.meta.url)('../package.json') as { version: string }).version)
 
@@ -152,6 +153,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   app.addHook('onListen', async () => { void service.startSchedules().catch(() => {}) })
   registerScheduleRoutes(app, service, options.authorize)
   registerDecisionRoutes(app, options.scheduleEffects, options.authorize, { service, ...(options.automationsEnabled ? { automationsEnabled: options.automationsEnabled } : {}) })
+  registerProjectAutomationRoutes(app, async () => (await service.get()).operations.projectAutomation, options.authorize)
   sharingRoutes(app, service, options.authorize)
   // Human owner authorization only: never register activity in the MCP operation dispatcher.
   app.get('/api/memory/chat/agents/:sessionId/activity', { preHandler: auth }, async (request, reply) => {

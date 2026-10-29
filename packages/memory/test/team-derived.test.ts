@@ -485,3 +485,16 @@ it('still refuses a live automation session that is inconsistent with its channe
   expect(await rejection(teams.ensureProjectLeader(projectId))).toMatch(/no coincide con su canal/)
   expect(Number((await db.query("SELECT count(*) AS n FROM chat_sessions WHERE capability='hub_system'"))[0]!.n)).toBe(1)
 })
+
+it('retires the project leader when asked and builds a new channel and system session from the current authorization', async () => {
+  const first = await activate()
+  const oldChannel = (await sessionRow(first)).channel_id
+  await teams.retireProjectLeader(projectId)
+  expect((await db.query('SELECT coordinator_session_id FROM project_automation WHERE project_id=$1', [projectId]))[0]!.coordinator_session_id).toBeNull()
+  expect((await db.query('SELECT closed_at,leader_id FROM chat_channels WHERE id=$1', [oldChannel]))[0]).toMatchObject({ leader_id: null })
+  expect((await sessionRow(first)).closed_at).not.toBeNull()
+  const second = await teams.ensureProjectLeader(projectId)
+  expect(second).not.toBe(first)
+  expect((await sessionRow(second)).channel_id).not.toBe(oldChannel)
+  expect(await teams.launchDerived(input())).toMatchObject({ state: 'launched', created_by: second })
+})

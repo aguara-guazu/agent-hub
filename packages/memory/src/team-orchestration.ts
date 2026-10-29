@@ -604,12 +604,7 @@ export class TeamOrchestration {
           existing && !row.coordinator_session_id?'El canal de automatización del proyecto ya existe sin una sesión vinculada.':'La sesión de automatización del proyecto no coincide con su canal.',409)
         return String(row.coordinator_session_id)
       }
-      if(existing) {
-        // The scope key is unique: the retired channel gives it up so the new one can take it, and no leadership moves between them.
-        await sql.query("UPDATE chat_channels SET closed_at=COALESCE(closed_at,now()),leader_id=NULL,scope_key=$2,updated_at=now() WHERE id=$1",[existing.id,`${scope}:closed:${existing.id}`])
-        await sql.query("UPDATE chat_sessions SET state='offline',closed_at=COALESCE(closed_at,now()),lease_until=NULL WHERE channel_id=$1 AND capability='hub_system'",[existing.id])
-      }
-      if(row.coordinator_session_id)await sql.query("UPDATE chat_sessions SET state='offline',closed_at=COALESCE(closed_at,now()),lease_until=NULL WHERE id=$1 AND capability='hub_system'",[row.coordinator_session_id])
+      await this.retireAutomationChannel(sql,projectId,row.coordinator_session_id)
       const channel=(await sql.query(`INSERT INTO chat_channels(id,project_id,path,name,scope_key,kind,activated_at)
         VALUES($1,$2,$3,$4,$5,'virtual',now()) RETURNING *`,[randomUUID(),projectId,path ?? this.automationPath(projectId,delegation),delegation.channel.name.slice(0,200),scope]))[0]!
       const sessionId=`system:${randomUUID()}`
@@ -618,6 +613,26 @@ export class TeamOrchestration {
       await sql.query('UPDATE chat_channels SET leader_id=$2,updated_at=now() WHERE id=$1',[channel.id,sessionId])
       await sql.query('UPDATE project_automation SET coordinator_session_id=$2,updated_at=now() WHERE project_id=$1',[projectId,sessionId])
       return sessionId
+    })
+  }
+
+  /** The scope key is unique: a retired channel gives it up so a new one can take it, and no leadership moves between them. */
+  private async retireAutomationChannel(sql:Sql,projectId:string,sessionId?:string|null) {
+    const scope=`automation:${projectId}`
+    const existing=(await sql.query('SELECT id FROM chat_channels WHERE scope_key=$1',[scope]))[0]
+    if(existing) {
+      await sql.query('UPDATE chat_channels SET closed_at=COALESCE(closed_at,now()),leader_id=NULL,scope_key=$2,updated_at=now() WHERE id=$1',[existing.id,`${scope}:closed:${existing.id}`])
+      await sql.query("UPDATE chat_sessions SET state='offline',closed_at=COALESCE(closed_at,now()),lease_until=NULL WHERE channel_id=$1 AND capability='hub_system'",[existing.id])
+    }
+    if(sessionId)await sql.query("UPDATE chat_sessions SET state='offline',closed_at=COALESCE(closed_at,now()),lease_until=NULL WHERE id=$1 AND capability='hub_system'",[sessionId])
+  }
+
+  /** Called when a delegation is replaced or revoked: the next activation builds a new channel and system session from its own authorization. */
+  async retireProjectLeader(projectId:string) {
+    await this.db.transaction(async sql=>{
+      const row=(await sql.query('SELECT coordinator_session_id FROM project_automation WHERE project_id=$1',[projectId]))[0]
+      await this.retireAutomationChannel(sql,projectId,row?.coordinator_session_id)
+      await sql.query('UPDATE project_automation SET coordinator_session_id=NULL,updated_at=now() WHERE project_id=$1',[projectId])
     })
   }
 
