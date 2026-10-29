@@ -28,7 +28,8 @@ export interface ActionExecutor {
 
 /** Ítem tal como lo propone la síntesis. `exact_effect` es el efecto canónico que el ejecutor aplicará sin interpretación. */
 /** `operation_key`: identidad semántica de la operación (p. ej. issue + inicio del worklog); por defecto el digest del efecto. Impide re-aprobar una operación ya despachada o incierta con otro valor. */
-export interface DecisionItemInput { kind: DecisionItemKind; project_id: string; summary: string; exact_effect: unknown; operation_key?: string }
+/** `ordinal`: número del ítem en el artefacto que la persona ve. Si se informa, es el de la solicitud (único y mayor que 0, en todos los ítems o en ninguno); si no, se numera desde 1 en el orden recibido. */
+export interface DecisionItemInput { ordinal?: number; kind: DecisionItemKind; project_id: string; summary: string; exact_effect: unknown; operation_key?: string }
 export interface DecisionRequestInput {
   run_id: string
   artifact_id: string

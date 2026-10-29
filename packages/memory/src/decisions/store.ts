@@ -11,6 +11,8 @@ import {
 } from './contract.js'
 
 export const MAX_FAILED_ATTEMPTS = 5
+/** Mayor número de ítem que la gramática de respuestas puede seleccionar. */
+const MAX_ORDINAL = 99
 export const ACCOUNT_FAILURE_LIMIT = 10
 export const ACCOUNT_FAILURE_WINDOW_MS = 10 * 60_000
 const SCHEMA_VERSION = 2
@@ -210,7 +212,11 @@ export class DecisionStore {
    * `operation_key` es la identidad semántica de la operación (por ejemplo, issue + inicio de un worklog); por defecto es el digest del efecto.
    */
   prepareDecision(input: DecisionRequestInput): { request_id: string; revision: number; created: boolean } {
-    const items = input.items.map((item, index) => this.buildItem(item.kind, item.exact_effect, index + 1, item.project_id, item.summary, item.operation_key))
+    const explicit = input.items.filter(item => item.ordinal !== undefined).length
+    if (explicit !== 0 && explicit !== input.items.length) throw new DecisionError('invalid_ordinals', 'Todos los ítems llevan número o ninguno')
+    const numbers = input.items.map((item, index) => item.ordinal ?? index + 1)
+    if (numbers.some(number => !Number.isInteger(number) || number < 1 || number > MAX_ORDINAL) || new Set(numbers).size !== numbers.length) throw new DecisionError('invalid_ordinals', 'Los números de ítem deben ser enteros únicos mayores que 0')
+    const items = input.items.map((item, index) => this.buildItem(item.kind, item.exact_effect, numbers[index]!, item.project_id, item.summary, item.operation_key)).sort((a, b) => a.ordinal - b.ordinal)
     const digest = this.requestDigest(input.owner_id, input.run_id, input.artifact_id, 1, input.expires_at, items)
     return this.tx(() => {
       const existing = this.get<RequestRow>('SELECT * FROM decision_requests WHERE run_id = ? AND revision = 1', input.run_id)
