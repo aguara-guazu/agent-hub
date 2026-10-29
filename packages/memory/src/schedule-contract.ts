@@ -70,7 +70,8 @@ export interface JiraGuard {
   ownerAccountId(): Promise<string | null>
   assigneeOf(issueKey: string): Promise<{ account_id: string | null; verified: boolean }>
 }
-export interface AttentionLine { ref: string; summary: string; at: string; project_id?: string; effect?: unknown }
+/** `kind` travels beside `effect` for effects whose strict parser admits no extra key (git_push); Jira effects still carry it inside. */
+export interface AttentionLine { ref: string; summary: string; at: string; project_id?: string; effect?: unknown; kind?: PublicItem['kind'] }
 export const attentionKeys = ['pending_responses', 'liveness_incidents', 'uncertain_deliveries', 'overdue_close', 'carryover_items', 'push_candidates', 'activated_projects'] as const
 /** Read-only views over the state of other areas (requests awaiting a reply, supervisor incidents, uncertain deliveries, push candidates). */
 export type AttentionReaders = Partial<Record<typeof attentionKeys[number], () => Promise<AttentionLine[]>>>

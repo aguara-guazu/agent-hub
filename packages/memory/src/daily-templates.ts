@@ -19,10 +19,11 @@ const packageOf = (projectIds: string[], sections: Section[], remoteAllowed: boo
 
 const ACTION_KINDS = ['jira_worklog', 'jira_transition', 'jira_comment', 'git_push']
 /** A reader line without a project, an exact effect or a known action kind is dropped: nothing falls back to a generic mutator. */
-const proposedItems = (lines: AttentionLine[]): ProposedItem[] => lines.flatMap(line => {
+export const proposedItems = (lines: AttentionLine[]): ProposedItem[] => lines.flatMap(line => {
   const effect = line.effect as Record<string, unknown> | undefined
-  if (!line.project_id || !effect || typeof effect !== 'object' || !ACTION_KINDS.includes(String(effect['kind']))) return []
-  return [{ project_id: line.project_id, kind: effect['kind'] as ProposedItem['kind'], summary: line.summary, effect, effect_digest: hash(effect),
+  const kind = line.kind ?? effect?.['kind']
+  if (!line.project_id || !effect || typeof effect !== 'object' || !ACTION_KINDS.includes(String(kind))) return []
+  return [{ project_id: line.project_id, kind: kind as ProposedItem['kind'], summary: line.summary, effect, effect_digest: hash(effect),
     ...(typeof effect['estimate_id'] === 'string' ? { estimate_id: effect['estimate_id'] } : {}) }]
 })
 

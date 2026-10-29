@@ -170,7 +170,7 @@ export function renderBrief(pkg: BriefPackage, runId: string): BriefDraft {
   if (pkg.carryover.length) {
     for (const item of pkg.carryover) {
       const ordinal = items.length + 1
-      const operation_key = operationKeyOf(item.effect)
+      const operation_key = operationKeyOf(item.effect, item.kind)
       items.push({ ordinal, kind: item.kind, project_id: item.project_id, summary: item.summary, effect_digest: item.effect_digest, ...(operation_key ? { operation_key } : {}), ...(item.estimate_id ? { estimate_id: item.estimate_id } : {}) } as PublicItem)
       effects.push({ ordinal, effect: item.effect })
     }

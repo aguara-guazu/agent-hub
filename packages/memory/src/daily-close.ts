@@ -116,7 +116,7 @@ export function renderClose(pkg: ClosePackage, synthesis: HoursSynthesis | null,
   let totalSeconds = 0, hourTasks = 0
   const push = (project: CloseProject | { project_id: string }, kind: PublicItem['kind'], summary: string, effect: Record<string, unknown>, estimateRef?: string) => {
     const ordinal = items.length + 1
-    const operation_key = operationKeyOf(effect)
+    const operation_key = operationKeyOf(effect, kind)
     items.push({ ordinal, kind, project_id: project.project_id, summary, effect_digest: digestOf(effect), ...(operation_key ? { operation_key } : {}), ...(estimateRef ? { estimate_id: estimateRef } : {}) } as PublicItem)
     effects.push({ ordinal, effect })
     return ordinal

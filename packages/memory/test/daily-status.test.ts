@@ -10,7 +10,8 @@ import { Vault, defaultAI } from '../src/config.js'
 import { normalizeJiraIssue } from '../src/tasks.js'
 import { renderBrief, type BriefPackage, type BriefProject, type LatestSnapshot } from '../src/daily-brief.js'
 import { renderClose, type CloseProject, type ClosePackage } from '../src/daily-close.js'
-import { dayLabel } from '../src/daily-types.js'
+import { dayLabel, operationKeyOf } from '../src/daily-types.js'
+import { proposedItems } from '../src/daily-templates.js'
 import { deriveDeterministic, snapshotAsOf, type StatusInputs } from '../src/project-status.js'
 import type { HoursSynthesis, WorkedTask } from '../src/hours-estimate.js'
 
@@ -130,6 +131,31 @@ describe('cierre', () => {
     ])
     expect(second.items.map(item => item.operation_key)).toEqual(first.items.map(item => item.operation_key))
     expect(second.items[0]!.effect_digest).not.toBe(first.items[0]!.effect_digest)
+  })
+  describe('git_push sin kind dentro del efecto', () => {
+    const sha = 'a'.repeat(40)
+    const effect = { repo_id: 'repo-1', repo_path: '/work/repo', canonical_remote_url: 'https://example.test/org/repo.git', ref: 'refs/heads/feature/x', local_sha: sha, expected_remote_sha: null }
+    it('la línea lleva el kind aparte y el ítem conserva el efecto exacto', () => {
+      const [item] = proposedItems([{ ref: 'r', summary: 'push de feature/x', at: SCHEDULED, project_id: 'p1', kind: 'git_push', effect }])
+      expect(item).toMatchObject({ project_id: 'p1', kind: 'git_push', effect })
+      expect(Object.keys(item!.effect)).toEqual(Object.keys(effect))
+    })
+    it('sin kind en la línea ni en el efecto, o con un kind desconocido, la línea se descarta', () => {
+      expect(proposedItems([{ ref: 'r', summary: 's', at: SCHEDULED, project_id: 'p1', effect }])).toEqual([])
+      expect(proposedItems([{ ref: 'r', summary: 's', at: SCHEDULED, project_id: 'p1', kind: 'info', effect }])).toEqual([])
+    })
+    it('un efecto de Jira que trae su kind adentro sigue admitido', () => {
+      const jira = { kind: 'jira_comment', site: null, issue_key: 'APP-1', evidence_ref: 'n1' }
+      expect(proposedItems([{ ref: 'r', summary: 's', at: SCHEDULED, project_id: 'p1', effect: jira }])).toMatchObject([{ kind: 'jira_comment', effect: jira }])
+    })
+    it('la operation_key identifica repo, ref y SHA local, y el cierre la propaga al ítem', () => {
+      expect(operationKeyOf(effect, 'git_push')).toBe(`git_push:repo-1:refs/heads/feature/x:${sha}`)
+      expect(operationKeyOf({ ...effect, local_sha: 'b'.repeat(40) }, 'git_push')).not.toBe(operationKeyOf(effect, 'git_push'))
+      expect(operationKeyOf({ repo_id: 'repo-1' }, 'git_push')).toBeUndefined()
+      const [proposed] = proposedItems([{ ref: 'r', summary: 'push de feature/x', at: SCHEDULED, project_id: 'p1', kind: 'git_push', effect }])
+      const draft = renderClose(closePackage([closeProject('p1', 'Alfa', [])], [proposed!]), null, null, 'run-1')
+      expect(draft.items.map(item => [item.kind, item.operation_key])).toEqual([['git_push', `git_push:repo-1:refs/heads/feature/x:${sha}`]])
+    })
   })
 })
 

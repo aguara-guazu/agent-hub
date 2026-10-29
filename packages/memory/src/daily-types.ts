@@ -52,13 +52,14 @@ export const startOfLocalDay = (value: string | Date) => { const d = new Date(va
 export const endOfLocalDay = (value: string | Date) => { const d = new Date(value); return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1) }
 
 /**
- * Semantic identity of a Jira write, independent of the estimated value: a second close of the same window proposes the same worklog with other seconds,
- * and the decision store must see one operation. Pushes and unknown kinds carry no key here (their owner defines it).
+ * Semantic identity of an action, independent of the estimated value: a second close of the same window proposes the same worklog with other seconds,
+ * and the decision store must see one operation. `kind` defaults to the one inside the effect; a git_push effect carries none, so its caller passes it.
  */
-export function operationKeyOf(effect: Record<string, unknown>): string | undefined {
+export function operationKeyOf(effect: Record<string, unknown>, kind: unknown = effect['kind']): string | undefined {
+  if (kind === 'git_push') return ['repo_id', 'ref', 'local_sha'].every(key => typeof effect[key] === 'string') ? `git_push:${effect['repo_id']}:${effect['ref']}:${effect['local_sha']}` : undefined
   const site = typeof effect['site'] === 'string' ? effect['site'] : 'null', issue = effect['issue_key']
   if (typeof issue !== 'string') return undefined
-  switch (effect['kind']) {
+  switch (kind) {
     case 'jira_worklog': return typeof effect['started'] === 'string' ? `jira_worklog:${site}:${issue}:${effect['started']}` : undefined
     case 'jira_transition': return `jira_transition:${site}:${issue}:done`
     case 'jira_comment': return typeof effect['evidence_ref'] === 'string' ? `jira_comment:${site}:${issue}:${effect['evidence_ref']}` : undefined
