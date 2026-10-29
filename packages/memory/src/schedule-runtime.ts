@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { execFile } from 'node:child_process'
+import { realpath } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { inspectNativeProcess } from '@agenthub/gateway'
 import type { UsageQuotaAvailability, UsageQuotaState } from '@agenthub/shared'
@@ -42,16 +43,25 @@ const defaultProcesses: ProcessControl = {
   cwdHolders: dir => listCwdHolders(dir),
 }
 
+type CwdListing = (callback: (error: (Error & { code?: unknown; killed?: boolean | undefined; signal?: unknown }) | null, stdout: string) => void) => void
+const lsofCwd: CwdListing = callback => {
+  execFile('lsof', ['-nP', '-d', 'cwd', '-F', 'pn'], { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 }, (error, stdout) => callback(error, String(stdout ?? '')))
+}
+
 /**
- * `lsof -d cwd` lists the working directory of every process the user can see. It exits non-zero when some process is unreadable, so a
- * non-empty listing is used as is; an empty or failed one is undefined, never "no holders".
+ * `lsof -d cwd` lists the working directory of every process the user can see, reported as the canonical path of the vnode, so `dir` is
+ * canonicalized first. lsof exits 1 when some process is unreadable and that listing is still complete; a killed, signalled or truncated
+ * run, an empty listing or an unresolvable directory is undefined, never "no holders".
  */
-function listCwdHolders(dir: string): Promise<number[] | undefined> {
-  if (process.platform === 'win32') return Promise.resolve(undefined)
+export async function listCwdHolders(dir: string, list: CwdListing = lsofCwd): Promise<number[] | undefined> {
+  if (process.platform === 'win32') return undefined
+  const root = await realpath(dir).then(path => path.replace(/\/+$/, '')).catch(() => null)
+  if (!root) return undefined
   return new Promise(resolve => {
-    execFile('lsof', ['-nP', '-d', 'cwd', '-F', 'pn'], { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 }, (_error, stdout) => {
+    list((error, stdout) => {
+      if (error && (typeof error.code !== 'number' || error.killed || error.signal)) return resolve(undefined)
       if (!stdout) return resolve(undefined)
-      const root = dir.replace(/\/+$/, ''), holders = new Set<number>()
+      const holders = new Set<number>()
       let pid: number | null = null
       for (const line of stdout.split('\n')) {
         if (line.startsWith('p')) pid = Number(line.slice(1))

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -9,7 +9,7 @@ import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
 import { ScheduleStore, snapshotOf, targetKey, type NewSchedule } from '../src/schedule-store.js'
-import { ScheduleRuntime, type ProcessControl, type Synthesizer } from '../src/schedule-runtime.js'
+import { listCwdHolders, ScheduleRuntime, type ProcessControl, type Synthesizer } from '../src/schedule-runtime.js'
 import { registerScheduleTemplate } from '../src/schedule-templates.js'
 import type { ScheduleTemplateDefinition } from '../src/schedule-contract.js'
 
@@ -296,6 +296,20 @@ it('sin identidad persistida decide por el worktree: libre da salida registrada,
   expect(byMember.ocupado).toMatchObject({ action: 'unverified_left_running' })
   expect(byMember['sin-listado']).toMatchObject({ action: 'none' })
   expect(asked.sort()).toEqual(['/fleet/libre', '/fleet/ocupado', '/fleet/sin-listado'])
+})
+
+it('el listado de directorios de trabajo compara la ruta canónica y descarta salidas cortadas', async () => {
+  const real = join(dir, 'worktree-real'), link = join(dir, 'worktree-enlace')
+  await mkdir(real); await symlink(real, link)
+  const canonical = await realpath(real)
+  const listing = (error: any, stdout: string) => (callback: (error: any, stdout: string) => void) => callback(error, stdout)
+  expect(await listCwdHolders(link, listing(null, `p10\nn${canonical}\np11\nn/otro`))).toEqual([10])
+  expect(await listCwdHolders(link, listing(Object.assign(new Error('ilegibles'), { code: 1 }), `p12\nn${canonical}/sub`))).toEqual([12])
+  expect(await listCwdHolders(link, listing(null, 'p13\nn/otro'))).toEqual([])
+  expect(await listCwdHolders(link, listing(Object.assign(new Error('timeout'), { killed: true, signal: 'SIGTERM', code: null }), `p14\nn/otro`))).toBeUndefined()
+  expect(await listCwdHolders(link, listing(Object.assign(new Error('maxBuffer'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }), 'p15\nn/otro'))).toBeUndefined()
+  expect(await listCwdHolders(join(dir, 'no-existe'), listing(null, 'p16\nn/otro'))).toBeUndefined()
+  expect(await listCwdHolders(link, listing(null, ''))).toBeUndefined()
 })
 
 it('un inicio de proceso en otro formato no coincide: no se señala y queda sin verificar', async () => {
