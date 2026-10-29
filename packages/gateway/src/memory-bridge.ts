@@ -123,12 +123,27 @@ export function siteFromResources(result: CallResult, cloudId: string): string |
  */
 const JIRA_EXISTING_WRITES = new Set(["editjiraissue", "transitionjiraissue", "addcommenttojiraissue", "addworklogtojiraissue",
   "jira_update_issue", "jira_transition_issue", "jira_add_comment", "jira_add_worklog", "jira_delete_issue"])
+/**
+ * Escrituras que tocan varios issues existentes, con los argumentos que los nombran. Todos tienen que ser del dueño.
+ * `jira_remove_issue_link` solo recibe el id del enlace: sin issues verificables, siempre se rechaza.
+ */
+const JIRA_MULTI_WRITES: Record<string, readonly string[]> = {
+  createissuelink: ["inwardIssue", "outwardIssue"],
+  jira_create_issue_link: ["inward_issue_key", "outward_issue_key"],
+  jira_link_to_epic: ["issue_key", "epic_key"],
+  jira_add_issues_to_sprint: ["issue_keys"],
+  jira_create_remote_issue_link: ["issue_key"],
+  jira_remove_issue_link: [],
+}
+/** Tope de issues verificados por llamada; más se rechaza en vez de leer sin límite. */
+export const JIRA_GUARD_MAX_ISSUES = 50
 /** Identidad de la cuenta con la que escribe el server; mcp-atlassian no publica una equivalente. */
 const JIRA_IDENTITY_TOOLS = ["atlassianuserinfo"]
 const JIRA_ACCOUNT = /^[A-Za-z0-9:_-]{1,128}$/
 
 export function isJiraExistingWrite(toolName: string): boolean {
-  return JIRA_EXISTING_WRITES.has(toolName.toLowerCase())
+  const name = toolName.toLowerCase()
+  return JIRA_EXISTING_WRITES.has(name) || name in JIRA_MULTI_WRITES
 }
 
 export function jiraIdentityTool(toolName: string): boolean {
@@ -136,10 +151,36 @@ export function jiraIdentityTool(toolName: string): boolean {
 }
 
 /** Clave o id numérico del issue que la escritura toca; `undefined` si falta o no tiene forma válida. */
-export function targetIssue(args: Record<string, unknown>): string | undefined {
-  const raw = args["issueIdOrKey"] ?? args["issue_key"]
+function issueRef(raw: unknown): string | undefined {
   const value = typeof raw === "string" ? raw.trim().toUpperCase() : ""
   return ISSUE_KEY.test(value) || /^\d{1,20}$/.test(value) ? value : undefined
+}
+
+/**
+ * Issues existentes que la escritura toca, sin repetir. `undefined` si falta alguno, alguno no tiene forma válida o la herramienta
+ * no nombra ninguno: no se puede verificar y se rechaza. Rovo acepta en un enlace `{ key }` además de la clave.
+ */
+export function targetIssues(toolName: string, args: Record<string, unknown>): string[] | undefined {
+  const fields = JIRA_MULTI_WRITES[toolName.toLowerCase()]
+  if (!fields) {
+    const one = issueRef(args["issueIdOrKey"] ?? args["issue_key"])
+    return one ? [one] : undefined
+  }
+  const found: string[] = []
+  for (const field of fields) {
+    const raw = args[field]
+    const values = field === "issue_keys"
+      ? (Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(",") : [])
+      : [raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>)["key"] : raw]
+    if (values.length === 0) return undefined
+    for (const value of values) {
+      const ref = issueRef(value)
+      if (!ref) return undefined
+      found.push(ref)
+    }
+  }
+  const unique = [...new Set(found)]
+  return unique.length > 0 && unique.length <= JIRA_GUARD_MAX_ISSUES ? unique : undefined
 }
 
 /** Argumentos de la lectura del asignado con la misma forma que la escritura (Rovo pide `cloudId`). */
