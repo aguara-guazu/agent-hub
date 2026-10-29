@@ -70,7 +70,7 @@ export class LocalChatRuntime {
     // advisory presence, not a reason to silently suppress durable notifications.
     const sessions = await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
       WHERE s.nickname IS NOT NULL AND s.capability IN ('codex_queue','hub_fleet') AND s.native_id IS NOT NULL AND (s.state='idle' OR (s.state='busy' AND s.cli_kind='codex_cli')) AND s.closed_at IS NULL AND c.closed_at IS NULL
-      AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL)
+      AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL OR EXISTS(SELECT 1 FROM chat_channels led WHERE led.leader_id=s.id AND led.closed_at IS NULL))
       AND (EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.notified_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)
         OR EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.handled_at IS NULL AND n.cancelled_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5) OR EXISTS(SELECT 1 FROM usage_quota_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5))`)
     for (const s of sessions) {

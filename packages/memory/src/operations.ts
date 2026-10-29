@@ -175,6 +175,7 @@ export class MemoryOperations {
     if (operation.startsWith('chat_')) {
       const result=await this.chat.call(operation,raw,agent)
       if(operation==='chat_delete_channel')return {...result,...await this.teams?.stopTransferredPlans(result.affected_plans)}
+      if(operation==='chat_take_leadership' && result.affected_plans?.length)return {...result,...await this.teams?.stopTransferredPlans(result.affected_plans)}
       return result
     }
     if (operation.startsWith('team_')) {

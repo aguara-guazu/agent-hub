@@ -8,11 +8,14 @@ import { basename, resolve, dirname, join, relative, isAbsolute, sep } from 'nod
 import { promisify } from 'node:util'
 import { EventEmitter } from 'node:events'
 import { z } from 'zod'
-import { check, id, parse } from './contracts.js'
+import { check, id, parse, MemoryError } from './contracts.js'
 import { projectForPath, orcaWorkspaceSchema, type AgentContext } from './agents.js'
 import type { MemoryStore } from './store.js'
 import type { Sql } from './database.js'
 import { teamGuidance, teamGuidanceVersion } from './local-chat-team.js'
+import { recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
+import { channelProjectId, lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
+  LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
 
 const exec = promisify(execFile)
 const key = z.string().min(32).max(200)
@@ -23,13 +26,14 @@ const session = { session_key: key.optional() }
 export const chatKickInput = z.object({channel_id:id,participant_id:z.string().min(8).max(200),reason:z.string().trim().min(1).max(1000)})
 export const chatCoordinatorInput = z.object({channel_id:id,participant_id:z.string().min(8).max(200),expected_leader_id:z.string().nullable()}).strict()
 export const chatDeleteChannelInput = z.object({channel_id:id,reason:z.string().trim().min(1).max(1000)}).strict()
+export const chatTakeLeadershipInput = z.object({channel_id:id,expected_leader_id:z.string().min(8).max(200).nullable(),reason:z.string().trim().min(1).max(1000)}).strict()
 const page = { limit: z.number().int().min(1).max(100).default(40), offset: z.number().int().min(0).default(0) }
 const scope = { project_id: id.optional(), channel_id: id.optional(), unassigned: z.boolean().default(false) }
 export const chatDefinitions = {
   ...workDefinitions,
   chat_join: ['Start/recover registration after choosing collaboration. Before a nickname it returns only identity and key, no channel or context. Connection stays private and inactive; no folder or worktree joins sessions to channels. Use session_key in every chat call; it identifies this conversation, not the whole CLI.', z.object({ ...session, path: z.string().max(4000).optional() }).strict()],
   chat_create_channel: ['Create a channel independent of folders, Git and Orca, only after asking the person and getting approval. task_key identifies it for retries (omitted: name, else default); the same key reuses the current channel. Keeps identity/key; moves only this session, as coordinator; never takes the old channel or changes its team.', z.object({ ...session, name: z.string().trim().min(1).max(200).optional(), task_key:z.string().trim().min(1).max(200).optional() }).strict()],
-  chat_close_channel: ['Close this session channel on explicit person request. Leader only. Keeps history, blocks new joins.', z.object({ ...session }).strict()],
+  chat_close_channel: ['Close a channel you lead on explicit person request (channel_id; default: your session channel). Leader only. Keeps history, blocks new joins.', z.object({ ...session, channel_id:id.optional() }).strict()],
   chat_delete_channel: ['Trash your own channel on explicit person request. Leader only (the person deletes others in the UI). Closes sessions, cancels its teams, revokes deliveries; the Hub tries to stop its workers and reports uncertain stops. Keeps files/worktrees. History leaves search; the person can restore from trash.',chatDeleteChannelInput.extend(session).strict()],
   chat_set_nick: ['Pick and register your nickname (2–40 chars); if taken, pick another. Unlocks collaboration context. Changes only your session; keeps identity and history.', z.object({ ...session, nickname }).strict()],
   chat_channels: ['Browse active or past local channels. unassigned=true: only projectless channels; pending virtual ones stay hidden. deleted=true: trash. Worker spaces group under their team channel; include_workers=true adds them for audit.', z.object({ ...session, ...scope, ...page,deleted:z.boolean().default(false),include_workers:z.boolean().default(false) }).strict()],
@@ -38,7 +42,8 @@ export const chatDefinitions = {
   chat_read: ['Read thread messages. With session_key: by default only messages pending for it (not its own), marking only those returned as read; page pending with offset: 0. unread_only=false: history. Without session_key: anonymous read-only history; unread_only=true needs session_key.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
   chat_send: ['Create a task thread (channel_id,title), a short linked-team thread (team_root_thread_id,title), or reply (thread_id). Outside your channel: only the root or threads persistently bound to a current team; mentions only its members. A stable request_id makes retries duplicate-free. Linked-worker new topics auto-post to the team channel. Report in your assigned work_thread_id. To request an action/decision: response_required=true plus recipients. Reply via reply_to: notifies the author, handles only your request. Requires collaboration authorization.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), response_required: z.boolean().optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Read your pending mentions and private notices. Private notices have no thread; ask the agent for status via work_thread_id. Read is not handled; unhandled items stay visible. No model polling: the Hub notifies.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
-  chat_kick: ['Kick a session from the channel when the person orders it. Recognized leader only; give the reason. Keeps history, cancels notices, blocks rejoin. Does not close its terminal or stop running work.', chatKickInput.extend(session).strict()],
+  chat_kick: ['Kick a session from the channel when the person orders it. Only the current leader of that channel (also if you lead it from another channel); give the reason. Keeps history, cancels notices, blocks rejoin. Does not close its terminal or stop running work. Taking over a silent leader is memory_chat_take_leadership, not a kick.', chatKickInput.extend(session).strict()],
+  chat_take_leadership: [`Take over or reclaim a channel's leadership; pass the leader_id you read (expected_leader_id) and a reason. Takeover: only a session outside Hub teams, from the channel's project as the Hub derives it, when the leader has had no Hub-verified liveness for over ${LEADER_LIVENESS_TIMEOUT_MS/60000} minutes; it displaces that leader only, who keeps the right to reclaim. Reclaim: the exact displaced session (same session_key) recovers the channel even if the new leader is online. Never on a guess about the leader; check team.leader_offline and leader_last_liveness_at first. Audited and rate limited; the person can always correct it in the UI.`, chatTakeLeadershipInput.extend(session).strict()],
   chat_ack: ['Mark your own mention/private notice handled (message_id=item id) after resolving or answering. Reading alone is not acceptance.', z.object({ ...session, message_id: id }).strict()],
   chat_resolve: ['Close/reopen a thread in your channel. Keeps history; never marks messages of others handled.', z.object({ ...session, thread_id: id, state: z.enum(['open','resolved']) }).strict()],
 } satisfies Record<string, [string, z.ZodType]>
@@ -123,7 +128,7 @@ export class LocalChat {
       let deletedBy:string
       if('agent' in actor) {
         const who=await this.requireNickname(actor.agent,actor.session_key)
-        check(who.channel_id===channel.id && channel.leader_id===who.id && (!who.closed_at || channel.deleted_at),
+        check(channel.leader_id===who.id && (!who.closed_at || channel.deleted_at),
           'Sólo el líder puede eliminar su propio canal; la persona puede eliminar otros desde la UI.',403)
         deletedBy=`agent:${who.id}`
       } else deletedBy=`user:${actor.user_id}`
@@ -167,21 +172,29 @@ export class LocalChat {
       const target=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1 AND channel_id=$2',[input.participant_id,channel.id]))[0]
       check(target?.nickname && !target.closed_at && !target.removed_at && Date.parse(target.lease_until)>Date.now(),'La sesión elegida debe estar registrada y conectada.',409)
       if(channel.leader_id===target.id)return {channel_id:channel.id,leader_id:target.id,affected_plans:[] as string[]}
-      const plans=await sql.query("SELECT id,root_thread_id FROM chat_team_plans WHERE master_channel_id=$1 AND state NOT IN ('cancelled','completed')",[channel.id])
-      for(const plan of plans) {
-        await sql.query("UPDATE chat_team_plans SET state='paused',close_reason=$2,updated_at=now() WHERE id=$1",[plan.id,`Coordinador designado por ${userId}`])
-        await sql.query("UPDATE chat_team_members SET state='closed',invitation_hash=NULL,invitation_expires_at=NULL WHERE team_id=$1",[plan.id])
-        await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Cambio de coordinador' WHERE handled_at IS NULL AND cancelled_at IS NULL
-          AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_threads t ON t.id=m.thread_id WHERE t.id=$1 OR t.team_root_thread_id=$1)`,[plan.root_thread_id])
-        await sql.query(`INSERT INTO chat_team_events(id,team_id,type,actor_session_id,source_channel_id,target_thread_id,payload)
-          VALUES($1,$2,'coordinator_changed',$3,$4,$5,$6)`,[randomUUID(),plan.id,target.id,channel.id,plan.root_thread_id,JSON.stringify({user_id:userId,previous_leader_id:channel.leader_id,leader_id:target.id})])
-      }
-      await sql.query('UPDATE chat_channels SET leader_id=$2,activated_at=COALESCE(activated_at,now()),updated_at=now() WHERE id=$1',[channel.id,target.id])
+      const plans=await this.pauseChannelPlans(sql,channel.id,`Coordinador designado por ${userId}`,target.id,{user_id:userId,previous_leader_id:channel.leader_id,leader_id:target.id})
+      // The person's designation prevails over any pending reclaim right.
+      await sql.query('UPDATE chat_channels SET leader_id=$2,displaced_leader_id=NULL,displaced_at=NULL,leader_changed_at=now(),activated_at=COALESCE(activated_at,now()),updated_at=now() WHERE id=$1',[channel.id,target.id])
+      await recordAuthorityEvent(sql,{kind:"leadership_designated",channel_id:channel.id,project_id:await channelProjectId(sql,channel.id),actor_user_id:userId,
+        target_session_id:target.id,reason:"Coordinador designado desde la UI",evidence:{previous_leader_id:channel.leader_id,displaced_leader_id:channel.displaced_leader_id ?? null,affected_plans:plans}})
       await this.cancelInvalidTurnAlerts()
-      return {channel_id:channel.id,leader_id:target.id,affected_plans:plans.map(p=>String(p.id))}
+      return {channel_id:channel.id,leader_id:target.id,affected_plans:plans}
     })
     this.events.emit('change')
     return result
+  }
+  /** Leadership changed under these plans: they stop coordinating until their new leader prepares or the person resumes them. */
+  private async pauseChannelPlans(sql:Sql,channelId:string,reason:string,actorSessionId:string,payload:Record<string,unknown>) {
+    const plans=await sql.query("SELECT id,root_thread_id FROM chat_team_plans WHERE master_channel_id=$1 AND state NOT IN ('cancelled','completed')",[channelId])
+    for(const plan of plans) {
+      await sql.query("UPDATE chat_team_plans SET state='paused',close_reason=$2,updated_at=now() WHERE id=$1",[plan.id,reason])
+      await sql.query("UPDATE chat_team_members SET state='closed',invitation_hash=NULL,invitation_expires_at=NULL WHERE team_id=$1",[plan.id])
+      await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Cambio de coordinador' WHERE handled_at IS NULL AND cancelled_at IS NULL
+        AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_threads t ON t.id=m.thread_id WHERE t.id=$1 OR t.team_root_thread_id=$1)`,[plan.root_thread_id])
+      await sql.query(`INSERT INTO chat_team_events(id,team_id,type,actor_session_id,source_channel_id,target_thread_id,payload)
+        VALUES($1,$2,'coordinator_changed',$3,$4,$5,$6)`,[randomUUID(),plan.id,actorSessionId,channelId,plan.root_thread_id,JSON.stringify(payload)])
+    }
+    return plans.map(p=>String(p.id))
   }
   private async project(...paths: string[]) {
     let best: { id:string; length:number } | null = null
@@ -211,16 +224,26 @@ export class LocalChat {
         await this.assertNotRemoved(actor.agent,actor.session_key)
         const who=await this.identity(actor.agent,actor.session_key)
         check(who.nickname, 'Elegí tu propio nick con chat_set_nick antes de participar.',409)
-        check(!who.closed_at && who.channel_id===channel.id && channel.leader_id===who.id,'Sólo el líder reconocido de este canal puede expulsar agentes',403)
+        check(!who.closed_at && channel.leader_id===who.id,'Sólo el líder reconocido de este canal puede expulsar agentes',403)
         check(who.id!==input.participant_id,'El líder no puede expulsarse a sí mismo; la persona puede hacerlo desde la UI',400)
         removedBy=`agent:${who.id}`
       } else removedBy=`user:${actor.user_id}`
-      const target=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1 AND channel_id=$2',[input.participant_id,channel.id]))[0]
+      // The person may also remove a leader that lives in another channel: that revokes this leadership only.
+      const target=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1 AND (channel_id=$2 OR id=$3)',[input.participant_id,channel.id,'agent' in actor?null:channel.leader_id]))[0]
       check(target,'El agente no pertenece a este canal',404)
+      if(target.channel_id!==channel.id) {
+        await sql.query('UPDATE chat_channels SET leader_id=NULL,leader_changed_at=now(),updated_at=now() WHERE id=$1 AND leader_id=$2',[channel.id,target.id])
+        await recordAuthorityEvent(sql,{kind:"leadership_kick",channel_id:channel.id,project_id:await channelProjectId(sql,channel.id),actor_user_id:removedBy.slice(5),
+          target_session_id:target.id,reason:input.reason,evidence:{scope:"leadership_only",home_channel_id:target.channel_id}})
+        await this.cancelInvalidTurnAlerts()
+        return {session:publicSession(target),team:await this.team(channel.id)}
+      }
       if(!target.removed_at) {
         await sql.query(`UPDATE chat_sessions SET removed_at=now(),removed_by=$2,removal_reason=$3,state='offline',closed_at=now(),lease_until=NULL,wake_error=NULL WHERE id=$1`,[target.id,removedBy,input.reason])
         await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Destinatario expulsado del canal' WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL`,[target.id])
-        await sql.query('UPDATE chat_channels SET leader_id=NULL,updated_at=now() WHERE id=$1 AND leader_id=$2',[channel.id,target.id])
+        // A removed session can never act again, so it releases every channel it led and any reclaim right.
+        await sql.query('UPDATE chat_channels SET leader_id=NULL,leader_changed_at=now(),updated_at=now() WHERE leader_id=$1',[target.id])
+        await sql.query('UPDATE chat_channels SET displaced_leader_id=NULL,displaced_at=NULL WHERE displaced_leader_id=$1',[target.id])
         await this.cancelInvalidTurnAlerts()
       }
       return {session:publicSession((await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[target.id]))[0]!),team:await this.team(channel.id)}
@@ -228,8 +251,96 @@ export class LocalChat {
     if(notify)this.events.emit('change',input.participant_id)
     return result
   }
+  /** Attempts (accepted or refused) bound per session and per channel, so refusals cannot flood the audit. */
+  private async leadershipAttemptsLeft(sql:Sql,sessionId:string,channelId:string,now=Date.now()) {
+    const counts=(await sql.query(`SELECT COALESCE(SUM(CASE WHEN actor_session_id=$2 THEN 1 ELSE 0 END),0) AS mine,count(*) AS total FROM chat_authority_events
+      WHERE channel_id=$1 AND kind IN ('leadership_takeover','leadership_reclaim','leadership_rejected') AND created_at>$3`,
+    [channelId,sessionId,new Date(now-LEADERSHIP_ATTEMPT_WINDOW_MS).toISOString()]))[0]!
+    return Number(counts.mine)<LEADERSHIP_ATTEMPTS_PER_SESSION && Number(counts.total)<LEADERSHIP_ATTEMPTS_PER_CHANNEL
+  }
+  /**
+   * Takeover and reclaim are one compare-and-set on leader_id inside the writer transaction: two candidates, or a candidate
+   * and a reconnecting leader, serialize and the loser sees a changed leader_id. A channel never has two leaders, and the
+   * old leader is replaced in the same statement, never left without one. Liveness is re-read here, never trusted from input.
+   */
+  async takeLeadership(input:z.infer<typeof chatTakeLeadershipInput>,who:Record<string,any>) {
+    return this.db.transaction(async sql=>{
+      const now=Date.now()
+      const channel=(await sql.query('SELECT * FROM chat_channels WHERE id=$1',[input.channel_id]))[0]
+      check(channel && !channel.deleted_at,'Canal inexistente.',404)
+      const projectId=await channelProjectId(sql,channel.id)
+      check(await this.leadershipAttemptsLeft(sql,who.id,channel.id,now),
+        'Demasiados intentos de liderazgo sobre este canal. Esperá unos minutos o pedí a la persona que designe el coordinador desde la UI.',429)
+      const refuse=(status:number,code:string,message:string,evidence:Record<string,unknown>={}):never=>{
+        const audit:AuthorityEvent={kind:"leadership_rejected",channel_id:channel.id,project_id:projectId,actor_session_id:who.id,
+          target_session_id:channel.leader_id ?? null,reason:input.reason,evidence:{code,...evidence}}
+        throw Object.assign(new MemoryError(status,message,false,code),{leadershipAudit:audit})
+      }
+      if(channel.leader_id===who.id)return {channel_id:channel.id,leader_id:who.id,mode:'unchanged' as const,previous_leader_id:who.id,affected_plans:[] as string[],team:await this.team(channel.id)}
+      if(channel.closed_at)refuse(409,'channel_closed','El canal está cerrado.')
+      if(channel.kind==='virtual' && !channel.activated_at)refuse(409,'channel_inactive','El canal no está activo.')
+      if((await sql.query('SELECT 1 FROM chat_team_members WHERE channel_id=$1 LIMIT 1',[channel.id])).length)
+        refuse(409,'worker_channel','Es el canal de un worker de equipo; su coordinador lo reemplaza con memory_team_control.')
+      if(channel.leader_id!==input.expected_leader_id)
+        refuse(409,'leader_changed','El líder del canal cambió. Volvé a consultar team.leader_id antes de reintentar.',{current_leader_id:channel.leader_id})
+      const sessionProject=await sessionProjectId(sql,who.id)
+      if(!projectId || sessionProject!==projectId)
+        refuse(403,'project_mismatch','Sólo un agente del mismo proyecto del canal, según el Hub, puede tomar su liderazgo.',{session_project_id:sessionProject})
+      // Identity is the authenticated session row (session_key hash + gateway agent), compared by id; a nickname proves nothing.
+      const reclaim=channel.displaced_leader_id===who.id
+      let evidence:Record<string,unknown>
+      if(reclaim) {
+        // The authenticated call of the exact displaced session is its connection proof; it renews the lease below.
+        evidence={previous_leader_id:channel.leader_id,displaced_at:channel.displaced_at}
+      } else {
+        const inTeam=(await sql.query(`SELECT 1 FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+          WHERE m.session_id=$1 AND m.state='joined' AND p.state IN (${ACTIVE_TEAM_STATES.map(s=>`'${s}'`).join(',')}) LIMIT 1`,[who.id])).length
+        if(who.capability==='hub_fleet' || inTeam)refuse(403,'team_member','Los miembros de un equipo del Hub no toman canales; pedíselo a su coordinador.')
+        if(!channel.leader_id)refuse(409,'no_leader','El canal no tiene líder: el Hub lo asigna a su próximo participante activo o la persona lo designa en la UI.')
+        const lost=(await sql.query(`SELECT created_at FROM chat_authority_events WHERE channel_id=$1 AND target_session_id=$2
+          AND kind IN ('leadership_takeover','leadership_reclaim') AND created_at>$3 ORDER BY seq DESC LIMIT 1`,[channel.id,who.id,new Date(now-LEADERSHIP_COOLDOWN_MS).toISOString()]))[0]
+        if(lost)refuse(409,'cooldown',`Perdiste el liderazgo de este canal hace menos de ${LEADERSHIP_COOLDOWN_MS/60000} minutos; esperá antes de volver a tomarlo.`,{lost_at:lost.created_at,cooldown_ms:LEADERSHIP_COOLDOWN_MS})
+        const leader=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[channel.leader_id]))[0]!
+        const liveness=lastLiveness(leader,now)
+        if(leaseActive(leader,now))refuse(409,'leader_live','El líder tiene liveness vigente según el Hub; coordiná con él por el canal.',{...liveness,threshold_ms:LEADER_LIVENESS_TIMEOUT_MS})
+        if(liveness.silent_ms<=LEADER_LIVENESS_TIMEOUT_MS)
+          refuse(409,'leader_recent',`El líder lleva ${Math.floor(liveness.silent_ms/60000)} min sin liveness verificado; la toma requiere más de ${LEADER_LIVENESS_TIMEOUT_MS/60000}.`,{...liveness,threshold_ms:LEADER_LIVENESS_TIMEOUT_MS})
+        evidence={previous_leader_id:channel.leader_id,...liveness,threshold_ms:LEADER_LIVENESS_TIMEOUT_MS}
+      }
+      const previous=channel.leader_id as string|null
+      // Takeover leaves the displaced leader a reclaim right; a reclaim leaves none to the one it replaces (no ping-pong).
+      const changed=await sql.query(`UPDATE chat_channels SET leader_id=$2,displaced_leader_id=$3,displaced_at=CASE WHEN $3 IS NULL THEN NULL ELSE now() END,
+        leader_changed_at=now(),updated_at=now() WHERE id=$1 AND leader_id IS $4 AND closed_at IS NULL RETURNING id`,[channel.id,who.id,reclaim?null:previous,previous])
+      check(changed.length===1,'El líder del canal cambió durante la operación; volvé a consultar.',409)
+      await sql.query('UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[who.id,new Date(now+SESSION_LEASE_MS).toISOString()])
+      const plans=await this.pauseChannelPlans(sql,channel.id,reclaim?'Liderazgo reclamado':'Liderazgo tomado por falta de liveness',who.id,
+        {previous_leader_id:previous,leader_id:who.id,mode:reclaim?'reclaim':'takeover'})
+      const event=await recordAuthorityEvent(sql,{kind:reclaim?"leadership_reclaim":"leadership_takeover",channel_id:channel.id,project_id:projectId,
+        actor_session_id:who.id,target_session_id:previous,reason:input.reason,evidence:{...evidence,affected_plans:plans}})
+      if(previous) {
+        const minutes=typeof evidence.silent_ms==='number'?Math.floor(evidence.silent_ms/60000):null
+        const text=reclaim
+          ? `Agent Hub: ${who.label}, displaced earlier from channel "${channel.name}" (${channel.id}), reclaimed its leadership. You no longer lead or write there; channels you lead elsewhere are unchanged. Audit event ${event.id}.`
+          : `Agent Hub: ${who.label} took over leadership of channel "${channel.name}" (${channel.id}) after ${minutes} min without Hub-verified liveness from you. You no longer lead or write there. This same session can reclaim it with memory_chat_take_leadership(channel_id, expected_leader_id=${who.id}, reason). Audit event ${event.id}.`
+        await this.leadershipNotice(sql,channel.id,previous,event.id,reclaim?'leadership_reclaimed':'leadership_taken',text)
+      }
+      await this.cancelInvalidTurnAlerts()
+      return {channel_id:channel.id,leader_id:who.id,mode:reclaim?'reclaim' as const:'takeover' as const,previous_leader_id:previous,
+        event_id:event.id,affected_plans:plans,team:await this.team(channel.id)}
+    })
+  }
+  /** Durable private notice from the channel's system identity; one pending per channel and recipient. */
+  private async leadershipNotice(sql:Sql,channelId:string,recipientId:string,eventId:string,cause:string,text:string) {
+    const sender=`hub-system:${channelId}`
+    await sql.query(`INSERT OR IGNORE INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,closed_at)
+      VALUES($1,'agenthub-system',$2,'Agent Hub','hub',$3,'offline',now(),now())`,[sender,hash(randomUUID()),channelId])
+    await sql.query(`UPDATE chat_status_notices SET cancelled_at=now(),error='Aviso de liderazgo superado' WHERE session_id=$1 AND recipient_id=$2
+      AND handled_at IS NULL AND cancelled_at IS NULL`,[sender,recipientId])
+    await sql.query(`INSERT INTO chat_status_notices(id,session_id,turn_id,cause,channel_id,recipient_id,text) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+      [randomUUID(),sender,`leadership:${eventId}`,cause,channelId,recipientId,text])
+  }
   async team(channelId:string, includeGuidance=false, sessionId?:string) {
-    const c=(await this.db.query('SELECT c.leader_id,s.nickname,s.label,s.closed_at,s.lease_until FROM chat_channels c LEFT JOIN chat_sessions s ON s.id=c.leader_id WHERE c.id=$1',[channelId]))[0]!
+    const c=(await this.db.query('SELECT c.leader_id,c.displaced_leader_id,s.nickname,s.label,s.closed_at,s.lease_until,s.last_seen_at,s.created_at FROM chat_channels c LEFT JOIN chat_sessions s ON s.id=c.leader_id WHERE c.id=$1',[channelId]))[0]!
     const linked=sessionId ? (await this.db.query(`SELECT t.id AS team_id,t.created_by AS master_leader_id,t.root_thread_id,t.master_channel_id,m.work_thread_id
       FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id
       JOIN chat_channels master ON master.id=t.master_channel_id JOIN chat_sessions leader ON leader.id=t.created_by
@@ -238,12 +349,15 @@ export class LocalChat {
       AND master.leader_id=t.created_by AND leader.closed_at IS NULL AND leader.removed_at IS NULL`,[sessionId,channelId]))[0] ?? null : null
     const version=hash(JSON.stringify([teamGuidanceVersion,c.leader_id,linked])).slice(0,16)
     return {scope:'channel' as const,channel_id:channelId,leader_id:c.leader_id,leader_nickname:c.nickname ?? c.label,
-      leader_offline:Boolean(c.leader_id && (c.closed_at || !(Date.parse(c.lease_until)>Date.now()))),linked_team:linked,guidance_version:version,...(includeGuidance?{guidance:teamGuidance}:{})}
+      leader_offline:Boolean(c.leader_id && (c.closed_at || !(Date.parse(c.lease_until)>Date.now()))),
+      leader_last_liveness_at:c.leader_id ? lastLiveness(c).last_liveness_at : null,displaced_leader_id:c.displaced_leader_id ?? null,
+      linked_team:linked,guidance_version:version,...(includeGuidance?{guidance:teamGuidance}:{})}
   }
   async activate(sid:string) {
     // Registration and inbox bootstrap are available before choosing a nickname.
     if(!(await this.db.query(`SELECT 1 FROM chat_sessions WHERE id=$1 AND nickname IS NOT NULL AND trim(nickname)<>''`,[sid])).length)return
-    await this.db.query(`UPDATE chat_channels SET leader_id=$1 WHERE leader_id IS NULL AND closed_at IS NULL
+    // A displaced leader recovers a channel only through an explicit, audited reclaim.
+    await this.db.query(`UPDATE chat_channels SET leader_id=$1 WHERE leader_id IS NULL AND closed_at IS NULL AND displaced_leader_id IS NOT $1
       AND (kind<>'virtual' OR activated_at IS NOT NULL) AND id=(SELECT channel_id FROM chat_sessions WHERE id=$1 AND closed_at IS NULL)`,[sid])
     await this.db.query(`UPDATE chat_sessions SET team_seen=1 WHERE id=$1 AND EXISTS(
       SELECT 1 FROM chat_channels c WHERE c.id=chat_sessions.channel_id AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL))`,[sid])
@@ -316,7 +430,7 @@ export class LocalChat {
       const channel=(await sql.query(`INSERT INTO chat_channels(id,project_id,path,name,branch,repository,scope_key,kind,leader_id,activated_at,orca_workspace_id)
         VALUES($1,$2,$3,$4,$8,$9,$5,'virtual',$6,now(),$7) RETURNING *`,
         [randomUUID(),current.project_id,path,name,scopeKey,who.id,current.orca_workspace_id,current.branch,current.repository]))[0]!
-      await sql.query('UPDATE chat_channels SET leader_id=NULL,updated_at=now() WHERE id=$1 AND leader_id=$2',[current.id,who.id])
+      // Leadership is per channel: the previous channel keeps this session as its leader (multi-channel).
       const moved=(await sql.query('UPDATE chat_sessions SET channel_id=$2,team_seen=1 WHERE id=$1 RETURNING *',[who.id,channel.id]))[0]!
       // A turn already opened by the CLI now belongs to this explicitly requested task.
       await sql.query('UPDATE chat_turns SET channel_id=$2,team_id=NULL,report_recipient_id=NULL WHERE session_id=$1 AND terminal_at IS NULL',[who.id,channel.id])
@@ -604,8 +718,9 @@ export class LocalChat {
       root=(await sql.query('SELECT * FROM chat_threads WHERE id=$1 AND channel_id=$2',[plan.root_thread_id,channelId]))[0]
       if(!root)return null
     }
+    // The leader may live in another channel (multi-channel leadership); leader_id alone names the recipient.
     const recipient=(await sql.query(`SELECT s.* FROM chat_channels c JOIN chat_sessions s ON s.id=c.leader_id
-      WHERE c.id=$1 AND c.closed_at IS NULL AND s.channel_id=c.id AND s.removed_at IS NULL AND s.cli_kind<>'hub'`,[channelId]))[0]
+      WHERE c.id=$1 AND c.closed_at IS NULL AND s.removed_at IS NULL AND s.cli_kind<>'hub'`,[channelId]))[0]
     if(!recipient || recipient.id===source.id)return null
     return {source,recipient,channelId,root}
   }
@@ -614,6 +729,11 @@ export class LocalChat {
     await this.db.transaction(async sql=>{
       const pending=await sql.query('SELECT * FROM chat_status_notices WHERE handled_at IS NULL AND cancelled_at IS NULL')
       for(const alert of pending) {
+        if(String(alert.cause).startsWith("leadership_")) {
+          // Owed to the displaced session even while it is offline; only a removal makes it moot.
+          if((await sql.query("SELECT 1 FROM chat_sessions WHERE id=$1 AND removed_at IS NULL",[alert.recipient_id])).length)continue
+          await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Destinatario expulsado' WHERE id=$1",[alert.id]);continue
+        }
         if(alert.cause==='response_due') {
           if(await this.responseAlertValid(sql,alert))continue
           await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Pedido respondido o alcance cerrado' WHERE id=$1",[alert.id]);continue
@@ -639,10 +759,19 @@ export class LocalChat {
       if(operation==='chat_inbox' || operation==='chat_ack')await this.cancelInvalidTurnAlerts()
       return this.callInner(operation,raw,agent,receipt)
     }
-    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick']
+    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick','chat_take_leadership']
     // UI/history polling has no routing key and must remain a true read: no writer lock or wake-up event.
     const identifiedRead=operation==='chat_read' && typeof (raw as any)?.session_key==='string'
-    const result=await (writes.includes(operation) || identifiedRead ?this.db.transaction(execute):execute())
+    let result:any
+    try { result=await (writes.includes(operation) || identifiedRead ?this.db.transaction(execute):execute()) }
+    catch(error) {
+      // A refused takeover rolls back with its transaction; its audit row is written afterwards, within the same rate limit.
+      const audit=(error as {leadershipAudit?:AuthorityEvent}).leadershipAudit
+      if(audit)await this.db.transaction(async sql=>{
+        if(await this.leadershipAttemptsLeft(sql,String(audit.actor_session_id),String(audit.channel_id)))await recordAuthorityEvent(sql,audit)
+      }).catch(()=>undefined)
+      throw error
+    }
     if(writes.includes(operation) || (operation==='chat_read' && result.__chatReadChanged))this.events.emit('change')
     return result
   }
@@ -743,13 +872,16 @@ export class LocalChat {
     check(who && !who.closed_at, 'Sólo una sesión de agente abierta puede participar',403)
     if (!['chat_set_nick','chat_inbox','chat_ack','chat_work_list'].includes(operation))
       check(who.nickname, 'Elegí tu propio nick con chat_set_nick antes de participar.',409)
+    if (operation === 'chat_take_leadership') return this.takeLeadership(input,who)
     if (operation === 'chat_work_update' || operation === 'chat_work_list') {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread,'Hilo inexistente',404)
-      await this.writableChannel(who.channel_id)
       const teamRoot=(await this.db.query('SELECT id FROM chat_team_plans WHERE root_thread_id=$1',[thread.team_root_thread_id ?? thread.id]))[0]
-      if(teamRoot || thread.channel_id!==who.channel_id)
+      // Single-channel sessions resolve exactly as before: own channel ⇒ member. A channel led from elsewhere counts too.
+      if(teamRoot || !(await writeAssociation(this.db,who.id,thread.channel_id))) {
+        await this.writableChannel(who.channel_id)
         check(await this.teamForThread(this.db,who,thread),'El hilo no pertenece a tu canal o equipo activo',403)
+      } else await this.writableChannel(thread.channel_id)
       if(operation==='chat_work_update')return updateWork(this.db,who.id,input)
       const result=await this.page(`SELECT w.*,s.state AS session_state,s.closed_at AS session_closed_at,'agent' AS source,
         s.removed_at AS session_removed_at,s.lease_until AS session_lease_until,
@@ -787,8 +919,8 @@ export class LocalChat {
       return this.registration(created.session,created.channel,input.session_key,false)
     }
     if (operation === 'chat_close_channel') {
-      const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[who.channel_id]))[0]!
-      check((channel.kind!=='virtual' || channel.activated_at) && !channel.closed_at,'Esta sesión no pertenece a un canal activo.',409)
+      const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[input.channel_id ?? who.channel_id]))[0]
+      check(channel && (channel.kind!=='virtual' || channel.activated_at) && !channel.closed_at,'Esta sesión no pertenece a un canal activo.',409)
       check(channel.leader_id===who.id,'Sólo el líder reconocido puede cerrar este canal virtual.',403)
       const closed=(await this.db.query('UPDATE chat_channels SET closed_at=now(),virtual_path=NULL,updated_at=now() WHERE id=$1 AND closed_at IS NULL RETURNING *',[channel.id]))[0]!
       await this.db.query(`UPDATE chat_sessions SET state='offline',closed_at=COALESCE(closed_at,now()),lease_until=NULL,wake_error=NULL WHERE channel_id=$1`,[channel.id])
@@ -842,13 +974,19 @@ export class LocalChat {
     if (operation === 'chat_resolve') {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread,'Hilo inexistente',404)
-      await this.writableChannel(who.channel_id)
-      if(thread.team_root_thread_id) check(await this.teamForThread(this.db,who,thread),'El hilo de equipo no está activo o no te pertenece.',403)
-      else check(thread.channel_id===who.channel_id,'El hilo no pertenece a tu canal',403)
+      if(thread.team_root_thread_id) {
+        await this.writableChannel(who.channel_id)
+        check(await this.teamForThread(this.db,who,thread),'El hilo de equipo no está activo o no te pertenece.',403)
+      } else {
+        check(await writeAssociation(this.db,who.id,thread.channel_id),'El hilo no pertenece a tu canal',403)
+        await this.writableChannel(thread.channel_id)
+      }
       if(input.state==='resolved')check(!(await this.db.query('SELECT 1 FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id WHERE m.thread_id=$1 AND d.response_required=1 AND d.response_message_id IS NULL AND d.cancelled_at IS NULL',[thread.id])).length,'Hay pedidos pendientes de respuesta en este hilo.',409)
       return (await this.db.query('UPDATE chat_threads SET state=$2,updated_at=now() WHERE id=$1 RETURNING *',[input.thread_id,input.state]))[0]
     }
-    await this.writableChannel(who.channel_id)
+    // Single-channel sessions keep the original upfront check; a session that leads other channels is checked per target below.
+    const leadsElsewhere=(await this.db.query('SELECT 1 FROM chat_channels WHERE leader_id=$1 AND id<>$2 AND closed_at IS NULL AND deleted_at IS NULL LIMIT 1',[who.id,who.channel_id])).length>0
+    if(!leadsElsewhere)await this.writableChannel(who.channel_id)
     check(who.nickname, 'Elegí tu propio nick con chat_set_nick antes de escribir.',409)
     const requestPayload={thread:input.thread_id ?? null,channel:input.channel_id ?? null,title:input.title ?? null,task:input.task_id ?? null,text:input.text,reply:input.reply_to ?? null,mentions:[...new Set(input.mentions)].sort()}
     // Preserve pre-team-thread request hashes exactly so durable retries still deduplicate after upgrade.
@@ -892,24 +1030,27 @@ export class LocalChat {
           thread=(await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,task_id,team_root_thread_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',
             [randomUUID(),root.channel_id,input.title,who.id,input.task_id ?? root.task_id,root.id]))[0]
         } else {
-        check(input.title && input.channel_id === who.channel_id, 'Para iniciar un hilo usá el channel_id de tu sesión y un título',400)
-        if (input.task_id) check((await sql.query('SELECT id FROM tasks WHERE id=$1 AND project_id=(SELECT project_id FROM chat_channels WHERE id=$2)',[input.task_id,who.channel_id])).length,'La tarea no pertenece al proyecto',400)
-        thread = (await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,task_id) VALUES($1,$2,$3,$4,$5) RETURNING *',[randomUUID(),who.channel_id,input.title,who.id,input.task_id ?? null]))[0]
+        check(input.title && input.channel_id && (input.channel_id===who.channel_id || await writeAssociation(sql,who.id,input.channel_id)==='leader'), 'Para iniciar un hilo usá el channel_id de tu sesión (o de un canal que liderás) y un título',400)
+        if (input.task_id) check((await sql.query('SELECT id FROM tasks WHERE id=$1 AND project_id=(SELECT project_id FROM chat_channels WHERE id=$2)',[input.task_id,input.channel_id])).length,'La tarea no pertenece al proyecto',400)
+        thread = (await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,task_id) VALUES($1,$2,$3,$4,$5) RETURNING *',[randomUUID(),input.channel_id,input.title,who.id,input.task_id ?? null]))[0]
         }
       }
       check(thread,'Hilo inexistente',404)
       let linkedTeam:Record<string,any>|undefined
       const teamRoot=(await sql.query('SELECT id FROM chat_team_plans WHERE root_thread_id=$1',[thread.team_root_thread_id ?? thread.id]))[0]
-      if(teamRoot || thread.channel_id!==who.channel_id) {
+      // Server-enforced write rule: leader or non-displaced member of the thread's channel, or a linked team thread.
+      if(teamRoot || !(await writeAssociation(sql,who.id,thread.channel_id))) {
         linkedTeam=await this.teamForThread(sql,who,thread)
         check(linkedTeam,'Sólo el master y miembros vinculados pueden escribir en un hilo activo de su equipo.',403)
-      }
+        if(leadsElsewhere)await this.writableChannel(who.channel_id)
+      } else if(leadsElsewhere)await this.writableChannel(thread.channel_id)
+      const channelLeadership=(await sql.query('SELECT leader_id,displaced_leader_id FROM chat_channels WHERE id=$1',[thread.channel_id]))[0]!
       const recipients=new Set<string>(input.mentions)
       let replied:Record<string,any>|undefined
       if(input.reply_to) {
         replied=(await sql.query('SELECT * FROM chat_messages WHERE id=$1 AND thread_id=$2',[input.reply_to,thread.id]))[0]
         check(replied,'La respuesta debe apuntar al mismo hilo',400)
-        if(replied.author_id!==who.id && (await sql.query('SELECT 1 FROM chat_sessions WHERE id=$1 AND closed_at IS NULL AND removed_at IS NULL',[replied.author_id])).length)recipients.add(replied.author_id)
+        if(replied.author_id!==who.id && replied.author_id!==channelLeadership.displaced_leader_id && (await sql.query('SELECT 1 FROM chat_sessions WHERE id=$1 AND closed_at IS NULL AND removed_at IS NULL',[replied.author_id])).length)recipients.add(replied.author_id)
       }
       // Task reports and assignments must reach the counterpart, even if the model omitted mentions.
       if(linkedTeam && !recipients.size && !replied) {
@@ -924,7 +1065,8 @@ export class LocalChat {
         check(recipient !== who.id,'No podés despertarte mencionándote a vos mismo',400)
         const target=(await sql.query('SELECT id,channel_id,removed_at FROM chat_sessions WHERE id=$1',[recipient]))[0]
         if(linkedTeam)check(await this.teamRecipient(sql,linkedTeam,recipient),'La mención debe pertenecer al equipo vinculado a este hilo.',400)
-        else if(target && target.channel_id===thread.channel_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
+        else if(target && target.channel_id===thread.channel_id && target.id!==channelLeadership.displaced_leader_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
+        else if(target && target.id===channelLeadership.leader_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
         else check(false,'La mención debe pertenecer al mismo canal.',400)
       }
       const message = (await sql.query('INSERT INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',

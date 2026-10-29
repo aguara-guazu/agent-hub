@@ -38,7 +38,7 @@ export async function sessionProjectId(sql: Sql, sessionId: string): Promise<str
   return row?.project_id ?? null
 }
 
-export type AuthorityEventKind = "leadership_takeover" | "leadership_kick" | "leadership_reclaim" |
+export type AuthorityEventKind = "leadership_takeover" | "leadership_kick" | "leadership_reclaim" | "leadership_rejected" | "leadership_designated" |
   "read_interest" | "read_request" | "read_elevated" | "read_granted" | "read_rejected" | "read_revoked" | "read_cancelled"
 
 export interface AuthorityEvent {
