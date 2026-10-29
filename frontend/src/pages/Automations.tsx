@@ -17,7 +17,7 @@ import { useToast } from '../components/Toast'
 import { api } from '../lib/api'
 import { useMemory } from '../lib/memory'
 import type { MemoryEntity, Page } from '../lib/memory'
-import { automationKeys, CHANNEL_REASONS, STORE_ITEM_TO_PUBLIC, DECISION_ERRORS, useAutomationSettings, useConstraints, useDeliveryChannels, useDecision, useDecisionActions, useRetryDelivery, useRun, useRuns, useScheduleActions, useSchedules } from '../lib/automations'
+import { automationKeys, CHANNEL_REASONS, STORE_ITEM_TO_PUBLIC, DECISION_ERRORS, useAutomationSettings, useDeliveryChannels, useDecision, useDecisionActions, useRetryDelivery, useRun, useRuns, useScheduleActions, useSchedules } from '../lib/automations'
 import type { DeliveryAvailability, DeliveryTarget, DeliveryView, ItemState, PublicItem, Recurrence, RunListItem, RunState, ScheduleView } from '../lib/automations'
 
 const TEMPLATE_LABELS: Record<string, string> = {
@@ -168,7 +168,6 @@ function stateBadge(schedule: ScheduleView): ReactNode {
 
 export function SchedulesPage() {
   const schedules = useSchedules()
-  const constraints = useConstraints()
   const actions = useScheduleActions()
   const toast = useToast()
   const [params, setParams] = useSearchParams()
@@ -178,7 +177,6 @@ export function SchedulesPage() {
   const [editing, setEditing] = useState<ScheduleView | null>(null)
   const [channelsFor, setChannelsFor] = useState<ScheduleView | null>(null)
   const [cancelling, setCancelling] = useState<ScheduleView | null>(null)
-  const [noRecreate, setNoRecreate] = useState(false)
   const rows = (schedules.data?.items ?? []).filter(schedule => schedule.state === 'active' || schedule.state === 'paused')
   const loaded = schedules.data !== undefined
   // El parámetro se consume una vez que la tabla ya tiene filas; limpiarlo al desmontar devolvería la navegación a /schedules.
@@ -201,7 +199,7 @@ export function SchedulesPage() {
       <button className="btn btn-sm" onClick={() => setChannelsFor(schedule)}>Canales</button>
       {schedule.state === 'paused' ? <button className="btn btn-sm" onClick={() => actions.resume.mutate({ id: schedule.id, revision: schedule.revision })}>Reanudar</button> : <button className="btn btn-sm" onClick={() => actions.pause.mutate({ id: schedule.id, revision: schedule.revision })}>Pausar</button>}
       <button className="btn btn-sm" disabled={schedule.state !== 'active'} onClick={() => setRunningNow(schedule)}>Ejecutar ahora</button>
-      <button className="btn btn-sm btn-danger" onClick={() => { setNoRecreate(false); setCancelling(schedule) }}>Cancelar</button>
+      <button className="btn btn-sm btn-danger" onClick={() => setCancelling(schedule)}>Cancelar</button>
     </div> },
   ]
   return <>
@@ -211,8 +209,6 @@ export function SchedulesPage() {
     <DataTable columns={columns} rows={rows} rowKey={schedule => schedule.id} loading={schedules.isLoading} error={schedules.error} onRetry={() => void schedules.refetch()} caption="Automatizaciones programadas"
       rowId={schedule => `schedule-${schedule.id}`} rowClassName={schedule => schedule.id === highlighted ? 'automations-focus' : undefined}
       empty={<>Todavía no hay automatizaciones. Activa el brief y el cierre desde un proyecto, o pídeselo a tu agente. <Link to="/projects">Ir a proyectos</Link></>} />
-    {(constraints.data?.items.length ?? 0) > 0 && <section className="automations-constraints"><h2>Restricciones</h2><p className="automations-muted">Cancelaste estas automatizaciones: el agente no puede volver a crearlas.</p>
-      <ul>{constraints.data!.items.map(item => <li key={item.id}><span>{TEMPLATE_LABELS[item.template] ?? item.template}{item.scope === 'template_project' ? ' · todo el tipo en el proyecto' : ''}</span><small>{formatDateTime(item.created_at)}{item.reason ? ` · ${item.reason}` : ''}</small><button className="btn btn-sm" disabled={actions.lift.isPending} onClick={() => actions.lift.mutate({ constraintId: item.id })}>Levantar restricción</button></li>)}</ul></section>}
     {editing && <RescheduleModal key={editing.id} schedule={editing} onClose={() => setEditing(null)} />}
     {channelsFor && <ChannelsModal key={channelsFor.id} schedule={channelsFor} onClose={() => setChannelsFor(null)} />}
     <ConfirmDialog open={runningNow !== null} title="Ejecutar ahora" confirmLabel="Ejecutar" cancelLabel="Volver" busy={actions.runNow.isPending}
@@ -220,9 +216,9 @@ export function SchedulesPage() {
       onClose={() => setRunningNow(null)}
       onConfirm={() => runningNow && actions.runNow.mutate({ id: runningNow.id }, { onSuccess: () => { setRunningNow(null); toast.success('Ejecución encolada', 'La entrega dirá «ejecutado manualmente».') } })} />
     <ConfirmDialog open={cancelling !== null} title="Cancelar automatización" destructive confirmLabel="Cancelar automatización" cancelLabel="Volver" busy={actions.cancel.isPending}
-      message={<><p>El agente no podrá volver a crear esta automatización. Podrás levantar la restricción desde esta pantalla.</p><label className="automations-check"><input type="checkbox" checked={noRecreate} onChange={event => setNoRecreate(event.target.checked)} /> No volver a programar este tipo de automatización en el proyecto</label></>}
+      message={<><p>«{cancelling?.title}» deja de ejecutarse. Si un agente la vuelve a programar, te llegará el aviso y podrás cancelarla de nuevo.</p><p>Para detenerla un tiempo sin perderla, usa «Pausar».</p></>}
       onClose={() => setCancelling(null)}
-      onConfirm={() => cancelling && actions.cancel.mutate({ id: cancelling.id, revision: cancelling.revision, scope: noRecreate ? 'template_project' : 'target' }, { onSuccess: () => setCancelling(null) })} />
+      onConfirm={() => cancelling && actions.cancel.mutate({ id: cancelling.id, revision: cancelling.revision }, { onSuccess: () => setCancelling(null) })} />
   </>
 }
 

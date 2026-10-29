@@ -63,17 +63,6 @@ export interface ScheduleView {
 export type DeliveryUnavailableReason = 'not_connected' | 'scope_missing' | 'identity_unverified' | 'identity_is_bot' | 'tool_off'
 export type DeliveryAvailability = Record<'gmail_self' | 'slack_self', { available: boolean; reason?: DeliveryUnavailableReason; destination?: string }>
 
-export interface ScheduleConstraint {
-  id: string
-  scope: 'target' | 'template_project'
-  project_id: string | null
-  template: string
-  target_key: string | null
-  schedule_id: string | null
-  reason: string | null
-  created_at: string
-}
-
 export interface Page { total: number; limit: number; offset: number }
 
 /** Ítem público de un artefacto de decisión, sin códigos de aprobación. */
@@ -196,7 +185,6 @@ export const automationKeys = {
   settings: ['automations'] as const,
   jiraServer: ['automations', 'jira-server'] as const,
   schedules: ['schedules'] as const,
-  constraints: ['schedule-constraints'] as const,
   runs: (filters: Record<string, string | undefined> = {}) => ['schedule-runs', filters] as const,
   run: (id: string) => ['schedule-run', id] as const,
 }
@@ -219,15 +207,11 @@ export function useSchedules() {
   return useQuery({ queryKey: automationKeys.schedules, queryFn: () => api.get<{ items: ScheduleView[]; delivery_available?: DeliveryAvailability } & Page>('/memory/schedules?limit=200'), refetchInterval: 5000 })
 }
 
-export function useConstraints() {
-  return useQuery({ queryKey: automationKeys.constraints, queryFn: () => api.get<{ items: ScheduleConstraint[] }>('/memory/schedule-constraints') })
-}
-
 /** Mutaciones humanas sobre un schedule; todas devuelven el ScheduleView actualizado salvo `run_now` (`{ run_id }`). */
 export function useScheduleActions() {
   const cache = useQueryClient()
   const toast = useToast()
-  const refresh = async (): Promise<void> => { await Promise.all([cache.invalidateQueries({ queryKey: automationKeys.schedules }), cache.invalidateQueries({ queryKey: automationKeys.constraints })]) }
+  const refresh = async (): Promise<void> => { await cache.invalidateQueries({ queryKey: automationKeys.schedules }) }
   const base = (id: string): string => `/memory/schedules/${encodeURIComponent(id)}`
   const onError = (error: Error): void => { toast.error(error.message.includes('stale_revision') ? 'La automatización cambió mientras la editabas' : 'No se pudo completar la acción', error.message) }
   const make = <V,>(call: (vars: V) => Promise<unknown>) => ({ mutationFn: call, onSuccess: refresh, onError })
@@ -237,8 +221,7 @@ export function useScheduleActions() {
     runNow: useMutation(make(({ id }: { id: string }) => api.post<{ run_id: string }>(`${base(id)}/run_now`, {}))),
     reschedule: useMutation(make(({ id, revision, recurrence }: { id: string; revision: number; recurrence: Recurrence }) => api.put(`${base(id)}/recurrence`, { expected_revision: revision, recurrence }))),
     delivery: useMutation(make(({ id, revision, delivery }: { id: string; revision: number; delivery: DeliveryTarget[] }) => api.put(`${base(id)}/delivery`, { expected_revision: revision, delivery }))),
-    cancel: useMutation(make(({ id, revision, scope }: { id: string; revision: number; scope: 'target' | 'template_project' }) => api.post(`${base(id)}/cancel`, { expected_revision: revision, scope }))),
-    lift: useMutation(make(({ constraintId }: { constraintId: string }) => api.post(`/memory/schedule-constraints/${encodeURIComponent(constraintId)}/lift`, {}))),
+    cancel: useMutation(make(({ id, revision }: { id: string; revision: number }) => api.post(`${base(id)}/cancel`, { expected_revision: revision }))),
   }
 }
 

@@ -52,11 +52,10 @@ describe('formato de tiempos de una entrega', () => {
 })
 
 describe('Programaciones', () => {
-  function mockSchedules(items: ScheduleView[], extra: { constraints?: unknown[]; settings?: object } = {}) {
+  function mockSchedules(items: ScheduleView[], extra: { settings?: object } = {}) {
     return installFetch({ user, handle: call => {
       calls.push(call)
       if (call.path === '/memory/schedules') return jsonResponse({ items, total: items.length, limit: 200, offset: 0, delivery_available: { gmail_self: { available: false, reason: 'scope_missing' }, slack_self: { available: true } } })
-      if (call.path === '/memory/schedule-constraints') return jsonResponse({ items: extra.constraints ?? [] })
       if (call.path === '/memory/schedules/delivery-channels') return jsonResponse({ items: [{ channel: 'app', available: true }, { channel: 'gmail', available: true, destination: 'ana@example.com' }, { channel: 'slack', available: false, reason: 'not_connected' }] })
       if (call.path === '/automations') return jsonResponse({ automations_enabled: true, notify_schedule_created: true, notify_delivery: true, workday_hours: 9, keep_awake: true, ...extra.settings })
       if (call.path.startsWith('/memory/schedules/s1/')) return jsonResponse(schedule())
@@ -111,7 +110,6 @@ describe('Programaciones', () => {
   it('Gmail sin el envío autorizado ofrece Autorizar en Canales y no deja marcarlo', async () => {
     installFetch({ user, handle: call => {
       if (call.path === '/memory/schedules') return jsonResponse({ items: [schedule({ delivery: ['hub_inbox', 'app_window'] })], total: 1, limit: 200, offset: 0 })
-      if (call.path === '/memory/schedule-constraints') return jsonResponse({ items: [] })
       if (call.path === '/memory/schedules/delivery-channels') return jsonResponse({ items: [{ channel: 'app', available: true }, { channel: 'gmail', available: false, reason: 'scope_missing', destination: 'ana@example.com' }, { channel: 'slack', available: false, reason: 'not_connected' }] })
       if (call.path === '/memory/call') return jsonResponse((call.body as { operation: string }).operation === 'list_connectors' ? [{ id: 'g1', provider: 'google', name: 'A', config: {}, project_ids: [], interval_minutes: 30, enabled: true, account_email: 'ana@example.com' }] : {})
       if (call.path === '/automations') return jsonResponse({ automations_enabled: true, notify_schedule_created: true, notify_delivery: true, workday_hours: 9, keep_awake: true })
@@ -131,7 +129,6 @@ describe('Programaciones', () => {
     return installFetch({ user, handle: call => {
       calls.push(call)
       if (call.path === '/memory/schedules') return jsonResponse({ items, total: items.length, limit: 200, offset: 0, delivery_available: { gmail_self: gmail, slack_self: { available: false, reason: 'not_connected' } } })
-      if (call.path === '/memory/schedule-constraints') return jsonResponse({ items: [] })
       if (call.path === '/automations') return jsonResponse({ automations_enabled: true, notify_schedule_created: true, notify_delivery: true, workday_hours: 9, keep_awake: true })
       if (call.path === '/memory/call') return jsonResponse((call.body as { operation: string }).operation === 'list_connectors' ? [{ id: 'g1', provider: 'google', name: 'A', config: {}, project_ids: [], interval_minutes: 30, enabled: true, account_email: 'ana@example.com' }] : {})
       if (call.path === '/memory/connectors/g1/google/start') return jsonResponse({ authorization_url: 'https://accounts.google.com/o/oauth2/auth?x=1', gmail_send: true })
@@ -230,22 +227,16 @@ describe('Programaciones', () => {
     expect(api.lastCall('/memory/schedules/s1/recurrence', 'PUT')?.body).toEqual({ expected_revision: 3, recurrence: { type: 'daily', time: '09:30', weekdays: [1, 2, 3, 4] } })
   })
 
-  it('cancelar pide confirmación y puede restringir todo el tipo en el proyecto', async () => {
+  it('cancelar pide confirmación y solo cancela, sin restricciones', async () => {
     const api = mockSchedules([schedule()])
     const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
     await click(qa(container, 'button').find(button => button.textContent === 'Cancelar'))
-    expect(textOf(document.body)).toContain('El agente no podrá volver a crear esta automatización')
-    await click(need(document.body, '.automations-check input'))
+    expect(textOf(document.body)).toContain('«Brief diario» deja de ejecutarse')
+    expect(qa(document.body, '[role="dialog"] input[type="checkbox"]')).toHaveLength(0)
     await click(buttonByText(document.body, 'Cancelar automatización'))
-    expect(api.lastCall('/memory/schedules/s1/cancel', 'POST')?.body).toEqual({ expected_revision: 3, scope: 'template_project' })
-  })
-
-  it('lista las restricciones y permite levantarlas', async () => {
-    const api = mockSchedules([], { constraints: [{ id: 'c1', scope: 'target', project_id: null, template: 'daily_close', target_key: 'k', schedule_id: 's9', reason: null, created_at: '2026-10-28T12:00:00Z' }] })
-    const { container } = await renderWithProviders(<SchedulesPage />, { route: '/schedules' })
-    expect(textOf(container)).toContain('Restricciones')
-    await click(buttonByText(container, 'Levantar restricción'))
-    expect(api.callsTo('/memory/schedule-constraints/c1/lift', 'POST')).toHaveLength(1)
+    expect(api.lastCall('/memory/schedules/s1/cancel', 'POST')?.body).toEqual({ expected_revision: 3 })
+    expect(textOf(container)).not.toContain('Restricciones')
+    expect(api.callsTo('/memory/schedule-constraints', 'GET')).toHaveLength(0)
   })
 
   it('con foco en un schedule lo resalta', async () => {
