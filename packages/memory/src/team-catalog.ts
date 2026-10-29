@@ -89,7 +89,7 @@ export interface TeamValidation extends TeamSelection {
 
 type CatalogStatus = Omit<CliStatus, 'installed'> & { installed: boolean | null }
 
-const KIRO_FALLBACK_WARNING = 'Los esfuerzos de este modelo son una compatibilidad declarada por el adaptador: Kiro CLI no los informó y su acceso sigue sin verificar.'
+const KIRO_FALLBACK_WARNING = 'Effort levels are adapter-declared compatibility: Kiro CLI did not report them; access unverified.'
 
 function token(value: string, name: string): boolean {
   return new RegExp(`(?:^|[^a-z0-9])${name}(?:$|[^a-z0-9])`, 'i').test(value)
@@ -98,11 +98,11 @@ function token(value: string, name: string): boolean {
 /** Qualitative family guidance only. Unknown families receive no inferred role. */
 function roleHints(model: CliModel): TeamRoleHint[] {
   const family = `${model.id} ${model.name}`
-  if (token(family, 'luna') || token(family, 'haiku')) return [{ role: 'exploration', rationale: 'Preferir esta familia para tooling repetitivo, búsquedas acotadas y exploración con objetivos y resultados delimitados.', source: 'heuristic' }]
-  if (token(family, 'terra') || token(family, 'sonnet') || token(family, 'sol')) return [{ role: 'implementation', rationale: 'Considerar esta familia para programación habitual; Terra o Sonnet son preferencias medianas y medium es el esfuerzo inicial cuando el catálogo lo admite.', source: 'heuristic' }]
+  if (token(family, 'luna') || token(family, 'haiku')) return [{ role: 'exploration', rationale: 'Prefer for repetitive tooling, scoped searches and exploration with bounded goals and outputs.', source: 'heuristic' }]
+  if (token(family, 'terra') || token(family, 'sonnet') || token(family, 'sol')) return [{ role: 'implementation', rationale: 'Consider for routine coding; Terra or Sonnet are mid-tier preferences; start at medium effort when the catalog allows.', source: 'heuristic' }]
   if (token(family, 'astra') || token(family, 'opus')) return [
-    { role: 'design', rationale: 'Considerar esta familia para coordinación, razonamiento y diseño con ambigüedad o dificultad que justifique mayor capacidad.', source: 'heuristic' },
-    { role: 'review', rationale: 'Considerar esta familia para tareas de revisión.', source: 'heuristic' },
+    { role: 'design', rationale: 'Consider for coordination, reasoning and design when ambiguity or difficulty justifies more capability.', source: 'heuristic' },
+    { role: 'review', rationale: 'Consider for review tasks.', source: 'heuristic' },
   ]
   return []
 }
@@ -138,7 +138,7 @@ async function discover(runtime: CliExtractionRuntime, cli: ExtractionCli): Prom
       models: [],
       checked_at: new Date().toISOString(),
       source: 'native',
-      detail: `No se pudo consultar ${cliLabels[cli]}; los demás catálogos siguen disponibles.`,
+      detail: `Could not query ${cliLabels[cli]}; other catalogs remain available.`,
     }
   }
 }
@@ -179,7 +179,7 @@ export class TeamCatalog {
           launch_route: 'unsupported',
           checked_at: new Date().toISOString(),
           source: 'unsupported',
-          detail: 'Este cliente todavía no admite discovery ni lanzamiento de miembros de equipo.',
+          detail: 'Not yet supported for team member discovery or launch.',
         })),
       ],
       models: statuses.flatMap(({ cli, status }) => status.installed === true

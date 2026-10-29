@@ -177,7 +177,7 @@ it('consume invitación one-shot sólo desde workspace/CLI asignados y conserva 
   await db.query('UPDATE chat_channels SET leader_id=$2 WHERE id=$1',[master.channel.id,master.session.id])
   const joined=await teams.call('team_join',{session_key:child.key,invitation:token},child.agent)
   expect(joined).toMatchObject({team_id:prepared.id,member_id:assigned.id,root_thread_id:prepared.root_thread_id,master_session_id:master.session.id,session:{id:child.session.id,channel_id:child.channel.id}})
-  expect(joined.guidance).toContain('master coordina desde root_thread_id')
+  expect(joined.guidance).toContain('coordinates from root_thread_id')
   expect(joined.authorization).toMatchObject({source:'coordinator_declaration',instruction:'Orden explícita',digest:prepared.digest,approved_by_user_id:null})
   const context=await chat.call('chat_inbox',{session_key:child.key},child.agent)
   expect(context.team).toMatchObject({scope:'channel',leader_id:child.session.id,linked_team:{team_id:prepared.id,master_leader_id:master.session.id,root_thread_id:prepared.root_thread_id}})
@@ -518,7 +518,7 @@ async function hubTeam(enabled=()=>true,usage?:any) {
 it('prepara y lanza Hub sin metadatos Orca y vincula la incorporación por carpeta real',async()=>{
   const {master,backend,teams,plan,slot}=await hubTeam()
   expect(plan.plan.permissions).toBe('full_access')
-  expect(plan.plan.planning_guidance).toContain('mezcla de CLI')
+  expect(plan.plan.planning_guidance).toContain('CLI mix')
   const child=await hubSession('hub-worker',slot.workspace_path)
   const joined=await teams.call('team_join',{session_key:child.key,invitation:invitation(backend.prompts.get(slot.workspace_id)!)},child.agent)
   expect(joined.member_id).toBe(slot.id)
@@ -813,7 +813,7 @@ it('el bootstrap de workers exige join primero y enruta dudas al master por Hub'
   const joined=await team.teams.call('team_join',{session_key:worker.key,invitation:invitation(prompt)},worker.agent)
   expect(joined.root_thread_id).toBe(team.plan.root_thread_id)
   expect(joined.master_session_id).toBe(team.master.session.id)
-  expect(joined.guidance).toContain('No abras preguntas directas')
+  expect(joined.guidance).toContain('Never ask the person directly')
   expect(joined.prompt).toBeTruthy()
 })
 
@@ -857,7 +857,7 @@ it('el fallback de cuota rehace edit y clear con una sola nota de continuación,
   const row=(await db.query('SELECT prompt,workspace_id,cli,model,session_id,runtime FROM chat_team_members WHERE id=$1',[slot.id]))[0]
   expect(row).toMatchObject({workspace_id:slot.workspace_id,cli:slot.cli,model:slot.model,session_id:null})
   expect(row.prompt).toContain('Atendé la tarea 1')
-  expect(row.prompt.match(/--- Continuación tras cuota ---/g)).toHaveLength(1)
+  expect(row.prompt.match(/--- Continuation after quota ---/g)).toHaveLength(1)
   expect(row.prompt).toContain('git status')
   expect(backend.stop).toHaveBeenCalledWith(slot.launch_handle)
   expect(backend.launch.mock.calls[1]![1]).toMatchObject({member_id:slot.id,resume_worktree:true,cli:slot.cli,model:slot.model})
@@ -865,7 +865,7 @@ it('el fallback de cuota rehace edit y clear con una sola nota de continuación,
   await db.query(`UPDATE chat_team_members SET runtime=json_patch(runtime,'{"state":"failed"}') WHERE id=$1`,[slot.id])
   const again=(await db.query('SELECT runtime FROM chat_team_members WHERE id=$1',[slot.id]))[0].runtime.generation
   expect(await teams.continueMemberFresh(slot.id,again)).toBe('restarted')
-  expect((await db.query('SELECT prompt FROM chat_team_members WHERE id=$1',[slot.id]))[0].prompt.match(/--- Continuación tras cuota ---/g)).toHaveLength(1)
+  expect((await db.query('SELECT prompt FROM chat_team_members WHERE id=$1',[slot.id]))[0].prompt.match(/--- Continuation after quota ---/g)).toHaveLength(1)
 })
 
 it('el fallback de cuota se niega con el líder cerrado, la colaboración apagada, un miembro inexistente o un proceso que no confirma su detención',async()=>{

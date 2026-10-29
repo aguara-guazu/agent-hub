@@ -37,8 +37,10 @@ export interface DerivedPorts {
 }
 const APPROVED_ITEM_STATES = ['approved', 'dispatching', 'succeeded']
 const STOP_UNCONFIRMED = 'stop_unconfirmed'
-const CONTINUATION_MARK = '--- Continuación tras cuota ---'
-const CONTINUATION_NOTE = `${CONTINUATION_MARK}\nTu conversación anterior se detuvo porque se agotó la cuota y el Hub no pudo reanudarla en el mismo hilo. Esta es una conversación nueva sobre tu mismo worktree: revisa el estado del repositorio (git status y git log), tu inbox y tu último work_update, y continúa exactamente la tarea que tenías en curso.`
+const CONTINUATION_MARK = '--- Continuation after quota ---'
+/** Marca de las versiones en español: un prompt guardado antes del cambio de idioma se recorta igual y no acumula dos notas. */
+const LEGACY_CONTINUATION_MARK = '--- Continuación tras cuota ---'
+const CONTINUATION_NOTE = `${CONTINUATION_MARK}\nPrevious conversation stopped on exhausted quota; the Hub could not resume that thread. New conversation, same worktree: check git status, git log, your inbox and last work_update, then continue exactly the task in progress.`
 const TERMINAL_RUNTIME = ['stopped', 'exited', 'failed']
 /** A derived plan whose workers may still be running or whose stop was never confirmed keeps its slot and stays visible to later closes, whatever its logical state. */
 const HOLDS_PROCESS = `EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=chat_team_plans.id AND m.launch_handle IS NOT NULL
@@ -89,14 +91,14 @@ const controlInput = z.object({ ...session, plan_id:identifier, member_id:identi
 })
 
 export const teamDefinitions = {
-  team_catalog: ['Comprobar preparación del equipo antes de investigar el ticket: identidad coordinadora, espacio Git o virtual, CLI y modelos. Devuelve readiness con bloqueos y acciones, y preferred_backend. repository_path permite elegir otro repositorio sin cambiar de sesión. Un modelo listado no prueba cuota ni acceso.', z.object({...session,repository_path:z.string().min(1).max(4000).optional()}).strict()],
-  team_prepare: ['Preparar un plan inmutable. task_key etiqueta la tarea y conserva el canal y su coordinador. Requiere un canal activo creado con chat_create_channel(task_key,name) tras preguntar a la persona y obtener su autorización; preparar nunca crea ni activa canales. repository_path selecciona el repositorio de los trabajadores; base_revision admite el hash completo de cualquier commit local del repositorio, aunque difiera de HEAD; omitido usa HEAD o virtual. Proponer el plan editable y confirmar el plan exacto antes de lanzar. No crea procesos ni worktrees.', prepareInput],
-  team_launch: ['Lanzar el plan exacto elegido por la persona. Requiere plan_id, digest sin cambios y referencia textual a la instrucción humana declarada por el líder; conserva permisos nativos y nunca degrada modelo o esfuerzo.', launchInput],
-  team_answer: ['Responder como líder vigente una pregunta nativa pendiente de un worker Hub del plan activo. Requiere generación y question_id actuales; answers mapea los IDs de preguntas a {answers:[texto]}. Resolver con el contexto disponible o consultar a la persona y después responder al worker. Las respuestas no se guardan en eventos ni se envían a otro proceso.',answerInput],
-  team_control: ['Controlar un miembro Hub del plan aprobado: start, stop, interrupt, send, clear o edit de role/task/prompt. Requiere la generación actual. clear inicia una conversación nueva conservando worktree; cambiar CLI/modelo exige preparar y confirmar otro plan. Devuelve sólo metadatos, nunca terminal, logs ni transcripciones.', controlInput],
-  team_status: ['Consultar plan, efectos persistidos, incorporaciones y resultados inciertos sin exponer invitaciones ni claves.', statusInput],
-  team_join: ['Consumir una invitación de equipo de un solo uso desde el worktree y la CLI asignados. Conserva la session_key, canal y liderazgo propios.', joinInput],
-  team_close: ['Cerrar como líder el plan exacto, revocar invitaciones, ACL y entregas pendientes. Detiene los workers propios del Hub; conserva procesos Orca, worktrees, recibos e historial; no hace rollback destructivo.', closeInput],
+  team_catalog: ['Check readiness before researching the ticket: coordinator identity, Git/virtual workspace, CLIs, models. Returns readiness (blockers, actions), preferred_backend. repository_path: another repo, same session. Listed models: quota/access unverified.', z.object({...session,repository_path:z.string().min(1).max(4000).optional()}).strict()],
+  team_prepare: ['Prepare an immutable plan (no processes, worktrees, or channel creation/activation). task_key labels the task, keeping its channel and coordinator. Needs an active channel from chat_create_channel(task_key,name), created after the person authorizes it. repository_path: workers repo. base_revision: full hash of any local commit, HEAD or not (default HEAD/virtual). Propose the editable plan; confirm the exact plan before launch.', prepareInput],
+  team_launch: ['Launch the exact plan the person chose. Needs plan_id, unchanged digest and human_instruction quoting what the person said. Keeps native permissions; never downgrades model/effort.', launchInput],
+  team_answer: ['Current leader only: answer a pending native question from a Hub worker in the active plan. Needs current generation and question_id; answers maps question IDs to {answers:[text]}. Use available context or ask the person first. Answers are not stored in events or sent elsewhere.',answerInput],
+  team_control: ['Control a Hub member of the approved plan: start, stop, interrupt, send, clear, edit (role/task/prompt). Needs current generation. clear: new conversation, same worktree. CLI/model changes need another prepared, confirmed plan. Metadata only; never terminal, logs or transcripts.', controlInput],
+  team_status: ['View plan, persisted effects, joins and uncertain outcomes; never exposes invitations or keys.', statusInput],
+  team_join: ['Consume a single-use team invitation from the assigned worktree and CLI; keeps your session_key, channel and leadership.', joinInput],
+  team_close: ['Leader: close the exact plan; revoke invitations, ACLs, pending deliveries; stop Hub-owned workers. Keeps Orca processes, worktrees, receipts, history; no destructive rollback.', closeInput],
 } satisfies Record<string,[string,z.ZodType]>
 export const teamReadOperations = ['team_catalog','team_status']
 
@@ -147,8 +149,8 @@ export class TeamOrchestration {
     const leaderOffline=!!leader && (Boolean(leader.closed_at) || !(Date.parse(leader.lease_until)>Date.now()))
     const canActivate=channel?.kind==='virtual' && !channel.activated_at && !channel.closed_at
     if(channel?.leader_id!==who.id && !canActivate)blockers.push({code:'coordinator_required',
-      message:leaderOffline?'El coordinador reconocido está desconectado; esta sesión es miembro.':'Esta sesión no es la coordinadora reconocida.',next_action:'La persona puede designar esta sesión desde Colaboración → Agentes → Designar coordinador.'})
-    if(canActivate)blockers.push({code:'channel_required',message:'La sesión no tiene un canal activo.',next_action:'Preguntá a la persona si autoriza crear un canal y, tras su confirmación, usá memory_chat_create_channel(task_key, name).'})
+      message:leaderOffline?'El coordinador reconocido está desconectado; esta sesión es miembro.':'Esta sesión no es la coordinadora reconocida.',next_action:'The person can designate this session in Colaboración → Agentes → Designar coordinador.'})
+    if(canActivate)blockers.push({code:'channel_required',message:'La sesión no tiene un canal activo.',next_action:'Ask the person; if they authorize a channel, call memory_chat_create_channel(task_key, name).'})
     let workspace:TeamWorkspace|undefined
     try {
       check(channel && !channel.closed_at,'El canal está cerrado.',409)
@@ -156,12 +158,12 @@ export class TeamOrchestration {
       check(repositoryPath || (this.orca.provider==='hub'?workspace.path===await realpath(channel.path):workspace.id===channel.orca_workspace_id),'El backend devolvió otro espacio de trabajo.',409)
     } catch(error) {
       blockers.push({code:'workspace_unavailable',message:error instanceof MemoryError ? error.message:'No se pudo consultar el espacio de trabajo.',
-        next_action:'Verificá la ruta o indicá repository_path. Una carpeta local sin Git admite un espacio virtual.'})
+        next_action:'Check the path or pass repository_path; a non-Git local folder allows a virtual workspace.'})
     }
     const taskChannelAvailable=Boolean(channel && !channel.closed_at)
     if(taskChannelAvailable) {
       const blocker=blockers.find(item=>item.code==='coordinator_required')
-      if(blocker)blocker.next_action='Para un equipo nuevo, pedí autorización a la persona y creá su canal con memory_chat_create_channel(task_key, name). Para continuar en el canal existente, la persona puede designar coordinador desde la UI.'
+      if(blocker)blocker.next_action='New team: once the person authorizes it, create its channel with memory_chat_create_channel(task_key, name). Existing channel: the person can designate a coordinator in the UI.'
     }
     const launch_context={provider:this.orca.provider ?? 'orca',orca_workspace_id:this.orca.provider==='hub'?null:workspace?.id ?? channel?.orca_workspace_id ?? null,
       workspace_id:workspace?.id ?? null,workspace:workspace ?? null,available:!!workspace && blockers.length===0,
@@ -169,7 +171,7 @@ export class TeamOrchestration {
     const preference=await this.preference()
     const context={...launch_context,readiness:{ready:launch_context.available,blockers,activation_required:canActivate,
       task_channel_available:taskChannelAvailable,
-      ...(taskChannelAvailable?{next_action:'Preguntá a la persona antes de crear un canal con memory_chat_create_channel(session_key, task_key, name). La carpeta o el worktree no definen el canal.'}:{}),
+      ...(taskChannelAvailable?{next_action:'Ask the person before memory_chat_create_channel(session_key, task_key, name). The folder or worktree does not define the channel.'}:{}),
       coordinator_id:channel?.leader_id ?? null,coordinator_offline:leaderOffline},preferred_backend:preference}
     if(!value || typeof value!=='object' || Array.isArray(value))return {catalog:value,launch_context:context}
     const catalog=value as Record<string,any>
@@ -186,7 +188,7 @@ export class TeamOrchestration {
     const models=await Promise.all((Array.isArray(catalog.models)?catalog.models:[]).map(async(model:Record<string,any>)=>({
       ...model,usage:await this.quota(model.cli,model.id,who)})))
     if(context.available && !clis.some(entry=>entry.launchable)) {
-      blockers.push({code:'launcher_unavailable',message:'Ninguna CLI confirmó los requisitos de lanzamiento.',next_action:'Revisá launch_reason de las CLI y su instalación.'})
+      blockers.push({code:'launcher_unavailable',message:'Ninguna CLI confirmó los requisitos de lanzamiento.',next_action:'Check each CLI launch_reason and installation.'})
       context.available=false;context.readiness.ready=false
       context.reason=blockers.map(item=>item.message).join(' ')
     }
@@ -205,7 +207,7 @@ export class TeamOrchestration {
     check(plan,'Plan inexistente.',404)
     const who=(await this.db.query('SELECT * FROM chat_sessions WHERE id=$1',[plan.created_by]))[0]
     check(who && !who.closed_at && !who.removed_at,'La sesión coordinadora no está disponible.',409)
-    return this.launch({plan_id:planId,digest,human_instruction:`Plan ${planId} con digest ${digest} aprobado desde la UI por ${userId}`},who,userId)
+    return this.launch({plan_id:planId,digest,human_instruction:`Plan ${planId} digest ${digest} approved in UI by ${userId}`},who,userId)
   }
   async stopTransferredPlans(planIds:string[]) {
     const uncertain:string[]=[]
@@ -292,8 +294,8 @@ export class TeamOrchestration {
     const document={schema_version:1,id:planId,objective:input.objective,...(input.task_key?{task_key:input.task_key}:{}),master_channel_id:channel.id,created_by:who.id,
       parent,base_revision:baseRevision,catalog,members,usage,
       permissions:this.orca.provider==='hub'?'full_access':'native',
-      planning_guidance:'Proponer una mezcla de CLI cuando haya cuotas frescas disponibles y modelos adecuados. Explicar la idoneidad de cada modelo, presentar el plan editable y esperar elección y confirmación humana. Unknown no confirma disponibilidad.',
-      usage_guidance:'Observación de cuotas, no reserva ni garantía de terminar. Unknown o datos vencidos requieren planificar con incertidumbre; varios agentes comparten saldo.'}
+      planning_guidance:'Propose a CLI mix when fresh quota and fitting models exist. Explain each model choice, show the editable plan, await human choice and confirmation. Unknown does not confirm availability.',
+      usage_guidance:'Observed quota: no reservation or completion guarantee. Unknown or stale: plan for uncertainty; agents share the balance.'}
     const digest=hash(document)
     return this.db.transaction(async sql=>{
       const root=(await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by) VALUES($1,$2,$3,$4) RETURNING *',
@@ -740,7 +742,7 @@ export class TeamOrchestration {
     const plan=(await this.db.query('SELECT root_thread_id,master_channel_id FROM chat_team_plans WHERE id=$1',[planId]))[0]!
     await this.event(this.db,planId,null,'follow_up_claimed',who.id,plan.master_channel_id,plan.root_thread_id,{follow_up_ref:followUp.ref,claim,plan_expires_at:expiresAt})
     return this.launch({plan_id:planId,digest,
-      human_instruction:`Seguimiento aprobado (${followUp.source}, recibo ${followUp.ref}): solicitud ${input.request_id}, delegación v${input.delegation_version} de ${title}`},
+      human_instruction:`Approved follow-up (${followUp.source}, receipt ${followUp.ref}): request ${input.request_id}, delegation v${input.delegation_version} of ${title}`},
     who,undefined,{source:followUp.source==='channel_reply'?DERIVED_APPROVAL_SOURCE:'standing_delegation+owner_ui',userId:this.derived!.ownerId()})
   }
 
@@ -764,7 +766,7 @@ export class TeamOrchestration {
     if(!item || !leader || leader.closed_at || leader.removed_at || item.delegation_project_id || item.runtime?.generation!==claimedGeneration || item.runtime?.state!=='failed')return 'refused'
     const control={plan_id:item.team_id,member_id:item.id,expected_generation:item.runtime?.generation ?? 'none'}
     try {
-      const base=String(item.prompt).split(CONTINUATION_MARK)[0]!.trimEnd().slice(0,16000-CONTINUATION_NOTE.length-2)
+      const base=String(item.prompt).split(CONTINUATION_MARK)[0]!.split(LEGACY_CONTINUATION_MARK)[0]!.trimEnd().slice(0,16000-CONTINUATION_NOTE.length-2)
       await this.control({...control,action:'edit',prompt:`${base}\n\n${CONTINUATION_NOTE}`} as z.infer<typeof controlInput>,leader)
       await this.control({...control,action:'clear'} as z.infer<typeof controlInput>,leader)
       return 'restarted'
@@ -855,7 +857,7 @@ export class TeamOrchestration {
           master_session_id:member.created_by,session:{id:who.id,channel_id:who.channel_id},state:'joined',
           task:member.task,role:member.role,prompt:member.prompt,peers,
           authorization:{...this.authorization(plan),assignment:plan.plan.members.find((entry:{id:string})=>entry.id===member.id)},source_workspace:plan.parent,
-          guidance:'El master coordina desde root_thread_id como TL y resuelve decisiones técnicas dentro del alcance aprobado. La autorización adjunta indica su procedencia; no autoriza acciones ajenas al plan ni levanta restricciones de la CLI. No exijas una segunda aprobación directa de la persona para la misma acción ya autorizada. Si falta alcance o hay un bloqueo real, reportá la acción, la regla o error concreto y lo que falta al master. No abras preguntas directas a la persona; consultá al master por el Hub mencionando master_session_id. Los pares pueden pedirte subtareas dentro de tu rol por el hilo del equipo: respondé al solicitante y escalá al TL sólo conflictos o decisiones fuera de alcance. Usá work_thread_id para tu trabajo y tus reportes, mencionando master_session_id; root_thread_id es para coordinación general. Los pares pueden responder en tu hilo y vos en el suyo. Registrá trabajo y reportá al incorporarte; si tu tarea depende de una PR u otro resultado, registrá waiting con esa dependencia. No confundas idle con trabajo terminado.'}
+          guidance:'Master (TL) coordinates from root_thread_id and decides technical matters within approved scope. The attached authorization shows provenance; it grants nothing beyond the plan and lifts no CLI restriction. Never ask the person directly, not even to re-approve an authorized action; ask the master via the Hub, mentioning master_session_id. On missing scope or a real blocker, tell the master the action, exact rule or error, and what is missing. Peers may request in-role subtasks in the team thread: answer them; escalate only conflicts or out-of-scope decisions to the TL. Work and report in work_thread_id (mention master_session_id); root_thread_id is general coordination. Peers may post in your thread and you in theirs. On join, record work and report; if blocked by a PR or other result, record waiting with it. Idle is not done. Write in the language of your task.'}
       })
       check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
       await this.orca.bind?.(member.id,who.id)
@@ -864,7 +866,7 @@ export class TeamOrchestration {
   }
 
   private workerPrompt(token:string) {
-    return `Agent Hub: elegí tu nickname y registralo con memory_chat_join y memory_chat_set_nick, conservando la identidad/session_key recibida. Después usá memory_team_join con invitation=${token}. Esa herramienta entrega tu tarea y el contexto del equipo. La invitación vence y se consume una sola vez.`
+    return `Agent Hub: pick a nickname; register with memory_chat_join and memory_chat_set_nick, keeping your received identity/session_key. Then memory_team_join with invitation=${token} returns your task and team context. Single-use; expires.`
   }
   private authorization(plan:Record<string,any>) {
     return {plan_id:plan.id,digest:plan.digest,source:plan.approval_source ?? (plan.human_instruction?'legacy_record':null),
@@ -1079,7 +1081,7 @@ export class TeamOrchestration {
         ORDER BY m.seq DESC LIMIT 1`,[item.session_id,plan.root_thread_id]))[0] ?? null
     }
     return {id:plan.id,digest:plan.digest,objective:plan.objective,state:plan.state,master_channel_id:plan.master_channel_id,
-      root_thread_id:plan.root_thread_id,created_by:plan.created_by,parent:plan.parent,base_revision:plan.base_revision,plan:this.chat.usageEnabled(who.agent_id)?plan.plan:{...plan.plan,usage:[],usage_guidance:'La consulta de cuotas está deshabilitada para este cliente.',usage_redacted:true},
+      root_thread_id:plan.root_thread_id,created_by:plan.created_by,parent:plan.parent,base_revision:plan.base_revision,plan:this.chat.usageEnabled(who.agent_id)?plan.plan:{...plan.plan,usage:[],usage_guidance:'Quota lookup is disabled for this client.',usage_redacted:true},
       launch:{started_at:plan.launch_started_at,accepted_at:plan.launched_at,instruction_declared:Boolean(plan.human_instruction)},
       authorization:this.authorization(plan),
       close:{at:plan.closed_at,reason:plan.close_reason},members,

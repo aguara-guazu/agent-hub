@@ -56,7 +56,7 @@ describe('TeamCatalog', () => {
     expect(models[4]?.role_hints.map(hint => hint.role)).toEqual(['exploration'])
     expect(models[5]?.role_hints.map(hint => hint.role)).toEqual(['implementation'])
     expect(models[6]?.role_hints.map(hint => hint.role)).toEqual(['implementation'])
-    expect(models.flatMap(item => item.role_hints.map(hint => hint.rationale)).join(' ')).not.toMatch(/precio|costo|velocidad medida|latest|benchmark/i)
+    expect(models.flatMap(item => item.role_hints.map(hint => hint.rationale)).join(' ')).not.toMatch(/precio|costo|velocidad medida|price|cost|measured speed|latest|benchmark/i)
   })
 
   it('conserva un catálogo parcial cuando falla el discovery de una CLI', async () => {
@@ -97,7 +97,7 @@ describe('TeamCatalog', () => {
     })
     const kiro = (await fallback.catalog()).clis.find(cli => cli.id === 'kiro')
     expect(kiro).toMatchObject({ installed: true, catalogable: true, model_selectable: true, launchable: true, launch_route: 'hub_fleet' })
-    expect(validatedFallback.capabilities.model.warnings).toEqual([expect.stringContaining('compatibilidad declarada por el adaptador')])
+    expect(validatedFallback.capabilities.model.warnings).toEqual([expect.stringContaining('adapter-declared compatibility')])
 
     const unknown = new TeamCatalog(runtime({ kiro: { installed: true, checked_at: checkedAt, source: 'native', models: [{ id: 'unknown', name: 'Unknown', reasoning_efforts: [], reasoning_efforts_source: 'fallback' }] } }))
     await expect(unknown.validate('kiro', 'unknown', 'high')).rejects.toThrow('no ofrece ese esfuerzo')

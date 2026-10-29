@@ -6,7 +6,7 @@ import type { LeaderClosedEvent, ResumptionEvent } from './usage-notices.js'
 import { isRestored, type UsageQuotas } from './usage-quotas.js'
 
 /** Fixed instruction of a resumed member; it carries no task text so the conversation itself stays the source of truth. */
-export const QUOTA_RESUME_PROMPT = 'La cuota se restableció; continúa exactamente la tarea en curso; revisa tu inbox y tu último work_update.'
+export const QUOTA_RESUME_PROMPT = 'Quota restored: resume exactly your current task; check inbox and last work_update.'
 /** Observed exhaustion is accepted this long after the failure, because adapters can report a limit after the CLI stopped. */
 export const QUOTA_EVIDENCE_WINDOW_MS = 120_000
 
