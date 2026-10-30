@@ -81,22 +81,26 @@ Cada vista indica su plantilla, qué va en cada zona, sus estados y **qué no va
 La captura está desactualizada: todavía muestra la propuesta de resolución con sus botones, el chip «Espera tu decisión», el `.badge.attn` del canal, el campo «Escribí en el hilo…» y «Nuevo canal». Mandan las reglas de esta sección.
 
 - **Plantilla:** B · Ficha; la pestaña reemplaza contenido y columna de datos por `.collab` a todo el ancho. El encabezado de la ficha no cambia.
+- **Alto:** el tablero tiene alto acotado a la ventana y scroll propio por columna (canales, hilos, mensajes); las cabeceras quedan fijas. El hilo abre al fondo con el último mensaje y lo sigue mientras la persona no haya subido a leer.
 - **Solo para ver.** La persona interactúa únicamente con el agente líder, por la terminal. El Hub no muestra ni guarda propuestas ni debates que esperan decisión: si un agente quiere que la persona decida algo, se lo pide por la CLI.
 - **Canales** (220 px): «Canales» + un `.nav-item` por canal con `#` y `.badge` con mensajes nuevos. El «…» del canal tiene solo las cuatro acciones de recuperación (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), cada una confirmada por la persona.
+- **Archivados** (`.collab-archive`): al pie de la columna de canales, plegada por defecto; el botón «Archivados» con chevron y `.badge` con el total la despliega. No aparece si no hay archivados. Los archiva el Hub (48 h sin uso y sin agentes conectados, o 24 h después de que el líder lo propuso) y salen de la lista normal. Fila (`.nav-item.nav-item-2`): `#` + nombre y, debajo, fecha relativa del archivado y causa («por inactividad» o «por el líder»); fecha absoluta y causa completa en el tooltip. Orden: archivado más reciente primero, de a 50 con «Ver más». El estado desplegado vive en la URL (`?archived=1`), como el canal y el hilo, y sobrevive a recargas; un enlace a un canal archivado la despliega una vez y después se puede plegar. Abrir un canal archivado muestra sus hilos y mensajes como cualquier canal, con el chip «Archivado» (`c-off`) en la cabecera en lugar de los avatares y el «…». Con la sección desplegada la columna sigue scrolleando sola; bajo 1100 px pasa a una línea propia en la franja de canales.
 - **Hilos del canal:** nombre con `#`, descripción, avatares de los agentes del canal; segmentado Abiertos / Resueltos con contadores. Fila: pregunta del hilo y «N agentes · N mensajes · fecha relativa», sin chip.
 - **Hilo:** al entrar no hay ninguno abierto. Tocar un hilo abre su columna; tocarlo de nuevo o la X de la esquina superior derecha de la cabecera la cierra. Cabecera: título (dos líneas como máximo), «#canal · iniciado por X hoy 13:52» y la X. Mensajes con avatar, autor, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo, Pregunta) y hora; los enlaces llevan a la memoria (reuniones, documentos).
-- **Estados:** sin canales → `.empty` que dice cuándo aparecen; canal sin hilos → «Todavía no hay hilos».
-- **Va:** leer canales, hilos y mensajes; abrir y cerrar un hilo; las cuatro acciones de recuperación del «…» del canal.
-- **No va:** propuesta de resolución, chip «Espera tu decisión» o «En debate», `.badge.attn` por hilos pendientes, campo para escribir, «Aprobar y registrar decisión», «Pedir otra ronda», «Nuevo canal», «Cerrar sin decisión», «Mover a otro canal»; iniciar o detener agentes y aprobar planes de equipo; «Personas con acceso» (va en el panel de «Compartir»); «Foro de agentes»; bloques «Conexión y preferencias» o «Cómo se organizan» (van a Ajustes › Colaboración y red); una vista global de colaboración.
+- **Estados:** sin canales → `.empty` que dice cuándo aparecen; solo archivados → «No hay canales activos» con «Ver archivados»; canal sin hilos → «Todavía no hay hilos». Archivados: carga y error dentro de la sección desplegada, con «Reintentar».
+- **Agentes del canal:** la lista, los avatares de la cabecera y el contador vienen de `chat_agents` completo (todas sus páginas), que excluye a los agentes que el líder limpió; nunca se piden con `include_dismissed`. El contador es el de las filas listadas, y el panel pagina de a 40 sobre esa lista.
+- **Va:** leer canales, hilos y mensajes, también de canales archivados; desplegar y plegar Archivados; abrir y cerrar un hilo; las cuatro acciones de recuperación del «…» del canal.
+- **No va:** «Desarchivar», «Archivar» o «Proponer archivado» (lo deciden el Hub y el líder; un canal vuelve solo cuando un agente lo usa); el «…», los avatares o la designación de coordinador en un canal archivado (designar lo reactivaría); agentes limpiados en la lista o en el contador; propuesta de resolución, chip «Espera tu decisión» o «En debate», `.badge.attn` por hilos pendientes, campo para escribir, «Aprobar y registrar decisión», «Pedir otra ronda», «Nuevo canal», «Cerrar sin decisión», «Mover a otro canal»; iniciar o detener agentes y aprobar planes de equipo; «Personas con acceso» (va en el panel de «Compartir»); «Foro de agentes»; bloques «Conexión y preferencias» o «Cómo se organizan» (van a Ajustes › Colaboración y red); una vista global de colaboración.
 
-### Canales compartidos entre hubs (referencia futura, NO implementada)
+### Canales compartidos entre hubs
 
-Maqueta: `design-system/03-vistas/html/proyecto-inter-hub.html`. No se implementa hasta que la persona lo pida.
+Implementado en esta pestaña; maqueta de referencia: `design-system/03-vistas/html/proyecto-inter-hub.html`. Aparecen en el proyecto que el agente eligió al crear o unirse al canal.
 
 - Grupo «Compartidos entre hubs» en la columna de canales, con icono de compartir en lugar de `#`.
 - Bloque «Agentes del canal · N hubs · N agentes» bajo el encabezado de hilos: un desplegable por hub (chip «Este hub» o «Remoto», nombre con elipsis, cantidad de agentes) con su lista de agentes, scroll propio y `.tag` «Líder»; al final, «Código del canal» en mono con «Copiar».
 - Etiqueta de hub (chip) en cada mensaje, además de «Líder» cuando corresponde.
 - Sin propuesta de resolución ni chips de estado en los hilos; abrir y cerrar el hilo funciona igual que en la pestaña actual.
+- Sin el «…» de acciones de recuperación del canal: no aplican a un canal entre hubs.
 
 ## Automatizaciones
 
