@@ -66,6 +66,8 @@ export class LocalChatRuntime {
         await this.chat.db.query("UPDATE chat_sessions SET state='offline',closed_at=now(),lease_until=NULL WHERE id=$1 AND closed_at IS NULL",[s.id])
       }
     }
+    // After the fleet and PID lease renewals, so a live session is never taken as disconnected.
+    await this.chat.sweepArchive().catch(() => undefined)
     await this.chat.processTurnAlerts()
     await this.chat.processResponseAlerts()
     await this.chat.interhubSweep?.().catch(() => undefined)

@@ -870,4 +870,27 @@ CREATE TABLE interhub_local_agents (
  PRIMARY KEY(channel_id,session_id)
 );
 CREATE INDEX interhub_local_agents_session ON interhub_local_agents(session_id,removed_at);
+`, String.raw`
+-- Wrap up and channel archive. activity_at: server clock of the last Hub-observed activity of a session (hook events other
+-- than heartbeats, collaboration calls, fleet protocol events); legacy rows take their best recorded evidence.
+-- dismissed_*: the channel leader cleaned the session from agent listings; it is listed again once activity_at passes dismissed_at.
+-- archived_at/archive_cause: written only by the server sweep; archive_proposed_*: a leader's pending proposal (24 h instead of 48 h).
+-- Rollback: DROP INDEX chat_channels_archived; ALTER TABLE chat_channels DROP COLUMN for unarchived_at, archive_proposal_reason,
+-- archive_proposed_by, archive_proposed_at, archive_cause, archived_at; ALTER TABLE chat_sessions DROP COLUMN for dismissal_reason,
+-- dismissed_by, dismissed_at, activity_at; then delete this version from schema_versions.
+ALTER TABLE chat_sessions ADD COLUMN activity_at TIMESTAMP;
+ALTER TABLE chat_sessions ADD COLUMN dismissed_at TIMESTAMP;
+ALTER TABLE chat_sessions ADD COLUMN dismissed_by TEXT;
+ALTER TABLE chat_sessions ADD COLUMN dismissal_reason TEXT;
+ALTER TABLE chat_channels ADD COLUMN archived_at TIMESTAMP;
+ALTER TABLE chat_channels ADD COLUMN archive_cause TEXT;
+ALTER TABLE chat_channels ADD COLUMN archive_proposed_at TIMESTAMP;
+ALTER TABLE chat_channels ADD COLUMN archive_proposed_by TEXT;
+ALTER TABLE chat_channels ADD COLUMN archive_proposal_reason TEXT;
+ALTER TABLE chat_channels ADD COLUMN unarchived_at TIMESTAMP;
+UPDATE chat_sessions SET activity_at=max(created_at,
+  COALESCE(CASE WHEN event_at>'1970-01-02' THEN event_at END,created_at),
+  COALESCE((SELECT max(m.created_at) FROM chat_messages m WHERE m.author_id=chat_sessions.id),created_at),
+  COALESCE((SELECT max(w.updated_at) FROM chat_work_state w WHERE w.session_id=chat_sessions.id),created_at));
+CREATE INDEX chat_channels_archived ON chat_channels(archived_at);
 `]

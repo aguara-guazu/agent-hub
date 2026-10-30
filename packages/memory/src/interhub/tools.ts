@@ -3,6 +3,7 @@ import type { InterhubRoster, VerifiedInterhubChatEnvelope } from "@agenthub/sha
 import { check, id, parse } from "../contracts.js"
 import type { AgentContext } from "../agents.js"
 import type { LocalChat } from "../local-chat.js"
+import { markSessionActivity } from "../chat-wrap-up.js"
 
 const session = { session_key: z.string().min(32).max(200).optional() }
 // Length bounds only: the shape of a code is never described to a caller, so a wrong code fails like a revoked one.
@@ -103,6 +104,7 @@ export class InterhubTools {
     const services = this.require()
     const caller = await this.chat.requireNickname(agent, input.session_key) as InterhubCaller
     check(!caller.closed_at, "La sesión de colaboración está cerrada", 403)
+    await markSessionActivity(this.chat.db, caller.id)
     const result = await this.run(services, operation, input, caller)
     if (writes.has(operation)) this.chat.events.emit("change")
     return result

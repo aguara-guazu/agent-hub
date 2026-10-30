@@ -21,6 +21,7 @@ import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS
 import { AUTHOR_SOURCE_SQL, NON_AGENT_CLI_KINDS, THREAD_AGENT_COUNT_COLUMN, agentCountField, messageKind } from "./chat-debate.js"
 import { CHAT_CHANNEL_DESCRIPTION_MAX, INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
 import { INTERHUB_REMOTE_CLI_KIND, interhubChannelFields, interhubMentions, interhubMessageFields, interhubNoticeValid, interhubThreadFields } from "./interhub/chat.js"
+import { LISTED_SESSION_SQL, channelActivitySql, channelUsed, cleanAgents, markSessionActivity, proposeArchive, sweepChannelArchive, wrapUpDefinitions, wrapUpTiming } from "./chat-wrap-up.js"
 
 const exec = promisify(execFile)
 const key = z.string().min(32).max(200)
@@ -37,18 +38,19 @@ const scope = { project_id: id.optional(), channel_id: id.optional(), unassigned
 export const chatDefinitions = {
   ...workDefinitions,
   chat_join: ['Start/recover registration after choosing collaboration. Before a nickname it returns only identity and key, no channel or context. Connection stays private and inactive; no folder or worktree joins sessions to channels. Use session_key in every chat call; it identifies this conversation, not the whole CLI.', z.object({ ...session, path: z.string().max(4000).optional() }).strict()],
-  chat_create_channel: ['Create a channel independent of folders, Git and Orca, only after asking the person and getting approval. task_key identifies it for retries (omitted: name, else default); the same key reuses the current channel. Keeps identity/key; moves only this session, as coordinator; never takes the old channel or changes its team. Optional description is shown in the Hub UI.', z.object({ ...session, name: z.string().trim().min(1).max(200).optional(), task_key:z.string().trim().min(1).max(200).optional(), description:z.string().trim().min(1).max(CHAT_CHANNEL_DESCRIPTION_MAX).optional() }).strict()],
+  chat_create_channel: ['Create a channel independent of folders, Git and Orca, only after asking the person and getting approval. Before asking, list archived channels (memory_chat_channels archived=true) and prefer reviving a matching one. task_key identifies it for retries (omitted: name, else default); the same key reuses the current channel. Keeps identity/key; moves only this session, as coordinator; never takes the old channel or changes its team. Optional description is shown in the Hub UI.', z.object({ ...session, name: z.string().trim().min(1).max(200).optional(), task_key:z.string().trim().min(1).max(200).optional(), description:z.string().trim().min(1).max(CHAT_CHANNEL_DESCRIPTION_MAX).optional() }).strict()],
   chat_close_channel: ['Close a channel you lead on explicit person request (channel_id; default: your session channel). Leader only. Keeps history, blocks new joins.', z.object({ ...session, channel_id:id.optional() }).strict()],
   chat_delete_channel: ['Trash your own channel on explicit person request. Leader only (the person deletes others in the UI). Closes sessions, cancels its teams, revokes deliveries; the Hub tries to stop its workers and reports uncertain stops. Keeps files/worktrees. History leaves search; the person can restore from trash.',chatDeleteChannelInput.extend(session).strict()],
   chat_set_nick: ['Pick and register your nickname (2–40 chars); if taken, pick another. Unlocks collaboration context. Changes only your session; keeps identity and history.', z.object({ ...session, nickname }).strict()],
-  chat_channels: ['Browse active or past local channels you can read: your project, your own and team channels, and projects with a person-granted read permission. unassigned=true: only projectless channels; pending virtual ones stay hidden. deleted=true: trash. Worker spaces group under their team channel; include_workers=true adds them for audit.', z.object({ ...session, ...scope, ...page,deleted:z.boolean().default(false),include_workers:z.boolean().default(false) }).strict()],
-  chat_agents: ['Find session identities to mention, within the channels you can read. Coordinator channel_id includes linked team members. Default excludes kicked, closed and nickless sessions; stable order by registration. connection_state/last_seen_at = connection, not work. state=unknown + state_reason=activity_stale = unconfirmed activity: ask status via the Hub, never infer working or done. include_team_history shows disconnected past-team members with real state. include_removed/include_closed/include_pending: audit only. unassigned=true: projectless channels only.', z.object({ ...session, ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), include_closed: z.boolean().default(false), include_team_history: z.boolean().default(false), include_pending: z.boolean().default(false), ...page }).strict()],
+  chat_channels: ['Browse active or past local channels you can read: your project, your own and team channels, and projects with a person-granted read permission. unassigned=true: only projectless channels; pending virtual ones stay hidden. deleted=true: trash. Archived channels (no use for 48 h with nobody connected, or 24 h after the leader proposed it) are left out: archived=true lists only them, include_archived=true adds them; check them before creating a channel to revive one (use it, or memory_chat_take_leadership) or read its threads under the same read rules. Worker spaces group under their team channel; include_workers=true adds them for audit.', z.object({ ...session, ...scope, ...page,deleted:z.boolean().default(false),include_workers:z.boolean().default(false),archived:z.boolean().default(false),include_archived:z.boolean().default(false) }).strict()],
+  chat_agents: ['Find session identities to mention, within the channels you can read. Coordinator channel_id includes linked team members. Default excludes kicked, closed and nickless sessions, and those the leader cleaned with memory_chat_clean_agents until they show new activity; stable order by registration. last_activity_at = last Hub-observed activity; connection_state/last_seen_at = connection, not work. state=unknown + state_reason=activity_stale = unconfirmed activity: ask status via the Hub, never infer working or done. include_team_history shows disconnected past-team members with real state. include_removed/include_closed/include_pending/include_dismissed: audit only. unassigned=true: projectless channels only.', z.object({ ...session, ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), include_closed: z.boolean().default(false), include_team_history: z.boolean().default(false), include_pending: z.boolean().default(false), include_dismissed: z.boolean().default(false), ...page }).strict()],
   chat_threads: ['Search past threads/messages by text, channel, project, author or state, within your project, your own and team channels and person-granted projects. Reading a channel never lets you write there. unassigned=true: projectless channels only. History outlives agents.', z.object({ ...session, ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
   chat_read: ['Read thread messages. With session_key: by default only messages pending for it (not its own), marking only those returned as read; page pending with offset: 0. unread_only=false: history. Without session_key: read-only history that marks nothing. Only threads of channels you can read (same scope as chat_threads); another project needs memory_chat_read_request.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
   chat_send: ['Create a task thread (channel_id,title), a short linked-team thread (team_root_thread_id,title), or reply (thread_id). Only in channels you belong to: your own, or the root and threads bound to a current team; mentions only its members. Read access never grants writing. A stable request_id makes retries duplicate-free. Linked-worker new topics auto-post to the team channel. Report in your assigned work_thread_id. To request an action/decision: response_required=true plus recipients. Reply via reply_to: notifies the author, handles only your request. Optional kind tags your stance: proposal, objection, fact, agreement or question. Requires collaboration authorization.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), kind: messageKind.optional(), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), response_required: z.boolean().optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Read your pending mentions and private notices. Private notices have no thread; ask the agent for status via work_thread_id. Read is not handled; unhandled items stay visible. No model polling: the Hub notifies.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
   chat_kick: ['Kick a session from the channel when the person orders it. Only the current leader of that channel (also if you lead it from another channel); give the reason. Not the session that may reclaim the channel nor one that leads other channels: only the person removes those. Keeps history, cancels notices, blocks rejoin. Does not close its terminal or stop running work. Taking over a silent leader is memory_chat_take_leadership, not a kick.', chatKickInput.extend(session).strict()],
-  chat_take_leadership: [`Take over or reclaim a channel's leadership; pass the leader_id you read (expected_leader_id) and a reason. Takeover: only a session outside Hub teams, from the channel's project as the Hub derives it, when the leader has had no Hub-verified liveness for over ${LEADER_LIVENESS_TIMEOUT_MS/60000} minutes; it displaces that leader only, who keeps the right to reclaim. Reclaim: the exact displaced session (same session_key) recovers the channel even if the new leader is online. Never on a guess about the leader; check team.leader_offline and leader_last_liveness_at first. Audited and rate limited; the person can always correct it in the UI.`, chatTakeLeadershipInput.extend(session).strict()],
+  ...wrapUpDefinitions,
+  chat_take_leadership: [`Take over or reclaim a channel's leadership; pass the leader_id you read (expected_leader_id) and a reason. Takeover: only a session outside Hub teams, from the channel's project as the Hub derives it, when the leader has had no Hub-verified liveness for over ${LEADER_LIVENESS_TIMEOUT_MS/60000} minutes; it displaces that leader only, who keeps the right to reclaim. Reclaim: the exact displaced session (same session_key) recovers the channel even if the new leader is online. Taking or holding leadership of an archived channel revives it; an archived channel without leader accepts expected_leader_id=null under the same takeover rules. Never on a guess about the leader; check team.leader_offline and leader_last_liveness_at first. Audited and rate limited; the person can always correct it in the UI.`, chatTakeLeadershipInput.extend(session).strict()],
   chat_ack: ['Mark your own mention/private notice handled (message_id=item id) after resolving or answering. Reading alone is not acceptance.', z.object({ ...session, message_id: id }).strict()],
   ...readAccessDefinitions,
   chat_resolve: ['Close/reopen a thread in your channel. Keeps history; never marks messages of others handled.', z.object({ ...session, thread_id: id, state: z.enum(['open','resolved']) }).strict()],
@@ -67,7 +69,8 @@ const publicSession = (s: Record<string, any>) => {
   return { id:s.id,label:s.label,nickname:s.nickname,needs_nickname:!s.nickname,cli_kind:s.cli_kind,channel_id:s.channel_id,
     ...sessionStatus(s),
     capability:s.capability,last_seen_at:s.last_seen_at,created_at:s.created_at,closed_at:s.closed_at,wake_error:s.wake_error,
-    removed_at:s.removed_at,removed_by:s.removed_by,removal_reason:s.removal_reason }
+    removed_at:s.removed_at,removed_by:s.removed_by,removal_reason:s.removal_reason,
+    last_activity_at:s.activity_at ?? s.created_at,dismissed_at:s.dismissed_at ?? null,dismissed_by:s.dismissed_by ?? null,dismissal_reason:s.dismissal_reason ?? null }
 }
 
 export async function chatFolder(path: string) {
@@ -190,6 +193,7 @@ export class LocalChat {
       await sql.query('UPDATE chat_channels SET leader_id=$2,displaced_leader_id=NULL,displaced_at=NULL,leader_changed_at=now(),activated_at=COALESCE(activated_at,now()),updated_at=now() WHERE id=$1',[channel.id,target.id])
       await recordAuthorityEvent(sql,{kind:"leadership_designated",channel_id:channel.id,project_id:await channelProjectId(sql,channel.id),actor_user_id:userId,
         target_session_id:target.id,reason:"Coordinador designado desde la UI",evidence:{previous_leader_id:channel.leader_id,displaced_leader_id:channel.displaced_leader_id ?? null,affected_plans:plans}})
+      await channelUsed(sql,channel.id,'designation',{user_id:userId})
       await this.cancelInvalidTurnAlerts()
       return {channel_id:channel.id,leader_id:target.id,affected_plans:plans}
     })
@@ -217,6 +221,16 @@ export class LocalChat {
     if(result.revoked || result.cancelled)this.events.emit('change')
     return result
     }
+  /** The first archive evaluation waits one interval after start, so sessions still alive after a Hub restart renew their leases first. */
+  private archiveSweptAt=Date.now()
+  /** Hub runtime tick: revivals and proposal cancellations on every call, archive evaluation at most once per sweep interval. */
+  async sweepArchive(now=Date.now()) {
+    const archive=now-this.archiveSweptAt>=wrapUpTiming().archiveSweepMs
+    if(archive)this.archiveSweptAt=now
+    const result=await this.db.transaction(sql=>sweepChannelArchive(sql,now,archive))
+    if(result.archived.length || result.unarchived.length || result.proposals_cancelled.length)this.events.emit('change')
+    return result
+  }
   /** Leadership changed under these plans: they stop coordinating until their new leader prepares or the person resumes them. */
   private async pauseChannelPlans(sql:Sql,channelId:string,reason:string,actorSessionId:string,payload:Record<string,unknown>) {
     const plans=await sql.query("SELECT id,root_thread_id FROM chat_team_plans WHERE master_channel_id=$1 AND state NOT IN ('cancelled','completed')",[channelId])
@@ -327,7 +341,8 @@ export class LocalChat {
           target_session_id:channel.leader_id ?? null,reason:input.reason,evidence:{code,...evidence}}
         throw Object.assign(new MemoryError(status,message,false,code),{leadershipAudit:audit})
       }
-      if(channel.leader_id===who.id)return {channel_id:channel.id,leader_id:who.id,mode:'unchanged' as const,previous_leader_id:who.id,affected_plans:[] as string[],team:await this.team(channel.id)}
+      if(channel.leader_id===who.id)return {channel_id:channel.id,leader_id:who.id,mode:'unchanged' as const,previous_leader_id:who.id,affected_plans:[] as string[],
+        archive:await channelUsed(sql,channel.id,'leadership',{session_id:who.id}),team:await this.team(channel.id)}
       // First refusal for any session outside the project, so they learn nothing else about the channel and spend no channel budget.
       const sessionProject=await sessionProjectId(sql,who.id)
       if(!projectId || sessionProject!==projectId)
@@ -346,16 +361,19 @@ export class LocalChat {
         const inTeam=(await sql.query(`SELECT 1 FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
           WHERE m.session_id=$1 AND m.state='joined' AND p.state IN (${ACTIVE_TEAM_STATES.map(s=>`'${s}'`).join(',')}) LIMIT 1`,[who.id])).length
         if(who.capability==='hub_fleet' || inTeam)refuse(403,'team_member','Los miembros de un equipo del Hub no toman canales; pedíselo a su coordinador.')
-        if(!channel.leader_id)refuse(409,'no_leader','El canal no tiene líder: el Hub lo asigna a su próximo participante activo o la persona lo designa en la UI.')
+        // Only an archived channel can be revived without a leader to displace; an active one keeps the assignment rules.
+        if(!channel.leader_id && !channel.archived_at)refuse(409,'no_leader','El canal no tiene líder: el Hub lo asigna a su próximo participante activo o la persona lo designa en la UI.')
         const lost=(await sql.query(`SELECT created_at FROM chat_authority_events WHERE channel_id=$1 AND target_session_id=$2
           AND kind IN ('leadership_takeover','leadership_reclaim') AND created_at>$3 ORDER BY seq DESC LIMIT 1`,[channel.id,who.id,new Date(now-LEADERSHIP_COOLDOWN_MS).toISOString()]))[0]
         if(lost)refuse(409,'cooldown',`Perdiste el liderazgo de este canal hace menos de ${LEADERSHIP_COOLDOWN_MS/60000} minutos; esperá antes de volver a tomarlo.`,{lost_at:lost.created_at,cooldown_ms:LEADERSHIP_COOLDOWN_MS})
-        const leader=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[channel.leader_id]))[0]!
-        const liveness=lastLiveness(leader,now)
-        if(leaseActive(leader,now))refuse(409,'leader_live','El líder tiene liveness vigente según el Hub; coordiná con él por el canal.',{...liveness,threshold_ms:LEADER_LIVENESS_TIMEOUT_MS})
-        if(liveness.silent_ms<=LEADER_LIVENESS_TIMEOUT_MS)
-          refuse(409,'leader_recent',`El líder lleva ${Math.floor(liveness.silent_ms/60000)} min sin liveness verificado; la toma requiere más de ${LEADER_LIVENESS_TIMEOUT_MS/60000}.`,{...liveness,threshold_ms:LEADER_LIVENESS_TIMEOUT_MS})
-        evidence={previous_leader_id:channel.leader_id,...liveness,threshold_ms:LEADER_LIVENESS_TIMEOUT_MS}
+        if(channel.leader_id) {
+          const leader=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[channel.leader_id]))[0]!
+          const liveness=lastLiveness(leader,now)
+          if(leaseActive(leader,now))refuse(409,'leader_live','El líder tiene liveness vigente según el Hub; coordiná con él por el canal.',{...liveness,threshold_ms:LEADER_LIVENESS_TIMEOUT_MS})
+          if(liveness.silent_ms<=LEADER_LIVENESS_TIMEOUT_MS)
+            refuse(409,'leader_recent',`El líder lleva ${Math.floor(liveness.silent_ms/60000)} min sin liveness verificado; la toma requiere más de ${LEADER_LIVENESS_TIMEOUT_MS/60000}.`,{...liveness,threshold_ms:LEADER_LIVENESS_TIMEOUT_MS})
+          evidence={previous_leader_id:channel.leader_id,...liveness,threshold_ms:LEADER_LIVENESS_TIMEOUT_MS}
+        } else evidence={previous_leader_id:null,archived_at:channel.archived_at,archive_cause:channel.archive_cause}
       }
       const previous=channel.leader_id as string|null
       // Takeover leaves the displaced leader a reclaim right; a reclaim leaves none to the one it replaces (no ping-pong).
@@ -374,9 +392,10 @@ export class LocalChat {
           : `Agent Hub: ${who.label} took over leadership of channel "${channel.name}" (${channel.id}) after ${minutes} min without Hub-verified liveness from you. You no longer lead or write there. This same session can reclaim it with memory_chat_take_leadership(channel_id, expected_leader_id=${who.id}, reason). Audit event ${event.id}.`
         await this.leadershipNotice(sql,channel.id,previous,event.id,reclaim?'leadership_reclaimed':'leadership_taken',text)
       }
+      const archive=await channelUsed(sql,channel.id,'leadership',{session_id:who.id})
       await this.cancelInvalidTurnAlerts()
       return {channel_id:channel.id,leader_id:who.id,mode:reclaim?'reclaim' as const:'takeover' as const,previous_leader_id:previous,
-        event_id:event.id,affected_plans:plans,team:await this.team(channel.id)}
+        event_id:event.id,affected_plans:plans,archive,team:await this.team(channel.id)}
     })
   }
   /** Durable private notice from the channel's system identity; one pending per channel and recipient. */
@@ -543,6 +562,7 @@ export class LocalChat {
         closed_at=CASE WHEN $2='offline' THEN $3 ELSE NULL END,process_id=COALESCE($5,process_id),process_started=COALESCE($6,process_started),
         capability=CASE WHEN $7 IS NOT NULL THEN $7 WHEN cli_kind='codex_cli' AND capability NOT IN ('codex_appserver','tui_prompt') THEN 'codex_queue' ELSE capability END
         WHERE id=$1 AND event_at<=$3`, [sid, state, input.at, new Date(Date.now()+90000).toISOString(), input.process_id ?? null, input.process_started ?? null, input.transport ?? null])
+      if(input.event!=='SessionEnd')await markSessionActivity(this.db,sid)
       await this.captureNative(sid,agent,input)
       if(state==='offline')await sweepReadAccess(this.db)
     } else if(input.event==='PostModelSwitch') {
@@ -599,6 +619,7 @@ export class LocalChat {
       await this.db.query(`UPDATE chat_sessions SET capability='hub_fleet',state=$2,event_at=$3,last_seen_at=now(),lease_until=$4,
         closed_at=CASE WHEN $2='offline' THEN $3 ELSE NULL END,process_id=NULL,process_started=NULL WHERE id=$1`,
         [sessionId,state,at,new Date(Date.now()+90000).toISOString()])
+      if(event!=='SessionEnd')await markSessionActivity(this.db,sessionId)
       if(active)await this.recordTurnEvent(sessionId,event,at,turnId)
       return true
     })
@@ -827,7 +848,7 @@ export class LocalChat {
       if(operation==='chat_inbox' || operation==='chat_ack')await this.cancelInvalidTurnAlerts()
       return this.callInner(operation,raw,agent,receipt)
     }
-    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick','chat_read_interest','chat_read_request','chat_read_elevate','chat_take_leadership']
+    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick','chat_read_interest','chat_read_request','chat_read_elevate','chat_take_leadership','chat_clean_agents','chat_propose_archive']
     // UI/history polling has no routing key and must remain a true read: no writer lock or wake-up event.
     const identifiedRead=operation==='chat_read' && typeof (raw as any)?.session_key==='string'
     let result:any
@@ -848,22 +869,26 @@ export class LocalChat {
     check(definition, 'Operación de chat inexistente', 404)
     const input = parse(definition[1] as z.ZodType, raw ?? {}) as any
     const caller=agent && !['chat_join','chat_set_nick'].includes(operation) ? await this.requireNickname(agent,input.session_key) : undefined
+    if(caller)await markSessionActivity(this.db,caller.id)
     // Agents read within their scope; the person (no agent identity) is never scoped.
     const scope:ReadScope|null=caller && ['chat_channels','chat_agents','chat_threads','chat_read'].includes(operation) ? await readScope(this.db,caller.id) : null
     const scopeProjects=scope?JSON.stringify(scope.projects):null,scopeChannels=scope?JSON.stringify(scope.channels):null
     if(operation==='chat_kick'){check(agent,'Sólo el líder puede usar esta herramienta; la persona usa el control de la UI',403);return this.kick(input,{agent,session_key:input.session_key},false)}
     if(operation==='chat_delete_channel'){check(agent,'Usá el control de la UI para eliminar canales como persona.',403);return this.deleteChannel(input,{agent,session_key:input.session_key})}
+    if(operation==='chat_clean_agents'){check(caller,'Sólo el líder del canal limpia su lista de agentes, desde su terminal.',403);return cleanAgents(this.db,caller,input,sessionStatus)}
+    if(operation==='chat_propose_archive'){check(caller,'Sólo el líder del canal propone archivarlo, desde su terminal.',403);return proposeArchive(this.db,caller,input)}
     if (operation === 'chat_join') {
       check(agent, 'Sólo los agentes pueden registrarse', 403)
-      if (input.session_key) return this.enrollmentView(await this.register({ ...agent, cwd: input.path ?? agent.cwd }, input.session_key))
+      const joined=async(result:Record<string,any>)=>{await markSessionActivity(this.db,result.session.id);return this.enrollmentView(result)}
+      if (input.session_key) return joined(await this.register({ ...agent, cwd: input.path ?? agent.cwd }, input.session_key))
       // Native identities must retain their hook-issued key; fallback conversations create their own identity.
       const native = (await this.db.query('SELECT * FROM chat_sessions WHERE id=$1 AND agent_id=$2',[agent.session_id, agent.agent_id]))[0]
       if (native) {
         const channel=(await this.db.query('SELECT * FROM chat_channels WHERE id=$1',[native.channel_id]))[0]!
         await this.joinableChannel(channel)
-        return this.enrollmentView(await this.registration(native,channel,undefined,true))
+        return joined(await this.registration(native,channel,undefined,true))
       }
-      return this.enrollmentView(await this.register({ ...agent, cwd: input.path ?? agent.cwd }, randomUUID()))
+      return joined(await this.register({ ...agent, cwd: input.path ?? agent.cwd }, randomUUID()))
     }
     if (operation === 'chat_channels') {
       // Folder assignments can be added after sessions and channels already exist. Inter-hub channels have no folder:
@@ -872,14 +897,19 @@ export class LocalChat {
         const project=await this.project(c.path,c.repository ?? c.path)
         if ((project?.id ?? null)!==c.project_id) await this.db.query('UPDATE chat_channels SET project_id=$2 WHERE id=$1',[c.id,project?.id ?? null])
       }
+      // A direct channel_id lookup and the trash ignore the archive filter.
+      const archiveFilter=input.channel_id || input.deleted ? 'all' : input.archived ? 'only' : input.include_archived ? 'all' : 'exclude'
       const result = await this.page(`SELECT c.*,
         (SELECT p.id FROM chat_team_plans p WHERE p.master_channel_id=c.id ORDER BY p.created_at DESC,p.id DESC LIMIT 1) AS team_plan_id,
         (SELECT p.master_channel_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id WHERE m.channel_id=c.id LIMIT 1) AS parent_channel_id,
-        (SELECT label FROM chat_sessions WHERE id=c.leader_id) AS leader_label,(SELECT count(*) FROM chat_threads t WHERE t.channel_id=c.id AND t.archived_notice=0) AS threads FROM chat_channels c WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3=0 OR c.project_id IS NULL) AND (($4=1 AND c.deleted_at IS NOT NULL) OR ($4=0 AND c.deleted_at IS NULL))
+        (SELECT label FROM chat_sessions WHERE id=c.leader_id) AS leader_label,(SELECT count(*) FROM chat_threads t WHERE t.channel_id=c.id AND t.archived_notice=0) AS threads,
+        ${channelActivitySql()} AS last_activity_at FROM chat_channels c WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3=0 OR c.project_id IS NULL) AND (($4=1 AND c.deleted_at IS NOT NULL) OR ($4=0 AND c.deleted_at IS NULL))
         AND ($5=1 OR $2 IS NOT NULL OR NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=c.id))
         AND ($6 IS NULL OR c.id IN (SELECT value FROM json_each($7)) OR COALESCE((SELECT master.project_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
-          JOIN chat_channels master ON master.id=p.master_channel_id WHERE m.channel_id=c.id ORDER BY p.created_at DESC LIMIT 1),c.project_id) IN (SELECT value FROM json_each($6)))`,
-        [input.project_id ?? null,input.channel_id ?? null,input.unassigned ? 1 : 0,input.deleted?1:0,input.include_workers?1:0,scopeProjects,scopeChannels], 'updated_at DESC,id', input)
+          JOIN chat_channels master ON master.id=p.master_channel_id WHERE m.channel_id=c.id ORDER BY p.created_at DESC LIMIT 1),c.project_id) IN (SELECT value FROM json_each($6)))
+        AND ($8='all' OR ($8='only' AND c.archived_at IS NOT NULL) OR ($8='exclude' AND c.archived_at IS NULL))`,
+        [input.project_id ?? null,input.channel_id ?? null,input.unassigned ? 1 : 0,input.deleted?1:0,input.include_workers?1:0,scopeProjects,scopeChannels,archiveFilter],
+        archiveFilter==='only' ? 'archived_at DESC,id' : 'updated_at DESC,id', input)
       return { ...result,items:await interhubChannelFields(this.db,await Promise.all(result.items.map(async c=>({...c,read_only:await this.channelReadOnly(c)})))) }
     }
     if (operation === 'chat_agents') {
@@ -896,11 +926,12 @@ export class LocalChat {
         AND ($3=0 OR (c.closed_at IS NULL AND s.closed_at IS NULL AND s.lease_until>now()))
         AND ($4=1 OR s.removed_at IS NULL) AND ($5=0 OR COALESCE(master.project_id,c.project_id) IS NULL)
         AND ($6=1 OR ($8=1 AND m.team_id IS NOT NULL) OR (s.closed_at IS NULL AND c.closed_at IS NULL)) AND ($7=1 OR (s.nickname IS NOT NULL AND trim(s.nickname)<>''))
-        AND ($9 IS NULL OR c.id IN (SELECT value FROM json_each($10)) OR p.master_channel_id IN (SELECT value FROM json_each($10)) OR COALESCE(master.project_id,c.project_id) IN (SELECT value FROM json_each($9)))`,
-      [input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0,input.include_removed ? 1 : 0,input.unassigned ? 1 : 0,input.include_closed || input.include_removed ? 1 : 0,input.include_pending ? 1 : 0,input.include_team_history ? 1 : 0,scopeProjects,scopeChannels], 'created_at ASC,id',input)
+        AND ($9 IS NULL OR c.id IN (SELECT value FROM json_each($10)) OR p.master_channel_id IN (SELECT value FROM json_each($10)) OR COALESCE(master.project_id,c.project_id) IN (SELECT value FROM json_each($9)))
+        AND ($11=1 OR ${LISTED_SESSION_SQL})`,
+      [input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0,input.include_removed ? 1 : 0,input.unassigned ? 1 : 0,input.include_closed || input.include_removed ? 1 : 0,input.include_pending ? 1 : 0,input.include_team_history ? 1 : 0,scopeProjects,scopeChannels,input.include_dismissed ? 1 : 0], 'created_at ASC,id',input)
       return { ...result, items: result.items.map(s=>({...publicSession(s),role:s.team_id?'team_member':s.role,team_id:s.team_id,team_role:s.team_role,team_state:s.team_state,member_state:s.member_state,work_thread_id:s.work_thread_id,master_channel_id:s.master_channel_id})) }
     }
-    if (operation === 'chat_threads') return this.page(`SELECT t.*,c.name AS channel_name,s.label AS author_label,${THREAD_AGENT_COUNT_COLUMN},
+    if (operation === 'chat_threads') return this.page(`SELECT t.*,c.name AS channel_name,c.archived_at AS channel_archived_at,s.label AS author_label,${THREAD_AGENT_COUNT_COLUMN},
       (SELECT id FROM chat_team_plans p WHERE p.root_thread_id=COALESCE(t.team_root_thread_id,t.id)) AS team_plan_id,
       (SELECT state FROM chat_team_plans p WHERE p.root_thread_id=COALESCE(t.team_root_thread_id,t.id)) AS team_plan_state,
       (SELECT group_concat(label, ' · ') FROM (SELECT DISTINCT a.label FROM chat_messages m JOIN chat_sessions a ON a.id=m.author_id WHERE m.thread_id=t.id)) AS participants,
@@ -1021,6 +1052,7 @@ export class LocalChat {
         check(!occupied, 'Ese nick ya pertenece a otra sesión. Elegí otro nick.',409)
         return (await sql.query('UPDATE chat_sessions SET nickname=$2,nickname_key=$3,label=$2 WHERE id=$1 RETURNING *',[who.id,input.nickname,canonical]))[0]!
       })
+      await markSessionActivity(this.db,who.id)
       await this.activate(who.id)
       const team=await this.team(who.channel_id,false,who.id)
       return { session:{...publicSession(value),role:team.leader_id===who.id?'leader':'member'},team }
@@ -1175,6 +1207,7 @@ export class LocalChat {
       if(linkedTeam)await sql.query(`INSERT INTO chat_team_events(id,team_id,type,actor_session_id,source_channel_id,target_thread_id,payload)
         VALUES($1,$2,'chat_message',$3,$4,$5,$6)`,[randomUUID(),linkedTeam.id,who.id,who.channel_id,thread.id,JSON.stringify({message_id:message.id,request_hash:requestHash})])
       await sql.query('UPDATE chat_threads SET updated_at=now(),archived_notice=0 WHERE id=$1',[thread.id])
+      await channelUsed(sql,thread.channel_id,'message',{session_id:who.id})
       return message
     })
     return result

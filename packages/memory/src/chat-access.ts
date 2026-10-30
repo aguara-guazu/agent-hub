@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import type { ChatWrapUpEventKind } from "@agenthub/shared"
 import type { Sql } from "./database.js"
 
 /** Plan states whose members still coordinate. Shared by membership, team reads and leadership checks. */
@@ -61,7 +62,7 @@ export async function channelProjectId(sql: Sql, channelId: string): Promise<str
 }
 
 export type AuthorityEventKind = "leadership_takeover" | "leadership_kick" | "leadership_reclaim" | "leadership_rejected" | "leadership_designated" | "leadership_assigned" | "session_kicked" |
-  "read_interest" | "read_request" | "read_elevated" | "read_granted" | "read_rejected" | "read_revoked" | "read_cancelled"
+  "read_interest" | "read_request" | "read_elevated" | "read_granted" | "read_rejected" | "read_revoked" | "read_cancelled" | ChatWrapUpEventKind
 
 export interface AuthorityEvent {
   kind: AuthorityEventKind
