@@ -5,10 +5,10 @@ import { Avatar, Empty, ErrorState, SkeletonRows, Tag } from "../../../component
 import { useFormat, useT } from "../../../i18n"
 import { useMemory } from "../../../lib/memory"
 import { MESSAGE_PAGE, Pager, agentInitials } from "./chatShared"
-import { messageKind, type BoardChannel, type BoardMessage, type Resolution, type ThreadRead } from "./collabData"
+import { messageKind, type BoardChannel, type BoardMessage, type ThreadRead } from "./collabData"
 
 /**
- * Debate de un hilo, solo lectura: mensajes tipados de los agentes y la resolución que proponen.
+ * Debate de un hilo, solo lectura: mensajes tipados de los agentes.
  * La persona aprueba en la terminal con el agente líder; acá no hay acciones.
  */
 export function ThreadView({ threadId, channel }: { threadId: string; channel: BoardChannel }) {
@@ -22,7 +22,6 @@ export function ThreadView({ threadId, channel }: { threadId: string; channel: B
   if (read.error || !thread) return <ErrorState error={read.error} title={t("collaboration.board.threadError")} onRetry={() => void read.refetch()} />
 
   const started = thread.created_at ?? read.data.items[0]?.created_at ?? thread.updated_at
-  const resolution = thread.state !== "resolved" && read.data.resolution?.state === "pending" ? read.data.resolution : null
 
   return <>
     <div className="collab-head">
@@ -43,7 +42,6 @@ export function ThreadView({ threadId, channel }: { threadId: string; channel: B
         </div>
       )}
 
-    {resolution && <ResolutionBlock resolution={resolution} />}
   </>
 }
 
@@ -66,7 +64,7 @@ function MessageItem({ message }: { message: BoardMessage }) {
       <Avatar name={message.author_label} text={agentInitials(message.author_label, message.cli_kind)} small />
       <div className="msg-body">
         <div className="msg-meta">
-          <b className="trunc" title={message.author_label}>{message.author_label}</b>
+          <b className="trunc" style={{ maxWidth: "18ch" }} title={message.author_label}>{message.author_label}</b>
           {kind && <Tag>{t(`collaboration.board.kind.${kind}`)}</Tag>}
           <time className="xs t3" dateTime={message.created_at} title={format.date(message.created_at)}>{when(message.created_at, format)}</time>
         </div>
@@ -98,17 +96,4 @@ function anchor(label: string, target: string): ReactNode | null {
   if (target.startsWith("/") && !target.startsWith("//")) return <Link to={target}>{label}</Link>
   if (/^https?:\/\//i.test(target)) return <a href={target} target="_blank" rel="noreferrer noopener">{label}</a>
   return null
-}
-
-function ResolutionBlock({ resolution }: { resolution: Resolution }) {
-  const { t } = useT("project")
-  return (
-    <div className="resolution" role="note" aria-label={t("collaboration.board.resolutionLabel")}>
-      <span className="eyebrow" style={{ color: "var(--accent-text)", textTransform: "uppercase" }}>
-        {t("collaboration.board.resolutionEyebrow", { agree: resolution.agreed_count, total: resolution.participant_count })}
-      </span>
-      <span className="md" style={{ fontWeight: 500, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{resolution.text}</span>
-      <span className="xs t3">{t("collaboration.board.approveInTerminal")}</span>
-    </div>
-  )
 }
