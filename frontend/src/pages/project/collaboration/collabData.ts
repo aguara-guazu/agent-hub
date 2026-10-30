@@ -44,7 +44,10 @@ export function messageKind(value: string | null | undefined): MessageKind | nul
   return MESSAGE_KINDS.find(kind => kind === value) ?? null
 }
 
-/** Selección de la pestaña en la URL (`?channel=`, `?thread=`, `?tstate=`): sobrevive a recargas y sirve de enlace desde Inicio. */
+/**
+ * Selección de la pestaña en la URL (`?channel=`, `?thread=`, `?tstate=`, `?archived=1` con la sección Archivados desplegada):
+ * sobrevive a recargas y sirve de enlace desde Inicio.
+ */
 export function useBoardParams() {
   const [params, setParams] = useSearchParams()
   const patch = useCallback((values: Record<string, string | null>) => setParams(current => merge(current, values), { replace: true }), [setParams])
@@ -53,6 +56,7 @@ export function useBoardParams() {
     channel: params.get("channel") ?? "",
     thread: params.get("thread") ?? "",
     state: (params.get("tstate") === "resolved" ? "resolved" : "open") as ThreadState,
+    archived: params.get("archived") === "1",
     patch,
     href,
   }

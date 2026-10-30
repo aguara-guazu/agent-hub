@@ -32,8 +32,8 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
   const agentPanel = useWorkPanel("agent")
   const planPanel = useWorkPanel("plan")
   const trashPanel = useWorkPanel("trash")
-
-  const [archiveOpen, setArchiveOpen] = useState(false)
+  const { patch, archived: archiveOpen } = params
+  const setArchiveOpen = (open: boolean) => patch({ archived: open ? "1" : null })
 
   const channels = useMemory<Page<BoardChannel>>("chat_channels", { project_id: project.id, limit: CHANNEL_LIMIT, offset: 0 })
   const all = channels.data?.items ?? []
@@ -50,9 +50,15 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
   const archivedCount = useMemory<Page<BoardChannel>>("chat_channels", { project_id: project.id, archived: true, limit: 1, offset: 0 }, Boolean(channels.data) && items.length === 0)
   const hasArchived = (archivedCount.data?.total ?? 0) > 0
 
-  // Abrir un canal archivado (enlace o recarga) despliega la sección para que se vea cuál está abierto.
+  // Un enlace a un canal archivado sin `?archived=1` despliega la sección una vez por canal, para que se vea cuál está
+  // abierto; después la persona puede plegarla sin que vuelva a abrirse.
   const archivedSelected = channel?.archived_at ? channel.id : null
-  useEffect(() => { if (archivedSelected) setArchiveOpen(true) }, [archivedSelected])
+  const autoOpened = useRef<string | null>(null)
+  useEffect(() => {
+    if (!archivedSelected || autoOpened.current === archivedSelected) return
+    autoOpened.current = archivedSelected
+    if (!archiveOpen) patch({ archived: "1" })
+  }, [archivedSelected, archiveOpen, patch])
 
   const selectChannel = (id: string) => params.patch({ channel: id, thread: null, tstate: null })
   const openThread = (threadId: string, channelId?: string) => params.patch({ thread: threadId, ...(channelId ? { channel: channelId } : {}) })
@@ -106,7 +112,7 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
           <ArchivedChannels
             projectId={project.id}
             open={archiveOpen}
-            onToggle={() => setArchiveOpen(value => !value)}
+            onToggle={() => setArchiveOpen(!archiveOpen)}
             activeId={channel?.id}
             href={id => params.href({ channel: id, thread: null, tstate: null })}
           />
