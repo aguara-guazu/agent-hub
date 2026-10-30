@@ -18,8 +18,8 @@ Los **agentes** (Claude Code, Codex CLI, Gemini CLI…) son quienes más escribe
 
 Antes de escribir una línea de front, respondé en orden. La primera respuesta afirmativa decide.
 
-1. **¿Es algo que la persona tiene que decidir o resolver?** (aprobar, autorizar, reiniciar, revisar un duplicado, decidir un debate)
-   → Una fila en **Inicio › Pendientes**, con una sola acción. Además, un chip de estado en el elemento afectado (en un hilo: «Espera tu decisión»).
+1. **¿Es algo que la persona tiene que decidir o resolver?** (aprobar, autorizar, reiniciar, revisar un duplicado)
+   → Una fila en **Inicio › Pendientes**, con una sola acción. Además, un chip de estado en el elemento afectado. Lo que un agente quiere que la persona decida no pasa por acá: se lo pide por la CLI.
 2. **¿Es una propiedad o acción de un elemento que ya existe?** (un campo nuevo de servidor, una acción sobre una skill)
    → En el **panel** o la **ficha** de ese elemento. Si es frecuente, como secundario; si no, en «…».
 3. **¿Es una forma nueva de ver una colección que ya existe?** (ver solo los fallidos, agrupar por cliente)
@@ -54,7 +54,7 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 | U13 | Pide confirmación para ejecutar algo que el agente ya propuso y la persona eligió | Ejecutar + toast |
 | U14 | Mezcla guardado automático y botón Guardar en el mismo panel | Elegir un modelo |
 | U15 | Pone un control dentro de un enlace, o un enlace dentro de un control | Separar: fila `div` con título enlazado |
-| U16 | Agrega una vista de colaboración fuera de la ficha de proyecto, o cualquier control de acción en la colaboración (escribir, aprobar, pedir otra ronda, crear canal, cerrar o mover hilos, iniciar o detener agentes, aprobar planes de equipo) | Pestaña Colaboración del proyecto, solo para ver; lo que espera decisión, en Inicio con «Ver»; la decisión, en la terminal con el agente líder. Solo se conservan las 4 acciones de recuperación del «…» del canal (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), confirmadas por la persona |
+| U16 | Agrega una vista de colaboración fuera de la ficha de proyecto, o cualquier control de acción en la colaboración (escribir, aprobar, pedir otra ronda, crear canal, cerrar o mover hilos, iniciar o detener agentes, aprobar planes de equipo) | Pestaña Colaboración del proyecto, solo para ver, sin propuestas ni pendientes de decisión; la decisión, en la terminal con el agente líder. Abrir y cerrar un hilo (tocarlo o su X) no es una acción sobre el hilo. Solo se conservan las 4 acciones de recuperación del «…» del canal (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), confirmadas por la persona |
 
 ## Heurísticas aplicadas a Agent Hub
 
@@ -96,7 +96,7 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 | Lo crea un agente | La persona… | Dónde |
 |---|---|---|
 | Tareas, decisiones, hallazgos | Lee, corrige, cierra | Proyecto › Tareas / Decisiones |
-| Canales e hilos de colaboración | Lee; decide con el agente líder por la terminal; recupera un canal si hace falta | Proyecto › Colaboración (solo ver); lo que espera decisión, en Inicio |
+| Canales e hilos de colaboración | Lee; decide con el agente líder por la terminal; recupera un canal si hace falta | Proyecto › Colaboración (solo ver) |
 | Notas de trabajo de los agentes | Lee | Proyecto › Notas (solo lectura) |
 | Entregas de automatizaciones | Revisa sin ver, marca vistas en tanda | Automatizaciones › Historial |
 | Automatizaciones | Ajusta horario y canales, pausa | Automatizaciones |

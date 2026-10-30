@@ -67,7 +67,7 @@ Toda vista de Agent Hub usa **una** de cuatro plantillas y llena sus zonas. Si u
 
 Las pestañas de proyecto son fijas: **Resumen, Contenido, Tareas, Decisiones, Colaboración, Notas.** Es la única excepción al máximo de cinco, decidida por la persona: «Notas» (notas de agentes, solo lectura) va al lado de Colaboración. El kit lo expresa con `<Tabs max={6}>`; ninguna otra ficha pasa de cinco.
 
-La pestaña Colaboración reemplaza las zonas 3 y 4 por `.collab`, a todo el ancho: canales (220 px) › hilos del canal › hilo seleccionado con su resolución propuesta informativa. Es solo para ver y es la única pestaña sin columna de datos.
+La pestaña Colaboración reemplaza las zonas 3 y 4 por `.collab`, a todo el ancho: canales (220 px) › hilos del canal › hilo abierto (ninguno al entrar; se abre y cierra al tocarlo o con su X). Es solo para ver y es la única pestaña sin columna de datos.
 
 ## Plantilla C · Configuración
 
@@ -85,7 +85,7 @@ Secciones fijas: **General, Fuentes, IA y procesamiento, Automatizaciones, Colab
 **Se usa en:** Inicio (única).
 
 - Saludo + una línea de estado general («7 cosas esperan una decisión. Todo lo demás está funcionando.»).
-- **Pendientes:** lista agrupada por tipo (Conexiones, Propuestas de agentes, Memoria). Propuestas de agentes incluye los debates que esperan decisión y las entregas con acciones propuestas. Cada fila tiene **una** acción que resuelve o lleva a resolver el pendiente. Cuando se resuelve, la fila desaparece.
+- **Pendientes:** lista agrupada por tipo (Conexiones, Propuestas de agentes, Memoria). Propuestas de agentes incluye las entregas con acciones propuestas; los debates de colaboración no llegan a Inicio. Cada fila tiene **una** acción que resuelve o lleva a resolver el pendiente. Cuando se resuelve, la fila desaparece.
 - Columna derecha: «Hoy» (automatizaciones del día) y «Proyectos recientes». Nada más.
 - Inicio no tiene acciones de creación ni configuración.
 

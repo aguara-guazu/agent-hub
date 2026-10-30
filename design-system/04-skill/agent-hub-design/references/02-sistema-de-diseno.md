@@ -222,15 +222,15 @@ Para colecciones que la persona revisa en tanda (hoy, Automatizaciones › Histo
 - El contador de la opción del segmentado que agrupa lo sin ver usa `.badge.attn` en lugar de `.count`.
 - `ah.css` tiene además `.row-check` y `.bulkbar-count`, de una versión anterior de esta sección; usá `.check` y `<strong>` como en el ejemplo.
 
-### Colaboración: canales › hilos › debate — `.collab`
+### Colaboración: canales › hilos › mensajes — `.collab`
 
-Tres columnas dentro de la pestaña Colaboración de un proyecto. **Solo para ver:** no hay campos para escribir ni botones de aprobar. Bajo 1100 px los canales pasan a una fila arriba.
+Tres columnas dentro de la pestaña Colaboración de un proyecto. **Solo para ver:** no hay campos para escribir, botones de aprobar ni propuestas. Bajo 1100 px los canales pasan a una fila arriba.
 
 ```html
 <div class="collab">
   <nav class="collab-chans" aria-label="Canales del proyecto">
     <div class="nav-group">Canales</div>
-    <a class="nav-item is-active" href="#"><span class="chan-hash">#</span>infra<span class="badge attn">1</span></a>
+    <a class="nav-item is-active" href="#"><span class="chan-hash">#</span>infra<span class="badge">1</span></a>
     <a class="nav-item" href="#"><span class="chan-hash">#</span>datos<span class="badge">2</span></a>
   </nav>
   <section class="collab-threads" aria-label="Hilos de #infra">
@@ -239,31 +239,27 @@ Tres columnas dentro de la pestaña Colaboración de un proyecto. **Solo para ve
       <div class="row is-selected"><div class="row-main">
         <span class="row-title">¿NAT Gateway por zona o uno compartido?</span>
         <span class="row-sub">3 agentes · 4 mensajes · hace 4 min</span>
-        <span class="chip c-warn">Espera tu decisión</span>
       </div></div>
     </div>
   </section>
   <section class="collab-thread" aria-label="Hilo seleccionado">
-    <div class="collab-head">… título (.h3.clamp2) · canal · quién lo inició</div>
+    <div class="collab-head">… título (.h3.clamp2) · canal · quién lo inició
+      <button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Cerrar hilo">×</button>
+    </div>
     <div class="msgs">
       <div class="msg"><span class="av av-sm hue3">CC</span><div class="msg-body">
         <div class="msg-meta"><b>Claude Code</b><span class="tag">Propuesta</span><span class="xs t3">13:52</span></div>
         <p class="prose">…</p>
       </div></div>
     </div>
-    <div class="resolution">
-      <span class="eyebrow">Propuesta de resolución · 3 de 3 agentes de acuerdo</span>
-      <span class="md">NAT Gateway por zona en producción y uno compartido en staging.</span>
-      <span class="xs t3">Se aprueba desde la terminal, con el agente líder.</span>
-    </div>
   </section>
 </div>
 ```
 
-- Canal: `.nav-item` con `.chan-hash`; el contador es `.badge.attn` si un hilo espera decisión y `.badge` si solo hay mensajes nuevos. El «…» del canal tiene solo las cuatro acciones de recuperación: Expulsar del canal, Designar coordinador, Eliminar a la papelera y Restaurar, cada una confirmada por la persona.
-- Hilo en la lista: título, «N agentes · N mensajes · fecha relativa» y un chip: «Espera tu decisión» `c-warn` o «En debate» `c-info`. Los resueltos se ven con el segmentado, no mezclados.
-- Mensaje: avatar, autor en `<b>`, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo) y hora. Solo escriben agentes.
-- `.resolution` es informativa: aparece cuando los agentes propusieron una resolución, sin botones, con la línea «Se aprueba desde la terminal, con el agente líder.».
+- Canal: `.nav-item` con `.chan-hash` y `.badge` con mensajes nuevos. El «…» del canal tiene solo las cuatro acciones de recuperación: Expulsar del canal, Designar coordinador, Eliminar a la papelera y Restaurar, cada una confirmada por la persona.
+- Hilo en la lista: título y «N agentes · N mensajes · fecha relativa», sin chip de estado. El estado es solo Abiertos / Resueltos, en el segmentado.
+- El hilo se abre al tocarlo en la lista y se cierra al tocarlo de nuevo o con la X de la esquina superior derecha de su cabecera; al entrar no hay ningún hilo abierto. La X de la cabecera del hilo (`.btn-icon.btn-ghost`, `aria-label` «Cerrar hilo») cierra la columna; no cambia el estado del hilo.
+- Mensaje: avatar, autor en `<b>`, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo, Pregunta) y hora. Solo escriben agentes; las etiquetas son de los agentes y no piden nada a la persona.
 - `.collab-full` quita el borde y el radio cuando `.collab` ocupa todo el alto disponible.
 
 #### Canales compartidos entre hubs (referencia futura, no implementada)
@@ -271,10 +267,9 @@ Tres columnas dentro de la pestaña Colaboración de un proyecto. **Solo para ve
 Maqueta en `design-system/03-vistas/html/proyecto-inter-hub.html`. No se implementa hasta que la persona lo pida; sirve para no cerrar el camino al diseñar la pestaña actual.
 
 - En `.collab-chans`, un segundo `.nav-group` «Compartidos entre hubs»; sus canales llevan un icono de compartir en lugar de `#`.
-- Debajo del encabezado de hilos, un bloque «Agentes del canal · N hubs»: por hub, chip «Este hub» (`c-ok`) o «Remoto» (`c-off`) + nombre + «conectado hace N min», y sus agentes con `.tag` «Líder» en el líder. Al final, «Código del canal» en mono con «Copiar».
+- Debajo del encabezado de hilos, un bloque «Agentes del canal · N hubs · N agentes» con un `<details>` por hub: resumen con chip «Este hub» (`c-ok`) o «Remoto» (`c-off`), nombre con elipsis y cantidad de agentes; adentro, una lista con scroll propio y `.tag` «Líder» en el líder. Al final, «Código del canal» en mono con «Copiar».
 - Cada mensaje suma, después del autor, `.tag` «Líder» si corresponde y un chip con el hub de origen.
-- Mensaje del Hub con `.tag` «Aviso» para la escalada: si la persona no responde una pregunta en 5 minutos, pasa al siguiente hub.
-- La resolución se aprueba «desde la terminal, con el agente líder de cada hub».
+- Los hilos se abren y cierran igual que en la pestaña actual.
 
 ### Interruptor — `.switch`
 

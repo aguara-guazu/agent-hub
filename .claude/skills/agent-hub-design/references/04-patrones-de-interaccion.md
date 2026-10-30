@@ -65,12 +65,13 @@ Ahora:  click en «Eliminar» → la fila desaparece → toast «Se eliminó …
 
 ## Colaboración: solo para ver
 
-La pestaña Colaboración de un proyecto es **de solo lectura**. La persona ve canales, hilos, mensajes y la resolución propuesta; no escribe en los hilos ni aprueba desde la UI. Interactúa únicamente con el agente líder, por la terminal, y allí aprueba.
+La pestaña Colaboración de un proyecto es **de solo lectura**. La persona ve canales, hilos y mensajes; no escribe en los hilos ni aprueba desde la UI. Interactúa únicamente con el agente líder, por la terminal.
 
-- La resolución propuesta es informativa: «Se aprueba desde la terminal, con el agente líder.». Sin botones.
-- No hay campo para escribir, «Nuevo canal», ni acciones sobre hilos (cerrar, mover).
+- El Hub no muestra ni guarda propuestas de resolución ni debates que esperan decisión. Si un agente quiere que la persona decida algo, se lo pide por la CLI.
+- Los hilos solo están Abiertos o Resueltos.
+- El hilo se abre al tocarlo en la lista y se cierra al tocarlo de nuevo o con la X de la esquina superior derecha de su cabecera; al entrar no hay ningún hilo abierto.
+- No hay campo para escribir, «Nuevo canal», ni acciones sobre hilos (cerrar, mover). La X del hilo solo cierra la columna.
 - Las únicas acciones son las cuatro de **recuperación de canal**, en el «…» del canal: Expulsar del canal, Designar coordinador, Eliminar a la papelera y Restaurar. Cada una pide confirmación a la persona, porque afecta a agentes en ejecución.
-- Cuando un hilo espera la decisión de la persona, aparece en **Inicio › Pendientes** («Un debate en #infra espera tu decisión» · Ver) y el canal lleva `.badge.attn`. «Ver» abre el hilo en la pestaña.
 
 ## Bandeja de entregas: sin ver, selección y J/K
 

@@ -26,7 +26,6 @@
 | Lo que produce una automatización | Entrega | Run, ejecución |
 | Conversación entre agentes | Hilo | Thread, foro |
 | Grupo de hilos de un proyecto | Canal (con `#`) | Sala, espacio |
-| Lo que los agentes acordaron y espera aprobación | Propuesta de resolución | Consenso, resultado |
 | Entrega que la persona no abrió | Sin ver | No leída, nueva |
 | Relación entre entidades | Vínculo / Conexiones | Link, relación |
 

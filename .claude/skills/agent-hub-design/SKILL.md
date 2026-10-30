@@ -27,7 +27,7 @@ Buscar o ir a… ⌘K
 Inicio                 bandeja de lo que necesita atención
 TRABAJO
 ├ Proyectos            → Resumen · Contenido · Tareas · Decisiones · Colaboración · Notas
-│                        (Colaboración = canales › hilos › debate, solo para ver;
+│                        (Colaboración = canales › hilos › mensajes, solo para ver;
 │                         Notas = notas de agentes, solo lectura)
 ├ Memoria              explorar + buscar
 └ Automatizaciones     Activas · Pausadas · Historial de entregas
@@ -47,7 +47,7 @@ No hay barra superior ni destino global de Colaboración: los canales e hilos vi
 
 La primera respuesta afirmativa decide:
 
-1. ¿La persona tiene que decidir o resolver algo? → fila en **Inicio › Pendientes** con una acción + chip de estado en el elemento. Un debate de agentes que espera decisión es una fila «Un debate en #canal espera tu decisión» con «Ver», que abre el hilo en Proyecto › Colaboración; la decisión se toma en la terminal, con el agente líder.
+1. ¿La persona tiene que decidir o resolver algo? → fila en **Inicio › Pendientes** con una acción + chip de estado en el elemento. Si un agente necesita que la persona decida algo, se lo pide por la CLI: el Hub no muestra ni guarda propuestas ni debates pendientes.
 2. ¿Es propiedad o acción de un elemento existente? → su **panel** o **ficha**; si es poco frecuente, en el menú «…».
 3. ¿Es otra forma de ver una colección existente? → opción del **segmentado** o un **selector** de su barra.
 4. ¿Es un tipo nuevo de contenido de proyecto? → un **tipo** en Proyecto › Contenido.
@@ -70,7 +70,7 @@ La primera respuesta afirmativa decide:
 - Reversible (pausar, ejecutar, eliminar con borrado suave): se ejecuta y muestra `.toast` con «Deshacer».
 - Un panel tiene un solo modelo de guardado: automático o explícito.
 - Entidades relacionadas se eligen con combobox que permite crear («Crear «X»»).
-- Colaboración es **solo para ver**: la persona lee canales, hilos y la resolución propuesta, que es informativa («Se aprueba desde la terminal, con el agente líder.»). Interactúa únicamente con el agente líder, por la terminal. Las únicas acciones son las cuatro de recuperación de canal en el «…» del canal (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), con confirmación de la persona.
+- Colaboración es **solo para ver**: la persona lee canales, hilos y mensajes. Interactúa únicamente con el agente líder, por la terminal. El hilo se abre al tocarlo en la lista y se cierra al tocarlo de nuevo o con la X de la esquina superior derecha de su cabecera; al entrar no hay ningún hilo abierto. Las únicas acciones son las cuatro de recuperación de canal en el «…» del canal (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), con confirmación de la persona.
 - Historial de entregas: sin ver (`.unread`), selección múltiple (`.check` + `.bulkbar`) y atajos J/K para ir a la siguiente o anterior sin ver.
 
 **Visual**
@@ -100,7 +100,7 @@ La primera respuesta afirmativa decide:
 | Metadatos de solo lectura | `.dl` |
 | Marcar elementos sin ver | `.row.is-unread` + `.unread` |
 | Elegir varias filas y actuar sobre ellas | `.check` en cada fila + `.bulkbar` arriba de la lista |
-| Canales, hilos y debate de un proyecto (solo ver) | `.collab` (`.collab-chans`, `.collab-threads`, `.collab-thread`) con `.msg` y `.resolution` informativa |
+| Canales, hilos y mensajes de un proyecto (solo ver) | `.collab` (`.collab-chans`, `.collab-threads`, `.collab-thread`) con `.msg` |
 | Algo de toda la página necesita atención | `.banner.banner-warn` (uno) |
 | Confirmar una acción reversible | `.toast` con «Deshacer» |
 | Nada que mostrar | `.empty` con una acción |
@@ -116,7 +116,7 @@ Si tu cambio incluye alguna de estas cosas, revisalo antes de seguir:
 - un `confirm()` o modal «¿Estás seguro?» para algo reversible;
 - el mismo texto de aviso repetido en un `map()` de filas;
 - un `<p>` que explica qué hace la sección;
-- un destino «Colaboración» en la barra lateral o una lista de hilos fuera de la ficha de proyecto (Inicio solo muestra una fila por debate que espera decisión);
+- un destino «Colaboración» en la barra lateral o una lista de hilos fuera de la ficha de proyecto;
 - un campo para escribir, un botón de aprobar o cualquier control de acción en la pestaña Colaboración fuera del «…» del canal;
 - un número grande en una tarjeta sin acción asociada;
 - una pestaña cuyo contenido es la misma lista que otra con otro filtro;
