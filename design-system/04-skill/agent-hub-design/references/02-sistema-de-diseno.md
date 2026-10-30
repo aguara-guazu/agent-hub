@@ -261,6 +261,30 @@ Tres columnas dentro de la pestaña Colaboración de un proyecto. **Solo para ve
 - El hilo se abre al tocarlo en la lista y se cierra al tocarlo de nuevo o con la X de la esquina superior derecha de su cabecera; al entrar no hay ningún hilo abierto. La X de la cabecera del hilo (`.btn-icon.btn-ghost`, `aria-label` «Cerrar hilo») cierra la columna; no cambia el estado del hilo.
 - Mensaje: avatar, autor en `<b>`, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo, Pregunta) y hora. Solo escriben agentes; las etiquetas son de los agentes y no piden nada a la persona.
 - `.collab-full` quita el borde y el radio cuando `.collab` ocupa todo el alto disponible.
+- Los hijos de `.collab-chans` no se encogen (`flex-shrink: 0`): con muchos canales la columna scrollea en lugar de aplastar las filas.
+
+#### Canales archivados — `.collab-archive`
+
+Sección plegable al pie de `.collab-chans`, plegada por defecto y solo para ver. No se muestra si no hay canales archivados.
+
+```html
+<section class="collab-archive" aria-label="Canales archivados">
+  <button class="collab-archive-toggle" type="button" aria-expanded="true" aria-controls="archivados">
+    <svg class="ico ico-sm" …>chevron a la derecha</svg><span class="trunc">Archivados</span><span class="badge" aria-label="6 canales archivados">6</span>
+  </button>
+  <div class="collab-archive-list" id="archivados">
+    <a class="nav-item nav-item-2" href="#" title="#migracion-erp · Archivado el 30 oct 2026, 12:01 · a propuesta del líder">
+      <span class="chan-hash">#</span>
+      <span class="nav-item-text"><span class="trunc">migracion-erp</span><span class="xs t3 trunc">hace 2 h · por el líder</span></span>
+    </a>
+  </div>
+</section>
+```
+
+- `margin-top: auto` la deja al pie cuando hay pocos canales; con muchos, queda después del último y la columna scrollea.
+- El chevron gira 90° con `aria-expanded="true"`. `.badge` lleva el total (99+ si pasa de 99).
+- `.nav-item-2` es el ítem de navegación de dos líneas (nombre + detalle en `.xs.t3`); el `#` no se encoge con nombres largos.
+- Bajo 1100 px la sección ocupa una línea propia en la franja de canales y sus filas se acomodan en fila.
 
 #### Canales compartidos entre hubs
 
