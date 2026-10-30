@@ -7,26 +7,15 @@ import type { Channel, Message, Thread } from "./chatTypes"
  * Campos de lectura que colab-back suma a chat_channels / chat_threads / chat_read (packages/shared/src/collaboration.ts).
  * La colaboración es solo para ver: no hay escrituras de la persona. Todos son opcionales para tolerar un backend anterior.
  */
-export type DebateState = "open" | "awaiting_decision" | "resolved"
 export type MessageKind = "proposal" | "objection" | "fact" | "agreement" | "question"
 export const MESSAGE_KINDS: readonly MessageKind[] = ["proposal", "objection", "fact", "agreement", "question"]
 
-export interface BoardChannel extends Channel { description?: string | null; awaiting_decision?: number }
+export interface BoardChannel extends Channel { description?: string | null }
 
-export interface BoardThread extends Thread { created_at?: string; agent_count?: number; debate_state?: DebateState }
-
-export interface Resolution {
-  id: string
-  text: string
-  state: "pending" | "approved" | "rerun" | "superseded"
-  proposed_by_label?: string
-  agreed_count: number
-  participant_count: number
-  created_at: string
-}
+export interface BoardThread extends Thread { created_at?: string; agent_count?: number }
 
 export interface BoardMessage extends Message { kind?: MessageKind | null; author_source?: "agent" | "hub"; cli_kind?: string }
-export type ThreadRead = Page<BoardMessage> & { thread: BoardThread; resolution?: Resolution | null }
+export type ThreadRead = Page<BoardMessage> & { thread: BoardThread }
 
 export type ThreadState = "open" | "resolved"
 

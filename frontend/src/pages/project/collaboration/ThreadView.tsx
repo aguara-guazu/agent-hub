@@ -1,34 +1,33 @@
 import { Fragment, useState } from "react"
 import type { ReactNode } from "react"
 import { Link } from "react-router-dom"
-import { Avatar, Empty, ErrorState, SkeletonRows, Tag } from "../../../components/ui"
+import { Avatar, Empty, ErrorState, IconButton, SkeletonRows, Tag } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { useMemory } from "../../../lib/memory"
 import { MESSAGE_PAGE, Pager, agentInitials } from "./chatShared"
 import { messageKind, type BoardChannel, type BoardMessage, type ThreadRead } from "./collabData"
 
-/**
- * Debate de un hilo, solo lectura: mensajes tipados de los agentes.
- * La persona aprueba en la terminal con el agente líder; acá no hay acciones.
- */
-export function ThreadView({ threadId, channel }: { threadId: string; channel: BoardChannel }) {
+/** Debate de un hilo, solo lectura: mensajes tipados de los agentes. La X cierra la columna (limpia `?thread=`). */
+export function ThreadView({ threadId, channel, onClose }: { threadId: string; channel: BoardChannel; onClose: () => void }) {
   const { t } = useT("project")
   const format = useFormat()
   const [offset, setOffset] = useState(0)
   const read = useMemory<ThreadRead>("chat_read", { thread_id: threadId, limit: MESSAGE_PAGE, offset })
   const thread = read.data?.thread
 
-  if (read.isPending) return <SkeletonRows count={3} label={t("collaboration.board.loadingThread")} />
-  if (read.error || !thread) return <ErrorState error={read.error} title={t("collaboration.board.threadError")} onRetry={() => void read.refetch()} />
+  const close = <IconButton icon="close" label={t("collaboration.board.closeThread")} small variant="ghost" onClick={onClose} />
+  if (read.isPending) return <><div className="collab-head" style={{ alignItems: "flex-end" }}>{close}</div><SkeletonRows count={3} label={t("collaboration.board.loadingThread")} /></>
+  if (read.error || !thread) return <><div className="collab-head" style={{ alignItems: "flex-end" }}>{close}</div><ErrorState error={read.error} title={t("collaboration.board.threadError")} onRetry={() => void read.refetch()} /></>
 
   const started = thread.created_at ?? read.data.items[0]?.created_at ?? thread.updated_at
 
   return <>
-    <div className="collab-head">
+    <div className="collab-head" style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between" }}>
       <div className="row-main" style={{ gap: "var(--sp-2)" }}>
         <span className="h3 clamp2" title={thread.title}>{thread.title}</span>
         <span className="xs t3">{t("collaboration.board.origin", { channel: channel.name, author: thread.author_label || read.data.items[0]?.author_label || "", when: when(started, format, time => t("collaboration.board.today", { time })) })}</span>
       </div>
+      {close}
     </div>
 
     {read.data.items.length === 0
