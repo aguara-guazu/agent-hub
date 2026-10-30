@@ -820,4 +820,24 @@ CREATE TABLE interhub_escalations (
   UNIQUE(channel_id,thread_id,question_message_id)
 );
 CREATE INDEX interhub_escalations_due ON interhub_escalations(answered_at,escalated_at);
+-- Inter-hub channel replication. Creator codes are represented only by a hash here; plaintext is creator-local vault state.
+CREATE TABLE interhub_channels (
+ channel_id TEXT PRIMARY KEY REFERENCES chat_channels(id) ON DELETE CASCADE,
+ creator_hub_id TEXT NOT NULL, creator_session_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ code_hash TEXT NOT NULL, code_generation INTEGER NOT NULL DEFAULT 1, code_revoked_at TIMESTAMP,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE TABLE interhub_members (
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ hub_id TEXT NOT NULL, peer_identity JSON NOT NULL, leader_session_id TEXT, leader_label TEXT NOT NULL,
+ joined_at TIMESTAMP NOT NULL DEFAULT ${NOW}, last_seen_at TIMESTAMP NOT NULL DEFAULT ${NOW}, removed_at TIMESTAMP,
+ PRIMARY KEY(channel_id,hub_id)
+);
+CREATE TABLE interhub_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ origin_hub_id TEXT NOT NULL, envelope JSON NOT NULL, received_from TEXT NOT NULL,
+ received_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX interhub_events_channel ON interhub_events(channel_id,seq);
 `]

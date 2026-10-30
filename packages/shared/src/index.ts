@@ -226,5 +226,5 @@ export * from "./unmanaged.js"
 export * from "./entity-summary.js"
 export * from "./catalog-restore.js"
 export * from "./collaboration.js"
-
 export * from "./interhub-chat.js"
+export * from "./interhub-transport.js"
