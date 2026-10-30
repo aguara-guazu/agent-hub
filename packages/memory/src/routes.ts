@@ -69,7 +69,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   let watchdog: LocalWatchdog | undefined
   const runtime = async () => {
     const { operations } = await service.get()
-    if (!chatRuntime) { chatRuntime = new LocalChatRuntime(operations.chat, undefined, agentId => collaborationEnabled() && (options.chatAgentEnabled?.(agentId) ?? true), undefined, collaborationEnabled, {wake:(id,text)=>service.wakeFleet(id,text),connected:id=>service.fleetConnected(id)}); chatRuntime.start() }
+    if (!chatRuntime) { chatRuntime = new LocalChatRuntime(operations.chat, undefined, agentId => collaborationEnabled() && (options.chatAgentEnabled?.(agentId) ?? true), undefined, collaborationEnabled, {wake:(id,text)=>service.wakeFleet(id,text),connected:id=>service.fleetConnected(id),readiness:id=>service.fleetReadiness(id)}); chatRuntime.start() }
     if (!watchdog) { watchdog = new LocalWatchdog(operations.chat, agentId => collaborationEnabled() && (options.chatAgentEnabled?.(agentId) ?? true), Date.now,
       () => app.log.warn('No se pudo registrar la observación del watchdog local'), collaborationEnabled); watchdog.start() }
     return chatRuntime
