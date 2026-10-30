@@ -108,6 +108,11 @@
 .page { width: 100%; max-width: 1240px; padding: 28px 40px 48px; display: flex; flex-direction: column; gap: 20px; }
 .split { display: flex; flex-wrap: wrap; align-items: stretch; flex: 1; min-height: 0; }
 .split > .page { flex: 999 1 520px; min-width: 0; }
+/* Vista que llena la ventana (Colaboración): el alto sale del viewport y solo las columnas internas scrollean. */
+.page-fill { height: 100vh; height: 100dvh; min-height: 560px; padding-bottom: var(--sp-5); }
+.page-fill > :not(.fill) { flex-shrink: 0; }
+.fill { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.fill[hidden] { display: none; }
 
 /* Barra lateral */
 .side { flex: 0 0 var(--side-w); width: var(--side-w); min-height: 100vh; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; padding: 14px 10px 10px; font-family: var(--font); font-size: var(--fs-sm); color: var(--text); }
@@ -273,21 +278,29 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
 .empty .ico { width: 24px; height: 24px; color: var(--text-3); margin-bottom: 4px; }
 
 /* Colaboración: canales › hilos › debate (tres columnas) */
-.collab { display: flex; flex-wrap: wrap; align-items: stretch; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; min-height: 620px; }
+.collab { display: flex; align-items: stretch; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+.fill > .collab { flex: 1 1 0; min-height: 0; }
 .collab-full { border-width: 1px 0 0; border-radius: 0; flex: 1; }
-.collab-chans { flex: 0 0 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; background: var(--bg); border-right: 1px solid var(--border); }
+.collab-chans { flex: 0 0 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; background: var(--bg); border-right: 1px solid var(--border); overflow-y: auto; }
 .collab-chans .nav-group:first-child { padding-top: 4px; }
 .chan-hash { font-family: var(--mono); color: var(--text-3); width: 12px; text-align: center; }
 .collab-threads { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); }
 .collab-threads .list { border: 0; border-radius: 0; }
-.collab-head { display: flex; flex-direction: column; gap: 10px; padding: 16px; border-bottom: 1px solid var(--border); }
+.collab-threads > .list { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+.collab-agents { flex: 0 1 auto; max-height: 40%; min-height: 0; overflow-y: auto; border-bottom: 1px solid var(--border); }
+.collab-head { flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; padding: 16px; border-bottom: 1px solid var(--border); }
 .collab-thread { flex: 1.5 1 380px; min-width: 0; display: flex; flex-direction: column; }
-.msgs { display: flex; flex-direction: column; gap: 18px; padding: 20px; flex: 1; }
+.msgs { display: flex; flex-direction: column; gap: 18px; padding: 20px; flex: 1 1 0; min-height: 0; overflow-y: auto; }
 .msg { display: flex; gap: 10px; }
 .msg-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
 .msg-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .msg-meta b { font-weight: 600; }
-@media (max-width: 1100px) { .collab-chans { flex-basis: 100%; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; } .collab-threads { border-right: 0; } }
+/* Angosto: los canales pasan a una franja de alto acotado arriba; hilos y debate comparten la fila de abajo. */
+@media (max-width: 1100px) {
+  .collab { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); grid-template-rows: auto minmax(0, 1fr); }
+  .collab-chans { grid-column: 1 / -1; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; align-content: flex-start; max-height: calc(var(--control-h) * 3 + var(--sp-6)); }
+  .collab:not(:has(> .collab-thread)) > .collab-threads { grid-column: 1 / -1; border-right: 0; }
+}
 
 /* Documentación (solo en las tablas del lienzo) */
 .doc-swatch { height: 44px; border-radius: 8px; border: 1px solid var(--border); }

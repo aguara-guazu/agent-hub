@@ -132,10 +132,12 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
   const companyId = typeof project.data.company_id === "string" ? project.data.company_id : ""
   const company = detail.links.find(link => link.entity.id === companyId)?.entity
   const updated = projectActivity(project)
+  // Colaboración llena el alto de la ventana: el tablero no crece con el contenido y cada columna scrollea sola.
+  const fill = tab === "colaboracion"
 
   return (
     <div className="split">
-      <div className="page" style={{ gap: "var(--sp-4)" }}>
+      <div className={fill ? "page page-fill" : "page"} style={{ gap: "var(--sp-4)" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
           <Crumbs />
           <div className="ph" style={{ alignItems: "flex-start" }}>
@@ -164,9 +166,9 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
 
         <Tabs<Tab> tabs={tabs} value={tab} onChange={value => setParam("tab", value === "resumen" ? null : value)} label={t("header.tabs.label")} idPrefix="project-tab" max={TABS.length} />
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-6)", alignItems: "flex-start" }}>
-          <div style={{ flex: "999 1 520px", minWidth: 0 }}>
-            <TabPanel idPrefix="project-tab" value={tab}>
+        <div className={fill ? "fill" : undefined} style={fill ? undefined : { display: "flex", flexWrap: "wrap", gap: "var(--sp-6)", alignItems: "flex-start" }}>
+          <div className={fill ? "fill" : undefined} style={fill ? undefined : { flex: "999 1 520px", minWidth: 0 }}>
+            <TabPanel idPrefix="project-tab" value={tab} className={fill ? "fill" : undefined}>
               <PanelSlotContext.Provider value={panel ? null : panelSlot}>
               <Suspense fallback={<SkeletonRows count={3} avatar={false} />}>
                 {tab === "resumen" && <Resumen project={project} />}
@@ -180,7 +182,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
             </TabPanel>
           </div>
           {/* Colaboración ocupa todo el ancho: tres columnas canales › hilos › debate. */}
-          {tab !== "colaboracion" && <ProjectAside detail={detail} company={company} narrow={narrow} onPanel={openPanel} />}
+          {!fill && <ProjectAside detail={detail} company={company} narrow={narrow} onPanel={openPanel} />}
         </div>
       </div>
 
