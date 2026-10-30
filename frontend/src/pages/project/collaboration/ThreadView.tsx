@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react"
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { Link } from "react-router-dom"
 import { Avatar, Empty, ErrorState, IconButton, SkeletonRows, Tag } from "../../../components/ui"
@@ -8,20 +8,63 @@ import { MESSAGE_PAGE, Pager, agentInitials } from "./chatShared"
 import { isInterhub } from "./interhubData"
 import { messageKind, type BoardChannel, type BoardMessage, type ThreadRead } from "./collabData"
 
+// Distancia al fondo (px) que todavía cuenta como «al fondo»: absorbe redondeos del scroll.
+const PIN_SLACK = 24
+
+/** Los mensajes llegan en orden: el hilo muestra los últimos MESSAGE_PAGE, con el último al fondo. */
+function latestOffset(total: number): number {
+  return Math.max(0, total - MESSAGE_PAGE)
+}
+
 /** Debate de un hilo, solo lectura: mensajes tipados de los agentes. La X cierra la columna (limpia `?thread=`). */
 export function ThreadView({ threadId, channel, onClose }: { threadId: string; channel: BoardChannel; onClose: () => void }) {
   const { t } = useT("project")
   const format = useFormat()
-  const [offset, setOffset] = useState(0)
-  const read = useMemory<ThreadRead>("chat_read", { thread_id: threadId, limit: MESSAGE_PAGE, offset })
-  const thread = read.data?.thread
+  // null sigue los últimos mensajes (también cuando el hilo crece); un número es la página que eligió la persona.
+  const [page, setPage] = useState<number | null>(null)
+  const probe = useMemory<ThreadRead>("chat_read", { thread_id: threadId, limit: 1, offset: 0 }, page === null)
+  const offset = page ?? (probe.data ? latestOffset(probe.data.total) : undefined)
+  const read = useMemory<ThreadRead>("chat_read", { thread_id: threadId, limit: MESSAGE_PAGE, offset: offset ?? 0 }, offset !== undefined)
+  // Al pasar de página se sigue viendo la anterior hasta que llega la nueva, sin parpadeo de carga.
+  const kept = useRef<ThreadRead | undefined>(undefined)
+  if (read.data) kept.current = read.data
+  const data = read.data ?? kept.current
+  const error = read.error ?? (page === null ? probe.error : null)
+
+  // Los mensajes arrancan al fondo y lo siguen mientras la persona no haya subido a leer.
+  const list = useRef<HTMLDivElement>(null)
+  const pinned = useRef(true)
+  const lastId = data?.items.at(-1)?.id
+  const hasMessages = Boolean(data?.items.length)
+  useLayoutEffect(() => {
+    const element = list.current
+    if (element && pinned.current) element.scrollTop = element.scrollHeight
+  }, [lastId, data?.offset])
+  useEffect(() => {
+    const element = list.current
+    if (!element || typeof ResizeObserver === "undefined") return
+    // Si la ventana o los mensajes cambian de tamaño, el último mensaje sigue a la vista.
+    const observer = new ResizeObserver(() => { if (pinned.current) element.scrollTop = element.scrollHeight })
+    observer.observe(element)
+    if (element.firstElementChild) observer.observe(element.firstElementChild)
+    return () => observer.disconnect()
+  }, [hasMessages])
+  function onScroll() {
+    const element = list.current
+    if (element) pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight <= PIN_SLACK
+  }
+  function goTo(next: number) {
+    pinned.current = true
+    setPage(probe.data && next >= latestOffset(probe.data.total) ? null : next)
+  }
 
   const close = <IconButton icon="close" label={t("collaboration.board.closeThread")} small variant="ghost" onClick={onClose} />
-  if (read.isPending) return <><div className="collab-head" style={{ alignItems: "flex-end" }}>{close}</div><SkeletonRows count={3} label={t("collaboration.board.loadingThread")} /></>
-  if (read.error || !thread) return <><div className="collab-head" style={{ alignItems: "flex-end" }}>{close}</div><ErrorState error={read.error} title={t("collaboration.board.threadError")} onRetry={() => void read.refetch()} /></>
+  if (!data && !error) return <><div className="collab-head" style={{ alignItems: "flex-end" }}>{close}</div><SkeletonRows count={3} label={t("collaboration.board.loadingThread")} /></>
+  const thread = data?.thread
+  if (!data || !thread) return <><div className="collab-head" style={{ alignItems: "flex-end" }}>{close}</div><ErrorState error={error} title={t("collaboration.board.threadError")} onRetry={() => { void probe.refetch(); void read.refetch() }} /></>
 
-  const started = thread.created_at ?? read.data.items[0]?.created_at ?? thread.updated_at
-  const first = offset === 0 ? read.data.items[0] : undefined
+  const started = thread.created_at ?? data.items[0]?.created_at ?? thread.updated_at
+  const first = data.offset === 0 ? data.items[0] : undefined
   const shared = isInterhub(channel)
   const author = thread.author_label || first?.author_label || ""
   // El hub de quien abrió el hilo solo se conoce por su primer mensaje, que es el de la primera página.
@@ -36,14 +79,14 @@ export function ThreadView({ threadId, channel, onClose }: { threadId: string; c
       {close}
     </div>
 
-    {read.data.items.length === 0
+    {data.items.length === 0
       ? <div className="msgs"><Empty icon="collaboration" title={t("collaboration.board.noMessages")} /></div>
       : (
-        <div className="msgs">
+        <div className="msgs" ref={list} onScroll={onScroll}>
           <ol aria-label={t("collaboration.board.messagesLabel")} style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "inherit" }}>
-            {read.data.items.map(message => <MessageItem key={message.id} message={message} />)}
+            {data.items.map(message => <MessageItem key={message.id} message={message} />)}
           </ol>
-          <Pager total={read.data.total} offset={offset} limit={MESSAGE_PAGE} onChange={setOffset} />
+          <Pager total={data.total} offset={data.offset} limit={MESSAGE_PAGE} onChange={goTo} />
         </div>
       )}
 

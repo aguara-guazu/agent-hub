@@ -78,7 +78,7 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
   )
 
   return (
-    <section className="section" aria-label={t("collaboration.board.label")}>
+    <section className="section fill" aria-label={t("collaboration.board.label")}>
       {banner}
       <div className="collab">
         <nav className="collab-chans" aria-label={t("collaboration.board.channels")}>

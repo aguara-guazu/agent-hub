@@ -11,8 +11,9 @@ export function InterhubAgents({ channelId, roster }: { channelId: string; roste
   const { t, plural } = useT("project")
   const data = roster.data
 
+  // Con varios hubs el bloque scrollea por dentro (alto acotado en .collab-agents) y deja lugar a la lista de hilos.
   return (
-    <div style={BLOCK}>
+    <div className="collab-agents">
       <div style={{ padding: "var(--sp-3) var(--sp-4) var(--sp-2)" }}>
         <span className="label">
           {data

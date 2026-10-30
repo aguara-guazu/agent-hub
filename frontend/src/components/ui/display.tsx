@@ -70,8 +70,8 @@ export function Tabs<T extends string>({ tabs, value, onChange, label, idPrefix 
   )
 }
 
-export function TabPanel({ idPrefix = "tab", value, children }: { idPrefix?: string; value: string; children: ReactNode }) {
-  return <div role="tabpanel" id={`${idPrefix}-${value}-panel`} aria-labelledby={`${idPrefix}-${value}`}>{children}</div>
+export function TabPanel({ idPrefix = "tab", value, className, children }: { idPrefix?: string; value: string; className?: string; children: ReactNode }) {
+  return <div role="tabpanel" id={`${idPrefix}-${value}-panel`} aria-labelledby={`${idPrefix}-${value}`} className={className}>{children}</div>
 }
 
 export type BannerTone = "neutral" | "warn" | "danger"
