@@ -768,7 +768,8 @@ ALTER TABLE chat_channels ADD COLUMN displaced_at TIMESTAMP;
 ALTER TABLE chat_channels ADD COLUMN leader_changed_at TIMESTAMP;
 CREATE INDEX chat_channels_leader ON chat_channels(leader_id);
 `, String.raw`
--- The person takes part in threads: typed messages, channel descriptions and agent-proposed resolutions the person decides.
+-- Typed agent messages, channel descriptions and thread resolutions proposed by the leader. The person decides in the
+-- leader's terminal; the leader records that answer (decision_source='coordinator_declaration'), never the UI.
 ALTER TABLE chat_messages ADD COLUMN kind TEXT;
 ALTER TABLE chat_channels ADD COLUMN description TEXT;
 CREATE TABLE chat_thread_resolutions (
@@ -776,7 +777,8 @@ CREATE TABLE chat_thread_resolutions (
  proposed_by TEXT NOT NULL REFERENCES chat_sessions(id), request_id TEXT NOT NULL, text TEXT NOT NULL,
  agreed_session_ids JSON NOT NULL DEFAULT '[]', participant_count INTEGER NOT NULL DEFAULT 0,
  state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','approved','rerun','superseded')),
- created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, decided_at TIMESTAMP, decided_by_user TEXT, decision_note TEXT, decision_entity_id TEXT,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, decided_at TIMESTAMP, decided_by TEXT, decision_source TEXT, human_instruction TEXT,
+ decision_note TEXT, decision_entity_id TEXT,
  UNIQUE(proposed_by,request_id)
 );
 CREATE UNIQUE INDEX chat_thread_resolutions_pending ON chat_thread_resolutions(thread_id) WHERE state='pending';

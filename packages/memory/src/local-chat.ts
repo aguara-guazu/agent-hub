@@ -18,9 +18,9 @@ import { canReadChannel, readAccessDefinitions, readDenied, readElevate, readInt
 import { channelProjectId, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
 import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
-import { AUTHOR_SOURCE_SQL, NON_AGENT_CLI_KINDS, THREAD_DEBATE_COLUMNS, approveResolution, createProjectChannel, debateFields, latestResolution, messageKind,
-  pendingDebates, personMessage, proposeResolution, proposeResolutionShape, rerunResolution, type createChannelInput, type pendingDebatesQuery,
-  type personMessageInput, type resolutionDecisionInput } from "./chat-debate.js"
+import { AUTHOR_SOURCE_SQL, CHANNEL_DEBATE_COLUMNS, NON_AGENT_CLI_KINDS, THREAD_DEBATE_COLUMNS, debateFields, latestResolution, messageKind, pendingDebates,
+  proposeResolution, proposeResolutionShape, settleResolution, settleResolutionShape, type pendingDebatesQuery } from "./chat-debate.js"
+import { CHAT_CHANNEL_DESCRIPTION_MAX } from "@agenthub/shared"
 
 const exec = promisify(execFile)
 const key = z.string().min(32).max(200)
@@ -37,7 +37,7 @@ const scope = { project_id: id.optional(), channel_id: id.optional(), unassigned
 export const chatDefinitions = {
   ...workDefinitions,
   chat_join: ['Start/recover registration after choosing collaboration. Before a nickname it returns only identity and key, no channel or context. Connection stays private and inactive; no folder or worktree joins sessions to channels. Use session_key in every chat call; it identifies this conversation, not the whole CLI.', z.object({ ...session, path: z.string().max(4000).optional() }).strict()],
-  chat_create_channel: ['Create a channel independent of folders, Git and Orca, only after asking the person and getting approval. task_key identifies it for retries (omitted: name, else default); the same key reuses the current channel. Keeps identity/key; moves only this session, as coordinator; never takes the old channel or changes its team.', z.object({ ...session, name: z.string().trim().min(1).max(200).optional(), task_key:z.string().trim().min(1).max(200).optional() }).strict()],
+  chat_create_channel: ['Create a channel independent of folders, Git and Orca, only after asking the person and getting approval. task_key identifies it for retries (omitted: name, else default); the same key reuses the current channel. Keeps identity/key; moves only this session, as coordinator; never takes the old channel or changes its team. Optional description is shown in the Hub UI.', z.object({ ...session, name: z.string().trim().min(1).max(200).optional(), task_key:z.string().trim().min(1).max(200).optional(), description:z.string().trim().min(1).max(CHAT_CHANNEL_DESCRIPTION_MAX).optional() }).strict()],
   chat_close_channel: ['Close a channel you lead on explicit person request (channel_id; default: your session channel). Leader only. Keeps history, blocks new joins.', z.object({ ...session, channel_id:id.optional() }).strict()],
   chat_delete_channel: ['Trash your own channel on explicit person request. Leader only (the person deletes others in the UI). Closes sessions, cancels its teams, revokes deliveries; the Hub tries to stop its workers and reports uncertain stops. Keeps files/worktrees. History leaves search; the person can restore from trash.',chatDeleteChannelInput.extend(session).strict()],
   chat_set_nick: ['Pick and register your nickname (2–40 chars); if taken, pick another. Unlocks collaboration context. Changes only your session; keeps identity and history.', z.object({ ...session, nickname }).strict()],
@@ -45,14 +45,15 @@ export const chatDefinitions = {
   chat_agents: ['Find session identities to mention, within the channels you can read. Coordinator channel_id includes linked team members. Default excludes kicked, closed and nickless sessions; stable order by registration. connection_state/last_seen_at = connection, not work. state=unknown + state_reason=activity_stale = unconfirmed activity: ask status via the Hub, never infer working or done. include_team_history shows disconnected past-team members with real state. include_removed/include_closed/include_pending: audit only. unassigned=true: projectless channels only.', z.object({ ...session, ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), include_closed: z.boolean().default(false), include_team_history: z.boolean().default(false), include_pending: z.boolean().default(false), ...page }).strict()],
   chat_threads: ['Search past threads/messages by text, channel, project, author or state, within your project, your own and team channels and person-granted projects. Reading a channel never lets you write there. unassigned=true: projectless channels only. History outlives agents.', z.object({ ...session, ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
   chat_read: ['Read thread messages. With session_key: by default only messages pending for it (not its own), marking only those returned as read; page pending with offset: 0. unread_only=false: history. Without session_key: read-only history that marks nothing. Only threads of channels you can read (same scope as chat_threads); another project needs memory_chat_read_request.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
-  chat_send: ['Create a task thread (channel_id,title), a short linked-team thread (team_root_thread_id,title), or reply (thread_id). Only in channels you belong to: your own, or the root and threads bound to a current team; mentions only its members. Read access never grants writing. A stable request_id makes retries duplicate-free. Linked-worker new topics auto-post to the team channel. Report in your assigned work_thread_id. To request an action/decision: response_required=true plus recipients. Reply via reply_to: notifies the author, handles only your request. Optional kind tags your stance: proposal, objection, fact, agreement or question. The person also writes in threads (author_source=person): that is the person speaking. Requires collaboration authorization.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), kind: messageKind.optional(), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), response_required: z.boolean().optional(), request_id: z.string().min(1).max(200) }).strict()],
+  chat_send: ['Create a task thread (channel_id,title), a short linked-team thread (team_root_thread_id,title), or reply (thread_id). Only in channels you belong to: your own, or the root and threads bound to a current team; mentions only its members. Read access never grants writing. A stable request_id makes retries duplicate-free. Linked-worker new topics auto-post to the team channel. Report in your assigned work_thread_id. To request an action/decision: response_required=true plus recipients. Reply via reply_to: notifies the author, handles only your request. Optional kind tags your stance: proposal, objection, fact, agreement or question (the person sees it in the Hub UI). Requires collaboration authorization.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), kind: messageKind.optional(), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), response_required: z.boolean().optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Read your pending mentions and private notices. Private notices have no thread; ask the agent for status via work_thread_id. Read is not handled; unhandled items stay visible. No model polling: the Hub notifies.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
   chat_kick: ['Kick a session from the channel when the person orders it. Only the current leader of that channel (also if you lead it from another channel); give the reason. Not the session that may reclaim the channel nor one that leads other channels: only the person removes those. Keeps history, cancels notices, blocks rejoin. Does not close its terminal or stop running work. Taking over a silent leader is memory_chat_take_leadership, not a kick.', chatKickInput.extend(session).strict()],
   chat_take_leadership: [`Take over or reclaim a channel's leadership; pass the leader_id you read (expected_leader_id) and a reason. Takeover: only a session outside Hub teams, from the channel's project as the Hub derives it, when the leader has had no Hub-verified liveness for over ${LEADER_LIVENESS_TIMEOUT_MS/60000} minutes; it displaces that leader only, who keeps the right to reclaim. Reclaim: the exact displaced session (same session_key) recovers the channel even if the new leader is online. Never on a guess about the leader; check team.leader_offline and leader_last_liveness_at first. Audited and rate limited; the person can always correct it in the UI.`, chatTakeLeadershipInput.extend(session).strict()],
   chat_ack: ['Mark your own mention/private notice handled (message_id=item id) after resolving or answering. Reading alone is not acceptance.', z.object({ ...session, message_id: id }).strict()],
   ...readAccessDefinitions,
   chat_resolve: ['Close/reopen a thread in your channel. Keeps history; never marks messages of others handled. A debate the person must decide goes through memory_chat_propose_resolution instead.', z.object({ ...session, thread_id: id, state: z.enum(['open','resolved']) }).strict()],
-  chat_propose_resolution: ['Leader of the thread channel (or master of its team) only: propose how a debated thread resolves, with the text and the session ids of participants who agree (you count). The person approves it in the UI (it becomes a project decision and resolves the thread) or asks for another round; agents never approve. A new proposal replaces the pending one. Stable request_id dedupes retries.', z.object({ ...session, ...proposeResolutionShape }).strict()],
+  chat_propose_resolution: ['Leader of the thread channel (or master of its team) only: propose how a debated thread resolves, with the text and the session ids of participants who agree (you count). The Hub UI shows it to the person read-only as awaiting decision; ask the person in your terminal. A new proposal replaces the pending one. Stable request_id dedupes retries.', z.object({ ...session, ...proposeResolutionShape }).strict()],
+  chat_settle_resolution: ['Same coordinator only, after the person answered in your terminal: outcome=approved records the resolution as a project decision and resolves the thread; outcome=rerun sets it aside and reopens the debate. human_instruction = the person\'s verbatim answer; audited as your declaration. Never on silence, inference or another agent\'s word. Participants are notified.', z.object({ ...session, ...settleResolutionShape }).strict()],
 } satisfies Record<string, [string, z.ZodType]>
 export const chatReadOperations = ['chat_work_list','chat_channels','chat_agents','chat_threads','chat_read']
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -204,23 +205,7 @@ export class LocalChat {
     check(grant,'El permiso no existe o ya terminó.',404)
     this.events.emit('change');return {grant_id:grant.id,revoked:true}
   }
-  /** Person routes of the debate (chat-debate.ts). Authenticated HTTP only; never reachable from callInner. */
-  async personMessage(threadId:string,input:z.infer<typeof personMessageInput>) {
-    const result=await this.db.transaction(sql=>personMessage(sql,threadId,input))
-    this.events.emit('change');return result
-  }
-  async approveResolution(threadId:string,input:z.infer<typeof resolutionDecisionInput>,userId:string) {
-    const result=await this.db.transaction(sql=>approveResolution(sql,this.store,threadId,input,userId))
-    this.events.emit('change');return result
-  }
-  async rerunResolution(threadId:string,input:z.infer<typeof resolutionDecisionInput>,userId:string) {
-    const result=await this.db.transaction(sql=>rerunResolution(sql,threadId,input,userId))
-    this.events.emit('change');return result
-  }
-  async createProjectChannel(input:z.infer<typeof createChannelInput>,userId:string) {
-    const result=await this.db.transaction(sql=>createProjectChannel(sql,input,userId))
-    this.events.emit('change');return result
-  }
+  /** Person read for the UI (Home and the project tab); there is no person write path in collaboration. */
   pendingDebates(filter:z.infer<typeof pendingDebatesQuery>) { return pendingDebates(this.db,filter) }
   readRequests(filter:Parameters<typeof personReadRequests>[1]) { return personReadRequests(this.db,filter) }
   readGrants(filter:Parameters<typeof personReadGrants>[1]) { return personReadGrants(this.db,filter) }
@@ -477,7 +462,7 @@ export class LocalChat {
     })
   }
   /** Explicit task channels preserve conversation identity and never claim a workspace. */
-  async createTaskChannel(sessionId:string,taskKey:string,name=taskKey) {
+  async createTaskChannel(sessionId:string,taskKey:string,name=taskKey,description?:string) {
     return this.db.transaction(async sql=>{
       const who=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1',[sessionId]))[0]
       check(who?.nickname && !who.closed_at && !who.removed_at,'La sesión debe estar registrada y activa.',409)
@@ -486,16 +471,19 @@ export class LocalChat {
       const path=current.path
       const scopeKey=`task:${hash(JSON.stringify([sessionId,taskKey]))}`
       const prior=(await sql.query('SELECT * FROM chat_channels WHERE scope_key=$1',[scopeKey]))[0]
-      if(prior?.id===who.channel_id)return {session:who,channel:current}
+      if(prior?.id===who.channel_id) {
+        if(description!==undefined && description!==current.description)return {session:who,channel:(await sql.query('UPDATE chat_channels SET description=$2,updated_at=now() WHERE id=$1 RETURNING *',[current.id,description]))[0]!}
+        return {session:who,channel:current}
+      }
       check(!prior,'Esta tarea ya tiene un canal anterior; no se puede cambiar de alcance con un reintento viejo.',409)
       check(!(await sql.query(`SELECT 1 FROM chat_team_plans p WHERE p.state NOT IN ('cancelled','completed') AND
         (p.created_by=$1 OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=p.id AND m.session_id=$1 AND m.state<>'closed')) LIMIT 1`,[who.id])).length,
         'La sesión ya participa en un equipo. Cerrá ese equipo antes de iniciar otra tarea.',409)
       check(!(await sql.query("SELECT 1 FROM chat_work_state WHERE session_id=$1 AND status<>'completed' LIMIT 1",[who.id])).length,
         'La sesión tiene trabajo pendiente; finalizalo antes de iniciar otra tarea.',409)
-      const channel=(await sql.query(`INSERT INTO chat_channels(id,project_id,path,name,branch,repository,scope_key,kind,leader_id,activated_at,orca_workspace_id)
-        VALUES($1,$2,$3,$4,$8,$9,$5,'virtual',$6,now(),$7) RETURNING *`,
-        [randomUUID(),current.project_id,path,name,scopeKey,who.id,current.orca_workspace_id,current.branch,current.repository]))[0]!
+      const channel=(await sql.query(`INSERT INTO chat_channels(id,project_id,path,name,branch,repository,scope_key,kind,leader_id,activated_at,orca_workspace_id,description)
+        VALUES($1,$2,$3,$4,$8,$9,$5,'virtual',$6,now(),$7,$10) RETURNING *`,
+        [randomUUID(),current.project_id,path,name,scopeKey,who.id,current.orca_workspace_id,current.branch,current.repository,description ?? null]))[0]!
       // Leadership is per channel: the previous channel keeps this session as its leader (multi-channel).
       const moved=(await sql.query('UPDATE chat_sessions SET channel_id=$2,team_seen=1 WHERE id=$1 RETURNING *',[who.id,channel.id]))[0]!
       // A turn already opened by the CLI now belongs to this explicitly requested task.
@@ -832,7 +820,7 @@ export class LocalChat {
       if(operation==='chat_inbox' || operation==='chat_ack')await this.cancelInvalidTurnAlerts()
       return this.callInner(operation,raw,agent,receipt)
     }
-    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick','chat_read_interest','chat_read_request','chat_read_elevate','chat_take_leadership','chat_propose_resolution']
+    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick','chat_read_interest','chat_read_request','chat_read_elevate','chat_take_leadership','chat_propose_resolution','chat_settle_resolution']
     // UI/history polling has no routing key and must remain a true read: no writer lock or wake-up event.
     const identifiedRead=operation==='chat_read' && typeof (raw as any)?.session_key==='string'
     let result:any
@@ -872,15 +860,14 @@ export class LocalChat {
     }
     if (operation === 'chat_channels') {
       // Folder assignments can be added after sessions and channels already exist.
-      // Channels created in the UI have no folder: their project is the one the person chose.
-      for (const c of await this.db.query("SELECT id,path,repository,project_id FROM chat_channels WHERE scope_key NOT LIKE 'ui:%' AND NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=chat_channels.id)")) {
+      for (const c of await this.db.query("SELECT id,path,repository,project_id FROM chat_channels WHERE NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=chat_channels.id)")) {
         const project=await this.project(c.path,c.repository ?? c.path)
         if ((project?.id ?? null)!==c.project_id) await this.db.query('UPDATE chat_channels SET project_id=$2 WHERE id=$1',[c.id,project?.id ?? null])
       }
       const result = await this.page(`SELECT c.*,
         (SELECT p.id FROM chat_team_plans p WHERE p.master_channel_id=c.id ORDER BY p.created_at DESC,p.id DESC LIMIT 1) AS team_plan_id,
         (SELECT p.master_channel_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id WHERE m.channel_id=c.id LIMIT 1) AS parent_channel_id,
-        (SELECT label FROM chat_sessions WHERE id=c.leader_id) AS leader_label,(SELECT count(*) FROM chat_threads t WHERE t.channel_id=c.id AND t.archived_notice=0) AS threads FROM chat_channels c WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3=0 OR c.project_id IS NULL) AND (($4=1 AND c.deleted_at IS NOT NULL) OR ($4=0 AND c.deleted_at IS NULL))
+        (SELECT label FROM chat_sessions WHERE id=c.leader_id) AS leader_label,${CHANNEL_DEBATE_COLUMNS},(SELECT count(*) FROM chat_threads t WHERE t.channel_id=c.id AND t.archived_notice=0) AS threads FROM chat_channels c WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND ($1 IS NULL OR c.project_id=$1) AND ($2 IS NULL OR c.id=$2) AND ($3=0 OR c.project_id IS NULL) AND (($4=1 AND c.deleted_at IS NOT NULL) OR ($4=0 AND c.deleted_at IS NULL))
         AND ($5=1 OR $2 IS NOT NULL OR NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=c.id))
         AND ($6 IS NULL OR c.id IN (SELECT value FROM json_each($7)) OR COALESCE((SELECT master.project_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
           JOIN chat_channels master ON master.id=p.master_channel_id WHERE m.channel_id=c.id ORDER BY p.created_at DESC LIMIT 1),c.project_id) IN (SELECT value FROM json_each($6)))`,
@@ -961,6 +948,7 @@ export class LocalChat {
     if (operation === 'chat_read_elevate') return readElevate(this.db,who,input)
     if (operation === 'chat_take_leadership') return this.takeLeadership(input,who)
     if (operation === 'chat_propose_resolution') return proposeResolution(this.db,who,input)
+    if (operation === 'chat_settle_resolution') return settleResolution(this.db,this.store,who,input)
     if (operation === 'chat_work_update' || operation === 'chat_work_list') {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread,'Hilo inexistente',404)
@@ -1003,7 +991,7 @@ export class LocalChat {
       })}
     }
     if (operation === 'chat_create_channel') {
-      const created=await this.createTaskChannel(who.id,input.task_key ?? input.name ?? 'default',input.name)
+      const created=await this.createTaskChannel(who.id,input.task_key ?? input.name ?? 'default',input.name,input.description)
       return this.registration(created.session,created.channel,input.session_key,false)
     }
     if (operation === 'chat_close_channel') {
