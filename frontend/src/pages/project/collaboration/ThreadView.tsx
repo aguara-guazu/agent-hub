@@ -72,7 +72,7 @@ function MessageItem({ message }: { message: BoardMessage }) {
         <div className="msg-meta">
           <b className="trunc" style={{ maxWidth: "18ch" }} title={message.author_label}>{message.author_label}</b>
           {message.author_role === "leader" && <Tag>{t("collaboration.interhub.leader")}</Tag>}
-          {hub && <span className={hub.is_local ? "chip c-ok trunc" : "chip c-off trunc"} style={{ maxWidth: "22ch" }} title={hub.name}>{hub.name}</span>}
+          {hub && <span className={hub.is_local ? "chip c-ok" : "chip c-off"} style={{ maxWidth: "22ch" }} title={hub.name}><span className="trunc">{hub.name}</span></span>}
           {kind && <Tag>{t(`collaboration.board.kind.${kind}`)}</Tag>}
           <time className="xs t3" dateTime={message.created_at} title={format.date(message.created_at)}>{when(message.created_at, format)}</time>
         </div>

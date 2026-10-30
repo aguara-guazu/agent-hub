@@ -89,7 +89,7 @@ function ChannelCode({ channelId }: { channelId: string }) {
     <div style={{ padding: "var(--sp-3) var(--sp-4)", display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
       <span className="label">{t("collaboration.interhub.code")}</span>
       <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-2)", minWidth: 0 }}>
-        <span className="chip c-info trunc" style={{ fontFamily: "var(--mono)", minWidth: 0, maxWidth: "100%" }}>{value}</span>
+        <span className="chip c-info" style={{ fontFamily: "var(--mono)", minWidth: 0, maxWidth: "100%" }}><span className="trunc">{value}</span></span>
         <Button small style={{ flex: "none" }} onClick={() => void copy()}>{common("actions.copy")}</Button>
       </div>
       <span className="xs t3">{t("collaboration.interhub.codeHint")}</span>
