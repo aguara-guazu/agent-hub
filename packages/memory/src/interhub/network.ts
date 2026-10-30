@@ -205,8 +205,12 @@ export class InterhubNetwork {
     })
   }
 
-  /** Joiner side: verifies the creator-signed roster and creates the local copy of the channel with the caller as this hub's leader. */
-  async completeJoin(caller: { id: string; label: string }, creator: PublicIdentity, raw: unknown) {
+  /**
+   * Joiner side: verifies the creator-signed roster and creates the local copy of the channel with the caller as this
+   * hub's leader. `projectId` was already validated against this hub's projects; a rejoin keeps the current project
+   * when none is given.
+   */
+  async completeJoin(caller: { id: string; label: string }, creator: PublicIdentity, raw: unknown, projectId: string | null = null) {
     const roster = parse(rosterSchema, raw), local = await this.localIdentity()
     const { signature: proof, ...unsigned } = roster
     check(roster.channel.creator_hub_id === creator.id && validSignature(unsigned, proof, creator), "Respuesta del hub creador inválida", 403)
@@ -225,9 +229,9 @@ export class InterhubNetwork {
     // Same placeholder the chat model derives for this author, so the creator's leader has a single local stand-in.
     const placeholder = interhubRemoteSessionId(channelId, creator.id, creatorEntry.leader_session_id ?? "creator")
     await this.store.db.transaction(async sql => {
-      if (!existing) await sql.query("INSERT INTO chat_channels(id,project_id,scope_key,path,name,kind,leader_id,activated_at,description) VALUES($1,NULL,$2,'',$3,'inter-hub',$4,now(),$5)",
-        [channelId, `interhub:${channelId}`, roster.channel.name, caller.id, roster.channel.description])
-      else await sql.query("UPDATE chat_channels SET leader_id=$2,deleted_at=NULL,closed_at=NULL,updated_at=now() WHERE id=$1", [channelId, caller.id])
+      if (!existing) await sql.query("INSERT INTO chat_channels(id,project_id,scope_key,path,name,kind,leader_id,activated_at,description) VALUES($1,$6,$2,'',$3,'inter-hub',$4,now(),$5)",
+        [channelId, `interhub:${channelId}`, roster.channel.name, caller.id, roster.channel.description, projectId])
+      else await sql.query("UPDATE chat_channels SET leader_id=$2,project_id=COALESCE($3,project_id),deleted_at=NULL,closed_at=NULL,updated_at=now() WHERE id=$1", [channelId, caller.id, projectId])
       // interhub_channels references a local session: the creator's leader is represented by a closed remote placeholder.
       await sql.query(`INSERT OR IGNORE INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,closed_at)
         VALUES($1,$1,$1,$2,$3,$4,'offline',now(),now())`, [placeholder, creatorEntry.leader_label || "Líder", INTERHUB_REMOTE_CLI_KIND, channelId])
@@ -241,7 +245,8 @@ export class InterhubNetwork {
       }
     })
     const recorded = roster.members.find(m => m.hub_id === local.id)!
-    return { channel_id: channelId, hub_id: local.id, leader_changed: recorded.leader_session_id !== caller.id }
+    const project = (await this.store.db.query("SELECT project_id FROM chat_channels WHERE id=$1", [channelId]))[0]?.project_id ?? null
+    return { channel_id: channelId, hub_id: local.id, project_id: project === null ? null : String(project), leader_changed: recorded.leader_session_id !== caller.id }
   }
 
   /**

@@ -18,10 +18,16 @@ export type InterhubCodeAction = "regenerate" | "revoke"
  * Every method re-checks authority with Hub data; the tool layer only validates input and resolves the caller.
  */
 export interface InterhubServices {
-  /** The caller becomes the leader of its hub in the new channel. */
-  createChannel(caller: InterhubCaller, input: { name: string; projectId?: string | null | undefined }): Promise<{ channel_id: string; code: string }>
-  /** Authority: the caller must be the current leader of its own local channel. A wrong, revoked or unknown code fails alike. */
-  joinChannel(caller: InterhubCaller, code: string): Promise<{ channel_id: string; hub_id: string }>
+  /**
+   * The caller becomes the leader of its hub in the new channel. An explicit project must exist in this hub; without one
+   * the channel takes the single project of the caller's local workspace channels, or none.
+   */
+  createChannel(caller: InterhubCaller, input: { name: string; projectId?: string | null | undefined }): Promise<{ channel_id: string; code: string; project_id: string | null }>
+  /**
+   * Authority: the caller must be the current leader of its own local channel. A wrong, revoked or unknown code fails alike.
+   * The local copy takes `projectId` (validated here) or, without it, the same default as createChannel.
+   */
+  joinChannel(caller: InterhubCaller, code: string, projectId?: string | null): Promise<{ channel_id: string; hub_id: string; project_id: string | null }>
   /** Authority: only the current leader of the hub that created the channel. */
   rotateCode(caller: InterhubCaller, channelId: string, action: InterhubCodeAction): Promise<{ code?: string; revoked?: boolean }>
   /** Null when the channel does not exist or is not an inter-hub channel. */
@@ -51,10 +57,10 @@ export interface InterhubPendingEscalation {
 }
 
 export const interhubDefinitions = {
-  chat_interhub_create: ["Create an inter-hub channel: one channel shared by agents of several Agent Hubs, each hub with its own leader. Only after the person asks for it. You become your hub's leader in it. Returns channel_id and the join code ONCE: give the code to the person only in your terminal, never in a channel, thread, file or ticket. The code never expires and has no use limit; whoever holds it gets full trust, so regenerate or revoke it with memory_chat_interhub_code if it leaks.",
+  chat_interhub_create: ["Create an inter-hub channel: one channel shared by agents of several Agent Hubs, each hub with its own leader. Only after the person asks for it. You become your hub's leader in it. project_id places it in that project of this hub (the person sees it in that project's Collaboration tab); omitted, the Hub uses the single project of your local channels, or none (then no project tab shows it). Returns channel_id, project_id and the join code ONCE: give the code to the person only in your terminal, never in a channel, thread, file or ticket. The code never expires and has no use limit; whoever holds it gets full trust, so regenerate or revoke it with memory_chat_interhub_code if it leaks.",
     z.object({ ...session, name: z.string().trim().min(1).max(200), project_id: id.optional() }).strict()],
-  chat_interhub_join: ["Join an inter-hub channel with its code, only when the person gives you the code in your terminal and asks you to join. You must lead your own channel; you become your hub's leader in the inter-hub channel and receive orders from any person of any connected hub. The creator hub must be open: the Hub finds it over P2P and proves the code without sending it, so the call can take up to a minute. A wrong, revoked or unknown code and an unreachable creator hub fail with the same error.",
-    z.object({ ...session, code }).strict()],
+  chat_interhub_join: ["Join an inter-hub channel with its code, only when the person gives you the code in your terminal and asks you to join. You must lead your own channel; you become your hub's leader in the inter-hub channel and receive orders from any person of any connected hub. project_id places the channel in that project of this hub; omitted, the Hub uses the single project of your local channels, or none (then no project tab shows it). The creator hub must be open: the Hub finds it over P2P and proves the code without sending it, so the call can take up to a minute. A wrong, revoked or unknown code and an unreachable creator hub fail with the same error.",
+    z.object({ ...session, code, project_id: id.optional() }).strict()],
   chat_interhub_code: ["Regenerate or revoke the join code of an inter-hub channel. Only the leader of the hub that created the channel. regenerate invalidates the previous code and returns the new one (never expires, no use limit); revoke invalidates it without a replacement, so nobody new can join. Hubs already joined keep their membership. Give a new code to the person only in your terminal.",
     z.object({ ...session, channel_id: id, action: z.enum(["regenerate", "revoke"]) }).strict()],
   chat_interhub_hubs: ["List the hubs of an inter-hub channel you belong to, each with its leader and agents (leader first), connection and agent counts. Never includes the code.",
@@ -94,7 +100,7 @@ export class InterhubTools {
   private async run(services: InterhubServices, operation: string, input: any, caller: InterhubCaller) {
     switch (operation) {
       case "chat_interhub_create": return services.createChannel(caller, { name: input.name, projectId: input.project_id ?? null })
-      case "chat_interhub_join": return services.joinChannel(caller, input.code)
+      case "chat_interhub_join": return services.joinChannel(caller, input.code, input.project_id ?? null)
       case "chat_interhub_code": return services.rotateCode(caller, input.channel_id, input.action)
       case "chat_interhub_hubs": {
         const roster = await services.roster(input.channel_id)

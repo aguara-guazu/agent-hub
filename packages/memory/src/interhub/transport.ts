@@ -32,9 +32,10 @@ const pageFrame = z.object({ type: z.literal("ih_page"), channel_id: uuid, curso
   events: z.array(z.object({ seq: seq, envelope: z.unknown() }).strict()).max(PAGE_EVENTS) }).strict()
 
 interface PeerState { pulling: Set<string>; announced: Map<string, number>; remote: Map<string, number>; joinAttempts: number }
+interface JoinResult { channel_id: string; hub_id: string; project_id: string | null }
 interface PendingJoin {
-  topic: string; key: string; caller: { id: string; label: string }; attempted: WeakSet<NetworkPeer>
-  requests: Map<string, { peer: NetworkPeer; transcript: JoinTranscript }>; settle: (error: unknown, value?: { channel_id: string; hub_id: string }) => void
+  topic: string; key: string; caller: { id: string; label: string }; projectId: string | null; attempted: WeakSet<NetworkPeer>
+  requests: Map<string, { peer: NetworkPeer; transcript: JoinTranscript }>; settle: (error: unknown, value?: JoinResult) => void
 }
 const iso = (value: unknown) => new Date(String(value)).toISOString()
 const reason = (error: unknown) => error instanceof MemoryError ? error.message : "Error interno al aplicar un evento inter-hub"
@@ -142,16 +143,16 @@ export class InterhubTransport implements NetworkExtension {
   topicsChanged() { void this.shared.refresh().catch(() => {}) }
 
   /** Joiner side: finds the creator through the code's rendezvous topic and proves the code without sending it. */
-  async join(caller: { id: string; label: string }, code: string) {
+  async join(caller: { id: string; label: string }, code: string, projectId: string | null = null) {
     check(code.length >= 32 && code.length <= 200, INVALID_CODE, 404)
     await this.network.assertNotOwnCode(code)
     const topic = rendezvousTopic(code)
     check(!this.joins.has(topic), "Ya hay una unión en curso con ese código; esperá su resultado.", 409)
     let timer: ReturnType<typeof setTimeout> | undefined, poll: ReturnType<typeof setInterval> | undefined
     try {
-      return await new Promise<{ channel_id: string; hub_id: string }>((resolve, reject) => {
+      return await new Promise<JoinResult>((resolve, reject) => {
         let settled = false
-        this.joins.set(topic, { topic, key: codeKey(code), caller, attempted: new WeakSet(), requests: new Map(),
+        this.joins.set(topic, { topic, key: codeKey(code), caller, projectId, attempted: new WeakSet(), requests: new Map(),
           settle: (error, value) => { if (settled) return; settled = true; if (error) reject(error); else resolve(value!) } })
         timer = setTimeout(() => this.joins.get(topic)?.settle(new MemoryError(404, INVALID_CODE)), joinTimeout())
         // The rendezvous lookup is repeated every few seconds instead of waiting for the 10 s network tick.
@@ -206,13 +207,13 @@ export class InterhubTransport implements NetworkExtension {
       // A refusal may come from any peer on the rendezvous topic; keep waiting for the creator until the deadline.
       if (!result.ok || !sameProof(joinProof(join.key, "accept", pending.transcript, result.roster), result.proof)) return
       try {
-        const done = await this.network.completeJoin(join.caller, peer.identity, result.roster)
+        const done = await this.network.completeJoin(join.caller, peer.identity, result.roster, join.projectId)
         if (done.leader_changed) {
           const identity = await this.network.localIdentity()
           await this.network.append(done.channel_id, "membership", { action: "joined", hub_id: identity.id, leader_id: join.caller.id, leader_label: join.caller.label,
             peer_public_key: identity.signing, peer_identity: publicIdentity(identity) })
         }
-        join.settle(null, { channel_id: done.channel_id, hub_id: done.hub_id })
+        join.settle(null, { channel_id: done.channel_id, hub_id: done.hub_id, project_id: done.project_id })
         this.events?.emit("change")
         this.topicsChanged()
         await this.announce(peer)

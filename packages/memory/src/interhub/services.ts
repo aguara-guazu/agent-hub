@@ -1,6 +1,7 @@
 import type { EventEmitter } from "node:events"
 import type { InterhubChatPayload, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import { INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
+import { channelProjectId, sessionProjectId } from "../chat-access.js"
 import { check } from "../contracts.js"
 import { sessionStatus } from "../local-chat.js"
 import type { MemoryStore } from "../store.js"
@@ -44,6 +45,26 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   })
   if (options.network) transport = new InterhubTransport(store, network, options.network, chat, events)
   const interhubChannel = async (channelId: string) => (await db.query("SELECT * FROM chat_channels WHERE id=$1 AND kind=$2 AND deleted_at IS NULL", [channelId, INTERHUB_CHANNEL_KIND]))[0]
+  /**
+   * Project of the local copy of an inter-hub channel. An explicit id must be a project of this hub. Without one, the
+   * caller's local workspace channels decide: their effective projects (own channel and the open local channels it
+   * leads) must reduce to exactly one; otherwise the channel stays without project.
+   */
+  const channelProject = async (caller: InterhubCaller, projectId: string | null | undefined) => {
+    if (projectId) {
+      check((await db.query("SELECT 1 FROM entities WHERE id=$1 AND kind='project'", [projectId]))[0], "Proyecto inexistente en este hub.", 404)
+      return projectId
+    }
+    const led = await db.query("SELECT id FROM chat_channels WHERE leader_id=$1 AND kind<>$2 AND closed_at IS NULL AND deleted_at IS NULL", [caller.id, INTERHUB_CHANNEL_KIND])
+    const projects = new Set<string>()
+    const own = await sessionProjectId(db, caller.id)
+    if (own) projects.add(own)
+    for (const row of led) {
+      const project = await channelProjectId(db, String(row.id))
+      if (project) projects.add(project)
+    }
+    return projects.size === 1 ? [...projects][0]! : null
+  }
   /** The caller is the current, open leader of the hub it represents in the channel. */
   const isHubLeader = async (channelId: string, caller: InterhubCaller) => Boolean((await db.query(
     `SELECT 1 FROM interhub_members m JOIN chat_sessions s ON s.id=m.leader_session_id
@@ -52,16 +73,19 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
 
   return {
     async createChannel(caller, input) {
-      const created = await network.createChannel(caller, { name: input.name, projectId: input.projectId ?? null })
+      const projectId = await channelProject(caller, input.projectId)
+      const created = await network.createChannel(caller, { name: input.name, projectId })
       transport?.topicsChanged()
-      return created
+      return { ...created, project_id: projectId }
     },
-    async joinChannel(caller, code) {
+    async joinChannel(caller, code, projectId) {
       // Joining represents the whole local hub: only the leader of the caller's own local channel may do it.
       const own = (await db.query("SELECT leader_id,kind FROM chat_channels WHERE id=$1", [caller.channel_id]))[0]
       check(own && own.leader_id === caller.id && own.kind !== INTERHUB_CHANNEL_KIND, "Sólo el líder de tu canal local puede unir tu hub a un canal entre hubs.", 403)
       check(transport, "La red P2P entre hubs no está disponible en este servicio.", 503)
-      return transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code)
+      // Resolved before the P2P wait so an unknown project fails at once.
+      const project = await channelProject(caller, projectId)
+      return transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code, project)
     },
     async rotateCode(caller, channelId, action) {
       const result = await network.rotateCode(caller, channelId, action)

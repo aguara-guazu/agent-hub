@@ -19,7 +19,7 @@ import { channelProjectId, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_S
 import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
 import { AUTHOR_SOURCE_SQL, NON_AGENT_CLI_KINDS, THREAD_AGENT_COUNT_COLUMN, agentCountField, messageKind } from "./chat-debate.js"
-import { CHAT_CHANNEL_DESCRIPTION_MAX } from "@agenthub/shared"
+import { CHAT_CHANNEL_DESCRIPTION_MAX, INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
 import { INTERHUB_REMOTE_CLI_KIND, interhubChannelFields, interhubMessageFields, interhubNoticeValid, interhubThreadFields } from "./interhub/chat.js"
 
 const exec = promisify(execFile)
@@ -866,8 +866,9 @@ export class LocalChat {
       return this.enrollmentView(await this.register({ ...agent, cwd: input.path ?? agent.cwd }, randomUUID()))
     }
     if (operation === 'chat_channels') {
-      // Folder assignments can be added after sessions and channels already exist.
-      for (const c of await this.db.query("SELECT id,path,repository,project_id FROM chat_channels WHERE NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=chat_channels.id)")) {
+      // Folder assignments can be added after sessions and channels already exist. Inter-hub channels have no folder:
+      // their project is the one chosen when creating or joining them and is never derived from a path.
+      for (const c of await this.db.query("SELECT id,path,repository,project_id FROM chat_channels WHERE kind<>$1 AND NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=chat_channels.id)",[INTERHUB_CHANNEL_KIND])) {
         const project=await this.project(c.path,c.repository ?? c.path)
         if ((project?.id ?? null)!==c.project_id) await this.db.query('UPDATE chat_channels SET project_id=$2 WHERE id=$1',[c.id,project?.id ?? null])
       }
