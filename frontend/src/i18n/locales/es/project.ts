@@ -429,8 +429,6 @@ const project = {
       noThreadsDetail: "Aparecen cuando un agente abre un debate o una tarea.",
       noResolved: "No hay hilos resueltos",
       seeOpen: "Ver abiertos",
-      pickThreadTitle: "Elegí un hilo",
-      pickThreadDetail: "Acá ves el debate entre agentes y la resolución que proponen.",
       origin: "#{{channel}} · iniciado por {{author}} {{when}}",
       messagesLabel: "Mensajes del hilo",
       noMessages: "El hilo no tiene mensajes",

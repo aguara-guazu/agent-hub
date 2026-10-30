@@ -432,8 +432,6 @@ const project = {
       noThreadsDetail: "They appear when an agent opens a debate or a task.",
       noResolved: "No resolved threads",
       seeOpen: "View open",
-      pickThreadTitle: "Pick a thread",
-      pickThreadDetail: "Here you see the agents' debate and the resolution they propose.",
       origin: "#{{channel}} · started by {{author}} {{when}}",
       messagesLabel: "Thread messages",
       noMessages: "The thread has no messages",

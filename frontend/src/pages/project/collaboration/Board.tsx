@@ -114,6 +114,7 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
                 threadId={params.thread}
                 onState={state => params.patch({ tstate: state === "open" ? null : state, thread: null })}
                 onThread={id => openThread(id)}
+                onCloseThread={() => params.patch({ thread: null })}
                 onAgents={() => { setAgentOffset(0); agentsPanel.open(channel.id) }}
                 onPlan={id => planPanel.open(id)}
                 onTrash={() => trashPanel.open()}
@@ -143,13 +144,14 @@ interface ChannelColumnsProps {
   threadId: string
   onState: (state: ThreadState) => void
   onThread: (id: string) => void
+  onCloseThread: () => void
   onAgents: () => void
   onPlan: (id: string) => void
   onTrash: () => void
   onDeleted: (uncertain: boolean) => void
 }
 
-function ChannelColumns({ projectId, channel, state, threadId, onState, onThread, onAgents, onPlan, onTrash, onDeleted }: ChannelColumnsProps) {
+function ChannelColumns({ projectId, channel, state, threadId, onState, onThread, onCloseThread, onAgents, onPlan, onTrash, onDeleted }: ChannelColumnsProps) {
   const { t, plural } = useT("project")
   const common = useT("common").t
   const format = useFormat()
@@ -161,7 +163,7 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
   const agents = useMemory<Page<Participant>>("chat_agents", { ...scope, include_team_history: true, limit: 100, offset: 0 })
   const visible = visibleAgents(agents.data?.items)
   const list = threads.data?.items ?? []
-  const selected = list.find(item => item.id === threadId)?.id ?? (threadId || list[0]?.id || "")
+  const selected = list.find(item => item.id === threadId)?.id ?? threadId
   const count = (value: ThreadState) => (value === state ? threads.data?.total : other.data?.total)
 
   const menu: MenuItem[] = [{ label: t("collaboration.board.channelAgents"), onSelect: onAgents }]
@@ -236,8 +238,8 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
                   role="button"
                   tabIndex={0}
                   aria-pressed={thread.id === selected}
-                  onClick={() => onThread(thread.id)}
-                  onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onThread(thread.id) } }}
+                  onClick={() => (thread.id === selected ? onCloseThread() : onThread(thread.id))}
+                  onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (thread.id === selected) onCloseThread(); else onThread(thread.id) } }}
                   style={{ alignItems: "flex-start", paddingTop: "var(--sp-3)", paddingBottom: "var(--sp-3)", cursor: "pointer" }}
                 >
                   <div className="row-main" style={{ gap: "var(--sp-2)" }}>
@@ -255,12 +257,11 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
             </div>}
     </section>
 
-    <section className="collab-thread" aria-label={t("collaboration.board.threadLabel")}>
-      {selected
-        ? <ThreadView key={selected} threadId={selected} channel={channel} />
-        : threads.isPending ? <SkeletonRows count={3} label={t("collaboration.board.loadingThread")} />
-        : <Empty icon="collaboration" title={t("collaboration.board.pickThreadTitle")} detail={t("collaboration.board.pickThreadDetail")} />}
-    </section>
+    {selected && (
+      <section className="collab-thread" aria-label={t("collaboration.board.threadLabel")}>
+        <ThreadView key={selected} threadId={selected} channel={channel} />
+      </section>
+    )}
 
     <DeleteChannelDialog
       channel={channel}

@@ -219,5 +219,20 @@
 </div>
 <button class="viewer-theme" type="button" data-theme-toggle aria-label="Cambiar tema">Tema claro / oscuro</button>
 <script src="assets/viewer.js"></script>
+<script>
+(function () {
+  var rows = document.querySelectorAll('.collab-threads > .list > .row');
+  var pane = document.querySelector('.collab-thread');
+  rows.forEach(function (row) {
+    row.style.cursor = 'pointer';
+    row.addEventListener('click', function () {
+      var open = row.classList.contains('is-selected');
+      rows.forEach(function (r) { r.classList.remove('is-selected'); });
+      if (open) { pane.style.display = 'none'; } else { row.classList.add('is-selected'); pane.style.display = ''; }
+    });
+  });
+})();
+</script>
+
 </body>
 </html>
