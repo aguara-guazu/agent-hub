@@ -1,22 +1,36 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useParams, useSearchParams } from "react-router-dom"
 import {
   Avatar, Banner, Button, Chip, Empty, EmptyFiltered, ErrorState, List, Row, RowHead, Seg, Select, SkeletonRows, Switch, useToast,
 } from "../../components/ui"
 import { useFormat, useT } from "../../i18n"
-import { relativeTime } from "../../components/ui"
-import { restoreErrorCode, useAutomationSettings, useAutomationSettingsMutation, useRuns, useScheduleActions, useSchedules } from "../../lib/automations"
+import { useQueryClient } from "@tanstack/react-query"
+import {
+  markAllRunsRead, markRunUnread, restoreErrorCode, setRunsRead, useAutomationSettings, useAutomationSettingsMutation, useRuns, useScheduleActions, useSchedules, useUnreadRunCount,
+} from "../../lib/automations"
 import type { RunListItem, ScheduleView } from "../../lib/automations"
 import { DeliveryPanel } from "./DeliveryPanel"
+import { HistoryList } from "./HistoryList"
 import { SchedulePanel } from "./SchedulePanel"
 import { cancel, commit, commitAll, isPending, schedule as deferAction } from "./pending"
-import { ARTIFACTS, RUN_TONES, runWhen, useActionError, useDecisionSummary, useProjects, useScheduleText, type Artifact } from "./shared"
+import { useActionError, useProjects, useScheduleText } from "./shared"
 
 type View = "active" | "paused" | "history"
+type Show = "unread" | "all"
 const VIEWS: readonly View[] = ["active", "paused", "history"]
 const ALL = "all"
 const NONE = "none"
 const ROW_MIN = 560
+const PAGE = 50
+/** Tope de `limit` del core para `GET …/schedules/runs`. */
+const MAX_PAGE = 200
+
+/** J/K no se roban de un campo de texto, de un diálogo modal ni de un menú abierto. */
+function typing(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable || target.closest("textarea, select, [role='combobox'], [role='listbox'], [role='menu']")) return true
+  return target instanceof HTMLInputElement && !["checkbox", "radio", "button", "submit", "reset"].includes(target.type)
+}
 
 function isView(value: string | null): value is View {
   return value !== null && (VIEWS as readonly string[]).includes(value)
@@ -26,13 +40,12 @@ function isView(value: string | null): value is View {
  *  `/automations/deliveries/:runId` abre el historial con el detalle de esa entrega en el panel. */
 export default function AutomationsPage() {
   const { t, plural } = useT("automations")
-  const ts = useT("status").t
   const tc = useT("common").t
   const format = useFormat()
   const toast = useToast()
   const actionError = useActionError()
   const text = useScheduleText()
-  const summary = useDecisionSummary()
+  const cache = useQueryClient()
   const navigate = useNavigate()
   const { runId = "" } = useParams()
   const [params, setParams] = useSearchParams()
@@ -45,14 +58,25 @@ export default function AutomationsPage() {
 
   const view: View = runId ? "history" : isView(params.get("view")) ? params.get("view") as View : "active"
   const [project, setProject] = useState<string>(ALL)
-  const [kind, setKind] = useState<Artifact | typeof ALL>(ALL)
+  const [show, setShow] = useState<Show>("unread")
+  const [limit, setLimit] = useState(PAGE)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set())
+  const [selection, setSelection] = useState<Set<string>>(new Set())
+  /**
+   * Estado de lectura cambiado en esta vista. Con «Sin ver», una entrega que se abre o se marca como vista sigue en la lista
+   * (si no, desaparecería bajo el cursor y J/K perderían el lugar) hasta que cambie el filtro.
+   */
+  const [touched, setTouched] = useState<ReadonlyMap<string, RunListItem>>(new Map())
+  const [marking, setMarking] = useState(false)
 
-  const runs = useRuns({ project_id: project !== ALL && project !== NONE ? project : undefined, kind: kind !== ALL ? kind : undefined }, view === "history")
+  const projectFilter = project !== ALL && project !== NONE ? project : undefined
+  const runs = useRuns({ project_id: projectFilter, unread: show === "unread" ? "true" : undefined, limit: String(limit) }, view === "history")
+  const unreadTotal = useUnreadRunCount()
 
   const setView = (next: View) => {
     setSelectedId(null)
+    setSelection(new Set())
     if (runId) { navigate(next === "active" ? "/automations" : `/automations?view=${next}`); return }
     setParams(current => {
       const updated = new URLSearchParams(current)
@@ -169,9 +193,10 @@ export default function AutomationsPage() {
     { value: NONE, label: t("filter.noProject") },
     ...projects.list.map(item => ({ value: item.id, label: item.title, avatar: item.title })),
   ]
-  const kindOptions: { value: Artifact | typeof ALL; label: string }[] = [{ value: ALL, label: t("filter.allKinds") }, ...ARTIFACTS.map(value => ({ value, label: t(`artifact.${value}`) }))]
-  const filtered = project !== ALL || (view === "history" && kind !== ALL)
-  const clearFilters = () => { setProject(ALL); setKind(ALL) }
+  const showOptions: { value: Show; label: string }[] = [{ value: "unread", label: t("filter.unread") }, { value: "all", label: t("filter.all") }]
+  const clearFilters = () => { setProject(ALL); resetHistory() }
+  const changeProject = (next: string) => { setProject(next); resetHistory() }
+  const changeShow = (next: Show) => { setShow(next); resetHistory() }
 
   function scheduleList() {
     if (schedules.isPending) return <SkeletonRows label={t("loading")} />
@@ -184,6 +209,34 @@ export default function AutomationsPage() {
         : <List><Empty icon="automations" title={t("empty.title")} detail={t("empty.detail")} action={<Button small onClick={() => navigate("/projects")}>{t("empty.action")}</Button>} /></List>
     }
     if (visible.length === 0) return <List><EmptyFiltered text={t("empty.filtered")} onClear={clearFilters} /></List>
+    if (view === "paused") {
+      return (
+        <List className="scroll-x">
+          {visible.map(item => {
+            const name = projectName(item.project_id)
+            return (
+              <Row
+                key={item.id}
+                id={`schedule-${item.id}`}
+                style={{ minWidth: ROW_MIN }}
+                selected={item.id === selectedId}
+                onOpen={() => setSelectedId(item.id)}
+                lead={<Avatar name={name ?? tc("app.name")} small />}
+                title={item.title}
+                sub={[name ?? t("scope.owner"), text.pausedBy(item)].filter(Boolean).join(" · ")}
+                meta={<Chip tone="off">{t("next.paused")}</Chip>}
+                action={<Switch
+                  checked={false}
+                  disabled={actions.pause.isPending || actions.resume.isPending}
+                  label={t("row.switch", { name: item.title })}
+                  onChange={on => togglePause(item, on)}
+                />}
+              />
+            )
+          })}
+        </List>
+      )
+    }
     return (
       <List className="scroll-x">
         <RowHead style={{ minWidth: ROW_MIN }}>
@@ -219,42 +272,155 @@ export default function AutomationsPage() {
     )
   }
 
+  const projectRuns = useMemo(() => {
+    const server = (runs.data?.items ?? []).filter(byProject)
+    const ids = new Set(server.map(run => run.run_id))
+    const list = server.map(run => {
+      const local = touched.get(run.run_id)
+      return local ? { ...run, read_at: local.read_at } : run
+    })
+    if (show === "unread") for (const run of touched.values()) if (!ids.has(run.run_id) && byProject(run)) list.push(run)
+    return list.sort((a, b) => Date.parse(b.scheduled_for) - Date.parse(a.scheduled_for) || a.run_id.localeCompare(b.run_id))
+    // `byProject` depende solo de `project`.
+  }, [runs.data, touched, show, project])
+
+  const touch = useCallback((items: readonly RunListItem[], read: boolean) => {
+    const at = new Date().toISOString()
+    setTouched(current => {
+      const next = new Map(current)
+      for (const run of items) next.set(run.run_id, { ...run, read_at: read ? run.read_at ?? at : null })
+      return next
+    })
+  }, [])
+  const resetHistory = () => { setTouched(new Map()); setSelection(new Set()); setLimit(PAGE) }
+
+  const order = projectRuns.map(run => run.run_id)
+  const current = order.indexOf(runId)
+  const previousRun = current > 0 ? projectRuns[current - 1] : undefined
+  const nextUnreadRun = projectRuns.slice(current + 1).find(run => run.read_at === null)
+
+  const openRun = useCallback((run: RunListItem) => {
+    if (run.read_at === null) touch([run], true)
+    navigate(`/automations/deliveries/${encodeURIComponent(run.run_id)}`)
+    requestAnimationFrame(() => document.getElementById(`delivery-${run.run_id}`)?.scrollIntoView?.({ block: "nearest" }))
+  }, [navigate, touch])
+
+  // Un enlace directo a una entrega sin ver la marca como vista al abrirse: se conserva en «Sin ver» igual que al abrirla desde la lista.
+  const opened = useRef("")
+  useEffect(() => {
+    if (!runId || opened.current === runId) return
+    const run = runs.data?.items.find(item => item.run_id === runId)
+    if (!run) return
+    opened.current = runId
+    if (run.read_at === null) touch([run], true)
+  }, [runId, runs.data, touch])
+
+  const keys = useRef({ previous: previousRun, next: nextUnreadRun, open: openRun })
+  keys.current = { previous: previousRun, next: nextUnreadRun, open: openRun }
+  useEffect(() => {
+    if (view !== "history") return
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.repeat) return
+      const key = event.key.toLowerCase()
+      if (key !== "j" && key !== "k") return
+      if (typing(event.target) || document.querySelector("[aria-modal='true'], .pop")) return
+      const target = key === "j" ? keys.current.next : keys.current.previous
+      if (!target) return
+      event.preventDefault()
+      keys.current.open(target)
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [view])
+
+  const refreshRuns = () => cache.invalidateQueries({ queryKey: ["schedule-runs"] })
+
+  function markRead(ids: readonly string[], read: boolean) {
+    const items = projectRuns.filter(run => ids.includes(run.run_id))
+    if (items.length === 0) return
+    setMarking(true)
+    touch(items, read)
+    setRunsRead(items.map(run => run.run_id), read)
+      .then(changed => {
+        setSelection(new Set())
+        if (changed.length === 0) return
+        const undoItems = items.filter(run => changed.includes(run.run_id))
+        toast.show({
+          message: plural(read ? "toast.markedRead" : "toast.markedUnread", changed.length),
+          undo: () => {
+            touch(undoItems, !read)
+            void setRunsRead(changed, !read).catch(error => fail(tc("toast.actionFailed"), error)).finally(() => void refreshRuns())
+          },
+        })
+      })
+      .catch(error => {
+        touch(items.filter(run => (run.read_at === null) !== read), !read)
+        fail(tc("toast.actionFailed"), error)
+      })
+      .finally(() => { setMarking(false); void refreshRuns() })
+  }
+
+  function markAll() {
+    setMarking(true)
+    const visibleUnread = projectRuns.filter(run => run.read_at === null)
+    touch(visibleUnread, true)
+    markAllRunsRead(projectFilter)
+      .then(changed => {
+        setSelection(new Set())
+        if (changed.length === 0) return
+        toast.show({
+          message: plural("toast.markedRead", changed.length),
+          undo: () => {
+            touch(visibleUnread.filter(run => changed.includes(run.run_id)), false)
+            void setRunsRead(changed, false).catch(error => fail(tc("toast.actionFailed"), error)).finally(() => void refreshRuns())
+          },
+        })
+      })
+      .catch(error => { touch(visibleUnread, false); fail(tc("toast.actionFailed"), error) })
+      .finally(() => { setMarking(false); void refreshRuns() })
+  }
+
+  function markOneUnread(run: { run_id: string }) {
+    const item = projectRuns.find(entry => entry.run_id === run.run_id)
+    if (item) touch([item], false)
+    navigate("/automations?view=history")
+    markRunUnread(run.run_id)
+      .then(() => toast.show({
+        message: plural("toast.markedUnread", 1),
+        undo: () => { if (item) touch([item], true); void setRunsRead([run.run_id], true).finally(() => void refreshRuns()) },
+      }))
+      .catch(error => { if (item) touch([item], true); fail(tc("toast.actionFailed"), error) })
+      .finally(() => void refreshRuns())
+  }
+
   function historyList() {
     if (runs.isPending) return <SkeletonRows label={t("loading")} />
     if (runs.error) return <List><ErrorState error={runs.error} title={t("empty.historyErrorTitle")} onRetry={() => void runs.refetch()} /></List>
-    const items = (runs.data?.items ?? []).filter(byProject)
-    if (items.length === 0) {
-      return filtered
-        ? <List><EmptyFiltered text={t("empty.historyFiltered")} onClear={clearFilters} /></List>
+    if (projectRuns.length === 0) {
+      if (project !== ALL) return <List><EmptyFiltered text={t("empty.historyFiltered")} onClear={clearFilters} /></List>
+      return show === "unread"
+        ? <List><Empty icon="done" title={t("empty.unreadTitle")} detail={t("empty.unreadDetail")} action={<Button small onClick={() => { resetHistory(); setShow("all") }}>{t("filter.showAll")}</Button>} /></List>
         : <List><Empty icon="automations" title={t("empty.historyTitle")} detail={t("empty.historyDetail")} action={<Button small onClick={() => setView("active")}>{t("view.active")}</Button>} /></List>
     }
+    const total = runs.data?.total ?? 0
+    const loaded = runs.data?.items.length ?? 0
     return (
-      <List className="scroll-x">
-        <RowHead style={{ minWidth: ROW_MIN }}>
-          <span style={{ flex: 1 }}>{t("columns.delivery")}</span>
-          <span className="col" style={{ width: 160 }}>{t("columns.status")}</span>
-        </RowHead>
-        {items.map((run: RunListItem) => {
-          const name = projectName(run.project_id)
-          const decision = run.decision?.state === "pending"
-          const detail = [name, relativeTime(runWhen(run)), run.decision && run.decision.state !== "none" ? summary(run.decision) : null].filter(Boolean).join(" · ")
-          return (
-            <Row
-              key={run.run_id}
-              style={{ minWidth: ROW_MIN }}
-              selected={run.run_id === runId}
-              onOpen={() => navigate(`/automations/deliveries/${encodeURIComponent(run.run_id)}`)}
-              lead={<Avatar name={name ?? tc("app.name")} small />}
-              title={<>{run.read_at ? null : <span className="dot" role="img" aria-label={t("row.unread")} style={{ display: "inline-block", marginRight: "var(--sp-2)", background: "var(--info)" }} />}{run.title}</>}
-              titleText={run.title}
-              sub={detail}
-              meta={<span className="col" style={{ width: 160, display: "flex" }}>
-                {decision ? <Chip tone="warn">{ts("chip.awaitingDecision")}</Chip> : <Chip tone={RUN_TONES[run.state]}>{ts(`delivery.${run.state}`)}</Chip>}
-              </span>}
-            />
-          )
-        })}
-      </List>
+      <>
+        <HistoryList
+          items={projectRuns}
+          selection={selection}
+          onSelectionChange={setSelection}
+          activeId={runId}
+          onOpen={openRun}
+          projectName={projectName}
+          onMarkRead={ids => markRead(ids, true)}
+          onMarkUnread={ids => markRead(ids, false)}
+          busy={marking}
+        />
+        {total > loaded && (limit < MAX_PAGE
+          ? <Button small variant="ghost" style={{ alignSelf: "center" }} disabled={runs.isFetching} onClick={() => setLimit(value => Math.min(value + PAGE, MAX_PAGE))}>{tc("actions.showMore")}</Button>
+          : <span className="hint" style={{ alignSelf: "center" }}>{t("history.capped", { count: loaded })}</span>)}
+      </>
     )
   }
 
@@ -262,7 +428,12 @@ export default function AutomationsPage() {
   return (
     <div className="split">
       <div className="page">
-        <div className="ph"><div className="ph-text"><h1 className="h1">{t("title")}</h1></div></div>
+        <div className="ph">
+          <div className="ph-text"><h1 className="h1">{t("title")}</h1></div>
+          {view === "history" && unreadTotal.count > 0 && (
+            <div className="ph-actions"><Button icon="check" disabled={marking} onClick={markAll}>{t("history.markAllRead")}</Button></div>
+          )}
+        </div>
         {banner}
         {showBar && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-2)", alignItems: "center" }}>
@@ -273,11 +444,11 @@ export default function AutomationsPage() {
               options={[
                 { value: "active", label: t("view.active"), count: active.length },
                 { value: "paused", label: t("view.paused"), count: paused.length },
-                { value: "history", label: t("view.history") },
+                { value: "history", label: t("view.history"), badge: { count: unreadTotal.count, label: plural("history.unreadBadge", unreadTotal.count) } },
               ]}
             />
-            <Select label={t("filter.project")} value={project} options={projectOptions} onChange={setProject} />
-            {view === "history" && <Select<Artifact | typeof ALL> label={t("filter.kind")} value={kind} options={kindOptions} onChange={setKind} />}
+            {view === "history" && <Select<Show> label={t("filter.show")} value={show} options={showOptions} onChange={changeShow} />}
+            <Select label={t("filter.project")} value={project} options={projectOptions} onChange={changeProject} />
           </div>
         )}
         {view === "history" ? historyList() : scheduleList()}
@@ -294,7 +465,17 @@ export default function AutomationsPage() {
           onDelete={remove}
         />
       )}
-      {runId && <DeliveryPanel key={runId} runId={runId} projectName={projectName} onClose={() => navigate("/automations?view=history")} />}
+      {runId && (
+        <DeliveryPanel
+          key={runId}
+          runId={runId}
+          projectName={projectName}
+          onClose={() => navigate("/automations?view=history")}
+          onPrevious={previousRun ? () => openRun(previousRun) : undefined}
+          onNextUnread={nextUnreadRun ? () => openRun(nextUnreadRun) : undefined}
+          onMarkUnread={markOneUnread}
+        />
+      )}
     </div>
   )
 }

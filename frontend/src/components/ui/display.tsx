@@ -11,7 +11,8 @@ import { cx } from "./layers"
 /** Botón sin apariencia propia, para pestañas y títulos clicables. */
 const BARE_BUTTON: CSSProperties = { border: 0, background: "transparent", padding: 0, font: "inherit", color: "inherit", textAlign: "left", cursor: "pointer" }
 
-export interface SegOption<T extends string> { value: T; label: string; count?: number }
+/** `badge`: pendientes que piden atención (por ejemplo, sin ver); reemplaza a `count`. */
+export interface SegOption<T extends string> { value: T; label: string; count?: number; badge?: { count: number; label: string } }
 
 /** Filtra la misma lista: de 2 a 5 opciones. */
 export function Seg<T extends string>({ options, value, onChange, label }: { options: readonly SegOption<T>[]; value: T; onChange: (value: T) => void; label: string }) {
@@ -20,7 +21,9 @@ export function Seg<T extends string>({ options, value, onChange, label }: { opt
       {options.slice(0, 5).map(option => (
         <button key={option.value} type="button" aria-pressed={option.value === value} onClick={() => onChange(option.value)}>
           {option.label}
-          {option.count !== undefined && <span className="count">{option.count}</span>}
+          {option.badge && option.badge.count > 0
+            ? <span className="badge attn" aria-label={option.badge.label}>{option.badge.count > 99 ? "99+" : option.badge.count}</span>
+            : option.count !== undefined && <span className="count">{option.count}</span>}
         </button>
       ))}
     </div>

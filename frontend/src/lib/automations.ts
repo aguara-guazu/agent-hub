@@ -60,6 +60,8 @@ export interface ScheduleView {
   last_run?: ScheduleRunSummary
   /** Presente cuando hay un run diferido (por cuota, automatizaciones apagadas o entrega no disponible). */
   deferred?: { reason: string; resets_at: string | null; next_attempt_at: string | null }
+  /** Solo en pausadas: cuándo se pausó por última vez (core anterior: sin el campo). */
+  paused_at?: string
 }
 
 export type DeliveryUnavailableReason = "not_connected" | "scope_missing" | "identity_unverified" | "identity_is_bot" | "tool_off"
@@ -92,6 +94,8 @@ export interface RunListItem {
   schedule_id: string
   artifact_kind: "notice" | "brief" | "close" | "status" | "report" | null
   title: string
+  /** Nombre de la automatización que la generó; `null` con un core anterior. */
+  schedule_title: string | null
   project_id: string | null
   scheduled_for: string
   started_at: string | null
@@ -139,7 +143,7 @@ export interface RawRunDetail {
 
 export function normalizeRunList(raw: { items: RawRunListItem[] } & Page): { items: RunListItem[] } & Page {
   return { ...raw, items: raw.items.map(item => ({
-    run_id: item.id, schedule_id: item.schedule_id, artifact_kind: item.artifact_kind ?? null, title: item.title ?? item.schedule_title ?? "Entrega", project_id: item.project_id ?? null,
+    run_id: item.id, schedule_id: item.schedule_id, artifact_kind: item.artifact_kind ?? null, title: item.title ?? item.schedule_title ?? "Entrega", schedule_title: item.schedule_title ?? null, project_id: item.project_id ?? null,
     scheduled_for: item.scheduled_for, started_at: item.started_at ?? null, state: item.state, trigger: item.trigger, skip_reason: item.skip_reason ?? null, deferred_reason: item.deferred_reason ?? null,
     read_at: item.read_at ?? null, ...(item.deliveries ? { deliveries: item.deliveries } : {}), ...(item.decision ? { decision: item.decision } : {}),
   })) }
@@ -156,7 +160,7 @@ export function normalizeRunDetail(raw: RawRunDetail): RunDetail {
   const states = new Map(raw.items.map(item => [item.ordinal, item.state]))
   const items: PublicItem[] = (raw.artifact?.items ?? []).map(({ estimate, ...item }) => { const parts = normalizeEstimate(estimate); return { ...item, state: states.get(item.ordinal) ?? "proposed", ...(parts ? { estimate: parts } : {}) } })
   return {
-    run_id: raw.run.id, schedule_id: raw.run.schedule_id, artifact_kind: raw.artifact?.kind ?? null, title: raw.artifact?.title ?? "Entrega", project_id: raw.project_id ?? null,
+    run_id: raw.run.id, schedule_id: raw.run.schedule_id, artifact_kind: raw.artifact?.kind ?? null, title: raw.artifact?.title ?? "Entrega", schedule_title: null, project_id: raw.project_id ?? null,
     scheduled_for: raw.run.scheduled_for, started_at: raw.run.started_at ?? null, state: raw.run.state, trigger: raw.run.trigger, skip_reason: raw.run.skip_reason ?? null, deferred_reason: raw.run.deferred_reason ?? null,
     read_at: raw.artifact?.read_at ?? null, deliveries: raw.deliveries, ...(raw.decision ? { decision: raw.decision } : {}), body_md: raw.artifact?.body_md ?? "", items,
     has_decision: (raw.decision?.total ?? 0) > 0 || items.some(item => item.kind !== "info"),
@@ -246,7 +250,7 @@ export function isStaleRevision(error: unknown): boolean {
   return error instanceof ApiError && (error.status === 409 || error.code === "stale_revision" || error.message.includes("stale_revision"))
 }
 
-export type RunFilters = { kind?: string; project_id?: string; schedule_id?: string; unread?: "true" | "false"; limit?: string }
+export type RunFilters = { kind?: string; project_id?: string; schedule_id?: string; unread?: "true" | "false"; limit?: string; offset?: string }
 
 export function useRuns(filters: RunFilters = {}, enabled = true) {
   const params = new URLSearchParams()
@@ -331,9 +335,36 @@ export function useRetryDelivery(runId: string) {
   })
 }
 
-/** Lectura de la entrega: deja de contar como «sin leer» en Inicio y en el historial. */
+/** Lectura de la entrega: deja de contar como «sin ver» en Inicio y en el historial. */
 export async function markRunRead(runId: string): Promise<void> {
   await api.put(`/memory/schedules/runs/${encodeURIComponent(runId)}/read`)
+}
+
+/** Vuelve a contarla como sin ver. */
+export async function markRunUnread(runId: string): Promise<void> {
+  await api.delete(`/memory/schedules/runs/${encodeURIComponent(runId)}/read`)
+}
+
+/** Lote: devuelve las entregas que cambiaron de estado, para que Deshacer revierta exactamente esas. */
+export async function setRunsRead(runIds: readonly string[], read: boolean): Promise<string[]> {
+  const ids = [...new Set(runIds)]
+  const changed: string[] = []
+  for (let start = 0; start < ids.length; start += 200) {
+    const result = await api.post<{ run_ids: string[] }>("/memory/schedules/runs/read", { read, run_ids: ids.slice(start, start + 200) })
+    changed.push(...result.run_ids)
+  }
+  return changed
+}
+
+/** Todas las sin ver (de un proyecto, si se indica). */
+export async function markAllRunsRead(projectId?: string): Promise<string[]> {
+  return (await api.post<{ run_ids: string[] }>("/memory/schedules/runs/read", { read: true, all: true, ...(projectId ? { project_id: projectId } : {}) })).run_ids
+}
+
+/** Total de entregas sin ver: el mismo dato que filtra `unread=true`. */
+export function useUnreadRunCount(projectId?: string) {
+  const runs = useRuns({ unread: "true", limit: "1", ...(projectId ? { project_id: projectId } : {}) })
+  return { count: runs.data?.total ?? 0, isPending: runs.isPending }
 }
 
 /** `PUT /automations` sin aviso propio: lo muestra quien llama. */
