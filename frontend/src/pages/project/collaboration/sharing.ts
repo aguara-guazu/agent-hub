@@ -12,7 +12,6 @@ export interface SharingStatus {
   projects: { id: string; title: string; enabled: boolean; conflict: string | null }[]
 }
 export interface SharedDetail { members: Member[]; conflict: string | null }
-export interface ForumMessage { id: string; agent_label: string; text: string; created_at: string; expires_at: string; to_member: string | null; reply_to: string | null }
 
 /** Administración P2P del hub local (no pasa por `/memory/call`). Misma clave de caché que Ajustes › Colaboración y red. */
 export const sharingCall = <T = unknown,>(input: unknown) => api.post<T>("/memory/sharing/call", input)

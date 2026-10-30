@@ -6,11 +6,15 @@ import {
 import { useFormat, useT } from "../../../i18n"
 import { useMemory, type MemoryEntity } from "../../../lib/memory"
 import { useErrorText } from "../shared"
-import { SidePanel, useWorkPanel } from "../work"
 import { ROLES, isActive, mayInvite, useSharingAction, useSharingStatus, type Identity, type Member, type PeerProgress, type Role, type SharedDetail } from "./sharing"
 
-/** Personas con acceso al proyecto compartido entre hubs: roles, vencimiento, recepción de cambios e invitaciones. */
-export function SharingSection({ project }: { project: MemoryEntity }) {
+type View = { kind: "members" } | { kind: "invite" } | { kind: "recovery"; phrase: string }
+
+/**
+ * Panel «Compartir» de la ficha (`?panel=share`): personas con acceso al proyecto compartido entre hubs, roles, vencimiento,
+ * recepción de cambios e invitaciones. Invitar y la frase de recuperación reemplazan el contenido del mismo panel.
+ */
+export function SharePanel({ project, onClose }: { project: MemoryEntity; onClose: () => void }) {
   const { t } = useT("project")
   const toast = useToast()
   const errorText = useErrorText()
@@ -18,59 +22,63 @@ export function SharingSection({ project }: { project: MemoryEntity }) {
   const shared = status.data?.projects.find(item => item.id === project.id)
   const detail = useMemory<SharedDetail>("shared_status", { project_id: project.id }, Boolean(shared))
   const create = useSharingAction<{ recovery_phrase?: string }>()
-  const invite = useWorkPanel("invite")
-  const [phrase, setPhrase] = useState("")
+  const [view, setView] = useState<View>({ kind: "members" })
   const me = detail.data?.members.find(member => member.identity.id === status.data?.identity.id)
   const owner = me?.role === "owner" && !me.revoked
   const canInvite = mayInvite(me)
   const conflict = detail.data?.conflict ?? shared?.conflict ?? null
+  const members = () => setView({ kind: "members" })
 
   function enable() {
     create.mutate({ operation: "create", project_id: project.id }, {
       onSuccess: result => {
         toast.success(t("collaboration.sharing.enabled"))
-        if (result?.recovery_phrase) { invite.close(); setPhrase(result.recovery_phrase) }
+        if (result?.recovery_phrase) setView({ kind: "recovery", phrase: result.recovery_phrase })
       },
       onError: failure => toast.error(errorText(failure)),
     })
   }
 
+  if (view.kind === "invite" && shared && canInvite) return <InvitePanel project={project} owner={owner} onClose={members} />
+  if (view.kind === "recovery") return <RecoveryPanel phrase={view.phrase} onClose={members} />
+
   return (
-    <section className="section">
-      <div className="section-h">
-        <h2 className="h2">{t("collaboration.sharing.title")}</h2>
-        {shared && canInvite && <Button small onClick={() => { setPhrase(""); invite.open() }}>{t("collaboration.sharing.invite")}</Button>}
-      </div>
-      {conflict && <Banner tone="danger">{conflict}</Banner>}
-      {status.isPending || (shared && detail.isPending) ? <SkeletonRows count={2} label={t("collaboration.sharing.loading")} />
-        : status.error || detail.error ? <List><ErrorState error={status.error ?? detail.error} title={t("collaboration.sharing.errorTitle")} onRetry={() => { void status.refetch(); void detail.refetch() }} /></List>
-        : !shared ? (
-          <List>
-            <Empty
-              icon="collaboration"
-              title={t("collaboration.sharing.emptyTitle")}
-              detail={t("collaboration.sharing.emptyDetail")}
-              action={<Button small icon="collaboration" disabled={create.isPending} onClick={enable}>{t("collaboration.sharing.enable")}</Button>}
-            />
-          </List>
-        ) : (
-          <List>
-            {(detail.data?.members ?? []).map(member => (
-              <MemberRow
-                key={member.identity.id}
-                project={project}
-                member={member}
-                self={member.identity.id === status.data?.identity.id}
-                selfName={status.data?.identity.name}
-                owner={owner}
-                progress={status.data?.network.peers?.find(peer => peer.project_id === project.id && peer.member_id === member.identity.id)}
+    <Panel label={t("collaboration.sharing.title")} onClose={onClose}>
+      <PanelHeader
+        title={t("collaboration.sharing.title")}
+        status={<span className="xs t3 trunc" title={project.title}>{project.title}</span>}
+        actions={shared && canInvite ? <Button small onClick={() => setView({ kind: "invite" })}>{t("collaboration.sharing.invite")}</Button> : undefined}
+      />
+      <PanelBody>
+        {conflict && <Banner tone="danger">{conflict}</Banner>}
+        {status.isPending || (shared && detail.isPending) ? <SkeletonRows count={2} label={t("collaboration.sharing.loading")} />
+          : status.error || detail.error ? <List><ErrorState error={status.error ?? detail.error} title={t("collaboration.sharing.errorTitle")} onRetry={() => { void status.refetch(); void detail.refetch() }} /></List>
+          : !shared ? (
+            <List>
+              <Empty
+                icon="collaboration"
+                title={t("collaboration.sharing.emptyTitle")}
+                detail={t("collaboration.sharing.emptyDetail")}
+                action={<Button small icon="collaboration" disabled={create.isPending} onClick={enable}>{t("collaboration.sharing.enable")}</Button>}
               />
-            ))}
-          </List>
-        )}
-      {invite.value && shared && canInvite && <InvitePanel project={project} owner={owner} onClose={invite.close} />}
-      {phrase && <RecoveryPanel phrase={phrase} onClose={() => setPhrase("")} />}
-    </section>
+            </List>
+          ) : (
+            <List>
+              {(detail.data?.members ?? []).map(member => (
+                <MemberRow
+                  key={member.identity.id}
+                  project={project}
+                  member={member}
+                  self={member.identity.id === status.data?.identity.id}
+                  selfName={status.data?.identity.name}
+                  owner={owner}
+                  progress={status.data?.network.peers?.find(peer => peer.project_id === project.id && peer.member_id === member.identity.id)}
+                />
+              ))}
+            </List>
+          )}
+      </PanelBody>
+    </Panel>
   )
 }
 
@@ -191,8 +199,7 @@ function InvitePanel({ project, owner, onClose }: { project: MemoryEntity; owner
     catch { toast.error(t("collaboration.invite.copyFailed")) }
   }
   return (
-    <SidePanel>
-      <Panel label={t("collaboration.invite.title")} onClose={onClose} dirty={dirty} onBlockedClose={() => setError(common("states.unsavedClose"))}>
+    <Panel label={t("collaboration.invite.title")} onClose={onClose} dirty={dirty} onBlockedClose={() => setError(common("states.unsavedClose"))}>
         <PanelHeader title={t("collaboration.invite.title")} status={<span className="xs t3 trunc" title={project.title}>{project.title}</span>} />
         <PanelBody>
           {invitation ? (
@@ -223,7 +230,6 @@ function InvitePanel({ project, owner, onClose }: { project: MemoryEntity; owner
           </>}
         </div>
       </Panel>
-    </SidePanel>
   )
 }
 
@@ -237,8 +243,7 @@ function RecoveryPanel({ phrase, onClose }: { phrase: string; onClose: () => voi
     catch { toast.error(t("collaboration.invite.copyFailed")) }
   }
   return (
-    <SidePanel>
-      <Panel label={t("collaboration.recovery.title")} onClose={onClose}>
+    <Panel label={t("collaboration.recovery.title")} onClose={onClose}>
         <PanelHeader title={t("collaboration.recovery.title")} />
         <PanelBody>
           <Field label={t("collaboration.recovery.phrase")} hint={t("collaboration.recovery.hint")}>
@@ -250,6 +255,5 @@ function RecoveryPanel({ phrase, onClose }: { phrase: string; onClose: () => voi
           <Button onClick={onClose}>{t("collaboration.recovery.done")}</Button>
         </div>
       </Panel>
-    </SidePanel>
   )
 }
