@@ -40,7 +40,7 @@ Toda vista de Agent Hub usa **una** de cuatro plantillas y llena sus zonas. Si u
 
 ## Plantilla A · Colección con panel
 
-**Se usa en:** Servidores MCP, Skills, Clientes, Automatizaciones, Actividad, Colaboración, Memoria (sin panel), Proyectos (sin panel: las filas abren la ficha).
+**Se usa en:** Servidores MCP, Skills, Clientes, Automatizaciones (incluido Historial), Actividad, Memoria (sin panel), Proyectos (sin panel: las filas abren la ficha).
 
 | Zona | Contenido | Reglas |
 |---|---|---|
@@ -67,6 +67,8 @@ Toda vista de Agent Hub usa **una** de cuatro plantillas y llena sus zonas. Si u
 
 Las pestañas de proyecto son fijas: **Resumen, Contenido, Tareas, Decisiones, Colaboración.**
 
+La pestaña Colaboración reemplaza las zonas 3 y 4 por `.collab`, a todo el ancho: canales (220 px) › hilos del canal › hilo seleccionado con su resolución propuesta y el campo para escribir. Es la única pestaña sin columna de datos.
+
 ## Plantilla C · Configuración
 
 **Se usa en:** Ajustes (única).
@@ -82,8 +84,8 @@ Secciones fijas: **General, Fuentes, IA y procesamiento, Automatizaciones, Colab
 
 **Se usa en:** Inicio (única).
 
-- Saludo + una línea de estado general.
-- **Pendientes:** lista agrupada por tipo (Conexiones, Propuestas de agentes, Memoria). Cada fila tiene **una** acción que resuelve o lleva a resolver el pendiente. Cuando se resuelve, la fila desaparece.
+- Saludo + una línea de estado general («7 cosas esperan una decisión. Todo lo demás está funcionando.»).
+- **Pendientes:** lista agrupada por tipo (Conexiones, Propuestas de agentes, Memoria). Propuestas de agentes incluye los debates que esperan decisión y las entregas con acciones propuestas. Cada fila tiene **una** acción que resuelve o lleva a resolver el pendiente. Cuando se resuelve, la fila desaparece.
 - Columna derecha: «Hoy» (automatizaciones del día) y «Proyectos recientes». Nada más.
 - Inicio no tiene acciones de creación ni configuración.
 
@@ -92,7 +94,7 @@ Secciones fijas: **General, Fuentes, IA y procesamiento, Automatizaciones, Colab
 | # | Regla |
 |---|---|
 | L1 | Toda vista usa una plantilla A–D. No se agregan zonas. |
-| L2 | Un botón primario por vista. Hasta dos secundarios. El resto, en «…». |
+| L2 | Un botón primario por vista. Hasta dos secundarios. El resto, en «…». Excepción: un bloque de decisión dentro de un panel o de un hilo (autorizar cuenta, aprobar acciones propuestas, aprobar una resolución) lleva su propio primario compacto. |
 | L3 | Las colecciones son listas de filas. Tarjetas solo en Inicio y en bloques de ayuda dentro de paneles. |
 | L4 | Un solo aviso de página. Nunca un aviso dentro de una fila o tarjeta: el estado va en un chip. |
 | L5 | Un solo contenedor con scroll por zona. Las tablas anchas hacen scroll horizontal dentro de su caja (`.scroll-x` + `min-width`); la página, nunca. |

@@ -14,6 +14,9 @@ De 33 modales quedan tres usos: **crear**, **confirmar lo irreversible** y la **
 | Borra datos sin vuelta atrás | **Confirmación** | Restaurar un respaldo, eliminar un proyecto con contenido |
 | Elegir entre variantes de una acción | **Menú** | «Nuevo proyecto ▾ · Unirme con una invitación · Restaurar desde un respaldo» |
 | Un flujo externo (OAuth) | **Bloque de acción en el panel** | «Autorizar cuenta» abre el navegador y vuelve |
+| Decidir sobre lo que propusieron los agentes | **Bloque de decisión** en el hilo o el panel | «Aprobar y registrar decisión» · «Pedir otra ronda»; «Aprobar 2 seleccionadas» · «Rechazar todas» |
+| Actuar sobre varias filas | **Selección múltiple** + `.bulkbar` | Marcar entregas como vistas o no vistas |
+| Sumar contexto a un debate | **Campo al pie del hilo** (`.composer`) | «Escribí en el hilo…» · Enviar |
 
 Nunca: modal sobre modal, modal para editar, modal para informar («¡Listo!»), modal para elegir una sola opción.
 
@@ -61,6 +64,30 @@ Ahora:  click en «Eliminar» → la fila desaparece → toast «Se eliminó …
 - Teclado: ↑↓ moverse, ↵ abrir, ⌘↵ abrir en panel, esc cerrar.
 - No tiene filtros propios: los filtros viven en Memoria.
 
+## Colaboración: lo que hace la persona
+
+La pestaña Colaboración de un proyecto no es solo lectura. La persona puede:
+
+- **Escribir en un hilo** con el campo del pie. Enter envía; el mensaje aparece al instante como suyo. Sirve para sumar contexto o reorientar el debate.
+- **Aprobar la resolución propuesta** («Aprobar y registrar decisión»): se ejecuta sin confirmación, registra la decisión en Proyecto › Decisiones, pasa el hilo a Resueltos y muestra un toast con Deshacer.
+- **Pedir otra ronda**: devuelve el hilo a los agentes («En debate»); la persona puede escribir antes qué falta.
+- **Crear un canal** con «Nuevo canal» (modal corto: nombre y descripción).
+- **Cerrar sin decisión o mover a otro canal**, desde el «…» del hilo.
+
+Siguen siendo de los agentes y de su terminal, no de la UI: iniciar o detener miembros de un equipo, aprobar planes de equipo y responder por un agente. La UI no muestra botones para eso.
+
+Cuando un hilo espera la decisión de la persona, aparece en **Inicio › Pendientes** («Un debate en #infra espera tu decisión» · Decidir) y el canal lleva `.badge.attn`. «Decidir» abre el hilo en la pestaña.
+
+## Bandeja de entregas: sin ver, selección y J/K
+
+Automatizaciones › Historial funciona como bandeja:
+
+- Toda entrega nueva entra **sin ver**. Abrirla en el panel la marca como vista; «Marcar como no vista» va en el «…» del panel.
+- **Selección múltiple:** las casillas de las filas y de la cabecera seleccionan; la `.bulkbar` ofrece «Marcar como vistas», «Marcar como no vistas» y ampliar a todas las sin ver. Son acciones reversibles: se aplican al instante, sin confirmación.
+- «Marcar todas como vistas» es un secundario del encabezado.
+- **Teclado:** J abre la siguiente sin ver, K la anterior. Los botones del pie del panel muestran la tecla con `.kbd`.
+- El panel de una entrega con acciones propuestas lleva su bloque de decisión: casillas por acción, «Aprobar N seleccionadas» y «Rechazar todas».
+
 ## Edición en línea
 
 - El valor se ve como texto; al pasar el cursor muestra un fondo `--surface-2`; al hacer click se convierte en campo.
@@ -93,4 +120,5 @@ No se usa un toast para informar algo que la pantalla ya muestra.
 - Todo es accesible con Tab en el orden visual.
 - Foco visible con `--focus` (anillo de 3 px), nunca `outline: none` sin reemplazo.
 - Atajos globales: ⌘K buscar, ⌘N crear en la vista actual, Escape cierra la capa superior.
-- Los atajos no se muestran en la interfaz salvo en la paleta ⌘K y en tooltips.
+- Atajos de bandeja: J siguiente sin ver, K anterior (Automatizaciones › Historial). No se activan con el foco en un campo.
+- Los atajos no se muestran en la interfaz salvo en la paleta ⌘K, en tooltips y en los botones Anterior / Siguiente del panel de entrega.

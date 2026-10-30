@@ -36,7 +36,7 @@ Seleccionar una fila abre su panel lateral, con los campos editables ahí mismo.
 Si una acción se puede revertir, se ejecuta y ofrece «Deshacer» durante 6 segundos. Solo se confirma lo que destruye datos sin vuelta atrás (restaurar un respaldo, eliminar un proyecto con contenido).
 
 ### 5. Lo que necesita atención sube a Inicio
-Autorizaciones pendientes, reinicios, propuestas de agentes, duplicados y vínculos sugeridos se juntan en la bandeja de Inicio, cada uno con su acción. Las demás vistas muestran **estado** (un chip), no alarmas.
+Autorizaciones pendientes, reinicios, propuestas de agentes, debates que esperan una decisión, duplicados y vínculos sugeridos se juntan en la bandeja de Inicio, cada uno con su acción. Las demás vistas muestran **estado** (un chip), no alarmas.
 
 ### 6. La interfaz no se explica a sí misma
 Nada de párrafos de ayuda permanentes. Si algo necesita explicación, va en el estado vacío, en el `hint` de un campo o en un tooltip. Un subtítulo que repite el título se borra.
@@ -66,7 +66,7 @@ Ajustes
 Barra superior: atrás · migas · búsqueda · sincronizar
 ```
 
-### Después: 2 niveles, 11 destinos
+### Después: 2 niveles, 10 destinos
 
 ```
 Buscar o ir a…  ⌘K
@@ -74,9 +74,9 @@ Inicio                 bandeja de lo que necesita atención
 
 TRABAJO
 ├ Proyectos            → Resumen · Contenido · Tareas · Decisiones · Colaboración
+│                        (canales › hilos › debate del proyecto)
 ├ Memoria              explorar + buscar en un solo lugar
-├ Colaboración         canales e hilos entre agentes
-└ Automatizaciones     programadas + historial de entregas
+└ Automatizaciones     Activas · Pausadas · Historial de entregas
 
 CONEXIONES
 ├ Servidores MCP
@@ -90,6 +90,8 @@ Ajustes                una página, ocho secciones
 
 **Trabajo** agrupa lo que la persona produce y consulta. **Conexiones** agrupa la infraestructura que el hub entrega a los agentes. Inicio está fuera de los grupos porque es el punto de entrada. Ajustes va al pie porque se visita poco.
 
+La colaboración no es un destino propio: todo canal pertenece a un proyecto y sus hilos se leen junto al resto del proyecto. Lo que necesita a la persona sube a Inicio («Un debate en #infra espera tu decisión»).
+
 ### Dónde quedó cada cosa
 
 | Antes | Ahora | Por qué |
@@ -101,10 +103,12 @@ Ajustes                una página, ocho secciones
 | Memoria › Por revisar, propuestas de entregas, fuentes sin asignar | Inicio › Pendientes | Todo lo que espera una decisión, junto |
 | Memoria › Procesamiento | Actividad › pestaña Procesamiento | Es un registro, como las llamadas |
 | Memoria › Fuentes y ajustes + Ajustes + Jira (dos veces) | Ajustes, con 8 secciones | Una sola fuente de verdad de configuración |
-| Memoria › Colaboración sin proyecto | Colaboración (filtro «Sin proyecto») | Los hilos se filtran por proyecto, no se separan |
-| Automatizaciones › Programaciones + Entregas | Automatizaciones, con historial en el panel | Una entrega siempre pertenece a una automatización |
-| Detalle de entrega | Panel de la automatización › Últimas entregas | Misma razón |
+| Memoria › Colaboración sin proyecto | Pestaña Colaboración del proyecto; los canales sin proyecto no tienen vista propia | Cada canal pertenece a un proyecto; un destino global duplicaba la pestaña |
+| Destino Colaboración de la barra lateral (rediseño v1) | Proyecto › Colaboración, en tres columnas: canales › hilos › debate | Un solo lugar para los hilos; lo que espera decisión sube a Inicio |
+| Automatizaciones › Programaciones + Entregas | Automatizaciones con segmentado Activas / Pausadas / Historial | Es la misma colección vista por estado; el historial junta las entregas de todas |
+| Detalle de entrega | Historial › panel de la entrega (resumen, acciones propuestas, J/K); el panel de la automatización muestra sus últimas entregas con «Ver en Historial» | Las entregas se revisan en tanda, como una bandeja con sin ver |
 | Proyecto › Colaboración, Foro compartido, Compartir y colaborar | Pestaña Colaboración + botón Compartir | Tres pestañas para un mismo tema |
+| Debate de agentes que necesita a la persona | Inicio › Pendientes («Decidir») + resolución propuesta en el hilo | La persona aprueba o pide otra ronda donde está el debate |
 | Proyecto › Reuniones, Documentos, Colecciones | Pestaña Contenido con filtro por tipo | Son la misma lista con distinto tipo |
 | Proyecto › Línea de tiempo | Pestaña Resumen › Última actividad | Es el resumen del proyecto |
 | Proyecto › Brief y cierre | Resumen › bloque Automatizaciones (interruptores) | Es un interruptor, no una sección |

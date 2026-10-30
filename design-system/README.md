@@ -23,7 +23,7 @@ Paquete completo del rediseño: biblia de diseño, documentos, vistas, skill par
 
 03-vistas/
   html/index.html                    Prototipo navegable (abrir en el navegador, funciona sin internet)
-  png/oscuro/  png/claro/            Las 12 vistas a 2880×1920 en ambos temas
+  png/oscuro/  png/claro/            Las 13 vistas a 2880×1920 en ambos temas (colaboración dentro de Proyecto; historial de entregas en Automatizaciones)
   png/variantes/                     Pestañas de Proyecto, secciones de Ajustes y vistas a 960 px
   png/fundamentos/                   Los 4 tableros de fundamentos
   Vistas-Agent-Hub.pdf               Las 12 vistas en ambos temas, una por página
@@ -33,7 +33,7 @@ Paquete completo del rediseño: biblia de diseño, documentos, vistas, skill par
   references/                        Los 9 documentos
   assets/ah.css                      El sistema visual
   assets/ejemplos/                   Prototipo HTML (una vista por plantilla y todas las demás)
-  assets/capturas/                   Capturas de referencia
+  assets/capturas/                   Capturas de referencia (vistas-oscuro/01-inicio … 13-ajustes, variantes/)
 
 05-fuente/
   ah.css                             Tokens + componentes. Fuente de verdad del sistema visual.
