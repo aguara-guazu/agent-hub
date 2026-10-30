@@ -8,7 +8,7 @@ import type { IconName } from "./Icon"
 import { useToast } from "./ui/Toast"
 import { useT } from "../i18n"
 
-type DestinationLabel = "home" | "projects" | "memory" | "collaboration" | "automations" | "servers" | "skills" | "clients" | "activity" | "settings"
+type DestinationLabel = "home" | "projects" | "memory" | "automations" | "servers" | "skills" | "clients" | "activity" | "settings"
 type DestinationKeywords = "cmdk.keywordsHome" | "cmdk.keywordsSettings" | "cmdk.keywordsActivity"
 
 export interface Destination {
@@ -27,7 +27,6 @@ export const DESTINATIONS: readonly Destination[] = [
   { to: "/home", labelKey: "home", icon: "home", group: "top", sections: ["/home"], keywordsKey: "cmdk.keywordsHome" },
   { to: "/projects", labelKey: "projects", icon: "projects", group: "work", sections: ["/projects"] },
   { to: "/memory", labelKey: "memory", icon: "memory", group: "work", sections: ["/memory"] },
-  { to: "/collaboration", labelKey: "collaboration", icon: "collaboration", group: "work", sections: ["/collaboration"] },
   { to: "/automations", labelKey: "automations", icon: "automations", group: "work", sections: ["/automations"] },
   { to: "/servers", labelKey: "servers", icon: "servers", group: "connections", sections: ["/servers"] },
   { to: "/skills", labelKey: "skills", icon: "book", group: "connections", sections: ["/skills"] },

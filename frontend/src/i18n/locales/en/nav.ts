@@ -8,7 +8,6 @@ const nav = {
   groupWork: "Work",
   projects: "Projects",
   memory: "Memory",
-  collaboration: "Collaboration",
   automations: "Automations",
   groupConnections: "Connections",
   servers: "MCP servers",
