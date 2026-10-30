@@ -773,7 +773,6 @@ ALTER TABLE chat_messages ADD COLUMN kind TEXT;
 ALTER TABLE chat_channels ADD COLUMN description TEXT;
 `, String.raw`
 -- Inter-hub channel replication. Creator codes are represented only by a hash here; plaintext is creator-local vault state.
-ALTER TABLE chat_channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'local';
 CREATE TABLE interhub_channels (
  channel_id TEXT PRIMARY KEY REFERENCES chat_channels(id) ON DELETE CASCADE,
  creator_hub_id TEXT NOT NULL, creator_session_id TEXT NOT NULL REFERENCES chat_sessions(id),

@@ -25,8 +25,11 @@ export class InterhubNetwork {
     return new SharedProjects(this.store).identity()
   }
   private async assertCreator(channelId: string, sessionId: string) {
-    const row = (await this.store.db.query("SELECT creator_hub_id,creator_session_id FROM interhub_channels WHERE channel_id=$1", [channelId]))[0]
-    check(row?.creator_session_id === sessionId, "Sólo el líder del hub creador puede gestionar el código", 403)
+    const row = (await this.store.db.query(`SELECT i.creator_hub_id FROM interhub_channels i
+      JOIN chat_channels c ON c.id=i.channel_id JOIN chat_sessions s ON s.id=$2
+      WHERE i.channel_id=$1 AND c.kind='inter-hub' AND c.leader_id=s.id AND s.closed_at IS NULL AND s.removed_at IS NULL`, [channelId, sessionId]))[0]
+    const local = await this.localIdentity()
+    check(row?.creator_hub_id === local.id, "Sólo el líder vigente del hub creador puede gestionar el código", 403)
     return row
   }
 
@@ -85,7 +88,8 @@ export class InterhubNetwork {
   async receiveEnvelope(raw: unknown, peer: PublicIdentity) {
     const event = parse(envelopeSchema, raw)
     check(event.origin_hub_id === peer.id && event.origin_peer_public_key === peer.signing, "La identidad del origen no coincide con el peer P2P", 403)
-    check(Math.abs(Date.now() - Date.parse(event.occurred_at)) <= 300_000, "Fecha de evento inválida", 403)
+    check(Date.parse(event.occurred_at) <= Date.now() + 300_000, "Fecha de evento inválida", 403)
+    check(Buffer.byteLength(canonical(event.payload)) <= 36_000_000, "Payload inter-hub demasiado grande", 413)
     const { signature: proof, ...unsigned } = event
     check(validSignature(unsigned, proof, peer), "Firma de evento inter-hub inválida", 403)
     const member = (await this.store.db.query("SELECT 1 FROM interhub_members WHERE channel_id=$1 AND hub_id=$2 AND removed_at IS NULL", [event.channel_id, peer.id]))[0]
