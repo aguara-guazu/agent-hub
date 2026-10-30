@@ -5,6 +5,7 @@ import { Avatar, Empty, ErrorState, IconButton, SkeletonRows, Tag } from "../../
 import { useFormat, useT } from "../../../i18n"
 import { useMemory } from "../../../lib/memory"
 import { MESSAGE_PAGE, Pager, agentInitials } from "./chatShared"
+import { isInterhub } from "./interhubData"
 import { messageKind, type BoardChannel, type BoardMessage, type ThreadRead } from "./collabData"
 
 /** Debate de un hilo, solo lectura: mensajes tipados de los agentes. La X cierra la columna (limpia `?thread=`). */
@@ -20,12 +21,17 @@ export function ThreadView({ threadId, channel, onClose }: { threadId: string; c
   if (read.error || !thread) return <><div className="collab-head" style={{ alignItems: "flex-end" }}>{close}</div><ErrorState error={read.error} title={t("collaboration.board.threadError")} onRetry={() => void read.refetch()} /></>
 
   const started = thread.created_at ?? read.data.items[0]?.created_at ?? thread.updated_at
+  const first = offset === 0 ? read.data.items[0] : undefined
+  const shared = isInterhub(channel)
+  const author = thread.author_label || first?.author_label || ""
+  // El hub de quien abrió el hilo solo se conoce por su primer mensaje, que es el de la primera página.
+  const authorHub = shared && first && first.author_label === author ? first.origin_hub?.name : undefined
 
   return <>
     <div className="collab-head" style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between" }}>
       <div className="row-main" style={{ gap: "var(--sp-2)" }}>
         <span className="h3 clamp2" title={thread.title}>{thread.title}</span>
-        <span className="xs t3">{t("collaboration.board.origin", { channel: channel.name, author: thread.author_label || read.data.items[0]?.author_label || "", when: when(started, format, time => t("collaboration.board.today", { time })) })}</span>
+        <span className="xs t3">{t(shared ? "collaboration.interhub.origin" : "collaboration.board.origin", { channel: channel.name, author: authorHub ? t("collaboration.interhub.authorHub", { author, hub: authorHub }) : author, when: when(started, format, time => t("collaboration.board.today", { time })) })}</span>
       </div>
       {close}
     </div>
@@ -58,12 +64,15 @@ function MessageItem({ message }: { message: BoardMessage }) {
   const { t } = useT("project")
   const format = useFormat()
   const kind = messageKind(message.kind)
+  const hub = message.origin_hub
   return (
     <li id={`chat-${message.id}`} className="msg">
       <Avatar name={message.author_label} text={agentInitials(message.author_label, message.cli_kind)} small />
       <div className="msg-body">
         <div className="msg-meta">
           <b className="trunc" style={{ maxWidth: "18ch" }} title={message.author_label}>{message.author_label}</b>
+          {message.author_role === "leader" && <Tag>{t("collaboration.interhub.leader")}</Tag>}
+          {hub && <span className={hub.is_local ? "chip c-ok" : "chip c-off"} style={{ maxWidth: "22ch" }} title={hub.name}><span className="trunc">{hub.name}</span></span>}
           {kind && <Tag>{t(`collaboration.board.kind.${kind}`)}</Tag>}
           <time className="xs t3" dateTime={message.created_at} title={format.date(message.created_at)}>{when(message.created_at, format)}</time>
         </div>
