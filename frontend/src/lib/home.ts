@@ -35,33 +35,40 @@ export interface ProjectSuggestion {
   data: { source_entity_id: string; candidate_project_id?: string | null; candidate_project_title?: string | null; confidence?: string; suggested_title?: string | null; suggested_description?: string | null; reason?: string }
 }
 
-/** Fila de `GET /memory/chat/pending-decisions` (contrato acordado con colab-back). */
+/**
+ * Fila de `GET /memory/chat/pending-decisions`: misma forma que `ChatPendingDebate` de `@agenthub/shared` (colab-back).
+ * Se declara acá hasta integrar esa rama; al integrarla, reemplazar por el import.
+ */
 export interface PendingDebate {
+  resolution_id: string
   thread_id: string
+  thread_title: string
   channel_id: string
   channel_name: string
-  project_id: string
-  project_title: string
-  title: string
-  question: string | null
-  resolution_id: string
-  agreed: number
-  participants: number
-  proposed_at: string
+  project_id: string | null
+  project_title: string | null
+  text: string
+  agreed_count: number
+  participant_count: number
+  proposed_by_label: string
+  created_at: string
 }
 
 /**
- * Debates que esperan decisión. Mientras el backend no exponga la ruta, o si falla, Inicio sigue sin esa fila:
- * la fuente es opcional y nunca convierte la bandeja en error.
+ * Debates con una resolución propuesta que espera a la persona. Es una fuente opcional: si la ruta no existe todavía
+ * o falla, Inicio sigue sin esas filas y la bandeja nunca pasa a error. Solo cuentan los de canales con proyecto,
+ * porque la colaboración vive en la pestaña del proyecto.
  */
 export function usePendingDebates() {
   const query = useQuery({
     queryKey: ["memory", "chat", "pending-decisions"],
-    queryFn: () => api.get<{ items: PendingDebate[] }>(`/memory/chat/pending-decisions?limit=${PENDING_PAGE}`),
+    queryFn: () => api.get<{ items: PendingDebate[] }>(`/memory/chat/pending-decisions?limit=${PENDING_PAGE}&offset=0`),
     retry: false,
     refetchInterval: 30_000,
   })
-  const items = [...(query.data?.items ?? [])].sort((a, b) => b.proposed_at.localeCompare(a.proposed_at))
+  const items = (query.data?.items ?? [])
+    .filter((debate): debate is PendingDebate & { project_id: string } => Boolean(debate.project_id))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
   return { items, refetch: query.refetch }
 }
 
@@ -79,7 +86,7 @@ export interface PendingInbox {
     failingConnectors: Connector[]
   }
   agents: {
-    debates: PendingDebate[]
+    debates: Array<PendingDebate & { project_id: string }>
     decisions: RunListItem[]
     unreadOther: number
     readRequests: ReadRequest[]

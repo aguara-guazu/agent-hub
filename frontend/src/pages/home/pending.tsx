@@ -173,16 +173,16 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
   }
 
   for (const debate of a.debates) {
-    const question = debate.question?.trim() || debate.title
+    const project = debate.project_title ?? projectNames.get(debate.project_id) ?? debate.project_id
     const to = `/projects/${encodeURIComponent(debate.project_id)}?${new URLSearchParams({ tab: "colaboracion", channel: debate.channel_id, thread: debate.thread_id }).toString()}`
     rows.push({ id: `debate-${debate.thread_id}`, group: "agents", node: (
       <Row
         key={`debate-${debate.thread_id}`}
-        lead={<Avatar name={debate.project_title} small />}
+        lead={<Avatar name={project} small />}
         title={t("debate.title", { channel: debate.channel_name })}
-        sub={[debate.project_title, question, plural("debate.agreed", debate.participants, { agreed: debate.agreed })].join(" · ")}
+        sub={[project, debate.thread_title, plural("debate.agreed", debate.participant_count, { agreed: debate.agreed_count })].join(" · ")}
         meta={<Chip tone="warn">{ts("chip.awaitingDecision")}</Chip>}
-        action={<LinkAction to={to}>{t("debate.action")}</LinkAction>}
+        action={<LinkAction to={to}>{tc("actions.view")}</LinkAction>}
       />
     ) })
   }

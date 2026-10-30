@@ -58,7 +58,6 @@ const home = {
     title: "Un debate en #{{channel}} espera tu decisión",
     agreed_one: "{{agreed, number}} de {{count, number}} agente de acuerdo",
     agreed_other: "{{agreed, number}} de {{count, number}} agentes de acuerdo",
-    action: "Decidir",
   },
   decision: {
     title_one: "{{title}} propone {{count, number}} acción",
