@@ -13,7 +13,8 @@ Antes de tocar cualquier archivo de interfaz, cargá la skill `agent-hub-design`
 
 - Toda vista usa una de las 4 plantillas (Colección con panel, Ficha, Configuración, Bandeja).
 - Solo clases y variables de `src/styles/ah.css`. Nada de colores, radios ni tamaños a mano.
-- Un botón primario por vista. Como máximo 5 pestañas. No se agregan destinos a la barra lateral.
+- Un botón primario por vista (salvo el primario compacto de un bloque de decisión). Como máximo 5 pestañas. No se agregan destinos a la barra lateral.
+- La colaboración vive solo en la pestaña Colaboración de cada proyecto. La persona escribe, aprueba la resolución o pide otra ronda y crea canales; iniciar o detener agentes y aprobar planes de equipo no van en la UI.
 - Editar en línea o en panel lateral. Modal solo para crear (≤ 5 campos) o confirmar lo irreversible.
 - Lo reversible se ejecuta al instante con «Deshacer»; no se piden confirmaciones.
 - Un solo aviso por página; el estado de cada elemento va en un chip.
@@ -64,7 +65,7 @@ Revisá este cambio de front de Agent Hub contra el sistema de diseño.
 
 Cargá la skill agent-hub-design. Para cada problema reportá:
 - archivo y línea,
-- regla violada (L1–L10, U1–U15, R1–R8 o punto del checklist),
+- regla violada (L1–L10, U1–U16, R1–R8 o punto del checklist),
 - qué ve o sufre la persona por ese problema,
 - la corrección concreta usando componentes del sistema.
 
@@ -78,9 +79,9 @@ las reglas. Si el cambio está bien, decilo en una línea.
 ```text
 Auditá el front completo de Agent Hub contra la skill agent-hub-design.
 
-Para cada destino de la arquitectura (Inicio, Proyectos, Proyecto, Memoria,
-fichas de entidad, Colaboración, Automatizaciones, Servidores MCP, Skills,
-Clientes, Actividad, Ajustes):
+Para cada destino de la arquitectura (Inicio, Proyectos, Proyecto con su
+pestaña Colaboración, Memoria, fichas de entidad, Automatizaciones con su
+Historial, Servidores MCP, Skills, Clientes, Actividad, Ajustes):
 1. Compará con su especificación y su lista «No va».
 2. Contá: botones primarios visibles, modales que se pueden abrir, avisos de
    página, pestañas, valores internos visibles, colores escritos a mano.
