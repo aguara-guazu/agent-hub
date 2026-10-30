@@ -42,6 +42,12 @@ export interface NetworkExtension {
 }
 export const networkSettingsSchema = z.object({ enabled: z.boolean().optional().transform(() => true), bootstrap: z.array(z.string().min(1).max(300)).max(20), bind_host: z.ipv4().default('0.0.0.0') }).strict()
 const MAX_FRAME = 55_000_000
+/**
+ * Both sides send hello as their first frame as soon as the connection opens. Hyperswarm can report a client
+ * connection as open that the remote never accepted, so no hello ever arrives; closing it at this deadline lets
+ * Hyperswarm redial instead of holding the dead connection (each one delays an inter-hub join by this long).
+ */
+const HELLO_TIMEOUT_MS = 5_000
 const helloSchema = z.object({ type: z.literal('hello'), identity: z.object({ id: z.string(), signing: z.string(), encryption: z.string(), name: z.string() }),
   noise_key: z.string(), created_at: z.string(), projects: z.array(z.string().uuid()).max(1000), signature: z.string() }).strict()
 
@@ -162,7 +168,7 @@ export class SharedNetwork {
     let remote: z.infer<typeof helloSchema> | null = null, buffer = Buffer.alloc(0), queue = Promise.resolve(), pending = 0, queuedBytes = 0
     const cursors = new Map<string, number>(), offered = new Map<string, string>(), requested = new Set<string>()
     const transfers = new Map<string, Transfer>()
-    const timeout = setTimeout(() => socket.destroy(), 15_000); timeout.unref()
+    const timeout = setTimeout(() => socket.destroy(), HELLO_TIMEOUT_MS); timeout.unref()
     let outgoing = Promise.resolve()
     const send = (value: unknown) => {
       const data = Buffer.from(JSON.stringify(value) + '\n')
