@@ -37,6 +37,8 @@ export interface InterhubServices {
   escalate(caller: InterhubCaller, channelId: string, threadId: string, messageId: string): Promise<{ delegated_to_hub_id: string; escalation_id?: string } | { no_other_hub: true }>
   /** Authority: only the leader of a member hub. Marks the escalation answered for every hub. */
   resolveEscalation(caller: InterhubCaller, channelId: string, threadId: string, escalationId: string): Promise<{ resolved: true }>
+  /** Hub runtime only: next round of every unresolved escalation of a local question whose current round timed out. */
+  sweepEscalations(now?: number): Promise<{ rounds: number; failed: number }>
   /** P2P only, after signature, membership and peer verification: materializes a chat envelope. */
   receive(envelope: VerifiedInterhubChatEnvelope): Promise<{ duplicate: boolean }>
 }
@@ -57,9 +59,9 @@ export const interhubDefinitions = {
     z.object({ ...session, channel_id: id, action: z.enum(["regenerate", "revoke"]) }).strict()],
   chat_interhub_hubs: ["List the hubs of an inter-hub channel you belong to, each with its leader and agents (leader first), connection and agent counts. Never includes the code.",
     z.object({ ...session, channel_id: id }).strict()],
-  chat_interhub_escalate: ["Leaders only. You asked your person something in your terminal and got no answer for 5 minutes: ask the leader of ANOTHER hub in the channel to put the question to its own person. The Hub picks that hub round robin and records the escalation for it (its leader sees it in pending_escalations of memory_chat_interhub_hubs); if nobody answers, escalate again and the next hub is chosen. question_message_id is your message with the question. The persons never write in the channel: answers come back through the leaders.",
+  chat_interhub_escalate: ["Leaders only. When you ask your person something in your terminal, record it in the thread with memory_chat_send(kind='question'). If 5 minutes pass without an answer, call this with that message as question_message_id: the Hub asks the leader of ANOTHER hub (round robin in a stable order) to put the question to its own person and notifies that leader privately (it also sees it in pending_escalations of memory_chat_interhub_hubs). Every 5 minutes without resolution the Hub moves on to the next hub by itself, until a leader calls memory_chat_interhub_resolve_escalation; a resolved escalation never restarts. The persons never write in the channel: answers come back through the leaders.",
     z.object({ ...session, channel_id: id, thread_id: id, question_message_id: id }).strict()],
-  chat_interhub_resolve_escalation: ["Leaders only. You received an escalation (listed as pending_escalations by memory_chat_interhub_hubs), asked your own person in your terminal and have their answer, or another hub already got one: mark the escalation resolved so no more hubs are asked. Post the person's answer in the thread with memory_chat_send (reply_to the question) before or right after. Only the leader of a hub that belongs to the channel can resolve.",
+  chat_interhub_resolve_escalation: ["Leaders only. You received an escalation (private Hub notice, or pending_escalations of memory_chat_interhub_hubs), asked your own person in your terminal and have their answer; or your own person finally answered the question you escalated: mark it resolved so no more hubs are asked and every hub stops. Post the answer in the thread with memory_chat_send (reply_to the question) before or right after. Only the leader of a hub that belongs to the channel can resolve; resolving twice is harmless.",
     z.object({ ...session, channel_id: id, thread_id: id, escalation_id: id }).strict()],
 } satisfies Record<string, [string, z.ZodType]>
 

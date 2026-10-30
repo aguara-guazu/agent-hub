@@ -76,6 +76,17 @@ export interface InterhubChatDependencies {
   changed?(): void
 }
 
+interface EscalationRound {
+  id: string
+  channel_id: string
+  thread_id: string
+  question_message_id: string
+  from: string
+  target: string
+  at: string
+  previous: { last_hub_id: string | null; next_hub_id: string | null; escalated_at: string } | null
+}
+
 /**
  * Materializes only envelopes whose peer, membership and signature P2P has verified, and owns the inter-hub
  * escalation state. Identity is never taken from a payload: the hub comes from the verified envelope and the
@@ -246,25 +257,117 @@ export class InterhubChat {
     await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error=$2 WHERE session_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL", [`${ESCALATION_SENDER}${escalationId}`, reason])
   }
 
-  async escalate(caller: { id: string; channel_id: string }, channelId: string, threadId: string, messageId: string) {
-    return this.store.db.transaction(async sql => {
-      const channel = await this.channel(sql, channelId)
-      check(channel.leader_id === caller.id, "Sólo el líder local del canal puede escalar.", 403)
-      const message = (await sql.query("SELECT id,created_at FROM chat_messages WHERE id=$1 AND thread_id=$2", [messageId, threadId]))[0]
-      check(message, "La pregunta no pertenece al hilo.", 404)
-      check(Date.now() - Date.parse(message.created_at) >= interhubEscalationTimeout(), "La pregunta todavía no cumplió el plazo de escalada.", 409)
-      const hubs = (await this.transport.hubs(channelId)).filter(hub => !hub.is_local && hub.connection === "online")
-      if (!hubs.length) return { no_other_hub: true as const }
+  /**
+   * Starts an escalation, or runs its next round, for a question the caller (this hub's leader) wrote here.
+   * The wait is measured with this hub's clock from the question (first round) or from the current round.
+   */
+  async escalate(caller: { id: string }, channelId: string, threadId: string, messageId: string, now = Date.now()) {
+    const localHub = await this.transport.localHubId()
+    const round = await this.store.db.transaction(async sql => {
+      await this.channel(sql, channelId)
+      const question = (await sql.query(`SELECT m.id,m.author_id,m.kind,m.created_at FROM chat_messages m JOIN chat_threads t ON t.id=m.thread_id
+        WHERE m.id=$1 AND m.thread_id=$2 AND t.channel_id=$3 AND NOT EXISTS(SELECT 1 FROM interhub_message_origins o WHERE o.message_id=m.id)`, [messageId, threadId, channelId]))[0]
+      check(question, "La pregunta no es un mensaje de este hub en ese hilo del canal.", 404)
+      check(question.author_id === caller.id, "Sólo podés escalar una pregunta que escribiste vos.", 403)
+      check(question.kind === "question", "Sólo se escala un mensaje enviado con kind question.", 409)
       const current = (await sql.query("SELECT * FROM interhub_escalations WHERE channel_id=$1 AND thread_id=$2 AND question_message_id=$3", [channelId, threadId, messageId]))[0] as InterhubEscalationState | undefined
-      const start = current?.last_hub_id ? Math.max(0, hubs.findIndex(hub => hub.id === current.last_hub_id) + 1) : 0
-      const target = hubs[start % hubs.length]!
-      const id = current?.id ?? randomUUID(), now = new Date().toISOString()
-      await sql.query(`INSERT INTO interhub_escalations(id,channel_id,thread_id,question_message_id,last_hub_id,next_hub_id,escalated_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7)
-        ON CONFLICT(channel_id,thread_id,question_message_id) DO UPDATE SET last_hub_id=excluded.last_hub_id,next_hub_id=excluded.next_hub_id,escalated_at=excluded.escalated_at,updated_at=now()`, [id, channelId, threadId, messageId, target.id, target.id, now])
-      await this.transport.publish(channelId, { type: "escalation", escalation: { id, thread_id: threadId, question_message_id: messageId, from_hub_id: await this.transport.localHubId(), to_hub_id: target.id, created_at: now } })
-      return { delegated_to_hub_id: target.id }
+      check(!current?.answered_at, "Esa escalada ya fue resuelta; no se repite.", 409)
+      const since = Date.parse(String(current?.escalated_at ?? question.created_at))
+      check(now - since >= interhubEscalationTimeout(), current ? "La ronda actual de esa escalada todavía está en plazo." : "La pregunta todavía no cumplió el plazo de escalada.", 409)
+      return this.nextRound(sql, channelId, { thread_id: threadId, question_message_id: messageId }, current, localHub, now)
     })
+    if (!round) return { no_other_hub: true as const }
+    await this.publishRound(round)
+    this.transport.changed?.()
+    return { delegated_to_hub_id: round.target, escalation_id: round.id }
+  }
+
+  /** Next hub after the last one asked, in stable hub-id order, preferring a connected one. Null when no other hub exists. */
+  private async nextRound(sql: Sql, channelId: string, question: { thread_id: string; question_message_id: string }, current: InterhubEscalationState | undefined, localHub: string, now: number): Promise<EscalationRound | null> {
+    const hubs = (await this.transport.hubs(channelId)).filter(hub => !hub.is_local && hub.id !== localHub).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    if (!hubs.length) return null
+    const last = current?.last_hub_id ?? null
+    const start = last === null ? 0 : Math.max(0, hubs.findIndex(hub => hub.id > last))
+    const ordered = [...hubs.slice(start), ...hubs.slice(0, start)]
+    const target = ordered.find(hub => hub.connection === "online") ?? ordered[0]!
+    const id = current?.id ?? randomUUID(), at = new Date(now).toISOString()
+    if (current) {
+      const updated = await sql.query("UPDATE interhub_escalations SET last_hub_id=$2,next_hub_id=$2,escalated_at=$3,updated_at=now() WHERE id=$1 AND answered_at IS NULL AND escalated_at=$4 RETURNING id",
+        [id, target.id, at, current.escalated_at])
+      check(updated.length, "La escalada cambió mientras se calculaba la ronda; volvé a intentar.", 409)
+    } else {
+      const inserted = await sql.query(`INSERT INTO interhub_escalations(id,channel_id,thread_id,question_message_id,last_hub_id,next_hub_id,escalated_at)
+        VALUES($1,$2,$3,$4,$5,$5,$6) ON CONFLICT DO NOTHING RETURNING id`, [id, channelId, question.thread_id, question.question_message_id, target.id, at])
+      check(inserted.length, "La escalada ya existe; volvé a intentar.", 409)
+    }
+    return { id, channel_id: channelId, thread_id: question.thread_id, question_message_id: question.question_message_id, from: localHub, target: target.id, at,
+      previous: current ? { last_hub_id: current.last_hub_id, next_hub_id: current.next_hub_id, escalated_at: current.escalated_at } : null }
+  }
+
+  /** Publishes a committed round; if publishing fails the round is undone (compare-and-set) so a later call or sweep retries it. */
+  private async publishRound(round: EscalationRound) {
+    try {
+      await this.transport.publish(round.channel_id, { type: "escalation", escalation: { id: round.id, thread_id: round.thread_id, question_message_id: round.question_message_id,
+        from_hub_id: round.from, to_hub_id: round.target, created_at: round.at } })
+    } catch (error) {
+      if (round.previous) await this.store.db.query("UPDATE interhub_escalations SET last_hub_id=$2,next_hub_id=$3,escalated_at=$4,updated_at=now() WHERE id=$1 AND escalated_at=$5 AND answered_at IS NULL",
+        [round.id, round.previous.last_hub_id, round.previous.next_hub_id, round.previous.escalated_at, round.at])
+      else await this.store.db.query("DELETE FROM interhub_escalations WHERE id=$1 AND escalated_at=$2 AND answered_at IS NULL", [round.id, round.at])
+      throw error
+    }
+  }
+
+  /**
+   * Runtime sweep: every unresolved escalation of a question asked here whose current round is older than the timeout
+   * moves to the next hub. Resolved escalations never get another round; without another hub the wait just restarts.
+   */
+  async sweepEscalations(now = Date.now()) {
+    const cutoff = new Date(now - interhubEscalationTimeout()).toISOString()
+    const due = await this.store.db.query(`SELECT e.id FROM interhub_escalations e JOIN chat_channels c ON c.id=e.channel_id
+      WHERE e.answered_at IS NULL AND e.escalated_at<=$1 AND c.kind=$2 AND c.closed_at IS NULL AND c.deleted_at IS NULL
+      AND NOT EXISTS(SELECT 1 FROM interhub_message_origins o WHERE o.message_id=e.question_message_id) ORDER BY e.escalated_at LIMIT 20`, [cutoff, INTERHUB_CHANNEL_KIND])
+    if (!due.length) return { rounds: 0, failed: 0 }
+    const localHub = await this.transport.localHubId()
+    let rounds = 0, failed = 0
+    for (const { id: escalationId } of due) {
+      try {
+        const round = await this.store.db.transaction(async sql => {
+          const current = (await sql.query("SELECT * FROM interhub_escalations WHERE id=$1 AND answered_at IS NULL AND escalated_at<=$2", [escalationId, cutoff]))[0] as InterhubEscalationState | undefined
+          if (!current || !await this.member(sql, current.channel_id, localHub)) return null
+          const next = await this.nextRound(sql, current.channel_id, current, current, localHub, now)
+          if (!next) await sql.query("UPDATE interhub_escalations SET escalated_at=$2,updated_at=now() WHERE id=$1 AND escalated_at=$3 AND answered_at IS NULL", [current.id, new Date(now).toISOString(), current.escalated_at])
+          return next
+        })
+        if (!round) continue
+        await this.publishRound(round)
+        rounds++
+      } catch { failed++ }
+    }
+    if (rounds) this.transport.changed?.()
+    return { rounds, failed }
+  }
+
+  /** Marks an escalation answered for every hub. Idempotent: an answered escalation is neither republished nor reopened. */
+  async resolve(channelId: string, threadId: string, escalationId: string, now = Date.now()) {
+    const localHub = await this.transport.localHubId(), resolvedAt = new Date(now).toISOString()
+    const changed = await this.store.db.transaction(async sql => {
+      await this.channel(sql, channelId)
+      const row = (await sql.query("SELECT answered_at FROM interhub_escalations WHERE id=$1 AND channel_id=$2 AND thread_id=$3", [escalationId, channelId, threadId]))[0]
+      check(row, "Escalada inexistente.", 404)
+      if (row.answered_at) return false
+      await sql.query("UPDATE interhub_escalations SET answered_at=$2,updated_at=now() WHERE id=$1 AND answered_at IS NULL", [escalationId, resolvedAt])
+      await this.cancelEscalationNotices(sql, escalationId, "Escalada resuelta")
+      return true
+    })
+    if (!changed) return { resolved: true as const }
+    try {
+      await this.transport.publish(channelId, { type: "escalation_resolved", resolution: { escalation_id: escalationId, hub_id: localHub, resolved_at: resolvedAt } })
+    } catch (error) {
+      await this.store.db.query("UPDATE interhub_escalations SET answered_at=NULL,updated_at=now() WHERE id=$1 AND answered_at=$2", [escalationId, resolvedAt])
+      throw error
+    }
+    this.transport.changed?.()
+    return { resolved: true as const }
   }
 }
 

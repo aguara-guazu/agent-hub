@@ -81,21 +81,16 @@ export function createInterhubServices(store: MemoryStore, changed?: () => void)
       return network.creatorCode(channelId)
     },
     async escalate(caller, channelId, threadId, messageId) {
+      check(await interhubChannel(channelId), "Canal entre hubs inexistente.", 404)
       check(await isHubLeader(channelId, caller), "Sólo el líder de tu hub en el canal puede escalar.", 403)
-      const result = await chat.escalate(caller, channelId, threadId, messageId)
-      if ("no_other_hub" in result) return result
-      const row = (await db.query("SELECT id FROM interhub_escalations WHERE channel_id=$1 AND thread_id=$2 AND question_message_id=$3", [channelId, threadId, messageId]))[0]
-      return { ...result, ...(row ? { escalation_id: String(row.id) } : {}) }
+      return chat.escalate(caller, channelId, threadId, messageId)
     },
     async resolveEscalation(caller, channelId, threadId, escalationId) {
       check(await interhubChannel(channelId), "Canal entre hubs inexistente.", 404)
       check(await isHubLeader(channelId, caller), "Sólo el líder de un hub miembro puede resolver una escalada.", 403)
-      const resolvedAt = new Date().toISOString()
-      const updated = await db.query("UPDATE interhub_escalations SET answered_at=COALESCE(answered_at,$4),updated_at=now() WHERE id=$1 AND channel_id=$2 AND thread_id=$3 RETURNING id", [escalationId, channelId, threadId, resolvedAt])
-      check(updated.length, "Escalada inexistente.", 404)
-      await chat.transport.publish(channelId, { type: "escalation_resolved", resolution: { escalation_id: escalationId, hub_id: await localHubId(), resolved_at: resolvedAt } })
-      return { resolved: true as const }
+      return chat.resolve(channelId, threadId, escalationId)
     },
+    sweepEscalations: now => chat.sweepEscalations(now),
     receive: envelope => chat.receive(envelope),
   }
 }

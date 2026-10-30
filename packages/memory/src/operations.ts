@@ -148,6 +148,7 @@ export class MemoryOperations {
     teamRuntime?: { catalog: TeamCatalog; orca: TeamOrca | ((chat:LocalChat)=>TeamOrca) }, readonly collaborationEnabled: () => boolean = () => true) {
     this.chat = new LocalChat(store)
     this.interhubTools = new InterhubTools(this.chat, () => this.interhub)
+    this.chat.interhubSweep = () => this.interhub.sweepEscalations()
     this.usage = new UsageQuotas(store.db)
     this.usageNotices = new UsageNotices(this.chat)
     this.fleet = typeof teamRuntime?.orca === 'function' ? teamRuntime.orca(this.chat) : teamRuntime?.orca

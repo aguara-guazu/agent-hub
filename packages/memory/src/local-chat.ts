@@ -124,6 +124,8 @@ export async function virtualFolder(path: string) {
 /** Durable data; events are hints only. Reconnecting listeners always re-read SQLite. */
 export class LocalChat {
   usageEnabled: (agentId:string)=>boolean = () => true
+  /** Set by MemoryOperations; the Hub runtime calls it on every tick to advance timed-out inter-hub escalations. */
+  interhubSweep?: () => Promise<unknown>
   readonly events = new EventEmitter().setMaxListeners(0)
   private async localHub() {
     const { SharedProjects } = await import("./sharing/projects.js")
