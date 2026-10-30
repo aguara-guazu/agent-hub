@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto"
 import type { EventEmitter } from "node:events"
 import { z } from "zod"
-import type { InterhubChatPayload } from "@agenthub/shared"
+import { INTERHUB_JOIN_TIMEOUT_MS, type InterhubChatPayload } from "@agenthub/shared"
 import { check, MemoryError, parse } from "../contracts.js"
 import type { MemoryStore } from "../store.js"
 import type { NetworkExtension, NetworkPeer, NetworkTopic, SharedNetwork } from "../sharing/network.js"
@@ -10,13 +10,28 @@ import { sessionStatus } from "../local-chat.js"
 import { INTERHUB_REMOTE_CLI_KIND, localChannelAgents, remoteAgentIds, type InterhubChat } from "./chat.js"
 import { InterhubNetwork, channelTopic, chatKind, codeKey, joinProof, rendezvousTopic, rosterSchema, sameProof, type JoinTranscript, type VerifiedEnvelope } from "./network.js"
 
-const joinTimeout = () => process.env.NODE_ENV === "test" && process.env.AGENTHUB_INTERHUB_JOIN_MS ? Number(process.env.AGENTHUB_INTERHUB_JOIN_MS) : 45_000
+/** INTERHUB_JOIN_TIMEOUT_MS; only a test process (NODE_ENV=test) may use AGENTHUB_INTERHUB_JOIN_MS instead. */
+export const interhubJoinTimeout = () => {
+  const override = process.env.NODE_ENV === "test" ? Number(process.env.AGENTHUB_INTERHUB_JOIN_MS) : NaN
+  return Number.isSafeInteger(override) && override > 0 ? override : INTERHUB_JOIN_TIMEOUT_MS
+}
+/**
+ * Waits between scheduled redials of a pending join; the last one repeats until the deadline. A connection that sends no
+ * hello is closed at the network's hello deadline and redialed at once, outside this schedule.
+ */
+const JOIN_REDIAL_MS = [3_000, 5_000, 8_000, 12_000, 15_000]
+/** A join request still unanswered after this long is sent again, with a new request, at the next redial. */
+const JOIN_REQUEST_ANSWER_MS = 5_000
+const JOIN_REDIAL_GAP_MS = 1_000
 const PAGE_EVENTS = 50, PAGE_BYTES = 1_000_000
 const MAX_APPLY_ATTEMPTS = 20
 const JOIN_ATTEMPTS_PER_MINUTE = 10, JOIN_ATTEMPTS_PER_CONNECTION = 20
 const REMOTE_CHANNELS_PER_PEER = 512
-/** Same answer for a wrong, revoked or unknown code and for an unreachable creator hub. */
-export const INVALID_CODE = "Código inválido o revocado, o el hub que creó el canal no está conectado."
+/**
+ * One answer for a wrong, revoked or unknown code and for a creator hub that never answered: nobody announces the
+ * rendezvous of an unknown or revoked code, so a separate "no answer" text would tell an active code from a dead one.
+ */
+export const INVALID_CODE = "Código inválido o revocado, o el hub que creó el canal no respondió a tiempo. Verificá el código y que ese hub esté abierto, y reintentá."
 const FRAME_LIMITS: Record<string, number> = { ih_join: 4_096, ih_join_result: 262_144, ih_have: 1_024, ih_pull: 1_024, ih_page: 2_000_000 }
 
 const uuid = z.string().uuid(), seq = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -34,8 +49,8 @@ const pageFrame = z.object({ type: z.literal("ih_page"), channel_id: uuid, curso
 interface PeerState { pulling: Set<string>; announced: Map<string, number>; remote: Map<string, number>; joinAttempts: number }
 interface JoinResult { channel_id: string; hub_id: string; project_id: string | null }
 interface PendingJoin {
-  topic: string; key: string; caller: { id: string; label: string }; projectId: string | null; attempted: WeakSet<NetworkPeer>
-  requests: Map<string, { peer: NetworkPeer; transcript: JoinTranscript }>; settle: (error: unknown, value?: JoinResult) => void
+  topic: string; key: string; caller: { id: string; label: string }; projectId: string | null; attempted: WeakSet<NetworkPeer>; redialedAt: number
+  requests: Map<string, { peer: NetworkPeer; transcript: JoinTranscript; sentAt: number }>; settle: (error: unknown, value?: JoinResult) => void
 }
 const iso = (value: unknown) => new Date(String(value)).toISOString()
 const reason = (error: unknown) => error instanceof MemoryError ? error.message : "Error interno al aplicar un evento inter-hub"
@@ -96,7 +111,15 @@ export class InterhubTransport implements NetworkExtension {
   }
 
   disconnected(peer: NetworkPeer) {
-    for (const join of this.joins.values()) for (const [request, pending] of join.requests) if (pending.peer === peer) join.requests.delete(request)
+    for (const join of this.joins.values()) {
+      let lost = false
+      for (const [request, pending] of join.requests) if (pending.peer === peer) { join.requests.delete(request); lost = true }
+      if (lost) this.redialJoin(join)
+    }
+  }
+
+  unanswered(topics: string[]) {
+    for (const join of this.joins.values()) if (topics.includes(join.topic)) this.redialJoin(join)
   }
 
   async tick(peers: NetworkPeer[]) {
@@ -142,29 +165,46 @@ export class InterhubTransport implements NetworkExtension {
 
   topicsChanged() { void this.shared.refresh().catch(() => {}) }
 
-  /** Joiner side: finds the creator through the code's rendezvous topic and proves the code without sending it. */
+  /**
+   * Joiner side: finds the creator through the code's rendezvous topic and proves the code without sending it. Until the
+   * deadline it keeps redialing with backoff (a new lookup that dials the creator at once) and resends unanswered
+   * requests, because a Hyperswarm connection can open on this side while the creator never receives it.
+   */
   async join(caller: { id: string; label: string }, code: string, projectId: string | null = null) {
     check(code.length >= 32 && code.length <= 200, INVALID_CODE, 404)
     await this.network.assertNotOwnCode(code)
     const topic = rendezvousTopic(code)
     check(!this.joins.has(topic), "Ya hay una unión en curso con ese código; esperá su resultado.", 409)
-    let timer: ReturnType<typeof setTimeout> | undefined, poll: ReturnType<typeof setInterval> | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined, poll: ReturnType<typeof setInterval> | undefined, redial: ReturnType<typeof setTimeout> | undefined
     try {
       return await new Promise<JoinResult>((resolve, reject) => {
         let settled = false
-        this.joins.set(topic, { topic, key: codeKey(code), caller, projectId, attempted: new WeakSet(), requests: new Map(),
-          settle: (error, value) => { if (settled) return; settled = true; if (error) reject(error); else resolve(value!) } })
-        timer = setTimeout(() => this.joins.get(topic)?.settle(new MemoryError(404, INVALID_CODE)), joinTimeout())
-        // The rendezvous lookup is repeated every few seconds instead of waiting for the 10 s network tick.
-        let polls = 0
-        poll = setInterval(() => { if (++polls % 6 === 0) void this.shared.refresh().catch(() => {}); this.tryJoins() }, 500)
+        const join: PendingJoin = { topic, key: codeKey(code), caller, projectId, attempted: new WeakSet(), requests: new Map(), redialedAt: Date.now(),
+          settle: (error, value) => { if (settled) return; settled = true; if (error) reject(error); else resolve(value!) } }
+        this.joins.set(topic, join)
+        timer = setTimeout(() => join.settle(new MemoryError(404, INVALID_CODE)), interhubJoinTimeout())
+        poll = setInterval(() => this.tryJoins(), 500)
+        let round = 0
+        const schedule = () => {
+          redial = setTimeout(() => { if (settled) return; this.redialJoin(join); schedule() }, JOIN_REDIAL_MS[Math.min(round++, JOIN_REDIAL_MS.length - 1)])
+        }
+        schedule()
         void this.shared.refresh().then(() => this.tryJoins()).catch(() => {})
       })
     } finally {
-      clearTimeout(timer); clearInterval(poll)
+      clearTimeout(timer); clearInterval(poll); clearTimeout(redial)
       this.joins.delete(topic)
       this.topicsChanged()
     }
+  }
+
+  /** Drops requests left unanswered so they are sent again, and looks the rendezvous topic up anew; at most once per gap. */
+  private redialJoin(join: PendingJoin) {
+    const now = Date.now()
+    if (this.joins.get(join.topic) !== join || now - join.redialedAt < JOIN_REDIAL_GAP_MS) return
+    join.redialedAt = now
+    for (const [request, pending] of join.requests) if (now - pending.sentAt >= JOIN_REQUEST_ANSWER_MS) { join.requests.delete(request); join.attempted.delete(pending.peer) }
+    void this.shared.redial(join.topic).then(() => this.tryJoins()).catch(() => {})
   }
 
   private tryJoins() {
@@ -176,7 +216,7 @@ export class InterhubTransport implements NetworkExtension {
         join.attempted.add(peer)
         const request = randomUUID(), nonce = randomBytes(32).toString("base64url")
         const transcript: JoinTranscript = { request, nonce, joiner: local, creator: peer.identity.id, joiner_noise: peer.localNoise, creator_noise: peer.remoteNoise }
-        join.requests.set(request, { peer, transcript })
+        join.requests.set(request, { peer, transcript, sentAt: Date.now() })
         await peer.send({ type: "ih_join", request, nonce, proof: joinProof(join.key, "join", transcript), leader: join.caller }).catch(() => join.requests.delete(request))
       }
     })().catch(() => {})

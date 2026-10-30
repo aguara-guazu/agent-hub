@@ -39,6 +39,8 @@ export interface NetworkExtension {
   frame(peer: NetworkPeer, frame: Record<string, unknown>, bytes: number): Promise<void>
   disconnected(peer: NetworkPeer): void
   tick(peers: NetworkPeer[]): Promise<void>
+  /** A connection to a peer found through these hex topics closed at the hello deadline without a hello. */
+  unanswered?(topics: string[]): void
 }
 export const networkSettingsSchema = z.object({ enabled: z.boolean().optional().transform(() => true), bootstrap: z.array(z.string().min(1).max(300)).max(20), bind_host: z.ipv4().default('0.0.0.0') }).strict()
 const MAX_FRAME = 55_000_000
@@ -74,6 +76,26 @@ export class SharedNetwork {
   peers(): NetworkPeer[] { return [...this.connections].map(c => c.peer()).filter((p): p is NetworkPeer => !!p && !p.closed()) }
   /** Runs a full update after the one in flight, so topic changes made before the call are applied. */
   async refresh() { await this.running; return this.tick() }
+  /**
+   * Looks an extension topic up again with a new discovery, at once: aborts a lookup in flight, forgets the closest nodes
+   * the previous one cached, and lets Hyperswarm dial every peer it finds without a connection instead of waiting for its
+   * reconnect backoff. Serialized with tick; a topic not joined yet gets a full update instead.
+   */
+  async redial(topic: string) {
+    while (this.running) await this.running
+    if (this.stopped || !this.swarm) return
+    this.running = this.rediscover(topic).catch(() => { this.lastError = 'No se pudo renovar el descubrimiento P2P; se reintentará' }).finally(() => { this.running = null })
+    return this.running
+  }
+  private async rediscover(topic: string) {
+    const swarm = this.swarm, state = this.extensionTopics.get(topic)
+    if (!swarm || !state) return this.update()
+    await swarm.leave(Buffer.from(topic, 'hex')).catch(() => {})
+    if (this.stopped || this.swarm !== swarm) { this.extensionTopics.delete(topic); return }
+    const [server, client] = state.mode.split(':').map(value => value === 'true')
+    state.handle = swarm.join(Buffer.from(topic, 'hex'), { server: Boolean(server), client: Boolean(client) })
+    state.refreshing = false
+  }
   async settings() {
     const row = (await this.sharing.store.db.query("SELECT value FROM settings WHERE key='sharing-network'"))[0]
     // Older installs may have saved enabled=false. Networking is now always on.
@@ -168,7 +190,13 @@ export class SharedNetwork {
     let remote: z.infer<typeof helloSchema> | null = null, buffer = Buffer.alloc(0), queue = Promise.resolve(), pending = 0, queuedBytes = 0
     const cursors = new Map<string, number>(), offered = new Map<string, string>(), requested = new Set<string>()
     const transfers = new Map<string, Transfer>()
-    const timeout = setTimeout(() => socket.destroy(), HELLO_TIMEOUT_MS); timeout.unref()
+    const remoteKey = socket.remotePublicKey.toString('hex')
+    const timeout = setTimeout(() => {
+      socket.destroy()
+      // Topics of the PeerInfo Hyperswarm dialed; the extension may redial them instead of waiting for Hyperswarm's backoff.
+      const topics = [...new Set([...(info?.topics ?? []), ...(swarm.peers?.get(remoteKey)?.topics ?? [])].map(t => t.toString('hex')))]
+      if (topics.length && !this.stopped) this.extension?.unanswered?.(topics)
+    }, HELLO_TIMEOUT_MS); timeout.unref()
     let outgoing = Promise.resolve()
     const send = (value: unknown) => {
       const data = Buffer.from(JSON.stringify(value) + '\n')

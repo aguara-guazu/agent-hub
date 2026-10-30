@@ -5,6 +5,13 @@ export const INTERHUB_CHAT_VERSION = 1 as const
 export const INTERHUB_ESCALATION_TIMEOUT_MS = 5 * 60 * 1000
 /** Largest accepted lead of a remote timestamp over the receiving hub's clock. */
 export const INTERHUB_CLOCK_SKEW_MS = 5 * 60 * 1000
+/**
+ * Deadline of a join with a code: P2P discovery of the creator hub, the connection redials and the proof exchange.
+ * Only a test process (NODE_ENV=test) may use another value.
+ */
+export const INTERHUB_JOIN_TIMEOUT_MS = 90 * 1000
+/** Name of the hub memory operation that joins with a code; clients that proxy it must allow INTERHUB_JOIN_TIMEOUT_MS. */
+export const INTERHUB_JOIN_OPERATION = "chat_interhub_join"
 
 export type InterhubRemoteRole = "leader" | "member"
 
