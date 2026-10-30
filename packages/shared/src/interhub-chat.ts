@@ -1,11 +1,17 @@
+import type { InterhubAgentRole, InterhubMessageOrigin } from "./interhub.js"
+
 export const INTERHUB_CHAT_VERSION = 1 as const
+/** A leader's unanswered question waits this long before another hub is asked, and again between rounds. */
 export const INTERHUB_ESCALATION_TIMEOUT_MS = 5 * 60 * 1000
+/** Largest accepted lead of a remote timestamp over the receiving hub's clock. */
+export const INTERHUB_CLOCK_SKEW_MS = 5 * 60 * 1000
 
 export type InterhubRemoteRole = "leader" | "member"
 
 /**
- * Agent identity that is carried as untrusted display data. Its hub and peer
- * identity come from the verified transport envelope, never from this payload.
+ * Agent identity that is carried as untrusted display data. Its hub and peer identity come from the verified
+ * transport envelope, never from this payload. `id` must equal the envelope's `origin_agent_id`; `role` is
+ * informative only: the receiver derives it from the origin hub's signed membership (its leader session).
  */
 export interface InterhubRemoteSessionPayload {
   id: string
@@ -26,18 +32,21 @@ export interface InterhubMessagePayload {
   thread_id: string
   author: InterhubRemoteSessionPayload
   text: string
+  /** Global session ids; only sessions of the receiving hub associated with the channel get a delivery. */
   mentions: string[]
   reply_to: string | null
   kind: "proposal" | "objection" | "fact" | "agreement" | "question" | null
   created_at: string
 }
 
+/** Announces an agent of the origin hub; an author must be announced (or be the hub's leader) before it writes. */
 export interface InterhubPresencePayload {
   session: InterhubRemoteSessionPayload
   state: "online" | "offline" | "unknown"
   occurred_at: string
 }
 
+/** One round: from_hub_id is the asking hub (must equal the verified origin), to_hub_id the hub whose leader asks its person. */
 export interface InterhubEscalationPayload {
   id: string
   thread_id: string
@@ -49,7 +58,7 @@ export interface InterhubEscalationPayload {
 
 export interface InterhubEscalationResolutionPayload {
   escalation_id: string
-  /** Hub whose leader took the question to its person; informative, the verified origin is the envelope's. */
+  /** Hub whose leader settled the escalation; must equal the verified origin. */
   hub_id: string
   resolved_at: string
 }
@@ -62,8 +71,9 @@ export type InterhubChatPayload =
   | { type: "escalation_resolved"; resolution: InterhubEscalationResolutionPayload }
 
 /**
- * P2P hands this to the chat model only after signature, membership and peer
- * identity verification. origin_hub_id is authoritative transport context.
+ * P2P hands this to the chat model only after signature, membership and peer identity verification.
+ * origin_hub_id, origin_hub_name and origin_peer_id come from the verified peer identity; origin_agent_id
+ * from the signed transport envelope. The chat model re-validates the shape and never trusts payload identity.
  */
 export interface VerifiedInterhubChatEnvelope {
   id: string
@@ -72,6 +82,7 @@ export interface VerifiedInterhubChatEnvelope {
   origin_hub_id: string
   origin_hub_name: string
   origin_peer_id: string
+  origin_agent_id: string | null
   occurred_at: string
   payload: InterhubChatPayload
 }
@@ -88,6 +99,24 @@ export interface InterhubEscalationState {
   question_message_id: string
   last_hub_id: string | null
   next_hub_id: string | null
+  /** Receiving hub's clock: start of the current round. */
   escalated_at: string
   answered_at: string | null
+}
+
+/** Extra fields of each `chat_read` item, only in inter-hub channels. Local messages carry the local hub. */
+export interface InterhubMessageReadFields {
+  origin_hub: InterhubMessageOrigin
+  /** Null for Hub system messages. */
+  author_role: InterhubAgentRole | null
+}
+
+/** Extra field of `chat_channels` items of kind inter-hub: member hubs not removed. */
+export interface InterhubChannelReadFields {
+  hub_count: number
+}
+
+/** Extra field of `chat_threads` items of inter-hub channels: distinct hubs whose agents wrote in the thread. */
+export interface InterhubThreadReadFields {
+  hub_count: number
 }
