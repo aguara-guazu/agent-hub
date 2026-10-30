@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { ApiError, api } from "../../../lib/api"
 import { MEMORY_REFRESH_MS } from "../../../lib/memory"
-import { INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
 import type { InterhubAgentRole, InterhubChannelCode, InterhubMessageOrigin, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import type { Channel } from "./chatTypes"
 
@@ -9,6 +8,9 @@ import type { Channel } from "./chatTypes"
  * Lectura del canal compartido entre hubs. Todo es solo para ver: la unión, el código y la escalada
  * viajan por la terminal del agente. Los campos son opcionales para tolerar un backend sin canales inter-hub.
  */
+// Solo tipos de @agenthub/shared: su índice trae módulos de Node que no deben entrar al bundle del navegador.
+const INTERHUB_CHANNEL_KIND = "inter-hub" satisfies typeof import("@agenthub/shared").INTERHUB_CHANNEL_KIND
+
 export function isInterhub(channel: Pick<Channel, "kind"> | undefined): boolean {
   return channel?.kind === INTERHUB_CHANNEL_KIND
 }
