@@ -9,8 +9,8 @@ Para revisar cualquier cambio de front (propio o de un agente) antes de darlo po
 - [ ] No agrega destinos a la barra lateral ni pestañas por encima de 5 (la ficha de proyecto tiene 6 por excepción; no se suma ninguna más).
 - [ ] Si algo necesita la atención de la persona, aparece en Inicio › Pendientes y como chip en el elemento.
 - [ ] Ningún ajuste nuevo vive fuera de Ajustes (salvo el propio de un elemento, en su panel).
-- [ ] La colaboración aparece solo en Proyecto › Colaboración; ningún destino ni lista de hilos fuera de la ficha (Inicio solo muestra la fila del debate que espera decisión).
-- [ ] Un debate que espera decisión aparece en Inicio › Pendientes con «Ver» y como `.badge.attn` en su canal.
+- [ ] La colaboración aparece solo en Proyecto › Colaboración; ningún destino ni lista de hilos fuera de la ficha.
+- [ ] Nada de la colaboración llega a Inicio: no hay propuestas de resolución, chips «Espera tu decisión» ni `.badge.attn` por hilos pendientes.
 
 ## Plantilla y layout
 
@@ -31,7 +31,7 @@ Para revisar cualquier cambio de front (propio o de un agente) antes de darlo po
 - [ ] Todo es alcanzable con Tab, con foco visible; Escape cierra la capa superior.
 - [ ] En listas con selección múltiple: cada `.check` tiene `aria-label` con el nombre, la `.bulkbar` aparece solo con selección y sus acciones se aplican sin confirmar.
 - [ ] En listas con sin ver: abrir marca como visto, J/K navegan y no se disparan con el foco en un campo.
-- [ ] En colaboración: la pestaña es solo para ver; no hay campo para escribir, botones de aprobar o pedir otra ronda, «Nuevo canal» ni acciones sobre hilos. Solo el «…» del canal ofrece las 4 acciones de recuperación, con confirmación.
+- [ ] En colaboración: la pestaña es solo para ver; no hay campo para escribir, botones de aprobar o pedir otra ronda, «Nuevo canal» ni acciones sobre hilos. Solo el «…» del canal ofrece las 4 acciones de recuperación, con confirmación. Ningún hilo abierto al entrar; tocar el hilo o su X abre y cierra la columna.
 - [ ] La pestaña Notas es solo lectura y «Personas con acceso» vive en el panel de «Compartir».
 
 ## Sistema visual
