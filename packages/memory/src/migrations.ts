@@ -771,4 +771,26 @@ CREATE INDEX chat_channels_leader ON chat_channels(leader_id);
 -- Optional stance label of agent messages and a channel description, both shown read-only in the Hub UI.
 ALTER TABLE chat_messages ADD COLUMN kind TEXT;
 ALTER TABLE chat_channels ADD COLUMN description TEXT;
+`, String.raw`
+-- Inter-hub channel replication. Creator codes are represented only by a hash here; plaintext is creator-local vault state.
+ALTER TABLE chat_channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'local';
+CREATE TABLE interhub_channels (
+ channel_id TEXT PRIMARY KEY REFERENCES chat_channels(id) ON DELETE CASCADE,
+ creator_hub_id TEXT NOT NULL, creator_session_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ code_hash TEXT NOT NULL, code_generation INTEGER NOT NULL DEFAULT 1, code_revoked_at TIMESTAMP,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE TABLE interhub_members (
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ hub_id TEXT NOT NULL, peer_identity JSON NOT NULL, leader_session_id TEXT, leader_label TEXT NOT NULL,
+ joined_at TIMESTAMP NOT NULL DEFAULT ${NOW}, last_seen_at TIMESTAMP NOT NULL DEFAULT ${NOW}, removed_at TIMESTAMP,
+ PRIMARY KEY(channel_id,hub_id)
+);
+CREATE TABLE interhub_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ origin_hub_id TEXT NOT NULL, envelope JSON NOT NULL, received_from TEXT NOT NULL,
+ received_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX interhub_events_channel ON interhub_events(channel_id,seq);
 `]
