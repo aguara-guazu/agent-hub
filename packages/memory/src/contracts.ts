@@ -106,12 +106,20 @@ export interface Fragment {
   offset_ms: number | null; metadata: Record<string, any>;
 }
 /** `transient` marks provider failures (overload, 5xx, rate limit, timeouts) that are retried with backoff instead of failing the job. */
+/** Where a rejected input failed: the dotted path of the request field (`document.roster.coordinator.model`) and a stable reason within the code. */
+export interface ErrorLocation { field?: string | undefined; reason?: string | undefined }
 export class MemoryError extends Error {
-  constructor(readonly statusCode: number, message: string, readonly transient = false, readonly code?: string) { super(message); this.name = 'MemoryError' }
+  constructor(readonly statusCode: number, message: string, readonly transient = false, readonly code?: string, readonly location?: ErrorLocation) { super(message); this.name = 'MemoryError' }
+}
+/** Dotted path of the first zod issue, or undefined for a root-level failure. */
+export function issueField(error: z.ZodError, prefix?: string): string | undefined {
+  const path = (error.issues[0]?.path ?? []).map(String)
+  const parts = prefix ? [prefix, ...path] : path
+  return parts.length ? parts.join(".") : undefined
 }
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input)
-  if (!result.success) throw new MemoryError(422, result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; '))
+  if (!result.success) throw new MemoryError(422, result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; '), false, undefined, { field: issueField(result.error) })
   return result.data
 }
 export function check(condition: unknown, message: string, code = 422): asserts condition {
