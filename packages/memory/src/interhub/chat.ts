@@ -62,8 +62,11 @@ export class InterhubChat {
       }
       if (payload.type === "escalation") {
         const escalation = payload.escalation
-        await sql.query(`INSERT OR IGNORE INTO interhub_escalations(id,channel_id,thread_id,question_message_id,last_hub_id,next_hub_id,escalated_at)
-          VALUES($1,$2,$3,$4,$5,$6,$7)`, [escalation.id, envelope.channel_id, escalation.thread_id, escalation.question_message_id, escalation.from_hub_id, escalation.to_hub_id, escalation.created_at])
+        // A later round of the same escalation moves it to the next hub, so the previous one stops listing it as pending.
+        await sql.query(`INSERT INTO interhub_escalations(id,channel_id,thread_id,question_message_id,last_hub_id,next_hub_id,escalated_at)
+          VALUES($1,$2,$3,$4,$5,$6,$7)
+          ON CONFLICT(id) DO UPDATE SET last_hub_id=excluded.last_hub_id,next_hub_id=excluded.next_hub_id,escalated_at=excluded.escalated_at,updated_at=now()
+          WHERE excluded.escalated_at>interhub_escalations.escalated_at AND interhub_escalations.answered_at IS NULL`, [escalation.id, envelope.channel_id, escalation.thread_id, escalation.question_message_id, escalation.from_hub_id, escalation.to_hub_id, escalation.created_at])
         return { duplicate: false, kind: payload.type }
       }
       return { duplicate: false }
@@ -87,9 +90,11 @@ export class InterhubChat {
     const reply = message.reply_to && (await sql.query("SELECT id FROM chat_messages WHERE id=$1 AND thread_id=$2", [message.reply_to, message.thread_id]))[0] ? message.reply_to : null
     await sql.query("INSERT OR IGNORE INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash,kind,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)", [message.id, message.thread_id, authorId, message.text, reply, envelope.id, envelope.id, message.kind, message.created_at])
     await sql.query("INSERT OR IGNORE INTO interhub_message_origins(message_id,envelope_id,hub_id,hub_name,peer_id,author_role) VALUES($1,$2,$3,$4,$5,$6)", [message.id, envelope.id, envelope.origin_hub_id, envelope.origin_hub_name, envelope.origin_peer_id, message.author.role])
-    // Remote IDs are never recipients. Only matching local sessions receive durable local delivery and wakes.
+    // Remote IDs are never recipients. Only matching local sessions receive durable local delivery and wakes; the
+    // hub's leader leads the channel from its own local channel, so it is matched through chat_channels.leader_id.
     for (const id of message.mentions) await sql.query(`INSERT OR IGNORE INTO chat_deliveries(message_id,recipient_id)
-      SELECT $1,s.id FROM chat_sessions s WHERE s.id=$2 AND s.channel_id=$3 AND s.cli_kind<>'interhub-remote' AND s.closed_at IS NULL AND s.removed_at IS NULL`, [message.id, id, envelope.channel_id])
+      SELECT $1,s.id FROM chat_sessions s WHERE s.id=$2 AND (s.channel_id=$3 OR s.id=(SELECT leader_id FROM chat_channels WHERE id=$3))
+      AND s.cli_kind<>'interhub-remote' AND s.closed_at IS NULL AND s.removed_at IS NULL`, [message.id, id, envelope.channel_id])
     await sql.query("UPDATE chat_threads SET updated_at=MAX(updated_at,$2),archived_notice=0 WHERE id=$1", [message.thread_id, message.created_at])
     return { duplicate: false, kind: "message" as const }
   }
@@ -101,9 +106,12 @@ export class InterhubChat {
       const message = (await sql.query("SELECT id,created_at FROM chat_messages WHERE id=$1 AND thread_id=$2", [messageId, threadId]))[0]
       check(message, "La pregunta no pertenece al hilo.", 404)
       check(Date.now() - Date.parse(message.created_at) >= interhubEscalationTimeout(), "La pregunta todavía no cumplió el plazo de escalada.", 409)
+      const current = (await sql.query("SELECT * FROM interhub_escalations WHERE channel_id=$1 AND thread_id=$2 AND question_message_id=$3", [channelId, threadId, messageId]))[0] as InterhubEscalationState | undefined
+      check(!current?.answered_at, "La escalada ya fue resuelta: no se pregunta a más hubs.", 409)
+      // Each round gives the asked hub's person the same deadline before the next hub is asked.
+      check(!current || Date.now() - Date.parse(current.escalated_at) >= interhubEscalationTimeout(), "La escalada anterior todavía no cumplió el plazo; esperá antes de pasar al siguiente hub.", 409)
       const hubs = (await this.transport.hubs(channelId)).filter(hub => !hub.is_local && hub.connection === "online")
       if (!hubs.length) return { no_other_hub: true as const }
-      const current = (await sql.query("SELECT * FROM interhub_escalations WHERE channel_id=$1 AND thread_id=$2 AND question_message_id=$3", [channelId, threadId, messageId]))[0] as InterhubEscalationState | undefined
       const start = current?.last_hub_id ? Math.max(0, hubs.findIndex(hub => hub.id === current.last_hub_id) + 1) : 0
       const target = hubs[start % hubs.length]!
       const id = current?.id ?? randomUUID(), now = new Date().toISOString()
