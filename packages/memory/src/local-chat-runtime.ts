@@ -5,6 +5,7 @@ import { promisify } from 'node:util'
 import { findExtractionCli } from './cli-extraction.js'
 import { LocalChat } from './local-chat.js'
 import { teamBootstrap } from './local-chat-team.js'
+import { markSessionActivity } from './chat-wrap-up.js'
 
 const exec = promisify(execFile)
 /** Delivery state of a Hub-owned process as seen by its manager: only 'idle' and 'mid_turn' accept input without error. */
@@ -18,6 +19,7 @@ export class LocalChatRuntime {
   private stopped = false
   private watchers = new Map<string,{ started:string; controller:AbortController }>()
   private controllers = new Set<AbortController>()
+  private activityWritten = new Map<string,{at:string;written:number}>()
   constructor(readonly chat: LocalChat, private queue = async (nativeId: string, text: string) => {
     const binary = findExtractionCli('codex_cli')
     if (!binary) throw new Error('Codex CLI no está instalado')
@@ -33,7 +35,7 @@ export class LocalChatRuntime {
   }, private enabled: (agentId:string) => boolean = () => true,
   private inspectProcess:typeof inspectNativeProcess = inspectNativeProcess,
   private collaborationEnabled: () => boolean = () => true,
-  private fleet?: {wake(sessionId:string,text:string):Promise<boolean>;connected(sessionId:string):Promise<boolean>;readiness?(sessionId:string):Promise<FleetReadiness>}) {}
+  private fleet?: {wake(sessionId:string,text:string):Promise<boolean>;connected(sessionId:string):Promise<boolean>;readiness?(sessionId:string):Promise<FleetReadiness>;activityAt?(sessionId:string):Promise<{at:string;turn_id:string}|undefined>}) {}
   start() {
     if (this.timer) return
     this.chat.events.on('change',this.kick)
@@ -53,7 +55,10 @@ export class LocalChatRuntime {
     // regain one; a failure in any later step of the tick must not postpone revocation.
     await this.chat.sweepReadAccess().catch(() => undefined)
     if(this.fleet)for(const session of await this.chat.db.query("SELECT id FROM chat_sessions WHERE capability='hub_fleet' AND closed_at IS NULL")) {
-      if(await this.fleet.connected(String(session.id)))await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[session.id,new Date(Date.now()+90000).toISOString()])
+      if(await this.fleet.connected(String(session.id))) {
+        await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[session.id,new Date(Date.now()+90000).toISOString()])
+        await this.recordFleetActivity(String(session.id))
+      }
     }
     // PID birth time prevents a recycled PID from keeping a dead session online.
     const processes = await this.chat.db.query('SELECT s.id,s.process_id,s.process_started FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.closed_at IS NULL AND c.closed_at IS NULL AND s.process_id IS NOT NULL')
@@ -120,6 +125,23 @@ export class LocalChatRuntime {
     }
     // After dispatch, so a delivery this tick could still make never raises a notice that is cancelled moments later.
     await this.chat.processStalledDeliveries()
+  }
+  /**
+   * Persists output evidence of a busy Hub worker at most every 30 s. Only output_at moves, plus the session activity record: the lifecycle
+   * columns and chat_turns stay owned by native turn events, and an idle or closed row ignores a late timestamp.
+   */
+  private async recordFleetActivity(sid:string) {
+    const evidence=await this.fleet?.activityAt?.(sid)
+    if(!evidence)return
+    const last=this.activityWritten.get(sid)
+    if(last?.at===evidence.at || (last && Date.now()-last.written<30_000))return
+    // Only an open turn with the same id may extend the busy interval; a late chunk of an earlier turn finds no match.
+    const written=await this.chat.db.query(`UPDATE chat_sessions SET output_at=$2 WHERE id=$1 AND capability='hub_fleet' AND state='busy'
+      AND closed_at IS NULL AND removed_at IS NULL AND (output_at IS NULL OR output_at<$2)
+      AND EXISTS(SELECT 1 FROM chat_turns t WHERE t.session_id=$1 AND t.turn_id=$3 AND t.terminal_at IS NULL) RETURNING id`,[sid,evidence.at,evidence.turn_id])
+    if(!written.length)return
+    this.activityWritten.set(sid,{at:evidence.at,written:Date.now()})
+    await markSessionActivity(this.chat.db,sid)
   }
   /** Undefined when the fleet cannot report readiness: the persisted state then gates delivery exactly as for any other session. */
   private async fleetReadiness(session:Record<string,any>):Promise<FleetReadiness | undefined> {

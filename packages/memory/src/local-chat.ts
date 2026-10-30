@@ -60,10 +60,10 @@ const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 export function sessionStatus(s: Record<string, any>,now=Date.now()) {
   const connected=Date.parse(s.lease_until)>now
   // PID checks and listener heartbeats prove connection only. They cannot renew busy evidence.
-  // PID checks and listener heartbeats prove connection only. They cannot renew busy evidence.
-  const activityStale=s.state==='busy' && !(Date.parse(s.event_at)>=now-90_000)
+  // Output evidence of a Hub-owned process may extend a busy interval, but only lifecycle events open or close it.
+  const activityStale=s.state==='busy' && !(Math.max(Date.parse(s.event_at) || 0,Date.parse(s.output_at) || 0)>=now-90_000)
   const state=s.removed_at?'removed':s.closed_at?'offline':!connected||activityStale?'unknown':s.state
-  return {state,state_reason:state==='unknown'?(connected?'activity_stale':'connection_stale'):null,state_observed_at:s.event_at,
+  return {state,state_reason:state==='unknown'?(connected?'activity_stale':'connection_stale'):null,state_observed_at:s.event_at,output_observed_at:s.output_at ?? null,
     connection_state:s.removed_at||s.closed_at?'offline':connected?'online':'unknown'}
 }
 const publicSession = (s: Record<string, any>) => {
@@ -1041,7 +1041,7 @@ export class LocalChat {
       if(operation==='chat_work_update')return updateWork(this.db,who.id,input)
       const result=await this.page(`SELECT w.*,s.state AS session_state,s.closed_at AS session_closed_at,'agent' AS source,
         s.removed_at AS session_removed_at,s.lease_until AS session_lease_until,
-        s.event_at AS session_event_at,o.work_version AS observed_version,o.policy_version,o.decision,o.last_observed_at,o.snapshot AS watchdog_snapshot,
+        s.event_at AS session_event_at,s.output_at AS session_output_at,o.work_version AS observed_version,o.policy_version,o.decision,o.last_observed_at,o.snapshot AS watchdog_snapshot,
         t.state AS watched_thread_state,c.closed_at AS watched_channel_closed_at,c.leader_id AS watched_recipient_id,
         recipient.closed_at AS watched_recipient_closed_at,recipient.removed_at AS watched_recipient_removed_at,recipient.lease_until AS watched_recipient_lease_until,
         d.message_id AS receipt_id,d.notified_at AS receipt_notified_at,d.read_at AS receipt_read_at,d.handled_at AS receipt_handled_at,
@@ -1052,11 +1052,11 @@ export class LocalChat {
         LEFT JOIN chat_watchdog_observations o ON o.session_id=w.session_id AND o.work_id=w.work_id
         LEFT JOIN chat_deliveries d ON d.message_id=w.report_message_id AND d.recipient_id=c.leader_id
         WHERE w.thread_id=$1`,[thread.id],'updated_at DESC,session_id,work_id',input)
-      return {...result,items:result.items.map(({session_event_at,session_removed_at,session_lease_until,observed_version,policy_version,decision,last_observed_at,watchdog_snapshot,
+      return {...result,items:result.items.map(({session_event_at,session_output_at,session_removed_at,session_lease_until,observed_version,policy_version,decision,last_observed_at,watchdog_snapshot,
         watched_thread_state,watched_channel_closed_at,watched_recipient_id,watched_recipient_closed_at,watched_recipient_removed_at,watched_recipient_lease_until,
         receipt_id,receipt_notified_at,receipt_read_at,receipt_handled_at,
         receipt_cancelled_at,receipt_attempts,receipt_next_attempt_at,receipt_error,...item})=>{
-        const presence=sessionStatus({state:item.session_state,event_at:session_event_at,closed_at:item.session_closed_at,removed_at:session_removed_at,lease_until:session_lease_until})
+        const presence=sessionStatus({state:item.session_state,event_at:session_event_at,output_at:session_output_at,closed_at:item.session_closed_at,removed_at:session_removed_at,lease_until:session_lease_until})
         item.session_state=presence.state
         const at=(value:unknown)=>typeof value==='string'?Date.parse(value):null
         const receipt=receipt_id?{notifiedAt:at(receipt_notified_at),readAt:at(receipt_read_at),handledAt:at(receipt_handled_at),

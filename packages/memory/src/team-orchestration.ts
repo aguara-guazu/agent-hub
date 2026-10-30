@@ -1052,14 +1052,16 @@ export class TeamOrchestration {
       let observed:Partial<TeamRuntimeMetadata>|undefined
       try {observed=await this.orca.status?.(item.launch_handle)} catch { /* unavailable metadata is unknown */ }
       // Status is a public snapshot, never a writer racing native events in the same generation.
-      item.runtime=this.publicRuntime(observed?{...item.runtime,...observed}:{...item.runtime,state:'unknown'},observed?.generation ?? item.runtime.generation)
+      const activity=item.session_id ? (await sql.query('SELECT output_at FROM chat_sessions WHERE id=$1',[item.session_id]))[0]?.output_at : undefined
+      item.runtime=this.publicRuntime(observed?{...item.runtime,...observed}:{...item.runtime,state:'unknown'},observed?.generation ?? item.runtime.generation,activity)
     }
     return result
   }
 
-  private publicRuntime(value:Partial<TeamRuntimeMetadata>,generation?:string) {
+  private publicRuntime(value:Partial<TeamRuntimeMetadata>,generation?:string,activityAt?:string|null) {
     const runtime=this.runtime(value,generation)
-    return ['busy','running','working','starting'].includes(runtime.state) && Date.now()-Date.parse(runtime.updated_at)>90_000
+    const lastSignal=Math.max(Date.parse(runtime.updated_at) || 0,Date.parse(activityAt ?? '') || 0)
+    return ['busy','running','working','starting'].includes(runtime.state) && Date.now()-lastSignal>90_000
       ? {...runtime,state:'unknown',activity_stale:true}:runtime
   }
 

@@ -104,6 +104,17 @@ export class FleetProcessManager {
     return value ? this.snapshot(value) : undefined
   }
   /** Called only by the owner-authenticated human HTTP route. */
+  /** Last assistant or tool output of the turn in progress, never its content. Undefined outside a busy turn. */
+  activityAt(id: string): { at: string; turn_id: string } | undefined {
+    const s = this.sessions.get(id)
+    const at = s?.activity.lastWorkAt, turn = s?.status.turn_id
+    return s && at !== undefined && turn && s.status.state === 'busy' ? { at: new Date(at).toISOString(), turn_id: turn } : undefined
+  }
+  /** Output evidence belongs to one turn: a different turn id starts with none. */
+  private setTurn(s: Session, turnId: string) {
+    if (s.status.turn_id !== turnId) s.activity.lastWorkAt = undefined
+    s.status.turn_id = turnId
+  }
   activity(id: string, after = 0): FleetActivity {
     const s = this.sessions.get(id)
     return s ? s.activity.read(s.status.state, after) : unavailableActivity()
@@ -226,7 +237,7 @@ export class FleetProcessManager {
     if (packet.method === 'turn/started' && typeof params.turn?.id === 'string') {
       if (s.completedTurns.has(params.turn.id)) return
       if (!s.submitting && s.status.turn_id !== params.turn.id) return
-      s.status.turn_id = params.turn.id
+      this.setTurn(s, params.turn.id)
       this.refreshQuestions(s)
     }
     if (packet.method === 'turn/completed' && params.turn?.id === s.status.turn_id) {
@@ -283,6 +294,11 @@ export class FleetProcessManager {
   }
 
   private observeCodex(s: Session, packet: Packet) {
+    const before = s.activity.lastWorkAt, turn = packet.params?.turnId
+    this.recordCodex(s, packet)
+    if (typeof turn === 'string' && s.status.turn_id && turn !== s.status.turn_id) s.activity.lastWorkAt = before
+  }
+  private recordCodex(s: Session, packet: Packet) {
     const p = packet.params ?? {}, item = p.item
     const key = `${p.turnId ?? s.status.turn_id ?? ''}:${p.itemId ?? item?.id ?? ''}`
     if (packet.method === 'item/agentMessage/delta' && typeof p.itemId === 'string') s.activity.stream(key + ':text', 'assistant', p.delta)
@@ -392,7 +408,7 @@ export class FleetProcessManager {
     if (claude) pending.claudeInput = { questions: raw.map((q: Packet, i: number) => ({ question: q.question, header: q.header,
       options: questions[i]!.options ?? [], multiSelect: q.multiSelect === true })) }
     s.questions.set(value.id, pending)
-    s.status.turn_id = turnId
+    this.setTurn(s, turnId)
     this.refreshQuestions(s)
   }
   async answer(id: string, questionId: string, answers: FleetQuestionAnswers): Promise<FleetStatus> {
@@ -533,7 +549,7 @@ export class FleetProcessManager {
   }
   private writeClaude(s: Session, text: string) {
     // The user message UUID is the local correlation ID; Claude supplies the native session ID.
-    s.status.turn_id = randomUUID()
+    this.setTurn(s, randomUUID())
     s.activity.add('user', text)
     this.write(s, { type: 'user', uuid: s.status.turn_id, session_id: s.expectedNative, message: { role: 'user', content: text }, parent_tool_use_id: null })
   }
@@ -548,7 +564,7 @@ export class FleetProcessManager {
       if (typeof id !== 'string' || !id) throw new Error('fleet_missing_turn_id')
       // Notifications can finish the turn before the RPC response arrives.
       if (this.live(s) && !s.completedTurns.has(id)) {
-        s.status.turn_id = id
+        this.setTurn(s, id)
         this.refreshQuestions(s)
         if (response.turn.status === 'failed') this.fail(s, 'fleet_turn_failed')
         else if (['completed', 'interrupted'].includes(response.turn.status)) this.receive(s, { method: 'turn/completed', params: { threadId: s.status.native_id, turn: response.turn } })
@@ -558,7 +574,7 @@ export class FleetProcessManager {
   /** The prompt RPC stays open for the whole turn; only its reply can mark the worker idle. */
   private submitAcp(s: Session, text: string) {
     const turn = randomUUID()
-    s.status.turn_id = turn
+    this.setTurn(s, turn)
     s.acpSegment = 0
     s.activity.add('user', text)
     const reply = this.request(s, 'session/prompt', { sessionId: s.status.native_id, prompt: [{ type: 'text', text }] }, 0)

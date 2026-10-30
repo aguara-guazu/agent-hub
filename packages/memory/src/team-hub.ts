@@ -505,6 +505,16 @@ export class HubTeamRuntime implements TeamOrca {
     }
     return 'unowned'
   }
+  /** Last output time of the process this Hub owns for the session; undefined when unowned or silent. */
+  async activityAt(sessionId: string): Promise<{ at: string; turn_id: string } | undefined> {
+    const members = await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE session_id=$1', [sessionId])
+    for (const member of members) {
+      const handle = String(member.id)
+      const runtime = this.runtime(member.runtime)
+      if (runtime && this.manager.status(handle) && this.generations.get(handle) === runtime.generation) return this.manager.activityAt(handle)
+    }
+    return undefined
+  }
   private accepting(handle: string, state: string | undefined): boolean {
     return state === 'idle' || (state === 'busy' && this.manager.supportsMidTurn(handle))
   }

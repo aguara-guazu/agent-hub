@@ -42,7 +42,7 @@ export class LocalWatchdog {
       // The thread's channel owns coordination; a child channel's leader is not its master.
       // Keep unavailable sessions observable, but never resurrect revoked/closed scopes.
       const rows = await sql.query(`SELECT w.*,s.agent_id,s.state AS session_state,s.closed_at AS session_closed_at,
-        s.last_seen_at,s.event_at,s.lease_until,c.leader_id AS recipient_id,
+        s.last_seen_at,s.event_at,s.output_at,s.lease_until,c.leader_id AS recipient_id,
         recipient.closed_at AS recipient_closed_at,recipient.removed_at AS recipient_removed_at,recipient.lease_until AS recipient_lease_until,
         d.notified_at,d.read_at,d.handled_at,d.cancelled_at,d.attempts,d.next_attempt_at,d.error AS delivery_error,
         d.message_id AS delivery_message_id,o.fingerprint AS previous_fingerprint
@@ -68,7 +68,7 @@ export class LocalWatchdog {
         const snapshot: WatchdogSnapshot = {
           now, work: {status:row.status,updatedAt:milliseconds(row.updated_at) ?? NaN,
             lastProgressAt:milliseconds(row.last_progress_at),waitingFor:row.waiting_for,reportMessageId:row.report_message_id},
-          session: {state:sessionStatus({state:row.session_state,event_at:row.event_at,closed_at:row.session_closed_at,lease_until:row.lease_until},now).state,
+          session: {state:sessionStatus({state:row.session_state,event_at:row.event_at,output_at:row.output_at,closed_at:row.session_closed_at,lease_until:row.lease_until},now).state,
             observedAt:milliseconds(row.last_seen_at),stateSince:milliseconds(row.event_at),leaseUntil:milliseconds(row.lease_until)},
           // Observing a hypothetical wake is not an attempt. Never escalate based on a wake we did not send.
           recovery: {statusAttempts:0,lastStatusAttemptAt:null,alertedAt:null},

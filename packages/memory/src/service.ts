@@ -240,6 +240,10 @@ export class MemoryService {
     const fleet=(await this.get()).operations.fleet
     return fleet instanceof HubTeamRuntime ? fleet.readiness(sessionId) : 'unowned' as const
   }
+  async fleetActivityAt(sessionId:string) {
+    const fleet=(await this.get()).operations.fleet
+    return fleet instanceof HubTeamRuntime ? fleet.activityAt(sessionId) : undefined
+  }
   async fleetActivity(sessionId: string, after = 0): Promise<FleetActivity> {
     const { operations, db } = await this.get()
     check((await db.query('SELECT id FROM chat_sessions WHERE id=$1', [sessionId]))[0], 'Sesión inexistente.', 404)
