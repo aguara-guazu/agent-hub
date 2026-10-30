@@ -222,15 +222,6 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
 .col { flex: none; min-width: 0; }
 .scroll-x { overflow-x: auto; }
 
-/* Sin ver y selección múltiple */
-.row-check { width: 16px; height: 16px; flex: none; margin: 0; accent-color: var(--accent); cursor: pointer; }
-.unread { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--accent); }
-.row:not(.is-unread) .unread { visibility: hidden; }
-.row.is-unread .row-title { font-weight: 600; }
-.row:has(.row-check:checked) { background: var(--surface-2); }
-.bulkbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 44px; padding: 6px 8px 6px 16px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--accent-border); }
-.bulkbar-count { font-weight: 600; margin-right: auto; }
-
 /* Selección múltiple y no leídos */
 .check { width: 16px; height: 16px; flex: none; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .unread { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--accent); }
@@ -297,7 +288,6 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
 .msg-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .msg-meta b { font-weight: 600; }
 .resolution { margin: 0 20px 16px; padding: 14px 16px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--accent-border); display: flex; flex-direction: column; gap: 10px; }
-.composer { display: flex; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); }
 @media (max-width: 1100px) { .collab-chans { flex-basis: 100%; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; } .collab-threads { border-right: 0; } }
 
 /* Documentación (solo en las tablas del lienzo) */
