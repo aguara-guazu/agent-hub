@@ -16,6 +16,9 @@ import type { UsageStatus } from "./UsageSection"
 import { EnrollDialog } from "./EnrollDialog"
 import { ClientChip } from "./state"
 
+const GLANCE_SLOT = 272
+const CHIP_SLOT = 152
+
 const ALL = "all"
 
 /** Clientes · plantilla A con panel. Sin primario: los clientes se detectan solos. */
@@ -123,7 +126,7 @@ export default function ClientsPage() {
                       lead={<Avatar name={name} />}
                       title={name}
                       sub={detail(client)}
-                      meta={<div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)" }}><UsageGlance client={client} data={quota.data} /><ClientChip client={client} /></div>}
+                      meta={<div style={{ display: "grid", gridTemplateColumns: `${GLANCE_SLOT}px ${CHIP_SLOT}px`, alignItems: "center", columnGap: "var(--sp-4)" }}><div><UsageGlance client={client} data={quota.data} /></div><div style={{ display: "flex", justifyContent: "flex-end" }}><ClientChip client={client} /></div></div>}
                       action={<Switch checked={client.enabled} disabled={pause.isPending} label={t("row.toggle", { client: name })} onChange={value => setEnabled(client, value)} />}
                     />
                   )

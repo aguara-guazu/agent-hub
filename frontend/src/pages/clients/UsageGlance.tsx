@@ -5,7 +5,6 @@ import { isWeekly, percentOf, usageOf } from "./UsageSection"
 import type { UsageStatus } from "./UsageSection"
 
 const FIVE_HOURS_MINUTES = 300
-const METER_WIDTH = 56
 const LABEL_WIDTH = 52
 const RESET_WIDTH = 92
 
@@ -16,7 +15,7 @@ const isMonthly = (window: UsageQuotaWindow) => window.id === "monthly-credits" 
 function Meter({ percent, tone, label }: { percent: number; tone: string; label: string }) {
   return (
     <div role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}
-      style={{ width: METER_WIDTH, height: "var(--sp-1)", borderRadius: "var(--r-full)", background: "var(--surface-3)", overflow: "hidden", flex: "none" }}>
+      style={{ width: "100%", height: "var(--sp-1)", borderRadius: "var(--r-full)", background: "var(--surface-3)", overflow: "hidden", flex: "none" }}>
       <div style={{ width: `${percent}%`, height: "100%", background: tone, borderRadius: "var(--r-full)" }} />
     </div>
   )
@@ -42,7 +41,7 @@ export function UsageGlance({ client, data }: { client: LocalClient; data: Usage
     const value = format.number(percent, { maximumFractionDigits: 0 })
     return (
       <div key={window.id} title={window.resets_at ? t("usage.glance.resets", { when: format.relative(window.resets_at) }) : undefined}
-        style={{ display: "grid", gridTemplateColumns: `${LABEL_WIDTH}px ${METER_WIDTH}px 34px ${RESET_WIDTH}px`, alignItems: "center", columnGap: "var(--sp-2)" }}>
+        style={{ display: "grid", gridTemplateColumns: `${LABEL_WIDTH}px minmax(0, 1fr) 34px ${RESET_WIDTH}px`, alignItems: "center", columnGap: "var(--sp-2)" }}>
         <span className="xs t3" style={{ textAlign: "right" }}>{name(window)}</span>
         <Meter percent={percent} tone={tone} label={t("usage.glance.label", { client: client.cli_kind, window: name(window), value })} />
         <span className="xs t2 num" style={{ textAlign: "right" }}>{t("usage.glance.used", { value })}</span>
@@ -51,7 +50,7 @@ export function UsageGlance({ client, data }: { client: LocalClient; data: Usage
     )
   }
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-1)" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-1)", width: "100%" }}>
       {primary && line(primary, false)}
       {hours && line(hours, true)}
     </div>
