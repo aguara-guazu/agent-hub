@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
-import { check, id, parse } from './contracts.js'
+import { id, issueField, MemoryError, parse } from './contracts.js'
 import { delegationDocument } from './project-automation.js'
 import type { ProjectAutomationService } from './project-automation-service.js'
 
@@ -13,6 +13,15 @@ const repositoryPatch = z.object({ remote_name: z.string().min(1).max(64).option
 const replacement = z.object({ repositories: z.array(repository).max(20), expected_ids_digest: z.string().length(64).regex(/^[a-f0-9]+$/) }).strict()
 const repositoryParams = z.object({ id, repoId: z.string().min(1).max(200) }).strict()
 
+/** Like `parse`, but a rejected delegation document carries the same code the service uses, so the app can point at the field. */
+function parseActivation(input: unknown) {
+  const result = activation.safeParse(input)
+  if (result.success) return result.data
+  const field = issueField(result.error)
+  if (field?.startsWith("document.")) throw new MemoryError(422, "El documento de delegación no es válido.", false, "invalid_document", { field })
+  return parse(activation, input)
+}
+
 /** Human routes of the per-project activation. Owner authorization only: none of them is an agent operation. */
 export function registerProjectAutomationRoutes(app: FastifyInstance, service: () => Promise<ProjectAutomationService>, authorize: (request: FastifyRequest) => Promise<{ id: string }>) {
   const auth = async (request: FastifyRequest) => { await authorize(request) }
@@ -20,8 +29,8 @@ export function registerProjectAutomationRoutes(app: FastifyInstance, service: (
 
   app.get('/api/memory/projects/:id/automation', { preHandler: auth }, async request => (await service()).view(projectId(request)))
   app.put('/api/memory/projects/:id/automation', { preHandler: auth, bodyLimit: 32_768 }, async request => {
-    const owner = await authorize(request), body = parse(activation, request.body)
-    check(!body.enabled || body.document, 'Activar un proyecto requiere el documento de delegación.', 422)
+    const owner = await authorize(request), body = parseActivation(request.body)
+    if (body.enabled && !body.document) throw new MemoryError(422, 'Activar un proyecto requiere el documento de delegación.', false, "invalid_document", { field: "document" })
     const { schedules: _schedules, plans: _plans, coordinator_state: _state, changed: _changed, ...view } = await (await service()).activate({ kind: 'human', ref: owner.id },
       { project_id: projectId(request), enabled: body.enabled, delegation: body.document, channel_id: body.channel_id, ...(body.channel ? { channel: body.channel } : {}), expected_version: body.expected_version })
     return view

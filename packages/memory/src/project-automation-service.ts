@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { basename, isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
 import { childEnv } from '@agenthub/gateway/platform'
-import { check, MemoryError } from './contracts.js'
+import { check, issueField, MemoryError, type ErrorLocation } from './contracts.js'
 import type { MemoryDatabase } from './database.js'
 import type { AgentContext } from './agents.js'
 import type { LocalChat } from './local-chat.js'
@@ -77,13 +77,13 @@ export interface ProjectAutomationOptions {
   git?: GitProbe
 }
 
-function fail(status: number, code: string, message: string): never { throw new MemoryError(status, message, false, code) }
+function fail(status: number, code: string, message: string, location?: ErrorLocation): never { throw new MemoryError(status, message, false, code, location) }
 
 /** Validates one allowed-branch pattern: an exact branch or `prefix/*`, never the default branch and never a bare wildcard. */
-function branchPattern(pattern: string, defaultBranch: string) {
+function branchPattern(pattern: string, defaultBranch: string, field: string) {
   const exact = pattern.endsWith('/*') ? pattern.slice(0, -2) : pattern
-  if (!BRANCH.test(exact) || exact.includes('..') || exact.endsWith('/') || exact.endsWith('.lock') || exact.includes('*') || exact === 'HEAD') fail(422, 'branch_invalid', `El patrón de rama ${pattern} no es válido.`)
-  if (pattern === defaultBranch || (pattern.endsWith('/*') && defaultBranch.startsWith(pattern.slice(0, -1)))) fail(422, 'branch_invalid', 'Los patrones no pueden incluir la rama principal del repositorio.')
+  if (!BRANCH.test(exact) || exact.includes('..') || exact.endsWith('/') || exact.endsWith('.lock') || exact.includes('*') || exact === 'HEAD') fail(422, 'branch_invalid', `El patrón de rama ${pattern} no es válido.`, { field, reason: "pattern_invalid" })
+  if (pattern === defaultBranch || (pattern.endsWith('/*') && defaultBranch.startsWith(pattern.slice(0, -1)))) fail(422, 'branch_invalid', 'Los patrones no pueden incluir la rama principal del repositorio.', { field, reason: "pattern_default_branch" })
 }
 
 /**
@@ -144,7 +144,7 @@ export class ProjectAutomationService {
     if (!channelId) return null
     const open = (await this.db.query("SELECT id FROM chat_channels WHERE id=$1 AND project_id=$2 AND closed_at IS NULL AND scope_key NOT LIKE 'automation:%'", [channelId, projectId]))[0]
     // A person choosing a channel that is not the project's gets an error; an agent sitting in an unrelated channel simply activates without coordinator.
-    if (!open && principal.kind === 'human') fail(422, 'channel_not_authorized', 'El canal elegido no está autorizado para este proyecto.')
+    if (!open && principal.kind === 'human') fail(422, 'channel_not_authorized', 'El canal elegido no está autorizado para este proyecto.', { field: "channel_id" })
     return open ? channelId : null
   }
 
@@ -163,7 +163,7 @@ export class ProjectAutomationService {
     if (!input.enabled) return this.deactivate(project.id, actor, currentVersion)
 
     const parsed = delegationDocument.safeParse(input.delegation)
-    if (!parsed.success) fail(422, 'invalid_document', 'El documento de delegación no es válido.')
+    if (!parsed.success) fail(422, 'invalid_document', 'El documento de delegación no es válido.', { field: issueField(parsed.error, "document") })
     const document = parsed.data!
     const sourceId = await this.sourceChannel(principal, project.id, input.channel_id)
     const authorized = sourceId ? input.channel ?? (principal.kind === 'human' ? { name: `Automatización: ${project.title}`.slice(0, 200), objective: DEFAULT_OBJECTIVE } : undefined) : undefined
@@ -172,7 +172,7 @@ export class ProjectAutomationService {
     const snapshots: RepositorySnapshot[] = repositories.map(({ id, ...rest }) => ({ repo_id: id, ...rest }))
     let snapshot
     try { snapshot = snapshotDelegation(project.id, version, document, snapshots, authorized) } catch (error) {
-      if (error instanceof MemoryError && !error.code) fail(error.statusCode, 'repository_unavailable', error.message)
+      if (error instanceof MemoryError && !error.code) fail(error.statusCode, 'repository_unavailable', error.message, { field: "document.repository_ids" })
       throw error
     }
     const unchanged = currentVersion !== null && latest && hash(asObject(latest.document)) === hash(snapshot.stored)
@@ -252,26 +252,26 @@ export class ProjectAutomationService {
    */
   private async resolveRepository(entry: { repo_path: string; remote_name?: string | undefined; allowed_branches: string[] }) {
     const remote = entry.remote_name ?? 'origin'
-    if (!REMOTE_NAME.test(remote)) fail(422, 'remote_not_allowed', 'Nombre de remoto inválido.')
-    if (!isAbsolute(entry.repo_path)) fail(422, 'repository_unavailable', 'repo_path debe ser una ruta absoluta.')
+    if (!REMOTE_NAME.test(remote)) fail(422, 'remote_not_allowed', 'Nombre de remoto inválido.', { field: "remote_name", reason: "remote_name_invalid" })
+    if (!isAbsolute(entry.repo_path)) fail(422, 'repository_unavailable', 'repo_path debe ser una ruta absoluta.', { field: "repo_path", reason: "path_not_absolute" })
     const repo = await realpath(entry.repo_path).catch(() => null)
-    if (!repo) fail(422, 'repository_unavailable', 'El repositorio no existe en esta computadora.')
+    if (!repo) fail(422, 'repository_unavailable', 'El repositorio no existe en esta computadora.', { field: "repo_path", reason: "path_not_found" })
     const top = await this.git(['rev-parse', '--show-toplevel'], repo)
-    if (top.code !== 0 || await realpath(top.stdout.trim()).catch(() => null) !== repo) fail(422, 'repository_unavailable', 'repo_path debe ser la raíz del repositorio.')
+    if (top.code !== 0 || await realpath(top.stdout.trim()).catch(() => null) !== repo) fail(422, 'repository_unavailable', 'repo_path debe ser la raíz del repositorio.', { field: "repo_path", reason: "path_not_repository_root" })
     const urls = async (push: boolean) => {
       const result = await this.git(['remote', 'get-url', ...(push ? ['--push'] : []), '--all', remote], repo)
       return result.code === 0 ? result.stdout.split('\n').map(line => line.trim()).filter(Boolean) : []
     }
     const [fetch, push] = [await urls(false), await urls(true)]
-    if (fetch.length !== 1 || push.length !== 1 || fetch[0] !== push[0]) fail(422, 'remote_not_allowed', 'El remoto no tiene un único destino de push verificable.')
+    if (fetch.length !== 1 || push.length !== 1 || fetch[0] !== push[0]) fail(422, 'remote_not_allowed', 'El remoto no tiene un único destino de push verificable.', { field: "repo_path", reason: "remote_ambiguous" })
     const url = push[0]!
     if (/[\s\x00-\x1f\x7f]/.test(url) || url.startsWith('-') || /^[a-z][a-z0-9+.-]*:\/\/[^/@]*:[^/@]*@/i.test(url) || !(/^(https:\/\/|ssh:\/\/)/.test(url) || /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:(?!\/\/)\S+$/.test(url)))
-      fail(422, 'remote_not_allowed', 'El remoto debe usar https o ssh y no puede llevar credenciales.')
+      fail(422, 'remote_not_allowed', 'El remoto debe usar https o ssh y no puede llevar credenciales.', { field: "repo_path", reason: "remote_insecure" })
     const probe = await this.git(['ls-remote', '--symref', url, 'HEAD'], tmpdir())
     const head = probe.code === 0 ? /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(probe.stdout)?.[1] : undefined
-    if (!head) fail(422, 'repository_unavailable', 'No se pudo determinar la rama principal del remoto.')
-    if (!entry.allowed_branches.length) fail(422, 'branch_invalid', 'Cada repositorio necesita al menos una rama permitida.')
-    for (const pattern of entry.allowed_branches) branchPattern(pattern, head)
+    if (!head) fail(422, 'repository_unavailable', 'No se pudo determinar la rama principal del remoto.', { field: "repo_path", reason: "default_branch_unknown" })
+    if (!entry.allowed_branches.length) fail(422, 'branch_invalid', 'Cada repositorio necesita al menos una rama permitida.', { field: "allowed_branches", reason: "branches_required" })
+    entry.allowed_branches.forEach((pattern, index) => branchPattern(pattern, head, `allowed_branches.${index}`))
     return { repo_path: repo, url, remote, default_branch: head, allowed: [...new Set(entry.allowed_branches)] }
   }
 

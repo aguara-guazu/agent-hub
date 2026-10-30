@@ -26,6 +26,9 @@ export class ApiError extends Error {
     message: string,
     /** Código cerrado que algunas rutas agregan al cuerpo de error (`{ code: 'digest_mismatch' }`). */
     readonly code?: string,
+    /** Campo rechazado (ruta con puntos del cuerpo enviado, p. ej. `document.roster.coordinator.model`) y motivo estable, cuando la ruta los informa. */
+    readonly field?: string,
+    readonly reason?: string,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -63,15 +66,19 @@ async function request<T>(method: string, path: string, body?: unknown, retry = 
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`
     let code: string | undefined
+    let field: string | undefined
+    let reason: string | undefined
     try {
       const data = await res.json()
       if (typeof data?.code === 'string') code = data.code
+      if (typeof data?.field === "string") field = data.field
+      if (typeof data?.reason === "string") reason = data.reason
       if (typeof data?.detail === 'string') message = data.detail
       else if (Array.isArray(data?.detail)) message = data.detail.map((d: { msg?: string }) => d.msg).join('; ')
     } catch {
       /* respuesta sin cuerpo JSON */
     }
-    throw new ApiError(res.status, message, code)
+    throw new ApiError(res.status, message, code, field, reason)
   }
 
   if (res.status === 204) return undefined as T
