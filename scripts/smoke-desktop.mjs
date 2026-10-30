@@ -1,7 +1,7 @@
 /* global window, document, fetch */
 import { createRequire } from 'node:module'
 const { _electron: electron } = createRequire(new URL('../frontend/package.json', import.meta.url))('playwright')
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { URL, fileURLToPath } from 'node:url'
@@ -29,6 +29,9 @@ async function managedFile(path, ready) {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const directory = await mkdtemp(join(tmpdir(), 'Agent Hub prueba Pérez #%20 '))
 await mkdir(join(directory, 'home/.gemini/antigravity'), { recursive: true })
+// With no stored preference the renderer follows the system locale; pin the language of the asserted texts.
+await mkdir(join(directory, 'state'), { recursive: true })
+await writeFile(join(directory, 'state/language'), 'es')
 const server = createServer()
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
 const port = server.address().port
@@ -80,11 +83,12 @@ try {
       assert.match(await managedFile(join(directory, 'home/.gemini', variant, 'skills/memory/SKILL.md'), text => /name:/.test(text)), /name:/)
     }
     await page.evaluate(() => { window.location.hash = '/clients' })
-    await page.getByRole('heading', { name: 'Antigravity', exact: true, level: 2 }).waitFor()
-    const quotas = page.getByRole('region', { name: 'Cuotas de uso', exact: true })
-    await quotas.getByRole('heading', { name: 'Antigravity', exact: true, level: 3 }).waitFor()
-    await quotas.getByText('Cuota desconocida', { exact: true }).waitFor()
-    await quotas.getByText('Abrí Antigravity CLI para recibir sus cuotas nativas. /usage actualiza la lectura.', { exact: true }).waitFor()
+    // The row also holds the enable switch, so its title is the button that opens the client panel.
+    await page.getByRole('button', { name: 'Antigravity', exact: true }).click()
+    const panel = page.getByRole('complementary', { name: 'Antigravity', exact: true })
+    await panel.getByRole('heading', { name: 'Antigravity', exact: true, level: 2 }).waitFor()
+    await panel.getByText('Sin confirmar', { exact: true }).waitFor()
+    await panel.getByText('Abrí Antigravity CLI para recibir su uso; /usage actualiza la lectura.', { exact: true }).waitFor()
     console.log(`Desktop smoke ${attempt + 1}: global shortcut, renderer, session, memory and Antigravity integration ready; ${process.platform}/${process.arch}`)
     await app.close(); app = undefined
   }
