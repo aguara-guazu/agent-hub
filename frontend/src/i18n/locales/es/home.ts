@@ -54,11 +54,6 @@ const home = {
     title: "La fuente «{{name}}» no se sincroniza",
     detail: "No entra contenido nuevo a la memoria desde esta fuente",
   },
-  debate: {
-    title: "Un debate en #{{channel}} espera tu decisión",
-    agreed_one: "{{agreed, number}} de {{count, number}} agente de acuerdo",
-    agreed_other: "{{agreed, number}} de {{count, number}} agentes de acuerdo",
-  },
   decision: {
     title_one: "{{title}} propone {{count, number}} acción",
     title_other: "{{title}} propone {{count, number}} acciones",
