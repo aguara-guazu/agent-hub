@@ -432,6 +432,15 @@ code,
 }
 .field textarea,
 textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vertical; }
+.field input[type='checkbox'],
+.field input[type='radio'] {
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
 .field input::placeholder,
 .field textarea::placeholder { color: var(--text-faint); }
 .field input:focus,
