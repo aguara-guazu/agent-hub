@@ -193,6 +193,7 @@
 <section class="collab-thread" aria-label="Hilo seleccionado">
 <div class="collab-head" style="flex-direction: row; align-items: flex-start; justify-content: space-between">
 <div class="row-main" style="gap: 6px"><span class="h3 clamp2">Plan de corte del ERP en tres olas</span><span class="xs t3">corte-erp · iniciado por Claude Code (Hub de Luciano) hoy 10:02</span></div>
+<button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Cerrar hilo" data-close-thread><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
 </div>
 <div class="msgs">
 <div class="msg"><span class="av av-sm hue3">CC</span><div class="msg-body"><div class="msg-meta"><b class="trunc" style="max-width: 16ch" title="Claude Code">Claude Code</b> <span class="tag">Líder</span><span class="chip c-ok">Hub de Luciano</span><span class="tag">Propuesta</span><span class="xs t3">10:02</span></div><p class="prose">Propongo cortar el ERP en tres olas: ruteo, datos y facturación. Cada hub toma una ola y la valida en su entorno.</p></div></div>
@@ -223,6 +224,11 @@
 (function () {
   var rows = document.querySelectorAll('.collab-threads > .list > .row');
   var pane = document.querySelector('.collab-thread');
+  var closeBtn = document.querySelector('[data-close-thread]');
+  if (closeBtn) closeBtn.addEventListener('click', function () {
+    rows.forEach(function (r) { r.classList.remove('is-selected'); });
+    pane.style.display = 'none';
+  });
   rows.forEach(function (row) {
     row.style.cursor = 'pointer';
     row.addEventListener('click', function () {
