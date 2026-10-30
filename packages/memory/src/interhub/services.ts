@@ -1,31 +1,36 @@
+import type { EventEmitter } from "node:events"
 import type { InterhubChatPayload, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import { INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
 import { check } from "../contracts.js"
 import type { MemoryStore } from "../store.js"
+import type { SharedNetwork } from "../sharing/network.js"
 import { SharedProjects } from "../sharing/projects.js"
 import { InterhubChat } from "./chat.js"
-import { InterhubNetwork } from "./network.js"
+import { InterhubNetwork, chatKind } from "./network.js"
+import { InterhubTransport } from "./transport.js"
 import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
 
 const asRole = (value: unknown): "leader" | "member" => value === "leader" ? "leader" : "member"
 
 /**
- * Connects the tools and routes to the P2P replica (InterhubNetwork) and the chat model (InterhubChat).
- * Every authority decision is taken here with Hub data (session rows, channel leader, creator hub identity),
- * never from tool input.
+ * Connects the tools and routes to the P2P replica (InterhubNetwork), its transport over the sharing network
+ * (InterhubTransport) and the chat model (InterhubChat). Every authority decision is taken here with Hub data
+ * (session rows, channel leader, creator hub identity), never from tool input. Without `network` the services
+ * still record events locally but cannot join channels of other hubs.
  */
-export function createInterhubServices(store: MemoryStore): InterhubServices {
+export function createInterhubServices(store: MemoryStore, options: { network?: SharedNetwork; events?: EventEmitter } = {}): InterhubServices {
   const network = new InterhubNetwork(store), db = store.db
   const localHubId = async () => (await new SharedProjects(store).identity()).id
+  let transport: InterhubTransport | undefined
   const chat = new InterhubChat(store, {
     hubs: async channelId => (await network.listHubs(channelId)).map(hub => ({ id: String(hub.id), name: String(hub.name), is_local: Boolean(hub.is_local), connection: hub.connection === "online" ? "online" : "offline" })),
     localHubId,
-    // Signs and appends to the local event log that peers catch up from; delivery to peers is the P2P transport's job.
     publish: async (channelId, payload: InterhubChatPayload) => {
-      const envelope = await network.signEnvelope({ version: 1, channel_id: channelId, origin_agent_id: null, kind: payload.type === "thread" ? "thread" : "message", occurred_at: new Date().toISOString(), payload })
-      await db.query("INSERT INTO interhub_events(id,channel_id,origin_hub_id,envelope,received_from) VALUES($1,$2,$3,$4,$5)", [envelope.id, channelId, envelope.origin_hub_id, JSON.stringify(envelope), "local"])
+      if (transport) return transport.publish(channelId, payload)
+      await network.append(channelId, chatKind(payload), payload)
     },
   })
+  if (options.network) transport = new InterhubTransport(store, network, options.network, chat, options.events)
   const interhubChannel = async (channelId: string) => (await db.query("SELECT * FROM chat_channels WHERE id=$1 AND kind=$2 AND deleted_at IS NULL", [channelId, INTERHUB_CHANNEL_KIND]))[0]
   /** The caller is the current, open leader of the hub it represents in the channel. */
   const isHubLeader = async (channelId: string, caller: InterhubCaller) => Boolean((await db.query(
@@ -35,14 +40,25 @@ export function createInterhubServices(store: MemoryStore): InterhubServices {
   const state = (row: Record<string, any>) => row.removed_at || row.closed_at ? "offline" : String(row.state ?? "unknown")
 
   return {
-    createChannel: (caller, input) => network.createChannel(caller, { name: input.name, projectId: input.projectId ?? null }),
+    async createChannel(caller, input) {
+      const created = await network.createChannel(caller, { name: input.name, projectId: input.projectId ?? null })
+      transport?.topicsChanged()
+      return created
+    },
     async joinChannel(caller, code) {
       // Joining represents the whole local hub: only the leader of the caller's own local channel may do it.
       const own = (await db.query("SELECT leader_id,kind FROM chat_channels WHERE id=$1", [caller.channel_id]))[0]
       check(own && own.leader_id === caller.id && own.kind !== INTERHUB_CHANNEL_KIND, "Sólo el líder de tu canal local puede unir tu hub a un canal entre hubs.", 403)
-      return network.joinChannel(caller, code)
+      check(transport, "La red P2P entre hubs no está disponible en este servicio.", 503)
+      return transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code)
     },
-    rotateCode: (caller, channelId, action) => network.rotateCode(caller, channelId, action),
+    async rotateCode(caller, channelId, action) {
+      const result = await network.rotateCode(caller, channelId, action)
+      const change = action === "revoke" ? "revoked" as const : "regenerated" as const
+      if (transport) await transport.codeChanged(channelId, change, result.generation)
+      else await network.append(channelId, "code", { action: change, generation: result.generation })
+      return "code" in result ? { code: result.code } : { revoked: true }
+    },
     async roster(channelId): Promise<InterhubRoster | null> {
       if (!await interhubChannel(channelId)) return null
       const local = await localHubId()
