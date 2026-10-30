@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { check, id } from './contracts.js'
+import { check, id, MemoryError } from './contracts.js'
 import { hash } from './store.js'
 
 export const delegableKinds = ['jira_worklog', 'jira_transition', 'jira_comment', 'git_push'] as const
@@ -64,10 +64,11 @@ export const pushProposeInput = z.object({
 export function snapshotDelegation(projectId: string, version: number, document: DelegationDocument, repositories: RepositorySnapshot[], channel?: { name: string; objective: string }) {
   const byId = new Map(repositories.map(repository => [repository.repo_id, repository]))
   const missing = document.repository_ids.filter(repoId => !byId.has(repoId))
-  check(!missing.length, 'La delegación referencia repositorios que no pertenecen al proyecto.', 422)
+  const reject = (message: string, code: string, reason: string) => { throw new MemoryError(422, message, false, code, { field: "document.repository_ids", reason }) }
+  if (missing.length) reject('La delegación referencia repositorios que no pertenecen al proyecto.', "repository_unavailable", "repository_missing")
   if (document.item_kinds.includes('git_push')) {
-    check(document.repository_ids.length > 0, 'Habilitar push exige al menos un repositorio.', 422)
-    for (const repoId of document.repository_ids) check(byId.get(repoId)!.allowed_branches.length > 0, 'Cada repositorio con push necesita ramas permitidas.', 422)
+    if (!document.repository_ids.length) reject('Habilitar push exige al menos un repositorio.', "repository_unavailable", "repositories_required")
+    for (const repoId of document.repository_ids) if (!byId.get(repoId)!.allowed_branches.length) reject('Cada repositorio con push necesita ramas permitidas.', "repository_unavailable", "branches_required")
   }
   const { repository_ids, ...rest } = document
   const stored: StoredDelegation = { ...rest, repositories: repository_ids.map(repoId => byId.get(repoId)!), ...(channel ? { channel } : {}) }

@@ -277,7 +277,10 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   fastify.setErrorHandler((error, _request, reply) => {
     if (error instanceof HttpError || error instanceof MemoryError) {
       const code = error instanceof MemoryError ? error.code : undefined
-      return reply.code(error instanceof HttpError ? error.status : error.statusCode).send({ detail: error.message, ...(code ? { code } : {}) })
+      const location = error instanceof MemoryError ? error.location : undefined
+      return reply.code(error instanceof HttpError ? error.status : error.statusCode).send({
+        detail: error.message, ...(code ? { code } : {}), ...(location?.field ? { field: location.field } : {}), ...(location?.reason ? { reason: location.reason } : {}),
+      })
     }
     if (error instanceof ValidationError) {
       return reply.code(422).send({ detail: error.message })

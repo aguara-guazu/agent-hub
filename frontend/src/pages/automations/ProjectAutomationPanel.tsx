@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useId, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { Link } from "react-router-dom"
 import {
@@ -8,13 +8,34 @@ import { useFormat, useT } from "../../i18n"
 import { useDeliveryChannels, useRuns, useSchedules } from "../../lib/automations"
 import type { MemoryEntity } from "../../lib/memory"
 import {
-  DEFAULT_LIMITS, automationErrorCode, cleanDocument, useAddRepository, useProjectAutomation, useSaveProjectAutomation,
+  AUTOMATION_FIELDS, DEFAULT_LIMITS, ROSTER_CLIS, automationErrorCode, automationServerProblem, cleanDocument, parseBranches, repositoryServerProblem,
+  useAddRepository, useProjectAutomation, useSaveProjectAutomation, validateDelegation, validateRepository,
 } from "../../lib/project-automation"
-import type { DelegatedItemKind, DelegationDocument, ProjectAutomationView, RosterEntry } from "../../lib/project-automation"
+import type {
+  AutomationField, DelegatedItemKind, DelegationDocument, FieldProblem, FieldProblems, ProjectAutomationView, RepositoryField, RepositoryProblem, RepositoryProblems, RosterEntry,
+} from "../../lib/project-automation"
 import { useActionError, useScheduleText } from "./shared"
 
-const FLEET_CLIS = ["claude_code", "codex_cli", "gemini_cli", "kiro", "opencode", "antigravity"] as const
+const FLEET_CLIS = ROSTER_CLIS
 type FleetCli = typeof FLEET_CLIS[number]
+const FIELD_LABELS: Record<AutomationField, "actions" | "repositories" | "channel" | "coordinatorCli" | "coordinatorModel" | "agentCli" | "agentModel"> = {
+  actions: "actions", repositories: "repositories", channel: "channel",
+  "coordinator.cli": "coordinatorCli", "coordinator.model": "coordinatorModel", "agent.cli": "agentCli", "agent.model": "agentModel",
+}
+/** Campos que vuelven a validarse cuando cambia cada parte del borrador (para limpiar el error del servidor al corregir). */
+const TOUCHES: Record<keyof Draft, AutomationField[]> = {
+  kinds: ["actions", "repositories"], repositories: ["repositories"], channel: ["channel"],
+  coordinator: ["coordinator.cli", "coordinator.model"], agent: ["agent.cli", "agent.model"],
+}
+
+/** Lleva el foco y el scroll al primer campo marcado dentro de `root`. */
+function focusFirstInvalid(root: HTMLElement | null) {
+  const target = root?.querySelector<HTMLElement>("[data-invalid]")
+  if (!target) return
+  const control = target.querySelector<HTMLElement>("input:not([disabled]), button:not([disabled]), textarea:not([disabled])") ?? target
+  control.focus({ preventScroll: true })
+  target.scrollIntoView({ block: "center", behavior: "smooth" })
+}
 const OWNER_TEMPLATES = ["daily_brief", "daily_close", "project_status"]
 const NO_CHANNEL = "none"
 
@@ -33,16 +54,16 @@ function draftOf(project: MemoryEntity, view: ProjectAutomationView): Draft {
   }
 }
 
-function Check({ checked, disabled, onChange, children }: { checked: boolean; disabled?: boolean; onChange: () => void; children: ReactNode }) {
+function Check({ checked, disabled, invalid, describedBy, onChange, children }: { checked: boolean; disabled?: boolean; invalid?: boolean; describedBy?: string; onChange: () => void; children: ReactNode }) {
   return (
     <label style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)", cursor: disabled ? "default" : "pointer" }}>
-      <input type="checkbox" style={{ accentColor: "var(--accent)", margin: 0 }} checked={checked} disabled={disabled} onChange={onChange} />
+      <input type="checkbox" style={{ accentColor: "var(--accent)", margin: 0 }} checked={checked} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={describedBy} onChange={onChange} />
       <span className="row-main">{children}</span>
     </label>
   )
 }
 
-function RosterFields({ label, value, onChange }: { label: string; value: RosterEntry; onChange: (value: RosterEntry) => void }) {
+function RosterFields({ label, value, errors, onChange }: { label: string; value: RosterEntry; errors: { cli?: string | undefined; model?: string | undefined }; onChange: (value: RosterEntry) => void }) {
   const { t } = useT("automations")
   const ts = useT("status").t
   const options = FLEET_CLIS.map(cli => ({ value: cli, label: ts(`client.${cli}`) }))
@@ -50,10 +71,16 @@ function RosterFields({ label, value, onChange }: { label: string; value: Roster
   return (
     <fieldset style={{ border: 0, margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
       <legend className="label" style={{ padding: 0, marginBottom: "var(--sp-2)" }}>{label}</legend>
-      <div style={{ display: "flex", gap: "var(--sp-2)", flexWrap: "wrap" }}>
-        <Select<FleetCli> label={t("project.cli")} value={known ? value.cli as FleetCli : ""} placeholder={value.cli} options={options} onChange={cli => onChange({ ...value, cli })} />
-        <div style={{ flex: "1 1 160px", minWidth: 0 }}>
-          <Input mono aria-label={`${label} · ${t("project.model")}`} placeholder={t("project.modelPlaceholder")} value={value.model} onChange={event => onChange({ ...value, model: event.target.value })} />
+      <div style={{ display: "flex", gap: "var(--sp-3)", flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div data-invalid={errors.cli ? "" : undefined} style={{ flex: "0 1 auto", minWidth: 0 }}>
+          <Field label={t("project.cli")} error={errors.cli}>
+            <Select<FleetCli> bare label={`${label} · ${t("project.cli")}`} value={known ? value.cli as FleetCli : ""} placeholder={value.cli} options={options} onChange={cli => onChange({ ...value, cli })} />
+          </Field>
+        </div>
+        <div data-invalid={errors.model ? "" : undefined} style={{ flex: "1 1 160px", minWidth: 0 }}>
+          <Field label={t("project.model")} error={errors.model}>
+            <Input mono placeholder={t("project.modelPlaceholder")} value={value.model} onChange={event => onChange({ ...value, model: event.target.value })} />
+          </Field>
         </div>
       </div>
     </fieldset>
@@ -62,24 +89,68 @@ function RosterFields({ label, value, onChange }: { label: string; value: Roster
 
 function RepositoryAdder({ projectId }: { projectId: string }) {
   const { t } = useT("automations")
+  const format = useFormat()
   const toast = useToast()
   const save = useAddRepository(projectId)
   const errorText = useAutomationErrorText()
+  const problemText = useProblemText()
+  const root = useRef<HTMLDivElement>(null)
   const [path, setPath] = useState("")
   const [branches, setBranches] = useState("feat/*, fix/*")
+  const [attempted, setAttempted] = useState(false)
+  const [server, setServer] = useState<RepositoryProblems>({})
+  const [focusTick, setFocusTick] = useState(0)
+  useEffect(() => { if (focusTick) focusFirstInvalid(root.current) }, [focusTick])
+  const local = attempted ? validateRepository(path, parseBranches(branches)) : {}
+  const problems: RepositoryProblems = { ...server, ...local }
+  const text = (field: RepositoryField) => { const problem = problems[field]; return problem ? problemText(problem) : undefined }
   function add() {
-    save.mutate({ repo_path: path.trim(), allowed_branches: branches.split(",").map(item => item.trim()).filter(Boolean) }, {
-      onSuccess: () => { setPath(""); toast.success(t("project.repositoryAdded")) },
-      onError: error => toast.error(t("project.repositoryFailed"), errorText(error)),
+    const list = parseBranches(branches)
+    const found = validateRepository(path, list)
+    setAttempted(true)
+    setServer({})
+    const fields = (Object.keys(found) as RepositoryField[])
+    if (fields.length) {
+      toast.error(t("project.repositoryFailed"), t("project.validation.review", { fields: format.list(fields.map(field => t(`project.validation.fields.${field}`))) }))
+      setFocusTick(tick => tick + 1)
+      return
+    }
+    save.mutate({ repo_path: path.trim(), allowed_branches: list }, {
+      onSuccess: () => { setPath(""); setAttempted(false); toast.success(t("project.repositoryAdded")) },
+      onError: error => {
+        const mapped = repositoryServerProblem(error, list)
+        if (!mapped) { toast.error(t("project.repositoryFailed"), errorText(error)); return }
+        setServer({ [mapped.field]: mapped.problem })
+        toast.error(t("project.repositoryFailed"), t("project.validation.review", { fields: t(`project.validation.fields.${mapped.field}`) }))
+        setFocusTick(tick => tick + 1)
+      },
     })
   }
   return (
-    <div className="card card-pad" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
-      <Field label={t("project.repoPath")}><Input mono value={path} placeholder={t("project.repoPathPlaceholder")} onChange={event => setPath(event.target.value)} /></Field>
-      <Field label={t("project.repoBranches")} hint={t("project.repoBranchesHint")}><Input mono value={branches} onChange={event => setBranches(event.target.value)} /></Field>
+    <div ref={root} className="card card-pad" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
+      <div data-invalid={problems.repoPath ? "" : undefined}>
+        <Field label={t("project.repoPath")} error={text("repoPath")}>
+          <Input mono value={path} placeholder={t("project.repoPathPlaceholder")} onChange={event => { setPath(event.target.value); setServer(({ repoPath: _path, ...rest }) => rest) }} />
+        </Field>
+      </div>
+      <div data-invalid={problems.repoBranches ? "" : undefined}>
+        <Field label={t("project.repoBranches")} hint={t("project.repoBranchesHint")} error={text("repoBranches")}>
+          <Input mono value={branches} onChange={event => { setBranches(event.target.value); setServer(({ repoBranches: _branches, ...rest }) => rest) }} />
+        </Field>
+      </div>
       <Button small icon="add" style={{ alignSelf: "flex-start" }} disabled={!path.trim() || save.isPending} onClick={add}>{t("project.addRepository")}</Button>
     </div>
   )
+}
+
+/** Texto del motivo de un campo marcado, por clave de `project.validation` o por código cerrado de `project.errors`. */
+function useProblemText() {
+  const { t } = useT("automations")
+  return (problem: FieldProblem | RepositoryProblem): string => {
+    if ("code" in problem) return t(`project.errors.${problem.code}`)
+    if ("pattern" in problem) return t(`project.validation.${problem.message}`, { pattern: problem.pattern })
+    return t(`project.validation.${problem.message}`)
+  }
 }
 
 function useAutomationErrorText() {
@@ -170,6 +241,13 @@ function Content({ project, view, error, retry, onClose, title }: { project: Mem
   const [draft, setDraft] = useState<Draft | null>(initial)
   const [blocked, setBlocked] = useState(false)
   const [deactivating, setDeactivating] = useState(false)
+  const [attempted, setAttempted] = useState(false)
+  const [server, setServer] = useState<FieldProblems>({})
+  const [focusTick, setFocusTick] = useState(0)
+  const root = useRef<HTMLDivElement>(null)
+  const idBase = useId()
+  const problemText = useProblemText()
+  useEffect(() => { if (focusTick) focusFirstInvalid(root.current) }, [focusTick])
   const dirty = Boolean(draft && initial && JSON.stringify(draft) !== JSON.stringify(initial))
 
   const header = (status?: ReactNode, actions?: ReactNode) => <PanelHeader title={title} status={status ?? <span className="xs t3 trunc" title={project.title}>{project.title}</span>} actions={actions} />
@@ -181,10 +259,38 @@ function Content({ project, view, error, retry, onClose, title }: { project: Mem
   const review = active && delegation.approval_source === "coordinator_declaration"
   const hasJira = Boolean(project.data?.jira_project_key)
   const pushOn = draft.kinds.includes("git_push")
-  const needsRoster = draft.channel !== NO_CHANNEL
-  const valid = !needsRoster || (draft.coordinator.model.trim() !== "" && draft.agent.model.trim() !== "")
+  const worklogOn = draft.kinds.includes("jira_worklog")
+  const transitionsOn = draft.kinds.includes("jira_transition") && draft.kinds.includes("jira_comment")
+  const check = (source: Draft) => validateDelegation({ kinds: source.kinds, repositories: source.repositories, coordinator: source.coordinator, agent: source.agent, hasJira, available: view.repositories })
+  const problems: FieldProblems = { ...server, ...(attempted ? check(draft) : {}) }
+  const errorOf = (field: AutomationField) => { const problem = problems[field]; return problem ? problemText(problem) : undefined }
+  const hintId = (field: AutomationField) => `${idBase}-${field}`
+  const marked = (field: AutomationField) => (problems[field] ? "" : undefined)
+  const actionsInvalid = Boolean(problems.actions)
+  const jiraProblem = Boolean(problems.actions && "message" in problems.actions && problems.actions.message === "jiraKeyMissing")
   const gmail = channels.data?.items.find(item => item.channel === "gmail")
-  const set = (patch: Partial<Draft>) => setDraft(current => (current ? { ...current, ...patch } : current))
+  const set = (patch: Partial<Draft>) => {
+    const touched = (Object.keys(patch) as (keyof Draft)[]).flatMap(key => TOUCHES[key])
+    if (touched.some(field => server[field])) setServer(current => Object.fromEntries(Object.entries(current).filter(([field]) => !touched.includes(field as AutomationField))))
+    setDraft(current => (current ? { ...current, ...patch } : current))
+  }
+  /** Un solo aviso con los campos a revisar; el motivo de cada uno queda en su campo. */
+  const report = (fields: AutomationField[]) => {
+    const names = [...new Set(AUTOMATION_FIELDS.filter(field => fields.includes(field)).map(field => {
+      const problem = problems[field] ?? server[field] ?? check(draft)[field]
+      return t(`project.validation.fields.${problem && "label" in problem && problem.label ? problem.label : FIELD_LABELS[field]}`)
+    }))]
+    toast.error(t("project.saveFailed"), t("project.validation.review", { fields: format.list(names) }))
+    setFocusTick(tick => tick + 1)
+  }
+  const failed = (failure: unknown) => {
+    const mapped = automationServerProblem(failure)
+    if (!mapped) { toast.error(t("project.saveFailed"), errorText(failure)); return }
+    setServer({ [mapped.field]: mapped.problem })
+    const label = "label" in mapped.problem && mapped.problem.label ? mapped.problem.label : FIELD_LABELS[mapped.field]
+    toast.error(t("project.saveFailed"), t("project.validation.review", { fields: t(`project.validation.fields.${label}`) }))
+    setFocusTick(tick => tick + 1)
+  }
   const toggleKinds = (...group: DelegatedItemKind[]) => set({
     kinds: group.every(kind => draft.kinds.includes(kind)) ? draft.kinds.filter(kind => !group.includes(kind)) : [...new Set([...draft.kinds, ...group])],
   })
@@ -199,25 +305,25 @@ function Content({ project, view, error, retry, onClose, title }: { project: Mem
     })
   }
   function submit() {
-    if (!draft || !valid || save.isPending) return
-    save.mutate({ enabled: true, expected_version: delegation?.version ?? null, channel_id: draft.channel === NO_CHANNEL ? null : draft.channel, document: documentOf(draft) }, {
-      onSuccess: () => toast.success(t(active ? "project.saved" : "project.activated")),
-      onError: failure => toast.error(t("project.saveFailed"), errorText(failure)),
-    })
+    if (!draft || save.isPending) return
+    setAttempted(true)
+    setServer({})
+    const found = check(draft)
+    const fields = Object.keys(found) as AutomationField[]
+    if (fields.length) { report(fields); return }
+    // Promesa y no callbacks de mutate: al guardar cambia la versión y el panel se vuelve a montar, y React Query descarta los callbacks de un observador desmontado.
+    save.mutateAsync({ enabled: true, expected_version: delegation?.version ?? null, channel_id: draft.channel === NO_CHANNEL ? null : draft.channel, document: documentOf(draft) })
+      .then(() => { setAttempted(false); toast.success(t(active ? "project.saved" : "project.activated")) }, failed)
   }
   function confirmDeclared() {
     if (!delegation) return
-    save.mutate({ enabled: true, expected_version: delegation.version, channel_id: view!.channel?.id ?? null, document: cleanDocument(delegation.document) }, {
-      onSuccess: () => toast.success(t("project.confirmed")),
-      onError: failure => toast.error(t("project.saveFailed"), errorText(failure)),
-    })
+    save.mutateAsync({ enabled: true, expected_version: delegation.version, channel_id: view!.channel?.id ?? null, document: cleanDocument(delegation.document) })
+      .then(() => toast.success(t("project.confirmed")), failed)
   }
   function deactivate() {
     if (!delegation) return
-    save.mutate({ enabled: false, expected_version: delegation.version, channel_id: view!.channel?.id ?? null, document: cleanDocument(delegation.document) }, {
-      onSuccess: () => { setDeactivating(false); toast.success(t("project.deactivated")) },
-      onError: failure => { setDeactivating(false); toast.error(t("project.saveFailed"), errorText(failure)) },
-    })
+    save.mutateAsync({ enabled: false, expected_version: delegation.version, channel_id: view!.channel?.id ?? null, document: cleanDocument(delegation.document) })
+      .then(() => { setDeactivating(false); toast.success(t("project.deactivated")) }, (failure: unknown) => { setDeactivating(false); toast.error(t("project.saveFailed"), errorText(failure)) })
   }
 
   const chip = <Chip tone={review ? "warn" : active ? "ok" : "off"}>{t(review ? "project.chip.review" : active ? "project.chip.on" : "project.chip.off")}</Chip>
@@ -226,6 +332,7 @@ function Content({ project, view, error, retry, onClose, title }: { project: Mem
     <Panel label={title} onClose={onClose} wide dirty={dirty} onBlockedClose={() => setBlocked(true)}>
       {header(chip, active ? <MoreMenu small ghost items={[{ label: t("project.deactivate"), danger: true, onSelect: () => setDeactivating(true) }]} /> : undefined)}
       <PanelBody>
+        <div ref={root} style={{ display: "contents" }}>
         {review && (
           <div className="card card-pad" style={{ background: "var(--surface-2)", display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
             <span style={{ fontWeight: 500 }}>{delegation.instruction ? t("project.declaredQuote", { instruction: delegation.instruction }) : t("project.declared")}</span>
@@ -242,38 +349,41 @@ function Content({ project, view, error, retry, onClose, title }: { project: Mem
         {active && <LastClose />}
         <hr className="divider" />
 
-        <div className="field">
-          <span className="label">{t("project.actions")}</span>
-          <Check checked={draft.kinds.includes("jira_worklog")} disabled={!hasJira} onChange={() => toggleKinds("jira_worklog")}><span>{t("project.worklog")}</span></Check>
-          <Check checked={draft.kinds.includes("jira_transition") && draft.kinds.includes("jira_comment")} disabled={!hasJira} onChange={() => toggleKinds("jira_transition", "jira_comment")}><span>{t("project.transitions")}</span></Check>
-          <Check checked={pushOn} onChange={() => toggleKinds("git_push")}><span>{t("project.pushes")}</span><span className="xs t3">{t("project.pushesHint")}</span></Check>
-          <span className="hint">{hasJira ? t("project.actionsHint") : t("project.noJira")}</span>
+        <div className="field" role="group" aria-labelledby={`${hintId("actions")}-label`} data-invalid={marked("actions")}>
+          <span id={`${hintId("actions")}-label`} className="label">{t("project.actions")}</span>
+          {/* Sin clave de Jira no se puede marcar una acción de Jira, pero sí desmarcar la que ya estaba. */}
+          <Check checked={worklogOn} disabled={!hasJira && !worklogOn} invalid={actionsInvalid && (!jiraProblem || worklogOn)} describedBy={hintId("actions")} onChange={() => toggleKinds("jira_worklog")}><span>{t("project.worklog")}</span></Check>
+          <Check checked={transitionsOn} disabled={!hasJira && !transitionsOn} invalid={actionsInvalid && (!jiraProblem || transitionsOn)} describedBy={hintId("actions")} onChange={() => toggleKinds("jira_transition", "jira_comment")}><span>{t("project.transitions")}</span></Check>
+          <Check checked={pushOn} invalid={actionsInvalid && !jiraProblem} describedBy={hintId("actions")} onChange={() => toggleKinds("git_push")}><span>{t("project.pushes")}</span><span className="xs t3">{t("project.pushesHint")}</span></Check>
+          <span id={hintId("actions")} className="hint" style={problems.actions ? { color: "var(--danger)" } : undefined}>{errorOf("actions") ?? (hasJira ? t("project.actionsHint") : t("project.noJira"))}</span>
         </div>
 
         {pushOn && (
-          <div className="field">
-            <span className="label">{t("project.repositories")}</span>
+          <div className="field" role="group" aria-labelledby={`${hintId("repositories")}-label`} data-invalid={marked("repositories")}>
+            <span id={`${hintId("repositories")}-label`} className="label">{t("project.repositories")}</span>
             {view.repositories.length === 0 && <span className="xs t3">{t("project.repositoriesEmpty")}</span>}
             {view.repositories.map(repo => (
-              <Check key={repo.id} checked={draft.repositories.includes(repo.id)} onChange={() => set({ repositories: draft.repositories.includes(repo.id) ? draft.repositories.filter(id => id !== repo.id) : [...draft.repositories, repo.id] })}>
+              <Check key={repo.id} checked={draft.repositories.includes(repo.id)} invalid={Boolean(problems.repositories)} describedBy={hintId("repositories")} onChange={() => set({ repositories: draft.repositories.includes(repo.id) ? draft.repositories.filter(id => id !== repo.id) : [...draft.repositories, repo.id] })}>
                 <span className="mono xs trunc" title={repo.repo_path}>{repo.repo_path}</span>
                 <span className="xs t3 trunc" title={repo.canonical_remote_url}>{t("project.repositoryBranches", { branches: repo.allowed_branches.join(", ") || "—", main: repo.default_branch })}</span>
               </Check>
             ))}
+            {problems.repositories && <span id={hintId("repositories")} className="hint" style={{ color: "var(--danger)" }}>{errorOf("repositories")}</span>}
             <RepositoryAdder projectId={project.id} />
           </div>
         )}
 
-        <Field label={t("project.channel")} hint={draft.channel === NO_CHANNEL ? t("project.noChannelHint") : undefined}>
-          {view.channel_candidates.length > 0
-            ? <Select bare label={t("project.channel")} value={draft.channel} options={channelOptions} onChange={channel => set({ channel })} />
-            : <span className="t3">{t("project.noChannels")}</span>}
-        </Field>
-        {needsRoster && <>
-          <RosterFields label={t("project.coordinator")} value={draft.coordinator} onChange={coordinator => set({ coordinator })} />
-          <RosterFields label={t("project.agent")} value={draft.agent} onChange={agent => set({ agent })} />
-          {!valid && <span className="hint" style={{ color: "var(--danger)" }}>{t("project.modelRequired")}</span>}
-        </>}
+        <div data-invalid={marked("channel")}>
+          <Field label={t("project.channel")} hint={draft.channel === NO_CHANNEL ? t("project.noChannelHint") : undefined} error={errorOf("channel")}>
+            {view.channel_candidates.length > 0
+              ? <Select bare label={t("project.channel")} value={draft.channel} options={channelOptions} onChange={channel => set({ channel })} />
+              : <span className="t3">{t("project.noChannels")}</span>}
+          </Field>
+        </div>
+        {/* El backend exige el equipo siempre, también sin canal: se muestra para que nunca falle un dato oculto. */}
+        <RosterFields label={t("project.coordinator")} value={draft.coordinator} errors={{ cli: errorOf("coordinator.cli"), model: errorOf("coordinator.model") }} onChange={coordinator => set({ coordinator })} />
+        <RosterFields label={t("project.agent")} value={draft.agent} errors={{ cli: errorOf("agent.cli"), model: errorOf("agent.model") }} onChange={agent => set({ agent })} />
+        <span className="hint" style={{ marginTop: "calc(-1 * var(--sp-2))" }}>{t("project.rosterHint")}</span>
 
         <div className="field">
           <span className="label">{t("project.delivery")}</span>
@@ -297,14 +407,15 @@ function Content({ project, view, error, retry, onClose, title }: { project: Mem
             ]} />
           </section>
         </>}
+        </div>
       </PanelBody>
       {active
-        ? <PanelFooter dirty={dirty && valid} saving={save.isPending} warning={blocked && dirty} onDiscard={() => { setDraft(initial); setBlocked(false) }} onSave={submit} />
+        ? <PanelFooter dirty={dirty} saving={save.isPending} warning={blocked && dirty} onDiscard={() => { setDraft(initial); setBlocked(false); setAttempted(false); setServer({}) }} onSave={submit} />
         : (
           <div className="panel-f">
             {blocked && dirty && <span className="xs" role="status" style={{ marginRight: "auto", color: "var(--warn)" }}>{tc("states.unsavedClose")}</span>}
-            <Button variant="ghost" disabled={!dirty || save.isPending} onClick={() => { setDraft(initial); setBlocked(false) }}>{tc("actions.discard")}</Button>
-            <Button disabled={!valid || save.isPending} onClick={submit}>{t("project.activate")}</Button>
+            <Button variant="ghost" disabled={!dirty || save.isPending} onClick={() => { setDraft(initial); setBlocked(false); setAttempted(false); setServer({}) }}>{tc("actions.discard")}</Button>
+            <Button disabled={save.isPending} onClick={submit}>{t("project.activate")}</Button>
           </div>
         )}
       <ConfirmDialog
