@@ -5,7 +5,7 @@ import { CLI_KINDS } from '@agenthub/shared'
 import { UsageQuotas } from './usage-quotas.js'
 import { UsageNotices } from './usage-notices.js'
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
-import { createInterhubServices } from './interhub/services.js'
+import { createInterhubServices, withMessageOrigins } from './interhub/services.js'
 import { InterhubTools, interhubDefinitions, interhubReadOperations, isInterhubOperation, type InterhubServices } from './interhub/tools.js'
 import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
 import { callScheduleTool, scheduleDefinitions, scheduleReadOperations } from './schedule-tools.js'
@@ -190,6 +190,7 @@ export class MemoryOperations {
       // would run unscoped like the person's authenticated /api/memory/call, so it is refused.
       check(actor !== 'mcp' || agent, 'La colaboración por MCP requiere la identidad de agente que agrega el gateway.', 403)
       const result=await this.chat.call(operation,raw,agent)
+      if(operation==='chat_read')return withMessageOrigins(this.store,result)
       if(operation==='chat_delete_channel')return {...result,...await this.teams?.stopTransferredPlans(result.affected_plans)}
       if(operation==='chat_take_leadership' && result.affected_plans?.length)return {...result,...await this.teams?.stopTransferredPlans(result.affected_plans)}
       return result

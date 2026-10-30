@@ -111,3 +111,18 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
     },
   }
 }
+
+/**
+ * Adds `origin_hub` to each `chat_read` item of an inter-hub channel. Remote origins come from the verified envelope
+ * recorded at materialization; any other message was written in this hub.
+ */
+export async function withMessageOrigins<T extends { thread?: { channel_id?: unknown }; items?: Record<string, any>[] }>(store: MemoryStore, result: T): Promise<T> {
+  const channelId = result?.thread?.channel_id
+  if (typeof channelId !== "string" || !result.items?.length) return result
+  const channel = (await store.db.query("SELECT kind FROM chat_channels WHERE id=$1", [channelId]))[0]
+  if (channel?.kind !== INTERHUB_CHANNEL_KIND) return result
+  const local = await new SharedProjects(store).identity()
+  const rows = await store.db.query("SELECT message_id,hub_id,hub_name FROM interhub_message_origins WHERE message_id IN (SELECT value FROM json_each($1))", [JSON.stringify(result.items.map(item => item.id))])
+  const origins = new Map(rows.map(row => [String(row.message_id), { id: String(row.hub_id), name: String(row.hub_name), is_local: false }]))
+  return { ...result, items: result.items.map(item => ({ ...item, origin_hub: origins.get(String(item.id)) ?? { id: local.id, name: local.name, is_local: true } })) }
+}
