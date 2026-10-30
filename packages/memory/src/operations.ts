@@ -1,6 +1,6 @@
 import { isCollaborationTool } from './collaboration.js'
 import { renderMemoryToolReference } from './skill.js'
-import { localCollaborationSkill, localOrchestrationReference } from './local-chat-skill.js'
+import { interhubReference, localCollaborationSkill, localOrchestrationReference } from './local-chat-skill.js'
 import { CLI_KINDS } from '@agenthub/shared'
 import { UsageQuotas } from './usage-quotas.js'
 import { UsageNotices } from './usage-notices.js'
@@ -38,7 +38,7 @@ import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput,
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
-  skill_reference: ['Only when needed: collaboration guides or the full tool reference. Runs nothing; grants no permissions.', z.object({section:z.enum(['memory-tools','local-collaboration','team-orchestration'])}).strict()],
+  skill_reference: ['Only when needed: collaboration guides or the full tool reference. Runs nothing; grants no permissions.', z.object({section:z.enum(['memory-tools','local-collaboration','team-orchestration','inter-hub'])}).strict()],
   usage_status: ['Native quotas and team notices: windows, resets, source, freshness. Unknown does not mean available; quota guarantees neither access nor completion. No inference or provider refresh.', z.object({session_key:z.string().min(32).max(200).optional(),cli:z.enum(CLI_KINDS).optional(),model:z.string().max(300).optional()}).strict()],
   ...chatDefinitions,
   ...interhubDefinitions,
@@ -208,7 +208,7 @@ export class MemoryOperations {
     if (agent && !['context', 'write_note', 'finish_notes'].includes(operation)) await touchSession(store, agent)
     const author = agent ? `agent:${agent.cli_kind || 'mcp'}:${agent.session_id.slice(0, 8)}` : actor
     switch (operation) {
-      case 'skill_reference': return {section:input.section,text:input.section==='memory-tools'?renderMemoryToolReference():input.section==='local-collaboration'?localCollaborationSkill.body:localOrchestrationReference}
+      case 'skill_reference': return {section:input.section,text:input.section==='memory-tools'?renderMemoryToolReference():input.section==='local-collaboration'?localCollaborationSkill.body:input.section==='inter-hub'?interhubReference:localOrchestrationReference}
 
       case 'usage_status': {
         const who=agent && input.session_key && this.collaborationEnabled() ? await this.chat.identity(agent,input.session_key) : undefined
