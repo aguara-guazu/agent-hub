@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { z } from "zod"
 import { CHAT_MESSAGE_KINDS, INTERHUB_CHANNEL_KIND, INTERHUB_CHAT_VERSION, INTERHUB_CLOCK_SKEW_MS, INTERHUB_ESCALATION_TIMEOUT_MS } from "@agenthub/shared"
-import type { InterhubAgentRole, InterhubChatPayload, InterhubEscalationState, VerifiedInterhubChatEnvelope } from "@agenthub/shared"
+import type { InterhubAgentRole, InterhubChatPayload, InterhubEscalationState, InterhubMessageOrigin, VerifiedInterhubChatEnvelope } from "@agenthub/shared"
 import { channelMembership } from "../chat-access.js"
 import { check, id, parse } from "../contracts.js"
 import type { Sql } from "../database.js"
@@ -275,4 +275,56 @@ export async function interhubNoticeValid(sql: Sql, notice: Record<string, any>)
   const escalationId = String(notice.session_id).slice(ESCALATION_SENDER.length)
   return (await sql.query(`SELECT 1 FROM interhub_escalations e JOIN chat_channels c ON c.id=e.channel_id
     WHERE e.id=$1 AND e.answered_at IS NULL AND c.closed_at IS NULL AND c.deleted_at IS NULL AND c.leader_id=$2`, [escalationId, notice.recipient_id])).length > 0
+}
+
+type LocalHub = () => Promise<{ id: string; name: string }>
+
+/** `chat_channels` items: hub_count only on inter-hub channels; every other item is returned untouched. */
+export async function interhubChannelFields<T extends Record<string, any>>(sql: Sql, items: T[]) {
+  const ids = items.filter(item => item.kind === INTERHUB_CHANNEL_KIND).map(item => String(item.id))
+  if (!ids.length) return items
+  const counts = new Map((await sql.query("SELECT channel_id,count(*) AS n FROM interhub_members WHERE removed_at IS NULL AND channel_id IN (SELECT value FROM json_each($1)) GROUP BY channel_id",
+    [JSON.stringify(ids)])).map(row => [String(row.channel_id), Number(row.n)]))
+  return items.map(item => item.kind === INTERHUB_CHANNEL_KIND ? { ...item, hub_count: counts.get(String(item.id)) ?? 0 } : item)
+}
+
+/** `chat_threads` items: hub_count (distinct hubs whose agents wrote) only on threads of inter-hub channels. */
+export async function interhubThreadFields<T extends Record<string, any>>(sql: Sql, items: T[]) {
+  if (!items.length) return items
+  const channels = new Set((await sql.query("SELECT id FROM chat_channels WHERE kind=$1 AND id IN (SELECT value FROM json_each($2))",
+    [INTERHUB_CHANNEL_KIND, JSON.stringify([...new Set(items.map(item => String(item.channel_id)))])])).map(row => String(row.id)))
+  const threads = items.filter(item => channels.has(String(item.channel_id))).map(item => String(item.id))
+  if (!threads.length) return items
+  // Remote hubs are counted by origin; every message without an origin was written here. Hub notices are not agents.
+  const counts = new Map((await sql.query(`SELECT m.thread_id,count(DISTINCT o.hub_id)+max(CASE WHEN o.message_id IS NULL THEN 1 ELSE 0 END) AS n
+    FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id LEFT JOIN interhub_message_origins o ON o.message_id=m.id
+    WHERE m.thread_id IN (SELECT value FROM json_each($1)) AND s.cli_kind<>'hub' GROUP BY m.thread_id`, [JSON.stringify(threads)])).map(row => [String(row.thread_id), Number(row.n)]))
+  return items.map(item => channels.has(String(item.channel_id)) ? { ...item, hub_count: counts.get(String(item.id)) ?? 0 } : item)
+}
+
+/**
+ * `chat_read` items of an inter-hub channel: origin_hub and author_role. Remote messages take them from their verified
+ * origin; local ones carry this hub, as leader when written by the channel's local leader. Other channels pass through.
+ */
+export async function interhubMessageFields<T extends Record<string, any>>(sql: Sql, channelId: string, items: T[], localHub: LocalHub) {
+  const channel = (await sql.query("SELECT kind,leader_id FROM chat_channels WHERE id=$1", [channelId]))[0]
+  if (channel?.kind !== INTERHUB_CHANNEL_KIND || !items.length) return items
+  const origins = new Map((await sql.query(`SELECT o.message_id,o.hub_id,o.hub_name,o.author_role,m.peer_identity FROM interhub_message_origins o
+    LEFT JOIN interhub_members m ON m.channel_id=$2 AND m.hub_id=o.hub_id WHERE o.message_id IN (SELECT value FROM json_each($1))`,
+  [JSON.stringify(items.map(item => String(item.id))), channelId])).map(row => [String(row.message_id), row]))
+  // Placeholders hide the remote session id; the announced cli_kind is recovered through the same derivation.
+  const remoteKinds = new Map(origins.size ? (await sql.query("SELECT hub_id,session_id,cli_kind FROM interhub_remote_sessions WHERE channel_id=$1", [channelId]))
+    .map(row => [interhubRemoteSessionId(channelId, String(row.hub_id), String(row.session_id)), String(row.cli_kind)]) : [])
+  const local = items.some(item => !origins.has(String(item.id))) ? await localHub() : null
+  return items.map(item => {
+    const origin = origins.get(String(item.id))
+    if (origin) {
+      const hub: InterhubMessageOrigin = { id: String(origin.hub_id), name: hubName(origin, String(origin.hub_name)), is_local: false }
+      const cliKind = remoteKinds.get(String(item.author_id))
+      return { ...item, ...(cliKind ? { cli_kind: cliKind } : {}), origin_hub: hub, author_role: origin.author_role === "leader" ? "leader" : "member" }
+    }
+    const hub: InterhubMessageOrigin = { id: local!.id, name: local!.name, is_local: true }
+    const role: InterhubAgentRole | null = item.author_source === "hub" ? null : item.author_id === channel.leader_id ? "leader" : "member"
+    return { ...item, origin_hub: hub, author_role: role }
+  })
 }

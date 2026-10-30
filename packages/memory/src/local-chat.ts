@@ -20,7 +20,7 @@ import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
 import { AUTHOR_SOURCE_SQL, NON_AGENT_CLI_KINDS, THREAD_AGENT_COUNT_COLUMN, agentCountField, messageKind } from "./chat-debate.js"
 import { CHAT_CHANNEL_DESCRIPTION_MAX } from "@agenthub/shared"
-import { interhubNoticeValid } from "./interhub/chat.js"
+import { INTERHUB_REMOTE_CLI_KIND, interhubChannelFields, interhubMessageFields, interhubNoticeValid, interhubThreadFields } from "./interhub/chat.js"
 
 const exec = promisify(execFile)
 const key = z.string().min(32).max(200)
@@ -125,6 +125,11 @@ export async function virtualFolder(path: string) {
 export class LocalChat {
   usageEnabled: (agentId:string)=>boolean = () => true
   readonly events = new EventEmitter().setMaxListeners(0)
+  private async localHub() {
+    const { SharedProjects } = await import("./sharing/projects.js")
+    const who = await new SharedProjects(this.store).identity()
+    return { id: who.id, name: who.name }
+  }
   constructor(readonly store: MemoryStore, readonly turnAlertGraceMs=60_000) {}
   get db() { return this.store.db }
   async deleteChannel(input:z.infer<typeof chatDeleteChannelInput>,actor:{user_id:string}|{agent:AgentContext;session_key?:string}) {
@@ -872,7 +877,7 @@ export class LocalChat {
         AND ($6 IS NULL OR c.id IN (SELECT value FROM json_each($7)) OR COALESCE((SELECT master.project_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
           JOIN chat_channels master ON master.id=p.master_channel_id WHERE m.channel_id=c.id ORDER BY p.created_at DESC LIMIT 1),c.project_id) IN (SELECT value FROM json_each($6)))`,
         [input.project_id ?? null,input.channel_id ?? null,input.unassigned ? 1 : 0,input.deleted?1:0,input.include_workers?1:0,scopeProjects,scopeChannels], 'updated_at DESC,id', input)
-      return { ...result,items:await Promise.all(result.items.map(async c=>({...c,read_only:await this.channelReadOnly(c)}))) }
+      return { ...result,items:await interhubChannelFields(this.db,await Promise.all(result.items.map(async c=>({...c,read_only:await this.channelReadOnly(c)})))) }
     }
     if (operation === 'chat_agents') {
       const result = await this.page(`SELECT s.*,CASE WHEN c.leader_id=s.id THEN 'leader' ELSE 'member' END AS role,
@@ -884,7 +889,7 @@ export class LocalChat {
         WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL)
         AND ($1 IS NULL OR COALESCE(master.project_id,c.project_id)=$1)
         AND ($2 IS NULL OR c.id=$2 OR p.master_channel_id=$2)
-        AND c.deleted_at IS NULL AND master.deleted_at IS NULL AND s.cli_kind NOT IN (${NON_AGENT_CLI_KINDS.map(kind=>`'${kind}'`).join(',')})
+        AND c.deleted_at IS NULL AND master.deleted_at IS NULL AND s.cli_kind NOT IN (${[...NON_AGENT_CLI_KINDS,INTERHUB_REMOTE_CLI_KIND].map(kind=>`'${kind}'`).join(',')})
         AND ($3=0 OR (c.closed_at IS NULL AND s.closed_at IS NULL AND s.lease_until>now()))
         AND ($4=1 OR s.removed_at IS NULL) AND ($5=0 OR COALESCE(master.project_id,c.project_id) IS NULL)
         AND ($6=1 OR ($8=1 AND m.team_id IS NOT NULL) OR (s.closed_at IS NULL AND c.closed_at IS NULL)) AND ($7=1 OR (s.nickname IS NOT NULL AND trim(s.nickname)<>''))
@@ -907,7 +912,7 @@ export class LocalChat {
       AND ($5 IS NULL OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.author_id=$5)) AND ($6=0 OR COALESCE(parent.project_id,c.project_id) IS NULL)
       AND ($7 IS NULL OR c.id IN (SELECT value FROM json_each($8)) OR COALESCE(parent.project_id,c.project_id) IN (SELECT value FROM json_each($7)))`,
     [input.project_id ?? null,input.channel_id ?? null,input.state ?? null,input.query,input.author_id ?? null,input.unassigned ? 1 : 0,scopeProjects,scopeChannels], 'updated_at DESC,id',input)
-      .then(result=>({...result,items:result.items.map(agentCountField)}))
+      .then(async result=>({...result,items:await interhubThreadFields(this.db,result.items.map(agentCountField))}))
     if (operation === 'chat_read') {
       check(!(input.unread_only===true && !input.session_key),'unread_only=true requiere session_key; sin identidad chat_read sólo permite historial read-only.',400)
       // A routing key is the explicit reader identity. Native/UI reads without it remain historical and never write receipts.
@@ -934,7 +939,8 @@ export class LocalChat {
       }
       // Pending pages must restart at zero: an offset can leave earlier unread messages untouched.
       const remaining=unreadOnly ? result.total-result.items.length : result.total-input.offset-result.items.length
-      const response={ ...result, thread, team:await this.team(thread.channel_id,false,who && who.channel_id===thread.channel_id?who.id:undefined),items: await this.receipts(result.items),
+      const response={ ...result, thread, team:await this.team(thread.channel_id,false,who && who.channel_id===thread.channel_id?who.id:undefined),
+        items: await interhubMessageFields(this.db,thread.channel_id,await this.receipts(result.items),()=>this.localHub()),
         read:{unread_only:unreadOnly,remaining:Math.max(0,remaining),next_offset:remaining>0 ? unreadOnly ? 0 : input.offset+result.items.length : null} }
       Object.defineProperty(response,'__chatReadChanged',{value:changed,enumerable:false})
       return response
