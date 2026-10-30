@@ -14,9 +14,8 @@ De 33 modales quedan tres usos: **crear**, **confirmar lo irreversible** y la **
 | Borra datos sin vuelta atrás | **Confirmación** | Restaurar un respaldo, eliminar un proyecto con contenido |
 | Elegir entre variantes de una acción | **Menú** | «Nuevo proyecto ▾ · Unirme con una invitación · Restaurar desde un respaldo» |
 | Un flujo externo (OAuth) | **Bloque de acción en el panel** | «Autorizar cuenta» abre el navegador y vuelve |
-| Decidir sobre lo que propusieron los agentes | **Bloque de decisión** en el hilo o el panel | «Aprobar y registrar decisión» · «Pedir otra ronda»; «Aprobar 2 seleccionadas» · «Rechazar todas» |
+| Aprobar las acciones que propone una entrega | **Bloque de decisión** en el panel de la entrega | «Aprobar 2 seleccionadas» · «Rechazar todas» |
 | Actuar sobre varias filas | **Selección múltiple** + `.bulkbar` | Marcar entregas como vistas o no vistas |
-| Sumar contexto a un debate | **Campo al pie del hilo** (`.composer`) | «Escribí en el hilo…» · Enviar |
 
 Nunca: modal sobre modal, modal para editar, modal para informar («¡Listo!»), modal para elegir una sola opción.
 
@@ -64,19 +63,14 @@ Ahora:  click en «Eliminar» → la fila desaparece → toast «Se eliminó …
 - Teclado: ↑↓ moverse, ↵ abrir, ⌘↵ abrir en panel, esc cerrar.
 - No tiene filtros propios: los filtros viven en Memoria.
 
-## Colaboración: lo que hace la persona
+## Colaboración: solo para ver
 
-La pestaña Colaboración de un proyecto no es solo lectura. La persona puede:
+La pestaña Colaboración de un proyecto es **de solo lectura**. La persona ve canales, hilos, mensajes y la resolución propuesta; no escribe en los hilos ni aprueba desde la UI. Interactúa únicamente con el agente líder, por la terminal, y allí aprueba.
 
-- **Escribir en un hilo** con el campo del pie. Enter envía; el mensaje aparece al instante como suyo. Sirve para sumar contexto o reorientar el debate.
-- **Aprobar la resolución propuesta** («Aprobar y registrar decisión»): se ejecuta sin confirmación, registra la decisión en Proyecto › Decisiones, pasa el hilo a Resueltos y muestra un toast con Deshacer.
-- **Pedir otra ronda**: devuelve el hilo a los agentes («En debate»); la persona puede escribir antes qué falta.
-- **Crear un canal** con «Nuevo canal» (modal corto: nombre y descripción).
-- **Cerrar sin decisión o mover a otro canal**, desde el «…» del hilo.
-
-Siguen siendo de los agentes y de su terminal, no de la UI: iniciar o detener miembros de un equipo, aprobar planes de equipo y responder por un agente. La UI no muestra botones para eso.
-
-Cuando un hilo espera la decisión de la persona, aparece en **Inicio › Pendientes** («Un debate en #infra espera tu decisión» · Decidir) y el canal lleva `.badge.attn`. «Decidir» abre el hilo en la pestaña.
+- La resolución propuesta es informativa: «Se aprueba desde la terminal, con el agente líder.». Sin botones.
+- No hay campo para escribir, «Nuevo canal», ni acciones sobre hilos (cerrar, mover).
+- Las únicas acciones son las cuatro de **recuperación de canal**, en el «…» del canal: Expulsar del canal, Designar coordinador, Eliminar a la papelera y Restaurar. Cada una pide confirmación a la persona, porque afecta a agentes en ejecución.
+- Cuando un hilo espera la decisión de la persona, aparece en **Inicio › Pendientes** («Un debate en #infra espera tu decisión» · Ver) y el canal lleva `.badge.attn`. «Ver» abre el hilo en la pestaña.
 
 ## Bandeja de entregas: sin ver, selección y J/K
 

@@ -61,13 +61,13 @@ Toda vista de Agent Hub usa **una** de cuatro plantillas y llena sus zonas. Si u
 | Migas | «Sección /» | Solo un nivel hacia arriba |
 | 1 · Identidad | Avatar + título (editable en línea) + chip de estado + metadatos en una línea | Título en una línea con elipsis |
 | Acciones | 1 primaria, «Compartir» si aplica, «…» | Editar detalles va en «…» o en la columna de datos |
-| 2 · Pestañas | Máximo 5 | Opcional si la ficha cabe en una sola vista |
+| 2 · Pestañas | Máximo 5 (Proyecto: 6) | Opcional si la ficha cabe en una sola vista |
 | 3 · Contenido | Lo que muestra la pestaña | Listas de filas, prosa con `.prose` |
 | 4 · Columna de datos | Detalles (`.dl`), interruptores relevantes, Conexiones | 280–340 px; se apila debajo en ventanas angostas |
 
-Las pestañas de proyecto son fijas: **Resumen, Contenido, Tareas, Decisiones, Colaboración.**
+Las pestañas de proyecto son fijas: **Resumen, Contenido, Tareas, Decisiones, Colaboración, Notas.** Es la única excepción al máximo de cinco, decidida por la persona: «Notas» (notas de agentes, solo lectura) va al lado de Colaboración. El kit lo expresa con `<Tabs max={6}>`; ninguna otra ficha pasa de cinco.
 
-La pestaña Colaboración reemplaza las zonas 3 y 4 por `.collab`, a todo el ancho: canales (220 px) › hilos del canal › hilo seleccionado con su resolución propuesta y el campo para escribir. Es la única pestaña sin columna de datos.
+La pestaña Colaboración reemplaza las zonas 3 y 4 por `.collab`, a todo el ancho: canales (220 px) › hilos del canal › hilo seleccionado con su resolución propuesta informativa. Es solo para ver y es la única pestaña sin columna de datos.
 
 ## Plantilla C · Configuración
 
@@ -94,7 +94,7 @@ Secciones fijas: **General, Fuentes, IA y procesamiento, Automatizaciones, Colab
 | # | Regla |
 |---|---|
 | L1 | Toda vista usa una plantilla A–D. No se agregan zonas. |
-| L2 | Un botón primario por vista. Hasta dos secundarios. El resto, en «…». Excepción: un bloque de decisión dentro de un panel o de un hilo (autorizar cuenta, aprobar acciones propuestas, aprobar una resolución) lleva su propio primario compacto. |
+| L2 | Un botón primario por vista. Hasta dos secundarios. El resto, en «…». |
 | L3 | Las colecciones son listas de filas. Tarjetas solo en Inicio y en bloques de ayuda dentro de paneles. |
 | L4 | Un solo aviso de página. Nunca un aviso dentro de una fila o tarjeta: el estado va en un chip. |
 | L5 | Un solo contenedor con scroll por zona. Las tablas anchas hacen scroll horizontal dentro de su caja (`.scroll-x` + `min-width`); la página, nunca. |

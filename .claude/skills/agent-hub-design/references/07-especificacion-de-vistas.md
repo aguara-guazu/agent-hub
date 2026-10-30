@@ -17,10 +17,10 @@ Cada vista indica su plantilla, qué va en cada zona, sus estados y **qué no va
 - **Plantilla:** D · Bandeja.
 - **Encabezado:** saludo + una línea con el número de pendientes.
 - **Pendientes:** agrupados por Conexiones, Propuestas de agentes y Memoria; segmentado con contadores. Cada fila: identidad, título que dice qué pasa, detalle con la consecuencia, **una** acción.
-- **Propuestas de agentes** incluye «Un debate en #canal espera tu decisión» (avatar del proyecto; detalle: proyecto · pregunta del hilo · «3 de 3 agentes de acuerdo»; acción «Decidir», que abre el hilo en Proyecto › Colaboración) y «Brief diario propone 3 acciones» («Revisar», que abre la entrega en Automatizaciones › Historial).
+- **Propuestas de agentes** incluye «Un debate en #canal espera tu decisión» (avatar del proyecto; detalle: proyecto · pregunta del hilo · «3 de 3 agentes de acuerdo»; acción «Ver», que abre el hilo en Proyecto › Colaboración; la decisión se toma en la terminal, con el agente líder) y «Brief diario propone 3 acciones» («Revisar», que abre la entrega en Automatizaciones › Historial).
 - **Columna:** «Hoy» (automatizaciones del día con hora en mono y chip) y «Proyectos recientes».
 - **Estados:** sin pendientes → «Nada pendiente», sin acción.
-- **No va:** métricas, gráficos, accesos directos de creación, novedades de la app, el debate completo (se decide en el hilo).
+- **No va:** métricas, gráficos, accesos directos de creación, novedades de la app, el debate completo, botones para aprobar un debate.
 
 ## Proyectos
 
@@ -38,15 +38,16 @@ Cada vista indica su plantilla, qué va en cada zona, sus estados y **qué no va
 
 - **Plantilla:** B · Ficha.
 - **Identidad:** avatar, título editable en línea, chip de etapa, empresa enlazada, actualización relativa.
-- **Acciones:** Compartir (con avatares de quienes tienen acceso), **Agregar** (primario: nota, archivos, tarea), «…» (Editar detalles, Vincular, Archivar, Eliminar).
-- **Pestañas:** Resumen · Contenido · Tareas · Decisiones · Colaboración.
+- **Acciones:** Compartir (con avatares de quienes tienen acceso; su panel muestra «Personas con acceso» y permisos), **Agregar** (primario: nota, archivos, tarea), «…» (Editar detalles, Vincular, Archivar, Eliminar).
+- **Pestañas:** Resumen · Contenido · Tareas · Decisiones · Colaboración · Notas. Seis por excepción decidida por la persona (`<Tabs max={6}>`); no se agrega ninguna más.
   - **Resumen:** descripción, Última actividad (4 elementos), Tareas abiertas (2) con «Ver las N».
   - **Contenido:** segmentado por tipo (Todo, Reuniones, Documentos, Notas, Colecciones) + filtro.
   - **Tareas:** campo «Agregar una tarea y presionar Enter» (sin modal) + grupos En curso, Bloqueadas, Por hacer.
   - **Decisiones:** decisiones y hallazgos con descripción de 2 líneas.
-  - **Colaboración:** canales › hilos › debate en tres columnas (ver abajo).
+  - **Colaboración:** canales › hilos › debate en tres columnas, solo para ver (ver abajo).
+  - **Notas:** notas de trabajo de los agentes, solo lectura. Fila: avatar del agente, «Agente · hub», la nota en una línea y fecha relativa. Sin acciones.
 - **Columna de datos:** Detalles (empresa, etapa, carpetas, IA remota), Automatizaciones (interruptores Brief diario y Cierre del día), Conexiones (con «Vincular»).
-- **No va:** paginación de 4 elementos, «Información adicional e historial» desplegable (va en «…» › Historial), chips de tipo «Proyecto».
+- **No va:** paginación de 4 elementos, «Información adicional e historial» desplegable (va en «…» › Historial), chips de tipo «Proyecto», «Foro de agentes» (ya no existe en la UI), acciones sobre las notas de agentes.
 
 | Contenido | Tareas |
 |---|---|
@@ -77,15 +78,27 @@ Cada vista indica su plantilla, qué va en cada zona, sus estados y **qué no va
 
 ![Proyecto › Colaboración](../assets/capturas/vistas-oscuro/06-proyecto-colaboracion.png)
 
+La captura está desactualizada: todavía muestra «Aprobar y registrar decisión», «Pedir otra ronda», el campo «Escribí en el hilo…» y «Nuevo canal». Manda `assets/ejemplos/proyecto.html`.
+
 - **Plantilla:** B · Ficha; la pestaña reemplaza contenido y columna de datos por `.collab` a todo el ancho. El encabezado de la ficha no cambia.
-- **Canales** (220 px): «Canales» + un `.nav-item` por canal con `#`, `.badge.attn` si un hilo espera decisión y `.badge` con mensajes nuevos; al pie, «Nuevo canal» (fantasma).
+- **Solo para ver.** La persona interactúa únicamente con el agente líder, por la terminal, y allí aprueba.
+- **Canales** (220 px): «Canales» + un `.nav-item` por canal con `#`, `.badge.attn` si un hilo espera decisión y `.badge` con mensajes nuevos. El «…» del canal tiene solo las cuatro acciones de recuperación (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), cada una confirmada por la persona.
 - **Hilos del canal:** nombre con `#`, descripción, avatares de los agentes del canal; segmentado Abiertos / Resueltos con contadores. Fila: pregunta del hilo, «N agentes · N mensajes · fecha relativa», chip «Espera tu decisión» (`c-warn`) o «En debate» (`c-info`).
-- **Hilo:** título (dos líneas como máximo), «#canal · iniciado por X hoy 13:52», «…» (Cerrar sin decisión, Mover a otro canal). Mensajes con avatar, autor, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo) y hora; los enlaces llevan a la memoria (reuniones, documentos).
-- **Resolución propuesta** (solo si los agentes la propusieron): «Propuesta de resolución · 3 de 3 agentes de acuerdo», el texto y «Aprobar y registrar decisión» (primario compacto) + «Pedir otra ronda».
-- **Campo al pie:** «Escribí en el hilo para sumar contexto o reorientar el debate» + Enviar.
-- **Estados:** sin canales → `.empty` con «Nuevo canal»; canal sin hilos → «Todavía no hay hilos»; ningún hilo seleccionado → la columna del hilo muestra un vacío de una línea.
-- **Va:** escribir en el hilo, aprobar la resolución o pedir otra ronda, crear canal, cerrar sin decisión, mover a otro canal.
-- **No va:** iniciar, detener o expulsar agentes; aprobar planes de equipo; personas con acceso y permisos (van en Compartir); bloques «Conexión y preferencias» o «Cómo se organizan» (van a Ajustes › Colaboración y red); una vista global de colaboración; modales para escribir o aprobar.
+- **Hilo:** título (dos líneas como máximo) y «#canal · iniciado por X hoy 13:52». Mensajes con avatar, autor, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo) y hora; los enlaces llevan a la memoria (reuniones, documentos).
+- **Resolución propuesta** (solo si los agentes la propusieron), informativa: «Propuesta de resolución · 3 de 3 agentes de acuerdo», el texto y «Se aprueba desde la terminal, con el agente líder.».
+- **Estados:** sin canales → `.empty` que dice cuándo aparecen; canal sin hilos → «Todavía no hay hilos»; ningún hilo seleccionado → la columna del hilo muestra un vacío de una línea.
+- **Va:** leer canales, hilos y resolución; las cuatro acciones de recuperación del «…» del canal.
+- **No va:** campo para escribir, «Aprobar y registrar decisión», «Pedir otra ronda», «Nuevo canal», «Cerrar sin decisión», «Mover a otro canal», toasts de aprobación; iniciar o detener agentes y aprobar planes de equipo; «Personas con acceso» (va en el panel de «Compartir»); «Foro de agentes»; bloques «Conexión y preferencias» o «Cómo se organizan» (van a Ajustes › Colaboración y red); una vista global de colaboración.
+
+### Canales compartidos entre hubs (referencia futura, NO implementada)
+
+Maqueta: `design-system/03-vistas/html/proyecto-inter-hub.html`. No se implementa hasta que la persona lo pida.
+
+- Grupo «Compartidos entre hubs» en la columna de canales, con icono de compartir en lugar de `#`.
+- Bloque «Agentes del canal · N hubs» bajo el encabezado de hilos: por hub, chip «Este hub» o «Remoto», nombre, «conectado hace N min» y sus agentes con `.tag` «Líder»; al final, «Código del canal» en mono con «Copiar».
+- Etiqueta de hub (chip) en cada mensaje, además de «Líder» cuando corresponde.
+- Aviso de escalada del Hub (`.tag` «Aviso»): si una pregunta a la persona no tiene respuesta en 5 minutos, pasa al siguiente hub.
+- Resolución informativa: «Se aprueba desde la terminal, con el agente líder de cada hub.».
 
 ## Automatizaciones
 
@@ -108,7 +121,7 @@ Cada vista indica su plantilla, qué va en cada zona, sus estados y **qué no va
 - **Barra:** segmentado · «Mostrar: Sin ver / Todas» · Proyecto.
 - **Selección:** `.bulkbar` arriba de la lista mientras hay filas marcadas: «N seleccionadas», «Marcar como vistas», «Marcar como no vistas», «Seleccionar las N sin ver», quitar selección.
 - **Lista:** agrupada por día en `.row-head` («Hoy · 4 sin ver», «Ayer · 2 sin ver»); la primera cabecera lleva la casilla de seleccionar todas. Fila: casilla, punto sin ver, nombre de la automatización, proyecto o causa, resultado (chip en columna de 150 px: «Entregada» `c-ok`, «3 propuestas» `c-warn`, «Falló» o «Falló un canal» `c-danger`), hora en mono. Los avisos de canal («Aviso · No se envió por Gmail») son filas del historial, no banners.
-- **Panel de la entrega:** título «Automatización · hoy 08:00», proyecto enlazado y canal de entrega; «…» (Marcar como no vista, Ver automatización). Resumen en lista corta; Acciones propuestas con casillas, «Aprobar N seleccionadas» (primario compacto) y «Rechazar todas». Pie: «Anterior» (K) y «Siguiente sin ver» (J).
+- **Panel de la entrega:** título «Automatización · hoy 08:00», proyecto enlazado y canal de entrega; «…» (Marcar como no vista, Ver automatización). Resumen en lista corta; Acciones propuestas con casillas, «Aprobar N seleccionadas» (el único primario de la vista) y «Rechazar todas». Pie: «Anterior» (K) y «Siguiente sin ver» (J).
 - **Estados:** sin entregas → `.empty`; filtro Sin ver vacío → una línea + «Ver todas».
 - **No va:** pestaña o destino «Entregas», confirmación para marcar vistas, un aviso por fila fallida, contadores en tarjetas.
 

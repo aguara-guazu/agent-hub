@@ -26,8 +26,9 @@ Si el pedido viola una regla: no lo implementes tal cual. Explicá qué regla vi
 Buscar o ir a… ⌘K
 Inicio                 bandeja de lo que necesita atención
 TRABAJO
-├ Proyectos            → Resumen · Contenido · Tareas · Decisiones · Colaboración
-│                        (Colaboración = canales › hilos › debate del proyecto)
+├ Proyectos            → Resumen · Contenido · Tareas · Decisiones · Colaboración · Notas
+│                        (Colaboración = canales › hilos › debate, solo para ver;
+│                         Notas = notas de agentes, solo lectura)
 ├ Memoria              explorar + buscar
 └ Automatizaciones     Activas · Pausadas · Historial de entregas
 CONEXIONES
@@ -40,13 +41,13 @@ Ajustes                General · Fuentes · IA y procesamiento · Automatizacio
 ● estado del equipo y sincronización (una línea al pie)
 ```
 
-No hay barra superior ni destino global de Colaboración: los canales e hilos viven solo en la pestaña Colaboración de cada proyecto. **Un agente nunca agrega destinos a la barra lateral, pestañas a una ficha ni secciones a Ajustes.** Eso es una decisión de producto que requiere actualizar esta skill.
+No hay barra superior ni destino global de Colaboración: los canales e hilos viven solo en la pestaña Colaboración de cada proyecto. El «Foro de agentes» ya no existe en la UI. La ficha de proyecto es la única con seis pestañas (excepción documentada en `references/03-plantillas-y-layout.md`). **Un agente nunca agrega destinos a la barra lateral, pestañas a una ficha ni secciones a Ajustes.** Eso es una decisión de producto que requiere actualizar esta skill.
 
 ## Árbol de decisión: dónde va una función
 
 La primera respuesta afirmativa decide:
 
-1. ¿La persona tiene que decidir o resolver algo? → fila en **Inicio › Pendientes** con una acción + chip de estado en el elemento. Un debate de agentes que espera decisión es una fila «Un debate en #canal espera tu decisión» con «Decidir», que abre el hilo en Proyecto › Colaboración.
+1. ¿La persona tiene que decidir o resolver algo? → fila en **Inicio › Pendientes** con una acción + chip de estado en el elemento. Un debate de agentes que espera decisión es una fila «Un debate en #canal espera tu decisión» con «Ver», que abre el hilo en Proyecto › Colaboración; la decisión se toma en la terminal, con el agente líder.
 2. ¿Es propiedad o acción de un elemento existente? → su **panel** o **ficha**; si es poco frecuente, en el menú «…».
 3. ¿Es otra forma de ver una colección existente? → opción del **segmentado** o un **selector** de su barra.
 4. ¿Es un tipo nuevo de contenido de proyecto? → un **tipo** en Proyecto › Contenido.
@@ -58,7 +59,7 @@ La primera respuesta afirmativa decide:
 
 **Layout**
 - Toda vista usa una plantilla: **A** Colección con panel · **B** Ficha · **C** Configuración · **D** Bandeja. Sin zonas extra.
-- Un botón primario por vista; hasta dos secundarios; el resto en «…». Excepción única: un bloque de decisión dentro de un panel o de un hilo («Autorizar cuenta», «Aprobar 2 seleccionadas», «Aprobar y registrar decisión») lleva su propio primario compacto (`.btn-sm`).
+- Un botón primario por vista; hasta dos secundarios; el resto en «…». En Automatizaciones › Historial la página no tiene primario y el único es «Aprobar N seleccionadas», en el panel de la entrega.
 - Colecciones = `.list` de `.row`. Por fila: un título, un detalle, un estado, como mucho una acción.
 - Un solo `.banner` por vista, agrupando casos. Nunca avisos dentro de filas o tarjetas.
 - Sin scroll horizontal de página. Títulos con elipsis + `title`; descripciones con `.clamp2`; `min-width: 0` en hijos flexibles.
@@ -69,7 +70,7 @@ La primera respuesta afirmativa decide:
 - Reversible (pausar, ejecutar, eliminar con borrado suave): se ejecuta y muestra `.toast` con «Deshacer».
 - Un panel tiene un solo modelo de guardado: automático o explícito.
 - Entidades relacionadas se eligen con combobox que permite crear («Crear «X»»).
-- Colaboración: la persona escribe en el hilo, aprueba la resolución propuesta («Aprobar y registrar decisión») o pide otra ronda, y crea canales. Iniciar o detener agentes y aprobar planes de equipo siguen siendo de los agentes y su terminal, no de la UI.
+- Colaboración es **solo para ver**: la persona lee canales, hilos y la resolución propuesta, que es informativa («Se aprueba desde la terminal, con el agente líder.»). Interactúa únicamente con el agente líder, por la terminal. Las únicas acciones son las cuatro de recuperación de canal en el «…» del canal (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), con confirmación de la persona.
 - Historial de entregas: sin ver (`.unread`), selección múltiple (`.check` + `.bulkbar`) y atajos J/K para ir a la siguiente o anterior sin ver.
 
 **Visual**
@@ -91,7 +92,7 @@ La primera respuesta afirmativa decide:
 | Variantes de la acción principal | `.btn-group` + `.pop.menu` |
 | Acciones secundarias de un elemento | `.btn.btn-icon` «…» + `.pop.menu` |
 | Filtrar la misma lista | `.seg` con `.count` |
-| Cambiar de contenido en una ficha | `.tabs` + `.tab` (máx. 5) |
+| Cambiar de contenido en una ficha | `.tabs` + `.tab` (máx. 5; la ficha de proyecto, 6) |
 | Estado | `.chip.c-*` |
 | Tipo de cosa | `.tag` |
 | Activar / desactivar | `.switch` (role=switch, aplica al instante) |
@@ -99,7 +100,7 @@ La primera respuesta afirmativa decide:
 | Metadatos de solo lectura | `.dl` |
 | Marcar elementos sin ver | `.row.is-unread` + `.unread` |
 | Elegir varias filas y actuar sobre ellas | `.check` en cada fila + `.bulkbar` arriba de la lista |
-| Canales, hilos y debate de un proyecto | `.collab` (`.collab-chans`, `.collab-threads`, `.collab-thread`) con `.msg`, `.resolution` y `.composer` |
+| Canales, hilos y debate de un proyecto (solo ver) | `.collab` (`.collab-chans`, `.collab-threads`, `.collab-thread`) con `.msg` y `.resolution` informativa |
 | Algo de toda la página necesita atención | `.banner.banner-warn` (uno) |
 | Confirmar una acción reversible | `.toast` con «Deshacer» |
 | Nada que mostrar | `.empty` con una acción |
@@ -110,12 +111,13 @@ Ejemplos completos y navegables de cada plantilla en `assets/ejemplos/` (`servid
 ## Señales de que algo está mal
 
 Si tu cambio incluye alguna de estas cosas, revisalo antes de seguir:
-- un segundo `.btn-primary` en la vista fuera de un bloque de decisión;
+- un segundo `.btn-primary` en la vista;
 - un `<dialog>` o modal para editar algo existente;
 - un `confirm()` o modal «¿Estás seguro?» para algo reversible;
 - el mismo texto de aviso repetido en un `map()` de filas;
 - un `<p>` que explica qué hace la sección;
 - un destino «Colaboración» en la barra lateral o una lista de hilos fuera de la ficha de proyecto (Inicio solo muestra una fila por debate que espera decisión);
+- un campo para escribir, un botón de aprobar o cualquier control de acción en la pestaña Colaboración fuera del «…» del canal;
 - un número grande en una tarjeta sin acción asociada;
 - una pestaña cuyo contenido es la misma lista que otra con otro filtro;
 - un string en inglés o en `snake_case` renderizado tal cual;

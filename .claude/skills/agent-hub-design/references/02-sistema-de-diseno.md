@@ -145,7 +145,7 @@ Filtra **la misma lista** por estado o tipo. Cada opción puede llevar contador 
 
 ### Pestañas — `.tabs` + `.tab`
 
-Cambian **el contenido** de una ficha. Máximo 5. La activa lleva `.is-active`. Si cabe en un `.seg`, no es una pestaña.
+Cambian **el contenido** de una ficha. Máximo 5; única excepción, la ficha de proyecto con 6 (`<Tabs max={6}>`). La activa lleva `.is-active`. Si cabe en un `.seg`, no es una pestaña.
 
 ### Chip de estado — `.chip` + `.c-*`
 
@@ -224,7 +224,7 @@ Para colecciones que la persona revisa en tanda (hoy, Automatizaciones › Histo
 
 ### Colaboración: canales › hilos › debate — `.collab`
 
-Tres columnas dentro de la pestaña Colaboración de un proyecto. Bajo 1100 px los canales pasan a una fila arriba.
+Tres columnas dentro de la pestaña Colaboración de un proyecto. **Solo para ver:** no hay campos para escribir ni botones de aprobar. Bajo 1100 px los canales pasan a una fila arriba.
 
 ```html
 <div class="collab">
@@ -232,8 +232,6 @@ Tres columnas dentro de la pestaña Colaboración de un proyecto. Bajo 1100 px l
     <div class="nav-group">Canales</div>
     <a class="nav-item is-active" href="#"><span class="chan-hash">#</span>infra<span class="badge attn">1</span></a>
     <a class="nav-item" href="#"><span class="chan-hash">#</span>datos<span class="badge">2</span></a>
-    <div style="flex: 1"></div>
-    <button class="btn btn-sm btn-ghost" type="button">Nuevo canal</button>
   </nav>
   <section class="collab-threads" aria-label="Hilos de #infra">
     <div class="collab-head">… nombre del canal, descripción, avatares de agentes · .seg Abiertos / Resueltos</div>
@@ -246,7 +244,7 @@ Tres columnas dentro de la pestaña Colaboración de un proyecto. Bajo 1100 px l
     </div>
   </section>
   <section class="collab-thread" aria-label="Hilo seleccionado">
-    <div class="collab-head">… título (.h3.clamp2), canal · quién lo inició · «…»</div>
+    <div class="collab-head">… título (.h3.clamp2) · canal · quién lo inició</div>
     <div class="msgs">
       <div class="msg"><span class="av av-sm hue3">CC</span><div class="msg-body">
         <div class="msg-meta"><b>Claude Code</b><span class="tag">Propuesta</span><span class="xs t3">13:52</span></div>
@@ -256,19 +254,27 @@ Tres columnas dentro de la pestaña Colaboración de un proyecto. Bajo 1100 px l
     <div class="resolution">
       <span class="eyebrow">Propuesta de resolución · 3 de 3 agentes de acuerdo</span>
       <span class="md">NAT Gateway por zona en producción y uno compartido en staging.</span>
-      <div><button class="btn btn-primary btn-sm" type="button">Aprobar y registrar decisión</button><button class="btn btn-sm" type="button">Pedir otra ronda</button></div>
+      <span class="xs t3">Se aprueba desde la terminal, con el agente líder.</span>
     </div>
-    <div class="composer"><input class="input" aria-label="Mensaje para el hilo" placeholder="Escribí en el hilo para sumar contexto o reorientar el debate"><button class="btn" type="button">Enviar</button></div>
   </section>
 </div>
 ```
 
-- Canal: `.nav-item` con `.chan-hash`; el contador es `.badge.attn` si hay un hilo que espera decisión y `.badge` si solo hay mensajes nuevos.
+- Canal: `.nav-item` con `.chan-hash`; el contador es `.badge.attn` si un hilo espera decisión y `.badge` si solo hay mensajes nuevos. El «…» del canal tiene solo las cuatro acciones de recuperación: Expulsar del canal, Designar coordinador, Eliminar a la papelera y Restaurar, cada una confirmada por la persona.
 - Hilo en la lista: título, «N agentes · N mensajes · fecha relativa» y un chip: «Espera tu decisión» `c-warn` o «En debate» `c-info`. Los resueltos se ven con el segmentado, no mezclados.
-- Mensaje: avatar, autor en `<b>`, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo) y hora. Los mensajes de la persona usan el mismo `.msg` con su avatar redondo.
-- `.resolution` aparece solo cuando los agentes propusieron una resolución; es el bloque de decisión del hilo y lleva el único primario compacto de la pestaña. Al aprobar, la decisión se registra en Proyecto › Decisiones y el hilo pasa a Resueltos.
-- `.composer` va siempre al pie del hilo; Enter envía. Nunca un modal para escribir.
+- Mensaje: avatar, autor en `<b>`, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo) y hora. Solo escriben agentes.
+- `.resolution` es informativa: aparece cuando los agentes propusieron una resolución, sin botones, con la línea «Se aprueba desde la terminal, con el agente líder.».
 - `.collab-full` quita el borde y el radio cuando `.collab` ocupa todo el alto disponible.
+
+#### Canales compartidos entre hubs (referencia futura, no implementada)
+
+Maqueta en `design-system/03-vistas/html/proyecto-inter-hub.html`. No se implementa hasta que la persona lo pida; sirve para no cerrar el camino al diseñar la pestaña actual.
+
+- En `.collab-chans`, un segundo `.nav-group` «Compartidos entre hubs»; sus canales llevan un icono de compartir en lugar de `#`.
+- Debajo del encabezado de hilos, un bloque «Agentes del canal · N hubs»: por hub, chip «Este hub» (`c-ok`) o «Remoto» (`c-off`) + nombre + «conectado hace N min», y sus agentes con `.tag` «Líder» en el líder. Al final, «Código del canal» en mono con «Copiar».
+- Cada mensaje suma, después del autor, `.tag` «Líder» si corresponde y un chip con el hub de origen.
+- Mensaje del Hub con `.tag` «Aviso» para la escalada: si la persona no responde una pregunta en 5 minutos, pasa al siguiente hub.
+- La resolución se aprueba «desde la terminal, con el agente líder de cada hub».
 
 ### Interruptor — `.switch`
 

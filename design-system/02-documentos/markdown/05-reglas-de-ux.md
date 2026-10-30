@@ -12,7 +12,7 @@ La persona usa Agent Hub para tres cosas, en este orden de frecuencia:
 
 Configurar es lo menos frecuente → Ajustes, al pie.
 
-Los **agentes** (Claude Code, Codex CLI, Gemini CLI…) son quienes más escriben en el hub: crean tareas, decisiones, hilos, automatizaciones. La persona **revisa, corrige y decide**. Por eso la interfaz prioriza leer, revisar y aprobar por sobre crear a mano. En un debate de agentes la persona también participa: escribe en el hilo, aprueba la resolución o pide otra ronda.
+Los **agentes** (Claude Code, Codex CLI, Gemini CLI…) son quienes más escriben en el hub: crean tareas, decisiones, hilos, automatizaciones. La persona **revisa, corrige y decide**. Por eso la interfaz prioriza leer, revisar y aprobar por sobre crear a mano. En la colaboración entre agentes, la UI es solo para ver: la persona decide con el agente líder, por la terminal.
 
 ## Árbol de decisión: dónde va una función nueva
 
@@ -39,7 +39,7 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 
 | # | Rechazar si… | Alternativa |
 |---|---|---|
-| U1 | Agrega un tercer nivel de navegación o una sexta pestaña | Fusionar pestañas o convertir en filtro |
+| U1 | Agrega un tercer nivel de navegación o una sexta pestaña (la ficha de proyecto ya usa su única excepción: Notas) | Fusionar pestañas o convertir en filtro |
 | U2 | Agrega un segundo botón primario a una vista | Pasar a secundario o a «…» |
 | U3 | Duplica una acción que ya existe en otro lugar de la misma vista | Dejar una sola, en el lugar del dueño |
 | U4 | Crea un modal para editar, informar o confirmar algo reversible | Panel, en línea, o Deshacer |
@@ -54,7 +54,7 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 | U13 | Pide confirmación para ejecutar algo que el agente ya propuso y la persona eligió | Ejecutar + toast |
 | U14 | Mezcla guardado automático y botón Guardar en el mismo panel | Elegir un modelo |
 | U15 | Pone un control dentro de un enlace, o un enlace dentro de un control | Separar: fila `div` con título enlazado |
-| U16 | Agrega una vista de colaboración fuera de la ficha de proyecto, o controles en la UI para iniciar o detener agentes o aprobar planes de equipo | Pestaña Colaboración del proyecto; lo que espera decisión, en Inicio; el control de agentes queda en su terminal |
+| U16 | Agrega una vista de colaboración fuera de la ficha de proyecto, o cualquier control de acción en la colaboración (escribir, aprobar, pedir otra ronda, crear canal, cerrar o mover hilos, iniciar o detener agentes, aprobar planes de equipo) | Pestaña Colaboración del proyecto, solo para ver; lo que espera decisión, en Inicio con «Ver»; la decisión, en la terminal con el agente líder. Solo se conservan las 4 acciones de recuperación del «…» del canal (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), confirmadas por la persona |
 
 ## Heurísticas aplicadas a Agent Hub
 
@@ -96,7 +96,8 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 | Lo crea un agente | La persona… | Dónde |
 |---|---|---|
 | Tareas, decisiones, hallazgos | Lee, corrige, cierra | Proyecto › Tareas / Decisiones |
-| Canales e hilos de colaboración | Lee, escribe, aprueba la resolución o pide otra ronda, crea canales | Proyecto › Colaboración; lo que espera decisión, en Inicio |
+| Canales e hilos de colaboración | Lee; decide con el agente líder por la terminal; recupera un canal si hace falta | Proyecto › Colaboración (solo ver); lo que espera decisión, en Inicio |
+| Notas de trabajo de los agentes | Lee | Proyecto › Notas (solo lectura) |
 | Entregas de automatizaciones | Revisa sin ver, marca vistas en tanda | Automatizaciones › Historial |
 | Automatizaciones | Ajusta horario y canales, pausa | Automatizaciones |
 | Propuestas en entregas | Aprueba o rechaza | Inicio › Pendientes → Automatizaciones › Historial, panel de la entrega |
