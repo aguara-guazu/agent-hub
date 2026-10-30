@@ -163,6 +163,7 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
 .search .input { padding-left: 32px; }
 .select { justify-content: space-between; font-weight: 400; color: var(--text-2); }
 .select b { font-weight: 500; color: var(--text); }
+.input[aria-invalid="true"], .select[aria-invalid="true"] { border-color: var(--danger); }
 
 /* Segmentado y pestañas */
 .seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--border); }
