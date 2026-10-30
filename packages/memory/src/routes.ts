@@ -7,6 +7,7 @@ import { listAuthorityEvents } from './chat-access.js'
 import { LocalWatchdog } from './local-watchdog.js'
 import { nativeSession } from '@agenthub/gateway'
 import { sharingRoutes } from './sharing/routes.js'
+import { interhubRoutes } from './interhub/routes.js'
 import { pdfPreview } from './pdf.js'
 import { mediaSettings, queueMedia } from './media-processing.js'
 import { MEDIA_MODULES, mediaSettingsInput } from './media-runtime.js'
@@ -149,6 +150,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const {operations}=await service.get()
     return operations.chat.rejectReadRequest(requestId,user.id,note)
   })
+  interhubRoutes(app, service, options.authorize, requireCollaboration)
   app.get('/api/memory/chat/read-grants', {preHandler:auth}, async (request, reply) => {
     const filter=parse(z.object({ active:z.enum(['true','false']).default('true').transform(v=>v==='true'), project_id:id.optional(), ...page }).strict(),request.query)
     const {operations}=await service.get()
