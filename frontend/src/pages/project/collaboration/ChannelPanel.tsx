@@ -104,6 +104,9 @@ export function ChannelPanel(props: ChannelPanelProps) {
 
   const kind = channelKind(channel)
   const visible = visibleAgents(agents.data?.items)
+  // chat_agents ya excluye a los limpiados por el líder; el total también cuenta sesiones que la vista oculta
+  // (desconectadas fuera de un equipo), así que se descuentan las ocultas de esta página.
+  const shownTotal = agents.data ? Math.max(visible.length, agents.data.total - (agents.data.items.length - visible.length)) : 0
   const leader = visible.find(agent => agent.id === channel.leader_id)
 
   const menu: MenuItem[] = [{ label: t("actions.channelThreads"), onSelect: () => onThreads(channel.id) }]
@@ -160,7 +163,7 @@ export function ChannelPanel(props: ChannelPanelProps) {
         {kind === "readOnly" && <span className="xs t3">{t("channel.readOnlyNote")}</span>}
         <hr className="divider" />
         <section className="section" aria-label={t("channel.agents")}>
-          <div className="section-h"><span className="h3">{t("channel.agents")}</span>{agents.data && <span className="xs t3">{plural("channel.agentCount", agents.data.total)}</span>}</div>
+          <div className="section-h"><span className="h3">{t("channel.agents")}</span>{agents.data && <span className="xs t3">{plural("channel.agentCount", shownTotal)}</span>}</div>
           {agents.isPending && <SkeletonRows count={2} label={t("channel.loadingAgents")} />}
           {agents.error && <List><ErrorState error={agents.error} title={t("channel.agentsError")} onRetry={() => void agents.refetch()} /></List>}
           {agents.data && visible.length === 0 && <List><Empty icon="clients" title={t("channel.noAgents")} detail={t("channel.noAgentsDetail")} /></List>}
