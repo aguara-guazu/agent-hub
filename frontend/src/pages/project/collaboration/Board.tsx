@@ -1,6 +1,6 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Link } from "react-router-dom"
-import { Avatar, Badge, Banner, Button, Chip, Empty, ErrorState, MoreMenu, Seg, SkeletonRows, cx, useToast, type MenuItem } from "../../../components/ui"
+import { Avatar, Banner, Button, Empty, ErrorState, MoreMenu, Seg, SkeletonRows, cx, useToast, type MenuItem } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
 import { AgentPanel } from "./AgentPanel"
@@ -89,7 +89,6 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
               >
                 <span className="chan-hash" aria-hidden="true">#</span>
                 <span className="trunc">{item.name}</span>
-                <Badge count={item.awaiting_decision ?? 0} attention label={t("collaboration.board.awaitingBadge", { count: item.awaiting_decision ?? 0 })} />
               </Link>
             ))}
         </nav>
@@ -171,11 +170,12 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
   menu.push({ label: t("collaboration.board.trash"), onSelect: onTrash })
   menu.push({ label: t("collaboration.board.deleteChannel"), danger: true, onSelect: () => setDeleting(true) })
 
-  function chip(thread: BoardThread) {
-    if (thread.state === "resolved" || thread.debate_state === "resolved") return <Chip tone="off">{t("collaboration.board.resolvedChip")}</Chip>
-    if (thread.debate_state === "awaiting_decision") return <Chip tone="warn">{t("collaboration.board.awaiting")}</Chip>
-    if (thread.debate_state === "open") return <Chip tone="info">{t("collaboration.board.debating")}</Chip>
-    return null
+  // Al cerrar la columna (botón X o volver a tocar el hilo) el foco vuelve a la fila del hilo.
+  const rows = useRef(new Map<string, HTMLDivElement>())
+  function closeThread() {
+    const id = selected
+    onCloseThread()
+    requestAnimationFrame(() => rows.current.get(id)?.focus())
   }
 
   function sub(thread: BoardThread) {
@@ -238,14 +238,14 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
                   role="button"
                   tabIndex={0}
                   aria-pressed={thread.id === selected}
-                  onClick={() => (thread.id === selected ? onCloseThread() : onThread(thread.id))}
-                  onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (thread.id === selected) onCloseThread(); else onThread(thread.id) } }}
+                  ref={element => { if (element) rows.current.set(thread.id, element); else rows.current.delete(thread.id) }}
+                  onClick={() => (thread.id === selected ? closeThread() : onThread(thread.id))}
+                  onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (thread.id === selected) closeThread(); else onThread(thread.id) } }}
                   style={{ alignItems: "flex-start", paddingTop: "var(--sp-3)", paddingBottom: "var(--sp-3)", cursor: "pointer" }}
                 >
                   <div className="row-main" style={{ gap: "var(--sp-2)" }}>
                     <span className="row-title" title={thread.title}>{thread.title}</span>
                     <span className="row-sub">{sub(thread)}</span>
-                    {chip(thread) && <span style={{ alignSelf: "flex-start" }}>{chip(thread)}</span>}
                   </div>
                 </div>
               ))}
@@ -259,7 +259,7 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
 
     {selected && (
       <section className="collab-thread" aria-label={t("collaboration.board.threadLabel")}>
-        <ThreadView key={selected} threadId={selected} channel={channel} />
+        <ThreadView key={selected} threadId={selected} channel={channel} onClose={closeThread} />
       </section>
     )}
 
