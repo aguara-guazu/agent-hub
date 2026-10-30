@@ -6,8 +6,7 @@ import { useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
 import { AgentPanel } from "./AgentPanel"
 import { ChannelPanel, DeleteChannelDialog } from "./ChannelPanel"
 import { PlanPanel } from "./PlanPanel"
-import { agentInitials, visibleAgents } from "./chatShared"
-import type { Participant } from "./chatTypes"
+import { agentInitials, useAllAgents, visibleAgents } from "./chatShared"
 import { SidePanel, useWorkPanel } from "../work"
 import { archiveCause, useBoardParams, type BoardChannel, type BoardThread, type ThreadState } from "./collabData"
 import { ArchivedChannels } from "./ArchivedChannels"
@@ -167,8 +166,8 @@ function ChannelLink({ item, active, href }: { item: BoardChannel; active: boole
 }
 
 function AgentPanelLoader({ projectId, agentId, onClose }: { projectId: string; agentId: string; onClose: () => void }) {
-  const agents = useMemory<Page<Participant>>("chat_agents", { project_id: projectId, include_team_history: true, limit: 100, offset: 0 })
-  const agent = agents.data?.items.find(item => item.id === agentId)
+  const agents = useAllAgents({ project_id: projectId, include_team_history: true })
+  const agent = agents.items?.find(item => item.id === agentId)
   return <AgentPanel key={agentId} agentId={agentId} agent={agent} onClose={onClose} onThreads={onClose} />
 }
 
@@ -200,9 +199,9 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
   const archived = Boolean(channel.archived_at)
   const cause = archiveCause(channel.archive_cause)
   // En un canal compartido los agentes vienen agrupados por hub (roster); chat_agents solo conoce los locales.
-  const agents = useMemory<Page<Participant>>("chat_agents", { ...scope, include_team_history: true, limit: 100, offset: 0 }, !shared && !archived)
+  const agents = useAllAgents({ ...scope, include_team_history: true }, !shared && !archived)
   const roster = useInterhubRoster(channel.id, shared)
-  const visible = visibleAgents(agents.data?.items)
+  const visible = visibleAgents(agents.items)
   const list = threads.data?.items ?? []
   const selected = list.find(item => item.id === threadId)?.id ?? threadId
   const count = (value: ThreadState) => (value === state ? threads.data?.total : other.data?.total)

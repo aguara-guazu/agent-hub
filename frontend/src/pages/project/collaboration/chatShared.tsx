@@ -1,10 +1,47 @@
 import { useCallback } from "react"
+import { useQueries } from "@tanstack/react-query"
 import { Button, type ChipTone } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
+import { MEMORY_REFRESH_MS, memoryCall, useMemory, type Page } from "../../../lib/memory"
 import type { Participant, Plan } from "./chatTypes"
 
 export const MESSAGE_PAGE = 40
 export const AGENT_PAGE = 40
+// Página máxima que acepta chat_agents y tope de páginas que se piden para un mismo alcance.
+const AGENT_FETCH = 100
+const AGENT_FETCH_PAGES = 10
+
+/**
+ * Todas las sesiones de chat_agents de un alcance, de a AGENT_FETCH (tope AGENT_FETCH_PAGES páginas). La vista filtra con
+ * visibleAgents y pagina sobre la lista completa, así el total que muestra es el de las filas que lista. chat_agents ya
+ * excluye a los agentes limpiados por el líder: nunca se pide con include_dismissed.
+ */
+export function useAllAgents(input: Record<string, unknown>, enabled = true) {
+  const first = useMemory<Page<Participant>>("chat_agents", { ...input, limit: AGENT_FETCH, offset: 0 }, enabled)
+  const pages = first.data ? Math.min(Math.ceil(first.data.total / AGENT_FETCH), AGENT_FETCH_PAGES) : 1
+  const rest = useQueries({
+    queries: Array.from({ length: Math.max(0, pages - 1) }, (_, index) => {
+      const page = { ...input, limit: AGENT_FETCH, offset: (index + 1) * AGENT_FETCH }
+      return {
+        queryKey: ["memory", "chat_agents", page],
+        queryFn: () => memoryCall<Page<Participant>>("chat_agents", page),
+        enabled,
+        refetchInterval: MEMORY_REFRESH_MS,
+        refetchIntervalInBackground: false,
+      }
+    }),
+  })
+  const pending = first.isPending || rest.some(query => query.isPending)
+  // Entre páginas pedidas en momentos distintos una sesión puede repetirse: se deja una por id.
+  const items = pending || !first.data ? undefined
+    : [...new Map([...first.data.items, ...rest.flatMap(query => query.data?.items ?? [])].map(agent => [agent.id, agent])).values()]
+  return {
+    items,
+    isPending: pending,
+    error: first.error ?? rest.find(query => query.error)?.error ?? null,
+    refetch: () => { void first.refetch(); for (const query of rest) void query.refetch() },
+  }
+}
 
 /** Valor de `.dl` que se corta con elipsis: el `dd` es un ítem de grid y necesita un hijo de bloque. */
 export const TRUNC = { display: "block", minWidth: 0, maxWidth: "100%" } as const

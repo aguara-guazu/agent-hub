@@ -6,8 +6,7 @@ import {
 } from "../../../components/ui"
 import { useT } from "../../../i18n"
 import { api } from "../../../lib/api"
-import { useMemory, type Page } from "../../../lib/memory"
-import { AGENT_PAGE, AGENT_TONE, Pager, agentState, capabilityKey, useCliLabel, visibleAgents, TRUNC } from "./chatShared"
+import { AGENT_PAGE, AGENT_TONE, Pager, agentState, capabilityKey, useAllAgents, useCliLabel, visibleAgents, TRUNC } from "./chatShared"
 import type { Channel, Participant } from "./chatTypes"
 
 // Motivos que el Hub guarda en el historial; son datos de la API, no texto de la interfaz.
@@ -90,7 +89,7 @@ export function ChannelPanel(props: ChannelPanelProps) {
   const [reason, setReason] = useState("")
   const [coordinating, setCoordinating] = useState<Participant | null>(null)
 
-  const agents = useMemory<Page<Participant>>("chat_agents", { project_id: projectId, include_team_history: true, channel_id: channel.id, limit: AGENT_PAGE, offset: agentOffset })
+  const agents = useAllAgents({ project_id: projectId, include_team_history: true, channel_id: channel.id })
   const refresh = () => void cache.invalidateQueries({ queryKey: ["memory"] })
 
   const kick = useMutation({
@@ -103,10 +102,8 @@ export function ChannelPanel(props: ChannelPanelProps) {
   })
 
   const kind = channelKind(channel)
-  const visible = visibleAgents(agents.data?.items)
-  // chat_agents ya excluye a los limpiados por el líder; el total también cuenta sesiones que la vista oculta
-  // (desconectadas fuera de un equipo), así que se descuentan las ocultas de esta página.
-  const shownTotal = agents.data ? Math.max(visible.length, agents.data.total - (agents.data.items.length - visible.length)) : 0
+  const visible = visibleAgents(agents.items)
+  const shown = visible.slice(agentOffset, agentOffset + AGENT_PAGE)
   const leader = visible.find(agent => agent.id === channel.leader_id)
 
   const menu: MenuItem[] = [{ label: t("actions.channelThreads"), onSelect: () => onThreads(channel.id) }]
@@ -163,13 +160,13 @@ export function ChannelPanel(props: ChannelPanelProps) {
         {kind === "readOnly" && <span className="xs t3">{t("channel.readOnlyNote")}</span>}
         <hr className="divider" />
         <section className="section" aria-label={t("channel.agents")}>
-          <div className="section-h"><span className="h3">{t("channel.agents")}</span>{agents.data && <span className="xs t3">{plural("channel.agentCount", shownTotal)}</span>}</div>
+          <div className="section-h"><span className="h3">{t("channel.agents")}</span>{agents.items && <span className="xs t3">{plural("channel.agentCount", visible.length)}</span>}</div>
           {agents.isPending && <SkeletonRows count={2} label={t("channel.loadingAgents")} />}
-          {agents.error && <List><ErrorState error={agents.error} title={t("channel.agentsError")} onRetry={() => void agents.refetch()} /></List>}
-          {agents.data && visible.length === 0 && <List><Empty icon="clients" title={t("channel.noAgents")} detail={t("channel.noAgentsDetail")} /></List>}
-          {visible.length > 0 && (
+          {agents.error && <List><ErrorState error={agents.error} title={t("channel.agentsError")} onRetry={agents.refetch} /></List>}
+          {agents.items && visible.length === 0 && <List><Empty icon="clients" title={t("channel.noAgents")} detail={t("channel.noAgentsDetail")} /></List>}
+          {shown.length > 0 && (
             <List>
-              {visible.map(agent => {
+              {shown.map(agent => {
                 const state = agentState(agent)
                 return (
                   <Row
@@ -186,7 +183,7 @@ export function ChannelPanel(props: ChannelPanelProps) {
               })}
             </List>
           )}
-          {agents.data && <Pager total={agents.data.total} offset={agentOffset} limit={AGENT_PAGE} onChange={onAgentOffset} />}
+          {agents.items && <Pager total={visible.length} offset={agentOffset} limit={AGENT_PAGE} onChange={onAgentOffset} />}
         </section>
       </PanelBody>
 
