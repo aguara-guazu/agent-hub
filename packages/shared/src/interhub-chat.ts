@@ -17,6 +17,7 @@ export interface InterhubRemoteSessionPayload {
 export interface InterhubThreadPayload {
   id: string
   title: string
+  author: InterhubRemoteSessionPayload
   created_at: string
 }
 
@@ -73,6 +74,7 @@ export interface InterhubLocalDeliveryEnvelope {
 }
 
 export interface InterhubEscalationState {
+  id: string
   channel_id: string
   thread_id: string
   question_message_id: string
