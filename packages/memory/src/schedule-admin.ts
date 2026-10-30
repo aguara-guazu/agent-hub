@@ -6,6 +6,7 @@ import { isRunProfileAgent, type Actor, type DeliveryTarget, type Recurrence, ty
 import { ScheduleError, ScheduleStore, snapshotOf, targetKey, type RunRow, type ScheduleRow } from './schedule-store.js'
 import { scheduleTemplate } from './schedule-templates.js'
 import { localIso, nextOccurrence, systemTimeZone } from './schedule-time.js'
+import { SCHEDULE_RESTORE_WINDOW_MS, type ScheduleRestoreInfo } from "@agenthub/shared"
 
 const MAX_PER_AGENT = 20, MAX_PER_OWNER = 100, MAX_ONCE_DAYS = 366
 
@@ -199,16 +200,59 @@ export class ScheduleAdmin {
       const updated = await this.store.updateSchedule(id, expectedRevision, { state: 'cancelled', next_run_at: null, cancelled_at: new Date(this.now()).toISOString(), cancelled_by: actor.kind, cancel_reason: options.reason ?? null })
       if (!updated) this.fail(409, 'stale_revision', 'El schedule cambió; leelo de nuevo.')
       await this.store.cancelLiveRuns(id, 'schedule_cancelled')
+      let constraintId: string | null = null
       if (principal.kind === 'human' && options.scope) {
-        await this.store.addConstraint({ subject: current.scope, project_id: current.project_id, template: current.template, scope: options.scope, target_key: options.scope === 'target' ? current.target_key : null,
+        const created = await this.store.addConstraint({ subject: current.scope, project_id: current.project_id, template: current.template, scope: options.scope, target_key: options.scope === "target" ? current.target_key : null,
           schedule_id: id, user: principal.ref, ...(options.reason ? { reason: options.reason } : {}) })
+        // ON CONFLICT DO NOTHING: an equivalent constraint that already existed is not this cancel's to lift on restore.
+        if (await this.store.constraintExists(created)) constraintId = created
         await this.store.addEvent({ type: 'schedule.constrained', schedule_id: id, actor_kind: 'human', actor_ref: principal.ref, payload: { scope: options.scope } })
       }
-      await this.store.addEvent({ type: 'schedule.cancelled', schedule_id: id, actor_kind: actor.kind, actor_ref: actor.ref, payload: { ...(options.reason ? { reason: options.reason } : {}) } })
+      // previous_* lets restoreCancelled return to the exact pre-cancel state.
+      await this.store.addEvent({ type: "schedule.cancelled", schedule_id: id, actor_kind: actor.kind, actor_ref: actor.ref, payload: { ...(options.reason ? { reason: options.reason } : {}),
+        previous_state: current.state, previous_paused_by: current.paused_by, previous_next_run_at: current.next_run_at, constraint_id: constraintId } })
       return updated
     })
     await this.o.stopRun?.(id)
     return { schedule: await this.view(row), announce: await this.announce('Cancelé', row) }
+  }
+
+  /**
+   * Undo of a person's cancel within SCHEDULE_RESTORE_WINDOW_MS: back to the pre-cancel state (active or paused, same pause author), lifting
+   * only the constraint that cancel created. Runs the cancel skipped or aborted stay stopped and are listed in `aborted_runs`.
+   */
+  async restoreCancelled(principal: Principal, id: string, expectedRevision: number): Promise<{ schedule: ScheduleView; restore: ScheduleRestoreInfo; announce: string }> {
+    if (principal.kind !== "human") this.fail(403, "restore_human_only", "Solo la persona puede deshacer una cancelación, desde la app.")
+    const row = await this.store.schedule(id)
+    if (!row) this.fail(404, "schedule_not_found", "El schedule no existe.")
+    if (row.state !== "cancelled") this.fail(409, "schedule_not_cancelled", `El schedule está ${row.state}.`)
+    if (row.revision !== expectedRevision) this.fail(409, "stale_revision", "El schedule cambió; leelo de nuevo.")
+    if (row.cancelled_by !== "human" || !row.cancelled_at) this.fail(409, "schedule_not_restorable", "Solo se deshace una cancelación hecha por la persona.")
+    if (this.now() - Date.parse(row.cancelled_at) > SCHEDULE_RESTORE_WINDOW_MS) this.fail(409, "restore_window_expired", "Venció el plazo para deshacer la cancelación.")
+    const event = await this.store.lastEvent(id, "schedule.cancelled")
+    const payload = (event?.payload ?? {}) as Record<string, unknown>
+    const previous = payload.previous_state
+    if (previous !== "active" && previous !== "paused") this.fail(409, "schedule_not_restorable", "La cancelación no guardó el estado anterior.")
+    if (previous === "active") this.requireAutomations()
+    const taken = await this.store.liveByTarget(row.target_key)
+    if (taken && taken.id !== id) this.fail(409, "schedule_target_taken", "Ya hay otro schedule activo para el mismo objetivo.")
+    const pausedBy = previous === "paused" && ["agent", "human", "system"].includes(String(payload.previous_paused_by)) ? payload.previous_paused_by as Actor : previous === "paused" ? "human" : null
+    const kept = typeof payload.previous_next_run_at === "string" && Date.parse(payload.previous_next_run_at) > this.now() ? payload.previous_next_run_at : null
+    const constraintId = typeof payload.constraint_id === "string" ? payload.constraint_id : null
+    const abortedRuns = await this.store.runsStoppedByCancel(id, row.cancelled_at)
+    let constraintLifted = false
+    const restored = await this.o.db.transaction(async () => {
+      const updated = await this.store.updateSchedule(id, expectedRevision, { state: previous, paused_by: pausedBy,
+        next_run_at: previous === "active" ? kept ?? this.firstRun(row.recurrence) : null, cancelled_at: null, cancelled_by: null, cancel_reason: null })
+      if (!updated) this.fail(409, "stale_revision", "El schedule cambió; leelo de nuevo.")
+      if (constraintId) constraintLifted = Boolean(await this.store.liftConstraint(constraintId, principal.ref))
+      await this.store.addEvent({ type: "schedule.restored", schedule_id: id, actor_kind: "human", actor_ref: principal.ref,
+        payload: { previous_state: previous, constraint_lifted: constraintLifted, aborted_runs: abortedRuns.length } })
+      return updated
+    })
+    if (previous === "active") this.o.wake?.()
+    const restore: ScheduleRestoreInfo = { previous_state: previous, constraint_lifted: constraintLifted, aborted_runs: abortedRuns, aborted_runs_resumed: false }
+    return { schedule: await this.view(restored), restore, announce: await this.announce("Restauré", restored) }
   }
 
   async runNow(principal: Principal, id: string, requestId: string): Promise<{ run_id: string; schedule: ScheduleView }> {
@@ -235,13 +279,15 @@ export class ScheduleAdmin {
     const available = availability ?? (row.delivery.some(target => target === 'gmail_self' || target === 'slack_self') ? await this.o.deliveryAvailability() : undefined)
     const label = row.created_by_session ? (await this.o.db.query<{ agent_label: string }>('SELECT agent_label FROM agent_sessions WHERE id=$1', [row.created_by_session]))[0]?.agent_label : undefined
     const quota = last?.state === 'deferred' ? last.quota as { resets_at?: string } | null : null
+    const pausedAt = row.state === 'paused' ? await this.store.lastPausedAt(row.id) : undefined
     return { id: row.id, scope: row.scope, project_id: row.project_id, template: row.template, template_version: row.template_version, kind: row.kind, title: row.title, recurrence: row.recurrence, timezone: zone,
       next_run_at: row.next_run_at, next_run_local: row.next_run_at ? localIso(Date.parse(row.next_run_at), zone) : null, delivery: row.delivery,
       delivery_unavailable: row.delivery.filter(target => (target === 'gmail_self' || target === 'slack_self') && !available?.[target]?.available), delivery_allowed: template?.allowed_targets ?? ['hub_inbox', 'app_window'], state: row.state as ScheduleState, paused_by: row.paused_by, revision: row.revision, human_override: row.human_override,
       created_by: { kind: row.created_by_kind, agent_id: row.created_by_agent, label: label ?? (row.created_by_kind === 'human' ? 'Persona' : row.created_by_kind === 'system' ? 'Hub' : 'Agente') },
       admission_note: template?.admission_note ?? '',
       ...(last ? { last_run: { id: last.id, state: last.state, scheduled_for: last.scheduled_for, trigger: last.trigger, ...(last.skip_reason ? { skip_reason: last.skip_reason } : {}), ...(last.deferred_reason ? { deferred_reason: last.deferred_reason } : {}) } } : {}),
-      ...(last?.state === 'deferred' ? { deferred: { reason: last.deferred_reason ?? 'quota', resets_at: quota?.resets_at ?? null, next_attempt_at: last.next_attempt_at } } : {}) }
+      ...(last?.state === 'deferred' ? { deferred: { reason: last.deferred_reason ?? 'quota', resets_at: quota?.resets_at ?? null, next_attempt_at: last.next_attempt_at } } : {}),
+      ...(pausedAt ? { paused_at: pausedAt } : {}) }
   }
   /** Fixed sentence the agent repeats in its chat so the person always learns about a change. */
   private async announce(verb: string, row: ScheduleRow): Promise<string> {

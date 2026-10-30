@@ -7,19 +7,19 @@ El sistema visual evita que algo se vea mal. Estas reglas evitan que algo **teng
 La persona usa Agent Hub para tres cosas, en este orden de frecuencia:
 
 1. **Saber si algo necesita su intervención** → Inicio.
-2. **Consultar y ordenar lo que sus agentes saben y hacen** → Proyectos, Memoria, Colaboración, Automatizaciones.
+2. **Consultar y ordenar lo que sus agentes saben y hacen** → Proyectos (con su pestaña Colaboración), Memoria, Automatizaciones.
 3. **Administrar lo que el hub entrega a los agentes** → Servidores MCP, Skills, Clientes, y revisar Actividad.
 
 Configurar es lo menos frecuente → Ajustes, al pie.
 
-Los **agentes** (Claude Code, Codex CLI, Gemini CLI…) son quienes más escriben en el hub: crean tareas, decisiones, hilos, automatizaciones. La persona **revisa, corrige y decide**. Por eso la interfaz prioriza leer, revisar y aprobar por sobre crear a mano.
+Los **agentes** (Claude Code, Codex CLI, Gemini CLI…) son quienes más escriben en el hub: crean tareas, decisiones, hilos, automatizaciones. La persona **revisa, corrige y decide**. Por eso la interfaz prioriza leer, revisar y aprobar por sobre crear a mano. En la colaboración entre agentes, la UI es solo para ver: la persona decide con el agente líder, por la terminal.
 
 ## Árbol de decisión: dónde va una función nueva
 
 Antes de escribir una línea de front, respondé en orden. La primera respuesta afirmativa decide.
 
 1. **¿Es algo que la persona tiene que decidir o resolver?** (aprobar, autorizar, reiniciar, revisar un duplicado)
-   → Una fila en **Inicio › Pendientes**, con una sola acción. Además, un chip de estado en el elemento afectado.
+   → Una fila en **Inicio › Pendientes**, con una sola acción. Además, un chip de estado en el elemento afectado. Lo que un agente quiere que la persona decida no pasa por acá: se lo pide por la CLI.
 2. **¿Es una propiedad o acción de un elemento que ya existe?** (un campo nuevo de servidor, una acción sobre una skill)
    → En el **panel** o la **ficha** de ese elemento. Si es frecuente, como secundario; si no, en «…».
 3. **¿Es una forma nueva de ver una colección que ya existe?** (ver solo los fallidos, agrupar por cliente)
@@ -39,7 +39,7 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 
 | # | Rechazar si… | Alternativa |
 |---|---|---|
-| U1 | Agrega un tercer nivel de navegación o una sexta pestaña | Fusionar pestañas o convertir en filtro |
+| U1 | Agrega un tercer nivel de navegación o una sexta pestaña (la ficha de proyecto ya usa su única excepción: Notas) | Fusionar pestañas o convertir en filtro |
 | U2 | Agrega un segundo botón primario a una vista | Pasar a secundario o a «…» |
 | U3 | Duplica una acción que ya existe en otro lugar de la misma vista | Dejar una sola, en el lugar del dueño |
 | U4 | Crea un modal para editar, informar o confirmar algo reversible | Panel, en línea, o Deshacer |
@@ -54,6 +54,7 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 | U13 | Pide confirmación para ejecutar algo que el agente ya propuso y la persona eligió | Ejecutar + toast |
 | U14 | Mezcla guardado automático y botón Guardar en el mismo panel | Elegir un modelo |
 | U15 | Pone un control dentro de un enlace, o un enlace dentro de un control | Separar: fila `div` con título enlazado |
+| U16 | Agrega una vista de colaboración fuera de la ficha de proyecto, o cualquier control de acción en la colaboración (escribir, aprobar, pedir otra ronda, crear canal, cerrar o mover hilos, iniciar o detener agentes, aprobar planes de equipo) | Pestaña Colaboración del proyecto, solo para ver, sin propuestas ni pendientes de decisión; la decisión, en la terminal con el agente líder. Abrir y cerrar un hilo (tocarlo o su X) no es una acción sobre el hilo. Solo se conservan las 4 acciones de recuperación del «…» del canal (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), confirmadas por la persona |
 
 ## Heurísticas aplicadas a Agent Hub
 
@@ -95,9 +96,11 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 | Lo crea un agente | La persona… | Dónde |
 |---|---|---|
 | Tareas, decisiones, hallazgos | Lee, corrige, cierra | Proyecto › Tareas / Decisiones |
-| Hilos de colaboración | Lee, cierra | Colaboración |
+| Canales e hilos de colaboración | Lee; decide con el agente líder por la terminal; recupera un canal si hace falta | Proyecto › Colaboración (solo ver) |
+| Notas de trabajo de los agentes | Lee | Proyecto › Notas (solo lectura) |
+| Entregas de automatizaciones | Revisa sin ver, marca vistas en tanda | Automatizaciones › Historial |
 | Automatizaciones | Ajusta horario y canales, pausa | Automatizaciones |
-| Propuestas en entregas | Aprueba o rechaza | Inicio › Pendientes → panel de la automatización |
+| Propuestas en entregas | Aprueba o rechaza | Inicio › Pendientes → Automatizaciones › Historial, panel de la entrega |
 | Vínculos sugeridos | Acepta o descarta | Inicio › Pendientes |
 
 Por eso: **las acciones de creación manual existen pero no dominan.** Un primario de «Crear» solo va donde la persona crea seguido (Proyectos, Memoria › Nueva nota, Servidores, Skills).

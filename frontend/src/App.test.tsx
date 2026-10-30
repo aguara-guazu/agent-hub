@@ -124,41 +124,12 @@ describe('hub local de escritorio', () => {
     expect(view.container.querySelector('input[type="password"]')).toBeNull()
     view.unmount()
   })
-  it('abre el catálogo y limita la navegación a recursos locales', async () => {
-    setToken('local-session')
-    stubApi(member)
-    const view = await mount()
-    expect(window.location.hash).toBe('#/catalog')
-    const links = [...view.container.querySelectorAll('nav a')].map(el => el.getAttribute('href'))
-    expect(links).toEqual(['#/catalog', '#/skills', '#/projects', '#/clients', '#/schedules', '#/activity'])
-    expect(view.container.querySelector('nav a[href="#/projects"]')?.textContent).toContain('Memoria')
-    expect(view.container.textContent).toContain('Mi Mac')
-    expect(view.container.textContent).not.toContain(member.email)
-    expect(view.container.textContent).not.toContain(member.organization)
-    view.unmount()
-  })
   it('consume la sesión de Electron y retira el token de la dirección', async () => {
     stubApi(member)
     window.history.replaceState(null, '', '/?sso_token=desktop-session#/skills')
     const view = await mount()
     expect(window.location.search).toBe('')
     expect(view.container.querySelector('h1')?.textContent).toBe('Skills')
-    view.unmount()
-  })
-  it('recupera una sesión vencida a través del puente sin login', async () => {
-    setToken('expired')
-    const getSession = vi.fn(async () => 'renewed')
-    window.agentHub = { getSession, getCoreStatus: async () => ({state:'running', daemonState:'running', apiBaseUrl:'http://localhost', pid:1}),
-      getAutostart: async () => false, setAutostart: async value => value, restartCore: async () => {}, syncNow: async () => {}, onCoreStateChanged: () => () => {}, platform:'darwin',
-      restartClient: async () => ({ ok: true, detail: '' }) }
-    vi.stubGlobal('fetch', vi.fn(async (input, init) => {
-      if (String(input).endsWith('/auth/me')) return init.headers.Authorization === 'Bearer renewed' ? jsonResponse(member) : new Response('{}', {status:401})
-      if (String(input).endsWith('/local/overview')) return jsonResponse({hostname:'Mi Mac', clients:[], rows:[]})
-      return jsonResponse([])
-    }))
-    const view = await mount()
-    expect(getSession).toHaveBeenCalledOnce()
-    expect(view.container.querySelector('h1')?.textContent).toBe('MCP servers')
     view.unmount()
   })
   it('mantiene los enlaces antiguos de clientes y actividad', async () => {

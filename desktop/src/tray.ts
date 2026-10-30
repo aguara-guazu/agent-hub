@@ -1,18 +1,20 @@
-import type { SupervisorState } from './supervisor.js'
+import { t } from "./i18n.js"
+import type { SupervisorState } from "./supervisor.js"
 
 /**
  * Plantilla del menú de tray, como datos puros.
  *
  * El main la traduce a `Menu.buildFromTemplate`. Separarla permite verificar
- * en pruebas qué acciones existen y qué estado muestran, sin Electron.
+ * en pruebas qué acciones existen y qué estado muestran, sin Electron. Los textos
+ * salen del idioma activo de `i18n.ts`: el main la vuelve a construir al cambiarlo.
  */
 
-export type TrayAction = 'show' | 'hide' | 'toggle-autostart' | 'restart-core' | 'restart-client' | 'quit'
+export type TrayAction = "show" | "hide" | "toggle-autostart" | "restart-core" | "restart-client" | "quit"
 
 export interface TrayItem {
   id?: TrayAction
   label?: string
-  type?: 'normal' | 'separator' | 'checkbox'
+  type?: "normal" | "separator" | "checkbox"
   enabled?: boolean
   checked?: boolean
 }
@@ -22,58 +24,59 @@ export interface TrayViewModel {
   windowVisible: boolean
   autostartEnabled: boolean
   showShortcut?: { label: string; registered: boolean } | null
-  /** Cliente de escritorio que sigue con una lista de herramientas vieja. */
-  clientRestart?: { label: string } | null
+  /** Hay un cliente de escritorio que sigue con una lista de herramientas vieja. */
+  clientRestart?: boolean
 }
 
 function coreLabel(state: SupervisorState): string {
   switch (state) {
-    case 'running':
-      return 'Core: en ejecución'
-    case 'starting':
-      return 'Core: iniciando…'
-    case 'restarting':
-      return 'Core: reiniciando…'
-    case 'stopping':
-      return 'Core: deteniendo…'
-    case 'failed':
-      return 'Core: con fallo'
-    case 'stopped':
+    case "running":
+      return t("tray.core.running")
+    case "starting":
+      return t("tray.core.starting")
+    case "restarting":
+      return t("tray.core.restarting")
+    case "stopping":
+      return t("tray.core.stopping")
+    case "failed":
+      return t("tray.core.failed")
+    case "stopped":
     default:
-      return 'Core: detenido'
+      return t("tray.core.stopped")
   }
 }
 
 export function buildTrayTemplate(vm: TrayViewModel): TrayItem[] {
   return [
     { label: coreLabel(vm.coreState), enabled: false },
-    { type: 'separator' },
+    { type: "separator" },
     vm.windowVisible
-      ? { id: 'hide', label: 'Ocultar ventana', type: 'normal' }
-      : { id: 'show', label: 'Abrir Agent Hub', type: 'normal' },
+      ? { id: "hide", label: t("tray.hide"), type: "normal" }
+      : { id: "show", label: t("tray.show"), type: "normal" },
     ...(vm.showShortcut ? [{
-      label: vm.showShortcut.registered
-        ? `Mostrar/ocultar: ${vm.showShortcut.label}`
-        : `Atajo no disponible: ${vm.showShortcut.label}`,
+      label: t(vm.showShortcut.registered ? "tray.shortcut" : "tray.shortcutUnavailable", { shortcut: vm.showShortcut.label }),
       enabled: false,
     }] : []),
     {
-      id: 'toggle-autostart',
-      label: 'Iniciar al ingresar',
-      type: 'checkbox',
+      id: "toggle-autostart",
+      label: t("tray.autostart"),
+      type: "checkbox",
       checked: vm.autostartEnabled,
     },
     {
-      id: 'restart-core',
-      label: 'Reiniciar core',
-      type: 'normal',
-      enabled: vm.coreState !== 'starting' && vm.coreState !== 'restarting',
+      id: "restart-core",
+      label: t("tray.restartCore"),
+      type: "normal",
+      enabled: vm.coreState !== "starting" && vm.coreState !== "restarting",
     },
-    ...(vm.clientRestart ? [{ id: 'restart-client' as const, label: vm.clientRestart.label, type: 'normal' as const }] : []),
+    ...(vm.clientRestart ? [{ id: "restart-client" as const, label: t("tray.restartClient"), type: "normal" as const }] : []),
 
-    { type: 'separator' },
-    { id: 'quit', label: 'Salir de Agent Hub', type: 'normal' },
+    { type: "separator" },
+    { id: "quit", label: t("tray.quit"), type: "normal" },
   ]
 }
 
-export const TRAY_TOOLTIP = 'Agent Hub'
+/** Tooltip del ícono; con el atajo registrado lo menciona. */
+export function trayTooltip(shortcut: string | null): string {
+  return shortcut ? t("tray.tooltipShortcut", { shortcut }) : t("tray.tooltip")
+}

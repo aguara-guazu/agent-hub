@@ -733,4 +733,164 @@ ALTER TABLE schedules ADD COLUMN human_override JSON NOT NULL DEFAULT '[]';
 `, String.raw`
 -- When the model of a session was last reported by a hook (session start or a model switch).
 ALTER TABLE chat_sessions ADD COLUMN model_observed_at TIMESTAMP;
+`, String.raw`
+-- Append-only audit of leadership and read-access decisions. No foreign keys: the record outlives sessions and channels.
+CREATE TABLE chat_authority_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+ channel_id TEXT, project_id TEXT, actor_session_id TEXT, actor_user_id TEXT, target_session_id TEXT,
+ reason TEXT NOT NULL, evidence JSON NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX chat_authority_events_project ON chat_authority_events(project_id,seq);
+CREATE INDEX chat_authority_events_channel ON chat_authority_events(channel_id,seq);
+CREATE INDEX chat_authority_events_kind ON chat_authority_events(kind,seq);
+-- Cross-project reads: an agent asks, its leader elevates, only the authenticated person grants.
+CREATE TABLE chat_read_requests (
+ id TEXT PRIMARY KEY, requester_session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ requester_channel_id TEXT NOT NULL, requester_project_id TEXT, target_project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+ leader_session_id TEXT, team_id TEXT, reason TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending_leader','pending_person','granted','rejected','cancelled')),
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, elevated_at TIMESTAMP, elevated_by TEXT, elevation_note TEXT,
+ decided_at TIMESTAMP, decided_by_user TEXT, decision_note TEXT, confirmation_phrase TEXT
+);
+CREATE UNIQUE INDEX chat_read_requests_open ON chat_read_requests(requester_session_id,target_project_id) WHERE state IN ('pending_leader','pending_person');
+CREATE INDEX chat_read_requests_state ON chat_read_requests(state,created_at);
+CREATE TABLE chat_read_grants (
+ id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE REFERENCES chat_read_requests(id) ON DELETE CASCADE,
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+ granted_by_user TEXT NOT NULL, granted_at TIMESTAMP NOT NULL DEFAULT ${NOW}, expires_at TIMESTAMP NOT NULL,
+ revoked_at TIMESTAMP, revoke_reason TEXT
+);
+CREATE INDEX chat_read_grants_session ON chat_read_grants(session_id,revoked_at);
+`, String.raw`
+-- Leadership taken over from a silent leader stays reclaimable by that exact session; leader_changed_at dates the last change.
+ALTER TABLE chat_channels ADD COLUMN displaced_leader_id TEXT REFERENCES chat_sessions(id);
+ALTER TABLE chat_channels ADD COLUMN displaced_at TIMESTAMP;
+ALTER TABLE chat_channels ADD COLUMN leader_changed_at TIMESTAMP;
+CREATE INDEX chat_channels_leader ON chat_channels(leader_id);
+`, String.raw`
+-- Optional stance label of agent messages and a channel description, both shown read-only in the Hub UI.
+ALTER TABLE chat_messages ADD COLUMN kind TEXT;
+ALTER TABLE chat_channels ADD COLUMN description TEXT;
+`, String.raw`
+-- Inter-hub chat state is strictly additive. A remote author enters chat_sessions only as a closed placeholder
+-- (cli_kind 'interhub-remote', non-routable key_hash) that the message and thread FKs require; it gets no wakes,
+-- leadership, team or agent-listing behavior. The roster of remote agents lives in interhub_remote_sessions.
+CREATE TABLE interhub_remote_sessions (
+  channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+  hub_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  cli_kind TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('leader','member')),
+  state TEXT NOT NULL CHECK(state IN ('online','offline','unknown')),
+  peer_id TEXT NOT NULL,
+  occurred_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+  PRIMARY KEY(channel_id,hub_id,session_id)
+);
+CREATE INDEX interhub_remote_sessions_channel ON interhub_remote_sessions(channel_id,hub_id,role,updated_at);
+CREATE TABLE interhub_received_envelopes (
+  envelope_id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+  origin_hub_id TEXT NOT NULL,
+  origin_peer_id TEXT NOT NULL,
+  occurred_at TIMESTAMP NOT NULL,
+  received_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX interhub_received_envelopes_channel ON interhub_received_envelopes(channel_id,occurred_at,envelope_id);
+CREATE TABLE interhub_message_origins (
+  message_id TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+  envelope_id TEXT NOT NULL UNIQUE REFERENCES interhub_received_envelopes(envelope_id) ON DELETE CASCADE,
+  hub_id TEXT NOT NULL,
+  hub_name TEXT NOT NULL,
+  peer_id TEXT NOT NULL,
+  author_role TEXT NOT NULL CHECK(author_role IN ('leader','member'))
+);
+CREATE INDEX interhub_message_origins_hub ON interhub_message_origins(hub_id,message_id);
+CREATE TABLE interhub_escalations (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  question_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+  last_hub_id TEXT,
+  next_hub_id TEXT,
+  escalated_at TIMESTAMP NOT NULL,
+  answered_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+  updated_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+  UNIQUE(channel_id,thread_id,question_message_id)
+);
+CREATE INDEX interhub_escalations_due ON interhub_escalations(answered_at,escalated_at);
+`, String.raw`
+-- Inter-hub channel replication. Creator codes are represented only by a hash here; plaintext is creator-local vault state.
+CREATE TABLE interhub_channels (
+ channel_id TEXT PRIMARY KEY REFERENCES chat_channels(id) ON DELETE CASCADE,
+ creator_hub_id TEXT NOT NULL, creator_session_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ code_hash TEXT NOT NULL, code_generation INTEGER NOT NULL DEFAULT 1, code_revoked_at TIMESTAMP,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE TABLE interhub_members (
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ hub_id TEXT NOT NULL, peer_identity JSON NOT NULL, leader_session_id TEXT, leader_label TEXT NOT NULL,
+ joined_at TIMESTAMP NOT NULL DEFAULT ${NOW}, last_seen_at TIMESTAMP NOT NULL DEFAULT ${NOW}, removed_at TIMESTAMP,
+ PRIMARY KEY(channel_id,hub_id)
+);
+CREATE TABLE interhub_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ origin_hub_id TEXT NOT NULL, envelope JSON NOT NULL, received_from TEXT NOT NULL,
+ received_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX interhub_events_channel ON interhub_events(channel_id,seq);
+`, String.raw`
+-- Inter-hub transport. Replicated events are stored before they are applied, so an event that arrives
+-- before its thread waits and is retried. The outbox records which local rows were already published.
+-- Rollback: DROP TABLE interhub_outbox; DROP INDEX interhub_events_pending; then drop the three added columns.
+ALTER TABLE interhub_events ADD COLUMN applied_at TIMESTAMP;
+ALTER TABLE interhub_events ADD COLUMN apply_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE interhub_events ADD COLUMN apply_error TEXT;
+UPDATE interhub_events SET applied_at=received_at;
+CREATE INDEX interhub_events_pending ON interhub_events(applied_at,seq);
+CREATE TABLE interhub_outbox (
+ key TEXT PRIMARY KEY,
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ envelope_id TEXT NOT NULL, digest TEXT NOT NULL,
+ updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX interhub_outbox_channel ON interhub_outbox(channel_id);
+`, String.raw`
+-- Local agent sessions that this hub's leader in an inter-hub channel associated with it: they read, write and are
+-- mentioned there as members of this hub. removed_at ends the association and keeps the audit row.
+-- Rollback: DROP TABLE interhub_local_agents.
+CREATE TABLE interhub_local_agents (
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ added_by TEXT NOT NULL, added_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ removed_by TEXT, removed_at TIMESTAMP,
+ PRIMARY KEY(channel_id,session_id)
+);
+CREATE INDEX interhub_local_agents_session ON interhub_local_agents(session_id,removed_at);
+`, String.raw`
+-- Wrap up and channel archive. activity_at: server clock of the last Hub-observed activity of a session (hook events other
+-- than heartbeats, collaboration calls, fleet protocol events); legacy rows take their best recorded evidence.
+-- dismissed_*: the channel leader cleaned the session from agent listings; it is listed again once activity_at passes dismissed_at.
+-- archived_at/archive_cause: written only by the server sweep; archive_proposed_*: a leader's pending proposal (24 h instead of 48 h).
+-- Rollback: DROP INDEX chat_channels_archived; ALTER TABLE chat_channels DROP COLUMN for unarchived_at, archive_proposal_reason,
+-- archive_proposed_by, archive_proposed_at, archive_cause, archived_at; ALTER TABLE chat_sessions DROP COLUMN for dismissal_reason,
+-- dismissed_by, dismissed_at, activity_at; then delete this version from schema_versions.
+ALTER TABLE chat_sessions ADD COLUMN activity_at TIMESTAMP;
+ALTER TABLE chat_sessions ADD COLUMN dismissed_at TIMESTAMP;
+ALTER TABLE chat_sessions ADD COLUMN dismissed_by TEXT;
+ALTER TABLE chat_sessions ADD COLUMN dismissal_reason TEXT;
+ALTER TABLE chat_channels ADD COLUMN archived_at TIMESTAMP;
+ALTER TABLE chat_channels ADD COLUMN archive_cause TEXT;
+ALTER TABLE chat_channels ADD COLUMN archive_proposed_at TIMESTAMP;
+ALTER TABLE chat_channels ADD COLUMN archive_proposed_by TEXT;
+ALTER TABLE chat_channels ADD COLUMN archive_proposal_reason TEXT;
+ALTER TABLE chat_channels ADD COLUMN unarchived_at TIMESTAMP;
+UPDATE chat_sessions SET activity_at=max(created_at,
+  COALESCE(CASE WHEN event_at>'1970-01-02' THEN event_at END,created_at),
+  COALESCE((SELECT max(m.created_at) FROM chat_messages m WHERE m.author_id=chat_sessions.id),created_at),
+  COALESCE((SELECT max(w.updated_at) FROM chat_work_state w WHERE w.session_id=chat_sessions.id),created_at));
+CREATE INDEX chat_channels_archived ON chat_channels(archived_at);
 `]

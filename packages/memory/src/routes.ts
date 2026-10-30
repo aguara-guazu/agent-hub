@@ -3,9 +3,11 @@ import { orcaWorkspaceSchema } from './agents.js'
 import { registerUsageRoutes } from './usage-routes.js'
 import { chatKickInput, chatCoordinatorInput, chatDeleteChannelInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
+import { listAuthorityEvents } from './chat-access.js'
 import { LocalWatchdog } from './local-watchdog.js'
 import { nativeSession } from '@agenthub/gateway'
 import { sharingRoutes } from './sharing/routes.js'
+import { interhubRoutes } from './interhub/routes.js'
 import { pdfPreview } from './pdf.js'
 import { mediaSettings, queueMedia } from './media-processing.js'
 import { MEDIA_MODULES, mediaSettingsInput } from './media-runtime.js'
@@ -123,6 +125,53 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     requireCollaboration()
     const {channel_id}=parse(z.object({channel_id:id}).strict(),request.body),{operations}=await service.get()
     return operations.chat.restoreChannel(channel_id)
+  })
+  // Read-access decisions belong to the authenticated person only. These routes are never MCP operations.
+  const page = { limit: z.coerce.number().int().min(1).max(100).default(50), offset: z.coerce.number().int().min(0).default(0) }
+  app.get('/api/memory/chat/read-requests', {preHandler:auth}, async (request, reply) => {
+    const filter=parse(z.object({ state:z.enum(['pending_leader','pending_person','granted','rejected','cancelled','all']).default('pending_person'), project_id:id.optional(), ...page }).strict(),request.query)
+    const {operations}=await service.get()
+    reply.header('Cache-Control','no-store')
+    return operations.chat.readRequests({...filter,state:filter.state==='all'?undefined:filter.state})
+  })
+  app.post('/api/memory/chat/read-requests/:requestId/confirm', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    requireCollaboration()
+    const {requestId}=parse(z.object({requestId:id}),request.params)
+    const {phrase}=parse(z.object({phrase:z.string().trim().min(1).max(500)}).strict(),request.body)
+    const {operations}=await service.get()
+    return operations.chat.confirmReadRequest(requestId,phrase,user.id)
+  })
+  app.post('/api/memory/chat/read-requests/:requestId/reject', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    requireCollaboration()
+    const {requestId}=parse(z.object({requestId:id}),request.params)
+    const {note}=parse(z.object({note:z.string().trim().min(1).max(1000).optional()}).strict(),request.body ?? {})
+    const {operations}=await service.get()
+    return operations.chat.rejectReadRequest(requestId,user.id,note)
+  })
+  interhubRoutes(app, service, options.authorize, requireCollaboration)
+  app.get('/api/memory/chat/read-grants', {preHandler:auth}, async (request, reply) => {
+    const filter=parse(z.object({ active:z.enum(['true','false']).default('true').transform(v=>v==='true'), project_id:id.optional(), ...page }).strict(),request.query)
+    const {operations}=await service.get()
+    reply.header('Cache-Control','no-store')
+    return operations.chat.readGrants(filter)
+  })
+  app.post('/api/memory/chat/read-grants/:grantId/revoke', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    requireCollaboration()
+    const {grantId}=parse(z.object({grantId:id}),request.params)
+    const {reason}=parse(z.object({reason:z.string().trim().min(1).max(1000).optional()}).strict(),request.body ?? {})
+    const {operations}=await service.get()
+    return operations.chat.revokeReadGrant(grantId,user.id,reason)
+  })
+  app.get('/api/memory/chat/authority-events', {preHandler:auth}, async (request, reply) => {
+    const raw=request.query as Record<string,unknown>
+    const filter=parse(z.object({ project_id:id.optional(), channel_id:id.optional(),
+      kind:z.union([z.string().regex(/^[a-z_]{1,40}$/),z.array(z.string().regex(/^[a-z_]{1,40}$/)).max(20)]).optional(), ...page }).strict(),raw)
+    const {operations}=await service.get()
+    reply.header('Cache-Control','no-store')
+    return listAuthorityEvents(operations.chat.db,{...filter,kinds:filter.kind===undefined?undefined:[filter.kind].flat()})
   })
   app.get('/api/memory/teams/preferences', {preHandler:auth}, async()=>{
     const {operations}=await service.get()

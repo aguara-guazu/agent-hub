@@ -17,6 +17,7 @@
 import type { AccountSkillsReport } from './adapters/claude_desktop.js'
 import type { ExternalSkill, ExternalSkillsOutcome } from './external_skills.js'
 import type { DaemonState } from './state.js'
+import type { UnmanagedInventory } from "@agenthub/shared"
 
 export const DEFAULT_MAX_ATTEMPTS = 5
 export const DEFAULT_BACKOFF_BASE = 1.0
@@ -241,6 +242,7 @@ export class SyncClient {
       driftDetail?: string
       syncedHash?: string
       accountSkills?: AccountSkillsReport
+      unmanaged?: UnmanagedInventory
     } = {},
   ): Promise<void> {
     const body: Record<string, unknown> = { agent_id: agentId }
@@ -250,6 +252,7 @@ export class SyncClient {
     if (fields.driftDetail !== undefined) body['drift_detail'] = fields.driftDetail
     if (fields.syncedHash !== undefined) body['synced_hash'] = fields.syncedHash
     if (fields.accountSkills !== undefined) body['account_skills'] = fields.accountSkills
+    if (fields.unmanaged !== undefined) body["unmanaged"] = fields.unmanaged
     await this.request('POST', '/sync/report', { json: body })
   }
 

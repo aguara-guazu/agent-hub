@@ -31,7 +31,8 @@ export type IncidentCause = 'hub_restart' | 'deadline_exceeded' | 'automations_o
 export type IncidentAction = 'terminated' | 'already_exited' | 'unverified_left_running' | 'termination_unknown' | 'none' | 'resumed' | 'resume_unsupported' | 'resume_failed'
 
 export const scheduleEventTypes = ['schedule.created', 'schedule.updated', 'schedule.paused', 'schedule.resumed', 'schedule.cancelled', 'schedule.constrained',
-  'run.started', 'run.deferred', 'decisions.revoked', 'replies.processed', 'run.persisted', 'run.delivered', 'run.finished', 'run.interrupted', 'decision.received', 'action.receipt'] as const
+  "run.started", "run.deferred", "decisions.revoked", "replies.processed", "run.persisted", "run.delivered", "run.finished", "run.interrupted", "decision.received", "action.receipt",
+  "schedule.restored"] as const
 export type ScheduleEventType = typeof scheduleEventTypes[number]
 
 /** Closed error codes stored in schedule_runs.error_code and phase receipts; provider or CLI text never reaches them. */
@@ -182,4 +183,6 @@ export interface ScheduleView {
   last_run?: { id: string; state: RunState; scheduled_for: string; trigger: RunTrigger; skip_reason?: string; deferred_reason?: string }
   /** Present while a run waits for quota or for the machine to wake. */
   deferred?: { reason: string; resets_at: string | null; next_attempt_at: string | null }
+  /** Only on paused schedules: time of the last `schedule.paused` event, when there is one. */
+  paused_at?: string
 }

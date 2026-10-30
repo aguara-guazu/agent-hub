@@ -47,6 +47,9 @@ export class LocalChatRuntime {
   }
   async tick() {
     if (!this.collaborationEnabled()) return
+    // Grants are re-checked on every read, but a session that closes or goes silent and then reconnects before a sweep would
+    // regain one; a failure in any later step of the tick must not postpone revocation.
+    await this.chat.sweepReadAccess().catch(() => undefined)
     if(this.fleet)for(const session of await this.chat.db.query("SELECT id FROM chat_sessions WHERE capability='hub_fleet' AND closed_at IS NULL")) {
       if(await this.fleet.connected(String(session.id)))await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[session.id,new Date(Date.now()+90000).toISOString()])
     }
@@ -63,14 +66,18 @@ export class LocalChatRuntime {
         await this.chat.db.query("UPDATE chat_sessions SET state='offline',closed_at=now(),lease_until=NULL WHERE id=$1 AND closed_at IS NULL",[s.id])
       }
     }
+    // After the fleet and PID lease renewals, so a live session is never taken as disconnected.
+    await this.chat.sweepArchive().catch(() => undefined)
     await this.chat.processTurnAlerts()
     await this.chat.processResponseAlerts()
+    await this.chat.interhubSweep?.().catch(() => undefined)
+    await this.chat.sweepReadAccess()
     // Native queue addresses the exact conversation and verifies it at delivery time.
     // A managed app-server may not expose a per-TUI PID to hooks; its idle lease is
     // advisory presence, not a reason to silently suppress durable notifications.
     const sessions = await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
       WHERE s.nickname IS NOT NULL AND s.capability IN ('codex_queue','hub_fleet') AND s.native_id IS NOT NULL AND (s.state='idle' OR (s.state='busy' AND s.cli_kind='codex_cli')) AND s.closed_at IS NULL AND c.closed_at IS NULL
-      AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL)
+      AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL OR EXISTS(SELECT 1 FROM chat_channels led WHERE led.leader_id=s.id AND led.closed_at IS NULL))
       AND (EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.notified_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)
         OR EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.handled_at IS NULL AND n.cancelled_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5) OR EXISTS(SELECT 1 FROM usage_quota_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5))`)
     for (const s of sessions) {

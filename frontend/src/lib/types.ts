@@ -220,3 +220,6 @@ export interface Explanation {
   source: string
   detail: string
 }
+
+/** Entidad de memoria (proyecto, reunión, persona…); contrato de props de las pestañas de proyecto. */
+export type { MemoryEntity as Entity } from "./memory"

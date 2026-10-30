@@ -38,6 +38,20 @@ export function registerScheduleRoutes(app: FastifyInstance, service: MemoryServ
     await store.markArtifactRead(runId); await store.markDeliveriesRead(runId)
     return { run_id: runId, read: true }
   })
+  app.delete('/api/memory/schedules/runs/:runId/read', { preHandler: auth }, async request => {
+    const { runId } = parse(z.object({ runId: id }).strict(), request.params), { store } = await scheduler()
+    await store.setRunsRead([runId], false)
+    return { run_id: runId, read: false }
+  })
+  /** Batch read state: explicit `run_ids`, or `all: true` (every unread run, optionally of one project). `run_ids` in the reply are the ones that changed. */
+  app.post('/api/memory/schedules/runs/read', { preHandler: auth, bodyLimit: 32768 }, async request => {
+    const body = parse(z.union([
+      z.object({ read: z.boolean(), run_ids: z.array(id).min(1).max(200) }).strict(),
+      z.object({ read: z.literal(true), all: z.literal(true), project_id: id.optional() }).strict(),
+    ]), request.body), { store } = await scheduler()
+    const run_ids = 'run_ids' in body ? await store.setRunsRead([...new Set(body.run_ids)], body.read) : await store.markAllRunsRead(body.project_id)
+    return { read: body.read, run_ids }
+  })
   app.get('/api/memory/schedules/feed', { preHandler: auth }, async request => {
     const { after } = parse(z.object({ after: z.coerce.number().int().min(0).optional() }).strict(), request.query), { store } = await scheduler()
     const active_runs = await store.activeRuns()
@@ -68,6 +82,11 @@ export function registerScheduleRoutes(app: FastifyInstance, service: MemoryServ
   app.post('/api/memory/schedules/:id/cancel', { preHandler: auth, bodyLimit: 4096 }, async request => {
     const principal = await human(request), body = parse(z.object({ expected_revision: revision, scope: z.enum(['target', 'template_project']).optional(), reason: z.string().trim().max(300).optional() }).strict(), request.body)
     return (await (await scheduler()).admin.cancel(principal, scheduleId(request), body.expected_revision, { scope: body.scope, reason: body.reason })).schedule
+  })
+  app.post("/api/memory/schedules/:id/restore", { preHandler: auth, bodyLimit: 4096 }, async request => {
+    const principal = await human(request), { expected_revision } = parse(z.object({ expected_revision: revision }).strict(), request.body)
+    const { schedule, restore } = await (await scheduler()).admin.restoreCancelled(principal, scheduleId(request), expected_revision)
+    return { ...schedule, restore }
   })
   app.post('/api/memory/schedules/:id/run_now', { preHandler: auth, bodyLimit: 4096 }, async request => {
     const principal = await human(request), { request_id } = parse(z.object({ request_id: z.string().min(1).max(200).default(() => randomUUID()) }).strict(), request.body ?? {})

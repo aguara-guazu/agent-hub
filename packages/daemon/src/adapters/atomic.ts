@@ -71,6 +71,30 @@ export class ConfigParseError extends Error {
   }
 }
 
+/**
+ * Error de parseo sin texto del parser: los mensajes de @iarna/toml y de JSON.parse copian la línea fallida, que puede
+ * llevar valores de `env` o `headers`. Solo viajan un código fijo y la posición (fila y columna, 1-based).
+ */
+export function parseFailure(path: string, format: "TOML" | "JSON", exc: unknown, text?: string): ConfigParseError {
+  const where = parsePosition(exc, text)
+  return new ConfigParseError(`${path} no es ${format} válido (${format.toLowerCase()}_parse_error${where ? `, fila ${where.line}, columna ${where.col}` : ""})`)
+}
+
+function parsePosition(exc: unknown, text?: string): { line: number; col: number } | null {
+  const error = exc as { line?: unknown; col?: unknown; message?: unknown }
+  if (typeof error?.line === "number" && typeof error?.col === "number") return { line: error.line + 1, col: error.col + 1 }
+  const message = typeof error?.message === "string" ? error.message : ""
+  const both = /\(line (\d+) column (\d+)\)/.exec(message)
+  if (both) return { line: Number(both[1]), col: Number(both[2]) }
+  const position = /at position (\d+)/.exec(message)
+  if (position && typeof text === "string") {
+    const before = text.slice(0, Number(position[1]))
+    const lines = before.split("\n")
+    return { line: lines.length, col: lines[lines.length - 1]!.length + 1 }
+  }
+  return null
+}
+
 // --------------------------------------------------------------------------- //
 // Región gestionada
 // --------------------------------------------------------------------------- //
@@ -184,7 +208,7 @@ export function readRegion(path: string, r: ManagedRegion): unknown {
     try {
       doc = toml.parse(text)
     } catch (exc) {
-      throw new ConfigParseError(`${path} no es TOML válido: ${(exc as Error).message}`)
+      throw parseFailure(path, "TOML", exc, text)
     }
     const value = dig(doc, r.keyPath)
     return value === undefined ? null : value
@@ -194,7 +218,7 @@ export function readRegion(path: string, r: ManagedRegion): unknown {
   try {
     parsed = text.trim() ? JSON.parse(text) : {}
   } catch (exc) {
-    throw new ConfigParseError(`${path} no es JSON válido: ${(exc as Error).message}`)
+    throw parseFailure(path, "JSON", exc, text)
   }
 
   if (r.kind === 'json_value') return dig(parsed, r.keyPath)
@@ -738,7 +762,7 @@ function loadJsonDoc(path: string): Record<string, unknown> {
   try {
     parsed = JSON.parse(text)
   } catch (exc) {
-    throw new ConfigParseError(`${path} no es JSON válido: ${(exc as Error).message}`)
+    throw parseFailure(path, "JSON", exc, text)
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new ConfigParseError(`${path} no tiene un objeto JSON en la raíz`)
@@ -903,7 +927,7 @@ export function planTomlTable(args: PlanTomlArgs): PlanOutcome {
     doc = (text ? toml.parse(text) : {}) as Record<string, unknown>
   } catch (exc) {
     if (exc instanceof ConfigParseError) return [null, [driftItem(args.path, regionLabel(r), exc.message)]]
-    return [null, [driftItem(args.path, regionLabel(r), `${args.path} no es TOML válido: ${(exc as Error).message}`)]]
+    return [null, [driftItem(args.path, regionLabel(r), parseFailure(args.path, "TOML", exc, text ?? undefined).message)]]
   }
 
   const currentDigest = canonicalDigest(current)
@@ -918,8 +942,9 @@ export function planTomlTable(args: PlanTomlArgs): PlanOutcome {
   let serialized: string
   try {
     serialized = toml.stringify(doc)
-  } catch (exc) {
-    return [null, [driftItem(args.path, regionLabel(r), `no se pudo serializar TOML: ${(exc as Error).message}`)]]
+  } catch {
+    // toml.stringify can quote the offending value; only a fixed code travels.
+    return [null, [driftItem(args.path, regionLabel(r), "no se pudo serializar TOML (toml_serialize_error)")]]
   }
   return [
     makeChange({

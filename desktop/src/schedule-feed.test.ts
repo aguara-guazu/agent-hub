@@ -68,7 +68,7 @@ describe('deliveryNotice', () => {
   })
 
   it('un evento sin título no escribe «null» en el aviso', () => {
-    expect(deliveryNotice(event(6, { type: 'run.persisted', run_id: 'r6', artifact_kind: 'brief', title: null }))?.body).toBe('Abre la entrega para verla.')
+    expect(deliveryNotice(event(6, { type: 'run.persisted', run_id: 'r6', artifact_kind: 'brief', title: null }))?.body).toBe('Abrí la entrega para verla.')
   })
 
   it('ignora otros eventos, otros tipos de artefacto y runs sin id', () => {
@@ -98,7 +98,7 @@ describe('ScheduleNoticeBatcher', () => {
     batcher.add([event(1, { title: 'Brief · Proyecto X' })])
     expect([...timers.values()][0]!.ms).toBe(15_000)
     fire()
-    expect(emitted).toEqual([{ title: 'Tu agente programó: Brief · Proyecto X', body: 'Haz clic para verlo o cancelarlo.', route: '/schedules?focus=s1' }])
+    expect(emitted).toEqual([{ title: 'Tu agente programó: Brief · Proyecto X', body: 'Hacé clic para verla o cancelarla.', route: '/schedules?focus=s1' }])
   })
 
   it('un cambio de agente sin título se nombra de forma genérica', () => {
@@ -114,7 +114,7 @@ describe('ScheduleNoticeBatcher', () => {
     batcher.add([event(2)])
     expect(timers.size).toBe(1)
     fire()
-    expect(emitted).toEqual([{ title: 'Tu agente programó 2 automatizaciones', body: 'Haz clic para verlas.', route: '/schedules' }])
+    expect(emitted).toEqual([{ title: 'Tu agente programó 2 automatizaciones', body: 'Hacé clic para verlas.', route: '/schedules' }])
   })
 
   it('distingue cambio de horario, cancelación y lotes mixtos', () => {

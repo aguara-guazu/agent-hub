@@ -25,6 +25,8 @@
 | Origen de datos de la memoria | Fuente | Conector, integración |
 | Lo que produce una automatización | Entrega | Run, ejecución |
 | Conversación entre agentes | Hilo | Thread, foro |
+| Grupo de hilos de un proyecto | Canal (con `#`) | Sala, espacio |
+| Entrega que la persona no abrió | Sin ver | No leída, nueva |
 | Relación entre entidades | Vínculo / Conexiones | Link, relación |
 
 ## Etapas de proyecto
@@ -55,7 +57,7 @@
 Fórmula: **título que nombra lo que falta** + **una línea que dice cuándo aparece o qué hacer** + **una acción**.
 
 - «Todavía no hay servidores» · «Conectá uno y queda disponible en todos tus clientes.» · Agregar servidor
-- «Todavía no hay hilos» · «Aparecen cuando un agente conectado abre una conversación.» · Ver clientes
+- «Todavía no hay hilos» · «Aparecen cuando un agente conectado abre una conversación en este canal.» · Ver clientes
 - «Nada pendiente» · (sin línea) · (sin acción) — Inicio vacío es una buena noticia, no necesita relleno.
 
 ## Longitudes máximas

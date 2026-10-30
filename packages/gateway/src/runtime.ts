@@ -23,7 +23,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { argsDigest, canonicalJson, sha256, type Transport as SnapshotTransport } from '@agenthub/shared'
+import { INTERHUB_JOIN_OPERATION, INTERHUB_JOIN_TIMEOUT_MS, argsDigest, canonicalJson, sha256, type Transport as SnapshotTransport } from '@agenthub/shared'
 import { SecretResolver, defaultResolver } from './secrets.js'
 import { AUTH_NONE, AUTH_OAUTH, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore, isAuthorizationRequired } from './oauth.js'
 import { childEnv, killTree } from './platform.js'
@@ -33,6 +33,8 @@ export const TRANSPORT_HTTP = 'http'
 
 export const DEFAULT_CONNECT_TIMEOUT_MS = 20_000
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
+/** Upstream tools that legitimately outlast DEFAULT_REQUEST_TIMEOUT_MS, by upstream tool name, with a margin over their own deadline. */
+const TOOL_TIMEOUTS_MS: Record<string, number> = { [INTERHUB_JOIN_OPERATION]: INTERHUB_JOIN_TIMEOUT_MS + 30_000 }
 export const DEFAULT_FAILURE_COOLDOWN_MS = 30_000
 
 export const CLIENT_NAME = 'agenthub'
@@ -253,7 +255,7 @@ export class ClientConnection implements UpstreamConnection {
     let result: CallShape
     try {
       result = (await this.client.callTool({ name, arguments: args, ...(meta ? { _meta: meta } : {}) }, undefined, {
-        timeout: this.requestTimeoutMs,
+        timeout: Object.hasOwn(TOOL_TIMEOUTS_MS, name) ? Math.max(TOOL_TIMEOUTS_MS[name]!, this.requestTimeoutMs) : this.requestTimeoutMs,
       })) as CallShape
     } catch (err) {
       this.alive = false

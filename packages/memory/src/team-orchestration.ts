@@ -8,6 +8,7 @@ import type { LocalChat } from './local-chat.js'
 import { hash } from './store.js'
 import { deriveStandingPlan, DERIVED_APPROVAL_SOURCE, type ApprovedItem, type StoredDelegation } from './project-automation.js'
 import type { Sql } from './database.js'
+import { markSessionActivity } from './chat-wrap-up.js'
 import type { ExtractionCli } from './cli-extraction.js'
 import type { UsageQuotas } from './usage-quotas.js'
 
@@ -127,6 +128,7 @@ export class TeamOrchestration {
     check(agent,'Sólo los agentes pueden participar en equipos',403)
     const who=await this.chat.requireNickname(agent,input.session_key)
     check(!who.closed_at,'La sesión de colaboración está cerrada',403)
+    await markSessionActivity(this.db,who.id)
     if(!teamReadOperations.includes(operation)) {
       check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
       check(who.nickname?.trim(),'Elegí tu propio nick con chat_set_nick antes de participar.',409)
@@ -149,7 +151,7 @@ export class TeamOrchestration {
     const leaderOffline=!!leader && (Boolean(leader.closed_at) || !(Date.parse(leader.lease_until)>Date.now()))
     const canActivate=channel?.kind==='virtual' && !channel.activated_at && !channel.closed_at
     if(channel?.leader_id!==who.id && !canActivate)blockers.push({code:'coordinator_required',
-      message:leaderOffline?'El coordinador reconocido está desconectado; esta sesión es miembro.':'Esta sesión no es la coordinadora reconocida.',next_action:'The person can designate this session in Colaboración → Agentes → Designar coordinador.'})
+      message:leaderOffline?'El coordinador reconocido está desconectado; esta sesión es miembro.':'Esta sesión no es la coordinadora reconocida.',next_action:leaderOffline?'The person can designate this session in Colaboración → Agentes → Designar coordinador. After more than 20 minutes without Hub-verified liveness of the leader, a same-project session outside Hub teams may use memory_chat_take_leadership.':'The person can designate this session in Colaboración → Agentes → Designar coordinador.'})
     if(canActivate)blockers.push({code:'channel_required',message:'La sesión no tiene un canal activo.',next_action:'Ask the person; if they authorize a channel, call memory_chat_create_channel(task_key, name).'})
     let workspace:TeamWorkspace|undefined
     try {

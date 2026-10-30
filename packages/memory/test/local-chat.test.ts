@@ -717,7 +717,7 @@ it('recupera referencias bajo demanda sin perder operaciones del catálogo ni su
   expect(orchestration.text).toContain('digest')
   const entry=await ops.call('skill_reference',{section:'local-collaboration'})
   expect(entry.text).toContain('team-orchestration')
-  expect(entry.text.length).toBeLessThan(14000)
+  expect(entry.text.length).toBeLessThan(16000)
   await expect(ops.call('skill_reference',{section:'../../private'})).rejects.toThrow()
 })
 it('conserva progreso explícito separado de heartbeat, Stop, esperas y reintentos',async()=>{

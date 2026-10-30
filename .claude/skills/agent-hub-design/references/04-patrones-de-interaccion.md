@@ -14,6 +14,8 @@ De 33 modales quedan tres usos: **crear**, **confirmar lo irreversible** y la **
 | Borra datos sin vuelta atrás | **Confirmación** | Restaurar un respaldo, eliminar un proyecto con contenido |
 | Elegir entre variantes de una acción | **Menú** | «Nuevo proyecto ▾ · Unirme con una invitación · Restaurar desde un respaldo» |
 | Un flujo externo (OAuth) | **Bloque de acción en el panel** | «Autorizar cuenta» abre el navegador y vuelve |
+| Aprobar las acciones que propone una entrega | **Bloque de decisión** en el panel de la entrega | «Aprobar 2 seleccionadas» · «Rechazar todas» |
+| Actuar sobre varias filas | **Selección múltiple** + `.bulkbar` | Marcar entregas como vistas o no vistas |
 
 Nunca: modal sobre modal, modal para editar, modal para informar («¡Listo!»), modal para elegir una sola opción.
 
@@ -61,6 +63,26 @@ Ahora:  click en «Eliminar» → la fila desaparece → toast «Se eliminó …
 - Teclado: ↑↓ moverse, ↵ abrir, ⌘↵ abrir en panel, esc cerrar.
 - No tiene filtros propios: los filtros viven en Memoria.
 
+## Colaboración: solo para ver
+
+La pestaña Colaboración de un proyecto es **de solo lectura**. La persona ve canales, hilos y mensajes; no escribe en los hilos ni aprueba desde la UI. Interactúa únicamente con el agente líder, por la terminal.
+
+- El Hub no muestra ni guarda propuestas de resolución ni debates que esperan decisión. Si un agente quiere que la persona decida algo, se lo pide por la CLI.
+- Los hilos solo están Abiertos o Resueltos.
+- El hilo se abre al tocarlo en la lista y se cierra al tocarlo de nuevo o con la X de la esquina superior derecha de su cabecera; al entrar no hay ningún hilo abierto.
+- No hay campo para escribir, «Nuevo canal», ni acciones sobre hilos (cerrar, mover). La X del hilo solo cierra la columna.
+- Las únicas acciones son las cuatro de **recuperación de canal**, en el «…» del canal: Expulsar del canal, Designar coordinador, Eliminar a la papelera y Restaurar. Cada una pide confirmación a la persona, porque afecta a agentes en ejecución.
+
+## Bandeja de entregas: sin ver, selección y J/K
+
+Automatizaciones › Historial funciona como bandeja:
+
+- Toda entrega nueva entra **sin ver**. Abrirla en el panel la marca como vista; «Marcar como no vista» va en el «…» del panel.
+- **Selección múltiple:** las casillas de las filas y de la cabecera seleccionan; la `.bulkbar` ofrece «Marcar como vistas», «Marcar como no vistas» y ampliar a todas las sin ver. Son acciones reversibles: se aplican al instante, sin confirmación.
+- «Marcar todas como vistas» es un secundario del encabezado.
+- **Teclado:** J abre la siguiente sin ver, K la anterior. Los botones del pie del panel muestran la tecla con `.kbd`.
+- El panel de una entrega con acciones propuestas lleva su bloque de decisión: casillas por acción, «Aprobar N seleccionadas» y «Rechazar todas».
+
 ## Edición en línea
 
 - El valor se ve como texto; al pasar el cursor muestra un fondo `--surface-2`; al hacer click se convierte en campo.
@@ -93,4 +115,5 @@ No se usa un toast para informar algo que la pantalla ya muestra.
 - Todo es accesible con Tab en el orden visual.
 - Foco visible con `--focus` (anillo de 3 px), nunca `outline: none` sin reemplazo.
 - Atajos globales: ⌘K buscar, ⌘N crear en la vista actual, Escape cierra la capa superior.
-- Los atajos no se muestran en la interfaz salvo en la paleta ⌘K y en tooltips.
+- Atajos de bandeja: J siguiente sin ver, K anterior (Automatizaciones › Historial). No se activan con el foco en un campo.
+- Los atajos no se muestran en la interfaz salvo en la paleta ⌘K, en tooltips y en los botones Anterior / Siguiente del panel de entrega.

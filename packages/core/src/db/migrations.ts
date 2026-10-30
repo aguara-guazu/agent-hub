@@ -294,6 +294,21 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS ix_call_run ON tool_call_logs (run_id, created_at)`,
     ],
   },
+  {
+    // Inventario de servers MCP y skills que cada cliente carga por fuera del hub (solo nombres y rutas). Vacío = sin reporte.
+    id: "0007_agent_unmanaged",
+    statements: [addColumnIfMissing("agent_instances", "unmanaged", "TEXT NOT NULL DEFAULT ''")],
+  },
+  {
+    // Borrado suave de servers y skills: la fila queda fuera de catálogo y snapshots hasta la purga (DELETE_RETENTION_MS en store.ts).
+    id: "0008_catalog_soft_delete",
+    statements: [
+      addColumnIfMissing("mcp_servers", "deleted_at", "TEXT"),
+      addColumnIfMissing("skills", "deleted_at", "TEXT"),
+      `CREATE INDEX IF NOT EXISTS ix_mcp_server_deleted ON mcp_servers (deleted_at) WHERE deleted_at IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS ix_skill_deleted ON skills (deleted_at) WHERE deleted_at IS NOT NULL`,
+    ],
+  },
 ]
 
 const SCHEMA_MIGRATIONS_DDL = `CREATE TABLE IF NOT EXISTS schema_migrations (

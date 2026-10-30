@@ -1,45 +1,86 @@
-import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
-import Layout from './components/Layout'
-import { LoadingBlock } from './components/Spinner'
-import { ToastProvider } from './components/Toast'
-import { AuthProvider, useAuth } from './lib/auth'
-import { HubActivity, HubCatalog, HubClients, HubSettings, HubSkills } from './pages/Hub'
-import { MemoryProjects, MemoryExplore, MemoryEntityPage, MemorySearch, MemoryReview } from './pages/Memory'
-import { MemorySettings } from './pages/MemorySettings'
-import { MemoryProcessing } from './pages/MemoryProcessing'
-import { MemoryLocalCollaboration } from './pages/MemoryLocalCollaboration'
-import { DeliveriesPage, DeliveryDetailPage, SchedulesPage } from './pages/Automations'
+import "./styles/fonts.css"
+import "./styles/ah.css"
+import { Outlet, Route, Routes } from "react-router-dom"
+import Layout from "./components/Layout"
+import { CollaborationRedirect, Redirect } from "./components/RouteFallbacks"
+import { Button } from "./components/ui/basics"
+import { Empty, Loading } from "./components/ui/display"
+import { ToastProvider } from "./components/ui/Toast"
+import { useT } from "./i18n"
+import { AuthProvider, useAuth } from "./lib/auth"
+import { useTheme } from "./lib/theme"
+import AutomationsPage from "./pages/automations/AutomationsPage"
+import MemoryPage from "./pages/memory/MemoryPage"
+import MemoryEntityView from "./pages/memory/EntityPage"
+import ProjectPage from "./pages/project/ProjectPage"
+import ProjectsPage from "./pages/projects/ProjectsPage"
+import ActivityPage from "./pages/activity/ActivityPage"
+import SettingsPage from "./pages/settings/SettingsPage"
+import SkillsPage from "./pages/skills/SkillsPage"
+import ClientsPage from "./pages/clients/ClientsPage"
+import ServersPage from "./pages/servers/ServersPage"
+import HomePage from "./pages/home/HomePage"
 
 function LocalSession() {
   const { user, loading, reload } = useAuth()
-  if (loading) return <LoadingBlock full label="Conectando con tu hub…" />
-  if (!user) return <div className="hub-session"><div className="hub-session-mark">⌘</div><h1>Agent Hub</h1><p>Abrí la aplicación de escritorio para conectar con tu catálogo local.</p><button className="btn btn-primary" onClick={() => void reload()}>Volver a conectar</button></div>
-  return <Outlet />
+  const theme = useTheme()
+  const { t } = useT("common")
+  if (user) return <Outlet />
+  return (
+    <div className={`ah shell ${theme.className}`} style={{ alignItems: "center", justifyContent: "center" }}>
+      {loading
+        ? <Loading label={t("session.connecting")} />
+        : <Empty icon="brand" title={t("session.title")} detail={t("session.detail")} action={<Button variant="primary" onClick={() => void reload()}>{t("actions.reconnect")}</Button>} />}
+    </div>
+  )
 }
 
+
+/** Árbol de rutas del rediseño. Las rutas previas redirigen a su destino nuevo para no romper enlaces
+ *  de notificaciones, del proceso de escritorio (`desktop/src/navigation.ts`) ni de la memoria. */
 export function App() {
-  return <ToastProvider><AuthProvider><Routes><Route element={<LocalSession />}><Route element={<Layout />}>
-    <Route index element={<Navigate to="/catalog" replace />} />
-    <Route path="catalog" element={<HubCatalog />} />
-    <Route path="skills" element={<HubSkills />} />
-    <Route path="clients" element={<HubClients />} />
-    <Route path="activity" element={<HubActivity />} />
-    <Route path="settings" element={<HubSettings />} />
-    <Route path="schedules" element={<SchedulesPage />} />
-    <Route path="deliveries" element={<DeliveriesPage />} />
-    <Route path="deliveries/:runId" element={<DeliveryDetailPage />} />
-    <Route path="projects" element={<MemoryProjects />} />
-    <Route path="projects/:id" element={<MemoryEntityPage />} />
-    <Route path="memory" element={<MemoryExplore />} />
-    <Route path="memory/collaboration" element={<MemoryLocalCollaboration />} />
-    <Route path="memory/entities/:id" element={<MemoryEntityPage />} />
-    <Route path="memory/search" element={<MemorySearch />} />
-    <Route path="memory/review" element={<MemoryReview />} />
-    <Route path="memory/sources" element={<MemorySettings />} />
-    <Route path="memory/processing" element={<MemoryProcessing />} />
-    <Route path="machines" element={<Navigate to="/clients" replace />} />
-    <Route path="audit" element={<Navigate to="/activity" replace />} />
-    <Route path="*" element={<Navigate to="/catalog" replace />} />
-  </Route></Route></Routes></AuthProvider></ToastProvider>
+  return (
+    <ToastProvider>
+      <AuthProvider>
+        <Routes>
+          <Route element={<LocalSession />}>
+            <Route element={<Layout />}>
+              <Route index element={<Redirect to="/home" />} />
+              <Route path="home" element={<HomePage />} />
+
+              <Route path="projects" element={<ProjectsPage />} />
+              <Route path="projects/:id" element={<ProjectPage />} />
+              <Route path="memory" element={<MemoryPage />} />
+              <Route path="memory/entities/:id" element={<MemoryEntityView />} />
+              <Route path="collaboration/*" element={<CollaborationRedirect />} />
+              <Route path="automations" element={<AutomationsPage />} />
+              <Route path="automations/deliveries/:runId" element={<AutomationsPage />} />
+
+              <Route path="servers" element={<ServersPage />} />
+              <Route path="skills" element={<SkillsPage />} />
+              <Route path="clients" element={<ClientsPage />} />
+              <Route path="activity" element={<ActivityPage />} />
+              <Route path="settings" element={<SettingsPage />} />
+
+              <Route path="catalog" element={<Redirect to="/servers" />} />
+              <Route path="schedules" element={<Redirect to="/automations" />} />
+              <Route path="deliveries" element={<Redirect to="/automations?view=history" />} />
+              <Route path="deliveries/:runId" element={<Redirect to={params => `/automations/deliveries/${params.runId}`} />} />
+              <Route path="memory/collaboration/*" element={<CollaborationRedirect />} />
+              <Route path="memory/search" element={<Redirect to="/memory" />} />
+              <Route path="memory/review" element={<Redirect to="/home" />} />
+              <Route path="memory/sources" element={<Redirect to="/settings?section=fuentes" keepSearch={false} />} />
+              <Route path="memory/processing" element={<Redirect to="/activity?tab=procesamiento" keepSearch={false} />} />
+              <Route path="memory/*" element={<Redirect to="/memory" keepSearch={false} />} />
+              <Route path="machines" element={<Redirect to="/clients" keepSearch={false} />} />
+              <Route path="audit" element={<Redirect to="/activity" keepSearch={false} />} />
+              <Route path="*" element={<Redirect to="/home" keepSearch={false} />} />
+            </Route>
+          </Route>
+        </Routes>
+      </AuthProvider>
+    </ToastProvider>
+  )
 }
+
 export default App

@@ -145,7 +145,7 @@ Filtra **la misma lista** por estado o tipo. Cada opción puede llevar contador 
 
 ### Pestañas — `.tabs` + `.tab`
 
-Cambian **el contenido** de una ficha. Máximo 5. La activa lleva `.is-active`. Si cabe en un `.seg`, no es una pestaña.
+Cambian **el contenido** de una ficha. Máximo 5; única excepción, la ficha de proyecto con 6 (`<Tabs max={6}>`). La activa lleva `.is-active`. Si cabe en un `.seg`, no es una pestaña.
 
 ### Chip de estado — `.chip` + `.c-*`
 
@@ -157,7 +157,7 @@ Marca el **tipo** de una cosa (Reunión, Documento, HTTP, v2). Neutro, sin color
 
 ### Contador — `.badge`, `.badge.attn`
 
-Número junto a un ítem de navegación o un hilo. `.attn` solo cuando el número significa «necesita atención».
+Número junto a un ítem de navegación, un canal o una opción del segmentado. `.attn` solo cuando el número significa «necesita atención».
 
 ### Avatar — `.av`
 
@@ -190,6 +190,86 @@ La unidad de casi toda la app. Anatomía, de izquierda a derecha:
 - Si la fila contiene controles (interruptor, botón), la fila es un `div` y el título es el enlace; nunca un control dentro de un `<a>`.
 - `.row.is-selected` marca la fila cuyo panel está abierto.
 - `.row-head` agrupa (con texto) o rotula columnas.
+
+### Sin ver y selección múltiple — `.unread`, `.check`, `.bulkbar`
+
+Para colecciones que la persona revisa en tanda (hoy, Automatizaciones › Historial).
+
+```html
+<div class="bulkbar" role="region" aria-label="Selección">
+  <strong>3 seleccionadas</strong>
+  <button class="btn btn-sm" type="button">Marcar como vistas</button>
+  <button class="btn btn-sm btn-ghost" type="button">Marcar como no vistas</button>
+  <a class="xs" href="#">Seleccionar las 6 sin ver</a>
+  <button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Quitar selección">×</button>
+</div>
+<div class="list scroll-x">
+  <div class="row-head"><input class="check" type="checkbox" aria-label="Seleccionar todas las visibles"><span style="width: 8px"></span><span style="flex: 1">Hoy · 4 sin ver</span>…</div>
+  <div class="row is-unread">
+    <input class="check" type="checkbox" aria-label="Seleccionar Resumen de guardias">
+    <span class="unread" aria-label="Sin ver"></span>
+    <div class="row-main"><span class="row-title">Resumen de guardias</span><span class="row-sub">Soporte administrado Lumen</span></div>
+    <span class="chip c-ok">Entregada</span>
+  </div>
+  <div class="row"><input class="check" type="checkbox" aria-label="…"><span class="unread is-read" aria-hidden="true"></span>…</div>
+</div>
+```
+
+- `.row.is-unread` pone el título en negrita y muestra el punto `.unread`; una fila vista lleva `.unread.is-read`, que conserva el espacio para que las columnas no salten.
+- `.check` va primero en la fila y en la `.row-head` («Seleccionar todas las visibles»). Cada casilla tiene `aria-label` con el nombre del elemento. Hacer click en la fila fuera de la casilla abre el panel; la casilla solo selecciona.
+- `.bulkbar` aparece arriba de la lista solo mientras hay selección: contador en `<strong>`, como máximo dos acciones `.btn-sm`, un enlace para ampliar la selección y la X para quitarla. No lleva primario.
+- Abrir una entrega en el panel la marca como vista. El pie del panel lleva «Anterior» (K) y «Siguiente sin ver» (J) con `.kbd`; J y K funcionan en toda la vista mientras el foco no esté en un campo.
+- El contador de la opción del segmentado que agrupa lo sin ver usa `.badge.attn` en lugar de `.count`.
+- `ah.css` tiene además `.row-check` y `.bulkbar-count`, de una versión anterior de esta sección; usá `.check` y `<strong>` como en el ejemplo.
+
+### Colaboración: canales › hilos › mensajes — `.collab`
+
+Tres columnas dentro de la pestaña Colaboración de un proyecto. **Solo para ver:** no hay campos para escribir, botones de aprobar ni propuestas. Bajo 1100 px los canales pasan a una fila arriba.
+
+```html
+<div class="collab">
+  <nav class="collab-chans" aria-label="Canales del proyecto">
+    <div class="nav-group">Canales</div>
+    <a class="nav-item is-active" href="#"><span class="chan-hash">#</span>infra<span class="badge">1</span></a>
+    <a class="nav-item" href="#"><span class="chan-hash">#</span>datos<span class="badge">2</span></a>
+  </nav>
+  <section class="collab-threads" aria-label="Hilos de #infra">
+    <div class="collab-head">… nombre del canal, descripción, avatares de agentes · .seg Abiertos / Resueltos</div>
+    <div class="list">
+      <div class="row is-selected"><div class="row-main">
+        <span class="row-title">¿NAT Gateway por zona o uno compartido?</span>
+        <span class="row-sub">3 agentes · 4 mensajes · hace 4 min</span>
+      </div></div>
+    </div>
+  </section>
+  <section class="collab-thread" aria-label="Hilo seleccionado">
+    <div class="collab-head">… título (.h3.clamp2) · canal · quién lo inició
+      <button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Cerrar hilo">×</button>
+    </div>
+    <div class="msgs">
+      <div class="msg"><span class="av av-sm hue3">CC</span><div class="msg-body">
+        <div class="msg-meta"><b>Claude Code</b><span class="tag">Propuesta</span><span class="xs t3">13:52</span></div>
+        <p class="prose">…</p>
+      </div></div>
+    </div>
+  </section>
+</div>
+```
+
+- Canal: `.nav-item` con `.chan-hash` y `.badge` con mensajes nuevos. El «…» del canal tiene solo las cuatro acciones de recuperación: Expulsar del canal, Designar coordinador, Eliminar a la papelera y Restaurar, cada una confirmada por la persona.
+- Hilo en la lista: título y «N agentes · N mensajes · fecha relativa», sin chip de estado. El estado es solo Abiertos / Resueltos, en el segmentado.
+- El hilo se abre al tocarlo en la lista y se cierra al tocarlo de nuevo o con la X de la esquina superior derecha de su cabecera; al entrar no hay ningún hilo abierto. La X de la cabecera del hilo (`.btn-icon.btn-ghost`, `aria-label` «Cerrar hilo») cierra la columna; no cambia el estado del hilo.
+- Mensaje: avatar, autor en `<b>`, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo, Pregunta) y hora. Solo escriben agentes; las etiquetas son de los agentes y no piden nada a la persona.
+- `.collab-full` quita el borde y el radio cuando `.collab` ocupa todo el alto disponible.
+
+#### Canales compartidos entre hubs (referencia futura, no implementada)
+
+Maqueta en `design-system/03-vistas/html/proyecto-inter-hub.html`. No se implementa hasta que la persona lo pida; sirve para no cerrar el camino al diseñar la pestaña actual.
+
+- En `.collab-chans`, un segundo `.nav-group` «Compartidos entre hubs»; sus canales llevan un icono de compartir en lugar de `#`.
+- Debajo del encabezado de hilos, un bloque «Agentes del canal · N hubs · N agentes» con un `<details>` por hub: resumen con chip «Este hub» (`c-ok`) o «Remoto» (`c-off`), nombre con elipsis y cantidad de agentes; adentro, una lista con scroll propio y `.tag` «Líder» en el líder. Al final, «Código del canal» en mono con «Copiar».
+- Cada mensaje suma, después del autor, `.tag` «Líder» si corresponde y un chip con el hub de origen.
+- Los hilos se abren y cierran igual que en la pestaña actual.
 
 ### Interruptor — `.switch`
 

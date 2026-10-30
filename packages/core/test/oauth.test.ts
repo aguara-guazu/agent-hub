@@ -130,8 +130,8 @@ describe('OAuth en el hub', () => {
     const callback = await app.fastify.inject({ method: 'GET', url: `/api/oauth/callback?code=codigo-ok&state=${encodeURIComponent(state!)}` })
     expect(callback.statusCode, callback.body).toBe(200)
     expect(callback.headers['content-type']).toContain('text/html')
-    expect(callback.body).toContain('Cuenta conectada')
-    expect(callback.body).toContain('1 herramientas')
+    expect(callback.body).toContain('Cuenta autorizada')
+    expect(callback.body).toContain('1 herramienta disponible')
     expect(fixture.tokenRequests).toEqual(['authorization_code'])
 
     const listed = await app.fastify.inject({ method: 'GET', url: '/api/catalog/servers', headers: authHeader(token) })

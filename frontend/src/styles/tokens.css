@@ -1,3 +1,5 @@
+/* Estilos previos al rediseño: capa legacy, por debajo de ah.css. Se eliminan al migrar las vistas que los usan. */
+@layer legacy {
 /* Sistema de diseño del Agent Hub.
  *
  *  Criterio: es una consola de operación, no una landing. Densidad alta, calma
@@ -430,6 +432,15 @@ code,
 }
 .field textarea,
 textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vertical; }
+.field input[type='checkbox'],
+.field input[type='radio'] {
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
 .field input::placeholder,
 .field textarea::placeholder { color: var(--text-faint); }
 .field input:focus,
@@ -508,7 +519,6 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
 .secondary { color: var(--text-secondary); }
 .row { display: flex; align-items: center; gap: var(--sp-3); }
 .row-tight { display: flex; align-items: center; gap: var(--sp-2); }
-.col { display: flex; flex-direction: column; gap: var(--sp-3); }
 .spread { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
 .grow { flex: 1; min-width: 0; }
 .wrap { white-space: normal; }
@@ -559,4 +569,6 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
   flex-wrap: wrap;
   padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--border);
+}
+
 }

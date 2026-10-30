@@ -1,6 +1,6 @@
 {
   "name": "@agenthub/desktop",
-  "version": "0.11.7",
+  "version": "0.13.1",
   "private": true,
   "type": "module",
   "description": "Aplicación Electron local de Agent Hub",
@@ -12,9 +12,9 @@
     "dev": "electron dist/entry.js"
   },
   "dependencies": {
-    "@agenthub/core": "0.11.7",
-    "@agenthub/daemon": "0.11.7",
-    "@agenthub/gateway": "0.11.7",
-    "@agenthub/memory": "0.11.7"
+    "@agenthub/core": "0.13.1",
+    "@agenthub/daemon": "0.13.1",
+    "@agenthub/gateway": "0.13.1",
+    "@agenthub/memory": "0.13.1"
   }
 }

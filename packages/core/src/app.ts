@@ -16,7 +16,7 @@ import cors from '@fastify/cors'
 import { loadSettings, type Settings } from './config.js'
 import { Database } from './db/database.js'
 import { runMigrations } from './db/migrations.js'
-import { Store } from './store.js'
+import { DELETE_PURGE_INTERVAL_MS, DELETE_RETENTION_MS, Store } from "./store.js"
 import { record as auditRecord, verify as auditVerify } from './audit/ledger.js'
 import { buildMatrix, hotReload } from './matrix.js'
 import { diffSnapshots, hasChanges, type PendingRestart } from './restart.js'
@@ -27,7 +27,8 @@ import { applyStarterCatalog } from './catalog/starter.js'
 import { applyFactorySkill, type FactorySkill } from './catalog/factory-skills.js'
 import { hubSkill } from './catalog/hub-skill.js'
 import { skillContentHash } from './hashing.js'
-import { buildZip, collectFiles } from './zip.js'
+import { buildZip, collectFiles, ZipReadError } from "./zip.js"
+import { skillDraftFromZip, type SkillZipDraft } from "./catalog/skill-import.js"
 import { computeSnapshot, explain } from './policy/resolver.js'
 import { ensureLocalOwner } from './local.js'
 import {
@@ -66,6 +67,7 @@ import {
 } from './security.js'
 import type { AccountSkillsReport, AgentInstance, ApiToken, Machine, McpServerRow, McpToolRow, SkillRow, User } from './types.js'
 import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliKind, type PolicySnapshot } from '@agenthub/shared'
+import { CATALOG_RESTORE_WINDOW_MS, SKILL_ZIP_MAX_BYTES, UNMANAGED_MAX_ITEMS, UNMANAGED_MAX_NAME, UNMANAGED_MAX_PATH, type LocalUnmanaged, type SkillZipImportExtras, type UnmanagedInventory } from "@agenthub/shared"
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
 import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
@@ -78,6 +80,63 @@ import { jiraWriteServerId, readJiraServerSelection, saveJiraServerId } from './
 
 const CLI_KINDS: readonly string[] = SHARED_CLI_KINDS
 const ORG_ROLES = ['owner', 'admin', 'member']
+
+/**
+ * Idioma de las páginas HTML del retorno de OAuth. El navegador vuelve a `redirect_uri`, que el proveedor compara
+ * exacta con la registrada: no admite un parámetro de idioma. Se toma el `Accept-Language` de `oauth/start` (el
+ * escritorio lo fija al idioma activo de la app), después el del navegador que vuelve, y por último `es`.
+ */
+type OAuthLanguage = "es" | "en"
+
+const OAUTH_TEXTS: Record<OAuthLanguage, Record<
+  "close" | "unknownTitle" | "unknownDetail" | "goneTitle" | "goneDetail" | "deniedTitle" | "missingCodeTitle" | "missingCodeDetail"
+  | "exchangeFailedTitle" | "authorizedTitle" | "toolsOne" | "toolsOther" | "probeFailed", string>> = {
+  es: {
+    close: "Podés cerrar esta pestaña y volver a Agent Hub.",
+    unknownTitle: "Solicitud desconocida o vencida",
+    unknownDetail: "Volvé a Agent Hub y usá «Autorizar cuenta» otra vez.",
+    goneTitle: "El servidor ya no existe",
+    goneDetail: "Se eliminó del catálogo mientras autorizabas.",
+    deniedTitle: "La autorización no se completó",
+    missingCodeTitle: "Falta el código de autorización",
+    missingCodeDetail: "El servidor volvió sin el parámetro code.",
+    exchangeFailedTitle: "No se pudo completar la autorización",
+    authorizedTitle: "Cuenta autorizada",
+    toolsOne: "{name}: {count} herramienta disponible.",
+    toolsOther: "{name}: {count} herramientas disponibles.",
+    probeFailed: "{name} quedó autorizado, pero la verificación falló: {error}",
+  },
+  en: {
+    close: "You can close this tab and go back to Agent Hub.",
+    unknownTitle: "Unknown or expired request",
+    unknownDetail: "Go back to Agent Hub and use “Authorize account” again.",
+    goneTitle: "The server no longer exists",
+    goneDetail: "It was removed from the catalog while you were authorizing.",
+    deniedTitle: "Authorization was not completed",
+    missingCodeTitle: "Authorization code missing",
+    missingCodeDetail: "The server returned without the code parameter.",
+    exchangeFailedTitle: "Could not complete the authorization",
+    authorizedTitle: "Account authorized",
+    toolsOne: "{name}: {count} tool available.",
+    toolsOther: "{name}: {count} tools available.",
+    probeFailed: "{name} is authorized, but the check failed: {error}",
+  },
+}
+
+/** Primer idioma soportado de un `Accept-Language` (en orden de aparición; los `q` que manda Chromium ya vienen decrecientes). */
+function oauthLanguage(header: string | string[] | undefined): OAuthLanguage | null {
+  const value = Array.isArray(header) ? header.join(",") : header ?? ""
+  for (const part of value.split(",")) {
+    const base = part.trim().split(";")[0]!.toLowerCase().split("-")[0]
+    if (base === "es" || base === "en") return base
+  }
+  return null
+}
+
+/** Interpolación de `{nombre}` con reemplazo por función: los valores (nombres de servidor, errores) no interpretan `$`. */
+function fillText(template: string, vars: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (match, name: string) => name in vars ? String(vars[name]) : match)
+}
 
 /** Error HTTP con código explícito, como las `HTTPException` del backend. */
 export class HttpError extends Error {
@@ -120,6 +179,50 @@ function optionalString(body: Record<string, unknown>, field: string, fallback =
   return value
 }
 
+const UNMANAGED_REASON = /^(?:(?:toml|json)_parse_error(?:: fila \d+, columna \d+)?|parse_error|read_error(?:: E[A-Z]+)?)$/
+
+/**
+ * Deriva que reporta el daemon, sin el texto que un parser de un daemon anterior copiaba tras «no es TOML/JSON válido:»
+ * (la línea fallida, con posibles tokens de `env` o `headers`). Lo demás queda igual.
+ */
+function scrubDriftDetail(detail: string): string {
+  // Continuation lines of a multi-line parser message do not start with an absolute path, as every drift line does.
+  return detail.replace(/(no es (?:TOML|JSON) válido):[^\n]*(?:\n(?!\/|[A-Za-z]:\\)[^\n]*)*/g, "$1 (parse_error)")
+}
+
+/** Inventario `unmanaged` de `POST /api/sync/report`, validado estricto: un campo de más o fuera de tope rechaza el reporte entero. */
+function readUnmanagedReport(raw: unknown): UnmanagedInventory {
+  const fail = (detail: string): never => { throw new HttpError(422, `unmanaged: ${detail}`) }
+  if (!isObject(raw)) fail("debe ser un objeto")
+  const body = raw as Record<string, unknown>
+  for (const key of Object.keys(body)) if (!["checked_at", "servers", "skills", "errors", "truncated"].includes(key)) fail(`campo desconocido: ${key}`)
+  const text = (value: unknown, field: string, max: number): string => {
+    if (typeof value !== "string" || value.length === 0 || value.length > max) fail(`${field} debe ser texto de 1 a ${max} caracteres`)
+    return value as string
+  }
+  const list = (value: unknown, field: string, keys: string[]): Record<string, unknown>[] => {
+    if (value === undefined) return []
+    if (!Array.isArray(value) || value.length > UNMANAGED_MAX_ITEMS || !value.every(isObject)) fail(`${field} debe ser una lista de hasta ${UNMANAGED_MAX_ITEMS} objetos`)
+    for (const item of value as Record<string, unknown>[]) for (const key of Object.keys(item)) if (!keys.includes(key)) fail(`${field}[]: campo desconocido: ${key}`)
+    return value as Record<string, unknown>[]
+  }
+  const checkedAt = text(body.checked_at, "checked_at", 40)
+  if (Number.isNaN(Date.parse(checkedAt))) fail("checked_at no es una fecha ISO")
+  if (body.truncated !== undefined && typeof body.truncated !== "boolean") fail("truncated debe ser booleano")
+  const servers = list(body.servers, "servers", ["name", "path"]).map((item) => ({ name: text(item.name, "servers[].name", UNMANAGED_MAX_NAME), path: text(item.path, "servers[].path", UNMANAGED_MAX_PATH) }))
+  const skills = list(body.skills, "skills", ["slug", "path", "linked"]).map((item) => {
+    if (typeof item.linked !== "boolean") fail("skills[].linked debe ser booleano")
+    return { slug: text(item.slug, "skills[].slug", UNMANAGED_MAX_NAME), path: text(item.path, "skills[].path", UNMANAGED_MAX_PATH), linked: item.linked as boolean }
+  })
+  // Solo motivos con la forma de código fijo; cualquier otro texto (un mensaje de parser de un daemon viejo) se reemplaza.
+  const errors = list(body.errors, "errors", ["path", "reason"]).map((item) => {
+    const reason = text(item.reason, "errors[].reason", 300)
+    return { path: text(item.path, "errors[].path", UNMANAGED_MAX_PATH), reason: UNMANAGED_REASON.test(reason) ? reason : "unknown_error" }
+  })
+  if (servers.length + skills.length > UNMANAGED_MAX_ITEMS) fail(`servers y skills suman más de ${UNMANAGED_MAX_ITEMS}`)
+  return { checked_at: new Date(checkedAt).toISOString(), servers, skills, errors, truncated: body.truncated === true }
+}
+
 export interface CoreApp {
   fastify: FastifyInstance
   store: Store
@@ -145,6 +248,15 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   // Credenciales OAuth de los MCP servers: archivos 0600 fuera de la base.
   const oauthStore = new OAuthStore(settings.oauthDir)
   const probeOptions = { oauthStore, redirectUrl: settings.oauthRedirectUrl }
+  // El archivo OAuth de un server borrado vive solo durante la ventana de Deshacer.
+  store.onServerPurged = (serverId) => oauthStore.delete(serverId)
+  const purgeDeleted = (): void => {
+    const purged = store.purgeDeleted(new Date(Date.now() - DELETE_RETENTION_MS).toISOString())
+    if (purged.servers || purged.skills) console.error(`[catalog] purga de borrados: ${purged.servers} servers, ${purged.skills} skills`)
+  }
+  purgeDeleted()
+  const purgeTimer = setInterval(purgeDeleted, DELETE_PURGE_INTERVAL_MS)
+  purgeTimer.unref()
 
   if (options.ensureOwner ?? settings.localMode) {
     const owner = ensureLocalOwner(store)
@@ -159,6 +271,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   }
 
   const fastify = Fastify({ logger: false })
+  fastify.addHook("onClose", async () => { clearInterval(purgeTimer) })
 
   // El cuerpo de las respuestas 204 no lleva contenido.
   fastify.setErrorHandler((error, _request, reply) => {
@@ -635,6 +748,21 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     }
   }
 
+  /** Inventario del cliente cruzado con el catálogo por slug; `null` si su daemon no lo reportó. */
+  function unmanagedView(user: User, agent: AgentInstance): LocalUnmanaged | null {
+    const report = agent.unmanaged
+    if (report === null) return null
+    const servers = new Map(store.serversOfUser(user.id).map((server) => [server.slug, server.id]))
+    const skills = new Map(store.skillsOfUser(user.id).map((skill) => [skill.slug, skill.id]))
+    return {
+      checked_at: report.checked_at,
+      servers: report.servers.map((item) => ({ ...item, catalog_server_id: servers.get(item.name) ?? null })),
+      skills: report.skills.map((item) => ({ ...item, catalog_skill_id: skills.get(item.slug) ?? null })),
+      errors: report.errors,
+      truncated: report.truncated,
+    }
+  }
+
   fastify.get('/api/local/overview', async (request) => {
     const user = await currentUser(request)
     const matrix = buildMatrix(store, user)
@@ -648,6 +776,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
         server_count: snapshot.servers.length, skill_count: snapshot.skills.length,
         restart_pending: pending !== null,
         pending: pending?.changes ?? null,
+        unmanaged: unmanagedView(user, agent),
       }
     })
     return { hostname: hostname(), clients, rows: matrix.rows }
@@ -774,17 +903,35 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     return serverView(fresh)
   })
 
+  // Borrado suave: sale de catálogo, snapshots y daemon igual que antes; `restore` lo devuelve dentro de DELETE_RETENTION_MS.
   fastify.delete('/api/catalog/servers/:id', async (request, reply) => {
     const user = await currentUser(request)
     const { id } = request.params as { id: string }
     const server = serverOr404(user, id)
-    const toolIds = store.toolsOfServer(server.id).map((t) => t.id)
-    store.forgetResource('mcp_tool', toolIds)
-    store.forgetResource('mcp_server', [server.id])
-    store.deleteServer(server.id)
-    oauthStore.delete(server.id)
+    store.softDeleteServer(server.id)
     notifyAfterCommit('user', user.id)
     return reply.code(204).send()
+  })
+
+  function withinRestoreWindow(deletedAt: string): boolean {
+    const at = Date.parse(deletedAt)
+    return Number.isFinite(at) && Date.now() - at <= CATALOG_RESTORE_WINDOW_MS
+  }
+
+  fastify.post("/api/catalog/servers/:id/restore", async (request) => {
+    const user = await currentUser(request)
+    const { id } = request.params as { id: string }
+    const deleted = store.deletedServer(id)
+    // The window is checked here, not only by the purge: a purge timer that has not run yet must not extend it.
+    if (!deleted || deleted.user_id !== user.id || !withinRestoreWindow(deleted.deleted_at)) {
+      const live = store.server(id)
+      if (live && live.user_id === user.id) throw new HttpError(409, "el MCP server no está eliminado")
+      throw new HttpError(404, "el MCP server no existe o ya venció el plazo para restaurarlo")
+    }
+    if (store.serverBySlug(user.id, deleted.slug)) throw new HttpError(409, `ya tenes otro MCP server con el slug ${deleted.slug}`)
+    store.restoreServer(deleted.id)
+    notifyAfterCommit("user", user.id)
+    return serverView(store.server(deleted.id)!)
   })
 
   fastify.post('/api/catalog/servers/:id/probe', async (request) => {
@@ -801,7 +948,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   // ------------------------------------------------------------ oauth
   // Flujos en curso: `state` -> server. Viven en memoria y vencen solos. El navegador
   // vuelve a `/api/oauth/callback` sin sesión de la consola: el `state` es la prueba.
-  const pendingOAuth = new Map<string, { serverId: string; expiresAt: number }>()
+  const pendingOAuth = new Map<string, { serverId: string; expiresAt: number; language: OAuthLanguage | null }>()
   const OAUTH_PENDING_TTL_MS = 10 * 60_000
   function prunePendingOAuth(): void {
     const now = Date.now()
@@ -823,10 +970,10 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
     return text.replace(/[&<>"']/g, (c) => map[c] ?? c)
   }
-  function oauthPage(title: string, detail: string): string {
-    return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} · Agent Hub</title>
+  function oauthPage(language: OAuthLanguage, title: string, detail: string): string {
+    return `<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} · Agent Hub</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;background:#0f1412;color:#e8ede9;display:grid;place-items:center;min-height:100vh;margin:0}main{max-width:32rem;padding:2rem}h1{font-size:1.4rem}p{color:#a7b0aa;line-height:1.5}</style></head>
-<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p><p>Podés cerrar esta pestaña y volver a Agent Hub.</p></main></body></html>`
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p><p>${escapeHtml(OAUTH_TEXTS[language].close)}</p></main></body></html>`
   }
   async function probeAndApply(server: McpServerRow) {
     const result = await probeServer(server, PROBE_TIMEOUT_MS, probeOptions)
@@ -857,7 +1004,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const state = provider.pendingState()
     if (!url || !state) throw new HttpError(502, 'el servidor de autorización no devolvió una URL utilizable')
     prunePendingOAuth()
-    pendingOAuth.set(state, { serverId: server.id, expiresAt: Date.now() + OAUTH_PENDING_TTL_MS })
+    pendingOAuth.set(state, { serverId: server.id, expiresAt: Date.now() + OAUTH_PENDING_TTL_MS, language: oauthLanguage(request.headers['accept-language']) })
     return { status: 'redirect', authorization_url: url.toString() }
   })
 
@@ -866,18 +1013,20 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const state = query.state ?? ''
     prunePendingOAuth()
     const pending = state ? pendingOAuth.get(state) : undefined
+    const language = pending?.language ?? oauthLanguage(request.headers['accept-language']) ?? 'es'
+    const text = OAUTH_TEXTS[language]
     reply.type('text/html; charset=utf-8')
-    if (!pending) return reply.code(400).send(oauthPage('Solicitud desconocida o vencida', 'Volvé a Agent Hub y usá «Conectar cuenta» otra vez.'))
+    if (!pending) return reply.code(400).send(oauthPage(language, text.unknownTitle, text.unknownDetail))
     pendingOAuth.delete(state)
     const server = store.server(pending.serverId)
-    if (!server) return reply.code(404).send(oauthPage('El server ya no existe', 'Se eliminó del catálogo mientras autorizabas.'))
+    if (!server) return reply.code(404).send(oauthPage(language, text.goneTitle, text.goneDetail))
     if (query.error) {
       const detail = query.error_description || query.error
       store.updateServer(server.id, { last_probe_error: `autorización rechazada: ${detail}` })
       notifyAfterCommit('user', server.user_id)
-      return reply.code(400).send(oauthPage('La autorización no se completó', detail))
+      return reply.code(400).send(oauthPage(language, text.deniedTitle, detail))
     }
-    if (!query.code) return reply.code(400).send(oauthPage('Falta el código de autorización', 'El servidor volvió sin el parámetro code.'))
+    if (!query.code) return reply.code(400).send(oauthPage(language, text.missingCodeTitle, text.missingCodeDetail))
     try {
       const outcome = await oauthAuthorize(oauthProvider(server), { serverUrl: server.url, authorizationCode: query.code })
       if (outcome !== 'AUTHORIZED') throw new Error('el servidor no entregó tokens')
@@ -885,12 +1034,12 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       const detail = describeError(error)
       store.updateServer(server.id, { last_probe_error: `no se pudo canjear la autorización: ${detail}` })
       notifyAfterCommit('user', server.user_id)
-      return reply.code(502).send(oauthPage('No se pudo completar la conexión', detail))
+      return reply.code(502).send(oauthPage(language, text.exchangeFailedTitle, detail))
     }
     const result = await probeAndApply(server)
-    return reply.send(oauthPage('Cuenta conectada', result.ok
-      ? `${server.display_name}: ${result.tools.length} herramientas disponibles.`
-      : `${server.display_name} quedó autorizado, pero el sondeo falló: ${result.error}`))
+    return reply.send(oauthPage(language, text.authorizedTitle, result.ok
+      ? fillText(result.tools.length === 1 ? text.toolsOne : text.toolsOther, { name: server.display_name, count: result.tools.length })
+      : fillText(text.probeFailed, { name: server.display_name, error: String(result.error) })))
   })
 
   fastify.get('/api/oauth/settings', async (request) => {
@@ -995,14 +1144,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       .send(archive)
   })
 
-  fastify.post('/api/catalog/skills', async (request, reply) => {
-    const user = await currentUser(request)
-    const body = requireObject(request.body)
-    rejectUnknown(body, ['slug', 'display_name', 'description', 'body'])
-    const slug = validateCatalogSlug(requireString(body, 'slug'))
-    const displayName = requireString(body, 'display_name')
-    const description = optionalString(body, 'description')
-    const skillBody = optionalString(body, 'body')
+  function createHubSkill(user: User, slug: string, displayName: string, description: string, skillBody: string): SkillRow {
     if (store.skillBySlug(user.id, slug)) throw new HttpError(409, `ya tenes una skill con el slug ${slug}`)
     const skill = store.insertSkill({
       user_id: user.id,
@@ -1013,7 +1155,44 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       content_hash: skillContentHash(displayName, description, skillBody),
     })
     notifyAfterCommit('user', user.id)
-    return reply.code(201).send(skillView(user, skill))
+    return skill
+  }
+
+  fastify.post('/api/catalog/skills', async (request, reply) => {
+    const user = await currentUser(request)
+    const body = requireObject(request.body)
+    rejectUnknown(body, ['slug', 'display_name', 'description', 'body'])
+    const slug = validateCatalogSlug(requireString(body, 'slug'))
+    const displayName = requireString(body, 'display_name')
+    const description = optionalString(body, 'description')
+    const skillBody = optionalString(body, 'body')
+    return reply.code(201).send(skillView(user, createHubSkill(user, slug, displayName, description, skillBody)))
+  })
+
+  // Parser binario solo en este ámbito: el resto de la API sigue aceptando únicamente JSON.
+  void fastify.register(async (scope) => {
+    scope.addContentTypeParser(["application/zip", "application/x-zip-compressed", "application/octet-stream"], { parseAs: "buffer" },
+      (_request, body, done) => done(null, body))
+
+    scope.post("/api/catalog/skills/import", { bodyLimit: SKILL_ZIP_MAX_BYTES }, async (request, reply) => {
+      const user = await currentUser(request)
+      const query = (request.query ?? {}) as Record<string, unknown>
+      rejectUnknown(query, ["slug", "display_name"])
+      const archive = request.body
+      if (!Buffer.isBuffer(archive) || archive.length === 0) throw new HttpError(422, "el cuerpo debe ser un archivo ZIP")
+      let draft: SkillZipDraft
+      try {
+        draft = skillDraftFromZip(archive)
+      } catch (error) {
+        if (error instanceof ZipReadError) throw new HttpError(error.status, error.message)
+        throw error
+      }
+      const slug = validateCatalogSlug(optionalString(query, "slug") || draft.name)
+      const displayName = optionalString(query, "display_name").trim() || draft.displayName
+      const skill = createHubSkill(user, slug, displayName, draft.description, draft.body)
+      const extras: SkillZipImportExtras = { ignored_files: draft.ignoredFiles }
+      return reply.code(201).send({ ...skillView(user, skill), ...extras })
+    })
   })
 
   fastify.patch('/api/catalog/skills/:id', async (request) => {
@@ -1046,10 +1225,26 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const { id } = request.params as { id: string }
     const skill = skillOr404(user, id)
     rejectExternal(skill, 'se quita')
-    store.forgetResource('skill', [skill.id])
-    store.deleteSkill(skill.id)
+    store.softDeleteSkill(skill.id)
     notifyAfterCommit('user', user.id)
     return reply.code(204).send()
+  })
+
+  fastify.post('/api/catalog/skills/:id/restore', async (request) => {
+    const user = await currentUser(request)
+    const { id } = request.params as { id: string }
+    const deleted = store.deletedSkill(id)
+    // The window is checked here, not only by the purge: a purge timer that has not run yet must not extend it.
+    if (!deleted || deleted.user_id !== user.id || !withinRestoreWindow(deleted.deleted_at)) {
+      const live = store.skill(id)
+      if (live && live.user_id === user.id) throw new HttpError(409, 'la skill no está eliminada')
+      throw new HttpError(404, 'la skill no existe o ya venció el plazo para restaurarla')
+    }
+    rejectExternal(deleted, 'se restaura')
+    if (store.skillBySlug(user.id, deleted.slug)) throw new HttpError(409, `ya tenes otra skill con el slug ${deleted.slug}`)
+    store.restoreSkill(deleted.id)
+    notifyAfterCommit('user', user.id)
+    return skillView(user, store.skill(deleted.id)!)
   })
 
   // ============================================================ policy
@@ -1333,7 +1528,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     if (typeof body.listed_hash === 'string') fields.last_listed_hash = body.listed_hash
     if (body.connected === true) fields.last_connected_at = new Date().toISOString()
     if (typeof body.drift_detected === 'boolean') fields.drift_detected = body.drift_detected
-    if (typeof body.drift_detail === 'string') fields.drift_detail = body.drift_detail
+    if (typeof body.drift_detail === 'string') fields.drift_detail = scrubDriftDetail(body.drift_detail)
     if (isObject(body.account_skills)) {
       const raw = body.account_skills
       const items = Array.isArray(raw.skills) ? raw.skills.filter(isObject) : []
@@ -1344,6 +1539,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
           .filter((item) => item.slug !== ''),
       }
     }
+    if (body.unmanaged !== undefined) fields.unmanaged = readUnmanagedReport(body.unmanaged)
     store.updateAgent(agent.id, fields)
     if (typeof body.synced_hash === 'string') {
       db.run(`INSERT INTO local_client_sync (agent_id, snapshot_hash, synced_at) VALUES (?, ?, ?)

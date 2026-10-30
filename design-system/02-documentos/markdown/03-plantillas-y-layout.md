@@ -40,7 +40,7 @@ Toda vista de Agent Hub usa **una** de cuatro plantillas y llena sus zonas. Si u
 
 ## Plantilla A · Colección con panel
 
-**Se usa en:** Servidores MCP, Skills, Clientes, Automatizaciones, Actividad, Colaboración, Memoria (sin panel), Proyectos (sin panel: las filas abren la ficha).
+**Se usa en:** Servidores MCP, Skills, Clientes, Automatizaciones (incluido Historial), Actividad, Memoria (sin panel), Proyectos (sin panel: las filas abren la ficha).
 
 | Zona | Contenido | Reglas |
 |---|---|---|
@@ -61,11 +61,13 @@ Toda vista de Agent Hub usa **una** de cuatro plantillas y llena sus zonas. Si u
 | Migas | «Sección /» | Solo un nivel hacia arriba |
 | 1 · Identidad | Avatar + título (editable en línea) + chip de estado + metadatos en una línea | Título en una línea con elipsis |
 | Acciones | 1 primaria, «Compartir» si aplica, «…» | Editar detalles va en «…» o en la columna de datos |
-| 2 · Pestañas | Máximo 5 | Opcional si la ficha cabe en una sola vista |
+| 2 · Pestañas | Máximo 5 (Proyecto: 6) | Opcional si la ficha cabe en una sola vista |
 | 3 · Contenido | Lo que muestra la pestaña | Listas de filas, prosa con `.prose` |
 | 4 · Columna de datos | Detalles (`.dl`), interruptores relevantes, Conexiones | 280–340 px; se apila debajo en ventanas angostas |
 
-Las pestañas de proyecto son fijas: **Resumen, Contenido, Tareas, Decisiones, Colaboración.**
+Las pestañas de proyecto son fijas: **Resumen, Contenido, Tareas, Decisiones, Colaboración, Notas.** Es la única excepción al máximo de cinco, decidida por la persona: «Notas» (notas de agentes, solo lectura) va al lado de Colaboración. El kit lo expresa con `<Tabs max={6}>`; ninguna otra ficha pasa de cinco.
+
+La pestaña Colaboración reemplaza las zonas 3 y 4 por `.collab`, a todo el ancho: canales (220 px) › hilos del canal › hilo abierto (ninguno al entrar; se abre y cierra al tocarlo o con su X). Es solo para ver y es la única pestaña sin columna de datos.
 
 ## Plantilla C · Configuración
 
@@ -82,8 +84,8 @@ Secciones fijas: **General, Fuentes, IA y procesamiento, Automatizaciones, Colab
 
 **Se usa en:** Inicio (única).
 
-- Saludo + una línea de estado general.
-- **Pendientes:** lista agrupada por tipo (Conexiones, Propuestas de agentes, Memoria). Cada fila tiene **una** acción que resuelve o lleva a resolver el pendiente. Cuando se resuelve, la fila desaparece.
+- Saludo + una línea de estado general («7 cosas esperan una decisión. Todo lo demás está funcionando.»).
+- **Pendientes:** lista agrupada por tipo (Conexiones, Propuestas de agentes, Memoria). Propuestas de agentes incluye las entregas con acciones propuestas; los debates de colaboración no llegan a Inicio. Cada fila tiene **una** acción que resuelve o lleva a resolver el pendiente. Cuando se resuelve, la fila desaparece.
 - Columna derecha: «Hoy» (automatizaciones del día) y «Proyectos recientes». Nada más.
 - Inicio no tiene acciones de creación ni configuración.
 
