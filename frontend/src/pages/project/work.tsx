@@ -4,7 +4,7 @@ import { createPortal } from "react-dom"
 import { useSearchParams } from "react-router-dom"
 
 /** Parámetros de URL de los paneles propios de Tareas, Decisiones y Colaboración; abrir uno cierra los demás y el `?panel=` de la ficha. */
-const OWN_PANELS = ["task", "decision", "message", "invite", "jira", "stats"] as const
+const OWN_PANELS = ["task", "decision", "message", "invite", "jira", "stats", "agents", "agent", "plan", "trash"] as const
 export type WorkPanel = (typeof OWN_PANELS)[number]
 
 /**

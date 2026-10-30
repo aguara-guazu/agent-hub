@@ -1,52 +1,13 @@
 import { useCallback } from "react"
-import { useSearchParams } from "react-router-dom"
-import { Button, type ChipTone } from "../../components/ui"
-import { useFormat, useT } from "../../i18n"
-import type { Participant, Plan, Receipt } from "./types"
+import { Button, type ChipTone } from "../../../components/ui"
+import { useFormat, useT } from "../../../i18n"
+import type { Participant, Plan } from "./chatTypes"
 
-/** Alcance de esta vista: canales sin proyecto. La pestaña Colaboración del proyecto usa su propio alcance. */
-export const SCOPE = { unassigned: true } as const
-
-export const THREAD_PAGE = 30
 export const MESSAGE_PAGE = 40
-export const CHANNEL_PAGE = 40
 export const AGENT_PAGE = 40
 
 /** Valor de `.dl` que se corta con elipsis: el `dd` es un ítem de grid y necesita un hijo de bloque. */
 export const TRUNC = { display: "block", minWidth: 0, maxWidth: "100%" } as const
-
-export type ListView = "threads" | "channels" | "trash"
-export type ThreadState = "open" | "resolved"
-
-/** Estado de la vista en la URL: sobrevive a recargas y a los enlaces de notificaciones (`?plan=`). */
-export function useCollaborationParams() {
-  const [params, setParams] = useSearchParams()
-  const patch = useCallback((values: Record<string, string | number | null>) => setParams(current => {
-    const next = new URLSearchParams(current)
-    for (const [key, value] of Object.entries(values)) {
-      if (value === null || value === "" || value === 0) next.delete(key)
-      else next.set(key, String(value))
-    }
-    return next
-  }, { replace: true }), [setParams])
-  const view = params.get("view")
-  const number = (key: string) => Math.max(0, Number(params.get(key)) || 0)
-  return {
-    view: (view === "channels" || view === "trash" ? view : "threads") as ListView,
-    state: (params.get("state") === "resolved" ? "resolved" : "open") as ThreadState,
-    channel: params.get("channel") ?? "",
-    agent: params.get("agent") ?? "",
-    query: params.get("q") ?? "",
-    thread: params.get("thread") ?? "",
-    plan: params.get("plan") ?? "",
-    inspect: params.get("inspect") ?? "",
-    offset: number("offset"),
-    messageOffset: number("moffset"),
-    channelOffset: number("coffset"),
-    agentOffset: number("aoffset"),
-    patch,
-  }
-}
 
 /** Sesiones que la vista muestra: sin expulsadas, sin las que no eligieron nick y sin cerradas fuera de un equipo. */
 export function visibleAgents(items: readonly Participant[] | undefined): Participant[] {
@@ -64,19 +25,6 @@ export const AGENT_TONE: Record<AgentState, ChipTone> = { idle: "ok", busy: "inf
 export function agentState(agent: Participant): AgentState {
   if (agent.state_reason === "activity_stale") return "stale"
   return (["idle", "busy", "blocked", "offline", "removed"] as const).find(state => state === agent.state) ?? "unknown"
-}
-
-export type ReceiptState = "cancelled" | "answered" | "readAwaiting" | "requested" | "handled" | "read" | "notified" | "pending"
-export const RECEIPT_TONE: Record<ReceiptState, ChipTone> = { cancelled: "off", answered: "ok", readAwaiting: "warn", requested: "warn", handled: "ok", read: "info", notified: "info", pending: "off" }
-
-export function receiptState(receipt: Receipt): ReceiptState {
-  if (receipt.cancelled_at) return "cancelled"
-  if (receipt.response_message_id) return "answered"
-  if (receipt.response_required) return receipt.read_at ? "readAwaiting" : "requested"
-  if (receipt.handled_at) return "handled"
-  if (receipt.read_at) return "read"
-  if (receipt.notified_at) return "notified"
-  return "pending"
 }
 
 export type PlanState = "prepared" | "launching" | "launched" | "active" | "partial" | "uncertain" | "paused" | "cancelled" | "completed" | "unknown"
@@ -103,6 +51,17 @@ export function memberQuota(plan: Plan, member: { worktree_name?: string; cli: s
   const entry = usage.find(item => member.worktree_name && item.worktree_name === member.worktree_name)
     ?? usage.find(item => item.cli === member.cli && item.model === member.model)
   return entry ? quotaState(entry.status) : null
+}
+
+const CLI_INITIALS: Record<string, readonly [string, string]> = {
+  claude_code: ["claude", "CC"], codex_cli: ["codex", "CX"], gemini_cli: ["gemini", "GC"], kiro: ["kiro", "KI"],
+  opencode: ["opencode", "OC"], antigravity: ["antigravity", "AG"], claude_desktop: ["claude", "CD"],
+}
+
+/** Iniciales del avatar cuando el nombre es el del cliente («Codex CLI» → CX, no CC); con un nick propio, las del nick. */
+export function agentInitials(label: string, cli: string | undefined): string | undefined {
+  const entry = cli ? CLI_INITIALS[cli] : undefined
+  return entry && label.toLowerCase().startsWith(entry[0]) ? entry[1] : undefined
 }
 
 const CLIS = ["claude_code", "codex_cli", "gemini_cli", "kiro", "claude_desktop", "opencode", "antigravity"] as const

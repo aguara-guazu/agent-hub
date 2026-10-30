@@ -1,8 +1,7 @@
 import { useState } from "react"
 import type { KeyboardEvent } from "react"
-import { Link } from "react-router-dom"
 import {
-  Avatar, Button, Chip, Dl, Empty, ErrorState, Input, List, Panel, PanelBody, PanelHeader, Row, RowLink, SkeletonRows, Tag, useToast,
+  Avatar, Button, Chip, Dl, Empty, ErrorState, Input, List, Panel, PanelBody, PanelHeader, Row, SkeletonRows, Tag, useToast,
 } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
@@ -10,58 +9,24 @@ import { ListDate, useErrorText, useMemoryAction } from "../shared"
 import { useTaskLabels } from "../tasks/labels"
 import type { AgentNote } from "../tasks/types"
 import { SidePanel, useWorkPanel } from "../work"
+import { CollaborationBoard } from "./Board"
 import { SharingSection } from "./SharingSection"
 import { useSharingStatus, type ForumMessage } from "./sharing"
 
-const THREADS_SHOWN = 5
 const NOTES_PAGE = 10
 const FORUM_PAGE = 50
 
-interface ThreadRow { id: string; channel_id: string; title: string; state: string; messages: number; author_label: string; updated_at: string }
-
-/** Colaboración del proyecto: hilos entre agentes (se leen en Colaboración), notas de trabajo, personas con acceso y foro compartido. */
+/** Colaboración del proyecto: canales › hilos › debate, personas con acceso, notas de trabajo y foro compartido. */
 export function CollaborationTab({ project }: { project: MemoryEntity }) {
   const sharing = useSharingStatus()
   const shared = Boolean(sharing.data?.projects.some(item => item.id === project.id))
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-5)", minWidth: 0 }}>
-      <ThreadsSection projectId={project.id} />
-      <NotesSection projectId={project.id} />
+      <CollaborationBoard project={project} />
       <SharingSection project={project} />
+      <NotesSection projectId={project.id} />
       {shared && <ForumSection projectId={project.id} />}
     </div>
-  )
-}
-
-function ThreadsSection({ projectId }: { projectId: string }) {
-  const { t, plural } = useT("project")
-  const threads = useMemory<Page<ThreadRow>>("chat_threads", { project_id: projectId, query: "", limit: THREADS_SHOWN, offset: 0 })
-  const total = threads.data?.total ?? 0
-  return (
-    <section className="section">
-      <div className="section-h">
-        <h2 className="h2">{t("collaboration.threads.title")}</h2>
-        <Link className="xs" to="/collaboration">{total > THREADS_SHOWN ? plural("collaboration.threads.viewAll", total) : t("collaboration.threads.open")}</Link>
-      </div>
-      {threads.isPending ? <SkeletonRows count={2} label={t("collaboration.threads.loading")} />
-        : threads.error ? <List><ErrorState error={threads.error} title={t("collaboration.threads.errorTitle")} onRetry={() => void threads.refetch()} /></List>
-        : threads.data.items.length === 0
-          ? <List><Empty icon="collaboration" title={t("collaboration.threads.emptyTitle")} detail={t("collaboration.threads.emptyDetail")} action={<Link className="btn btn-sm" to="/clients">{t("collaboration.threads.emptyAction")}</Link>} /></List>
-          : (
-            <List>
-              {threads.data.items.map(thread => (
-                <RowLink
-                  key={thread.id}
-                  to={`/collaboration?thread=${encodeURIComponent(thread.id)}&channel=${encodeURIComponent(thread.channel_id)}`}
-                  lead={<Avatar name={thread.author_label} small />}
-                  title={thread.title}
-                  sub={`${thread.author_label} · ${plural("collaboration.threads.messages", Number(thread.messages))}`}
-                  meta={<Chip tone={thread.state === "resolved" ? "off" : "info"}>{t(thread.state === "resolved" ? "collaboration.threads.closed" : "collaboration.threads.openState")}</Chip>}
-                />
-              ))}
-            </List>
-          )}
-    </section>
   )
 }
 
