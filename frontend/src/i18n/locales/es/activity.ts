@@ -89,6 +89,11 @@ const activity = {
       read_rejected: "Lectura rechazada",
       read_revoked: "Lectura revocada",
       read_cancelled: "Pedido cancelado",
+      agents_cleaned: "Limpieza de agentes",
+      channel_archive_proposed: "Archivado propuesto",
+      channel_archive_proposal_cancelled: "Propuesta de archivado cancelada",
+      channel_archived: "Canal archivado",
+      channel_unarchived: "Canal reactivado",
     },
     grantState: { active: "Vigente", expired: "Vencido", revoked: "Revocado" },
     reason: {
