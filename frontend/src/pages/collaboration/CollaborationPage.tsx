@@ -201,11 +201,6 @@ export default function CollaborationPage() {
       onPlan={openPlan}
       onChannel={id => patch({ channel: id, aoffset: 0 })}
       onInspect={item => patch({ inspect: item.id })}
-      onDeleted={(deleted, uncertain) => {
-        patch({ channel: null, aoffset: 0 })
-        if (uncertain) setNotice({ kind: "deleteUncertain", channelId: deleted.id })
-        else toast.success(t("toast.deleted", { name: deleted.name }))
-      }}
       onDesignated={uncertain => { if (uncertain) setNotice({ kind: "designateUncertain" }); else toast.success(t("toast.designated")) }}
       onClose={() => patch({ channel: null, aoffset: 0 })}
     />

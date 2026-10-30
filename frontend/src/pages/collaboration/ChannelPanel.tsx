@@ -29,6 +29,8 @@ type Uncertain = { uncertain_members?: string[] }
 
 export interface ChannelPanelProps {
   channel: Channel
+  /** Alcance de chat_agents y de la expulsión: canal del proyecto (`project_id`) o sin proyecto. */
+  projectId?: string
   agentOffset: number
   onAgentOffset: (offset: number) => void
   onThreads: (channelId: string, agentId?: string) => void
@@ -36,40 +38,69 @@ export interface ChannelPanelProps {
   onPlan: (planId: string) => void
   onChannel: (channelId: string) => void
   onInspect: (agent: Participant) => void
-  onDeleted: (channel: Channel, uncertain: boolean) => void
   onDesignated: (uncertain: boolean) => void
   onClose: () => void
 }
 
-/** Canal sin proyecto: datos, agentes y acciones de administración. */
+function ErrorDetail({ error }: { error: Error | null }) {
+  if (!error) return null
+  return (
+    <div role="alert" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-1)" }}>
+      <span className="xs" style={{ color: "var(--danger)" }}>{describeError(error)}</span>
+      {error.message && <span className="xs t3" style={{ overflowWrap: "anywhere" }}>{error.message}</span>}
+    </div>
+  )
+}
+
+/** Eliminar un canal a la papelera: corta el acceso de sus sesiones y detiene sus trabajadores; se restaura desde la papelera. */
+export function DeleteChannelDialog({ channel, open, onClose, onDeleted }: { channel: Channel; open: boolean; onClose: () => void; onDeleted: (channel: Channel, uncertain: boolean) => void }) {
+  const { t } = useT("collaboration")
+  const cache = useQueryClient()
+  const remove = useMutation({
+    mutationFn: (channel_id: string) => api.post<Uncertain>("/memory/chat/channels/delete", { channel_id, reason: DELETE_REASON }),
+    onSuccess: result => {
+      void cache.invalidateQueries({ queryKey: ["memory"] })
+      onDeleted(channel, Boolean(result?.uncertain_members?.length))
+    },
+  })
+  return (
+    <ConfirmDialog
+      open={open}
+      title={t("confirm.deleteTitle", { name: channel.name })}
+      confirmLabel={remove.isPending ? t("confirm.deleting") : t("confirm.deleteAction")}
+      busy={remove.isPending}
+      onClose={() => { remove.reset(); onClose() }}
+      onConfirm={() => remove.mutate(channel.id)}
+      message={<div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
+        <p className="t2" style={{ margin: 0 }}>{t("confirm.deleteBody")}</p>
+        <p className="t2" style={{ margin: 0 }}>{t("confirm.deleteKeeps")}</p>
+        <ErrorDetail error={remove.error} />
+      </div>}
+    />
+  )
+}
+
+/** Canal: datos, agentes y acciones de administración (expulsar, designar coordinador). */
 export function ChannelPanel(props: ChannelPanelProps) {
-  const { channel, agentOffset, onAgentOffset, onThreads, onThread, onPlan, onChannel, onInspect, onDeleted, onDesignated, onClose } = props
+  const { channel, projectId, agentOffset, onAgentOffset, onThreads, onThread, onPlan, onChannel, onInspect, onDesignated, onClose } = props
   const { t, plural } = useT("collaboration")
   const cliLabel = useCliLabel()
   const cache = useQueryClient()
   const [removing, setRemoving] = useState<Participant | null>(null)
   const [reason, setReason] = useState("")
   const [coordinating, setCoordinating] = useState<Participant | null>(null)
-  const [deleting, setDeleting] = useState(false)
+  const scope = projectId ? { project_id: projectId } : SCOPE
 
-  const agents = useMemory<Page<Participant>>("chat_agents", { ...SCOPE, include_team_history: true, channel_id: channel.id, limit: AGENT_PAGE, offset: agentOffset })
+  const agents = useMemory<Page<Participant>>("chat_agents", { ...scope, include_team_history: true, channel_id: channel.id, limit: AGENT_PAGE, offset: agentOffset })
   const refresh = () => void cache.invalidateQueries({ queryKey: ["memory"] })
 
   const kick = useMutation({
-    mutationFn: (input: { channel_id: string; participant_id: string; reason: string }) => api.post("/memory/chat/kick", input),
+    mutationFn: (input: { channel_id: string; participant_id: string; reason: string }) => api.post("/memory/chat/kick", projectId ? { ...input, project_id: projectId } : input),
     onSuccess: () => { setRemoving(null); setReason(""); onAgentOffset(0); refresh() },
   })
   const designate = useMutation({
     mutationFn: (input: { channel_id: string; participant_id: string; expected_leader_id: string | null }) => api.post<Uncertain>("/memory/chat/coordinator", input),
     onSuccess: result => { setCoordinating(null); refresh(); onDesignated(Boolean(result?.uncertain_members?.length)) },
-  })
-  const remove = useMutation({
-    mutationFn: (channel_id: string) => api.post<Uncertain>("/memory/chat/channels/delete", { channel_id, reason: DELETE_REASON }),
-    onSuccess: result => {
-      setDeleting(false)
-      refresh()
-      onDeleted(channel, Boolean(result?.uncertain_members?.length))
-    },
   })
 
   const kind = channelKind(channel)
@@ -79,7 +110,6 @@ export function ChannelPanel(props: ChannelPanelProps) {
   const menu: MenuItem[] = [{ label: t("actions.channelThreads"), onSelect: () => onThreads(channel.id) }]
   if (channel.team_plan_id) menu.push({ label: t("actions.viewTeam"), onSelect: () => onPlan(channel.team_plan_id!) })
   if (channel.parent_channel_id) menu.push({ label: t("actions.parentChannel"), onSelect: () => onChannel(channel.parent_channel_id!) })
-  menu.push({ label: t("actions.deleteChannel"), danger: true, onSelect: () => { remove.reset(); setDeleting(true) } })
 
   function agentMenu(agent: Participant): MenuItem[] {
     const items: MenuItem[] = [
@@ -112,13 +142,6 @@ export function ChannelPanel(props: ChannelPanelProps) {
     if (agent.team_state === "cancelled" || agent.team_state === "completed") parts.push(t("agent.teamClosed"))
     return parts.join(" · ")
   }
-
-  const errorDetail = (error: Error | null) => error && (
-    <div role="alert" style={{ display: "flex", flexDirection: "column", gap: "var(--sp-1)" }}>
-      <span className="xs" style={{ color: "var(--danger)" }}>{describeError(error)}</span>
-      {error.message && <span className="xs t3" style={{ overflowWrap: "anywhere" }}>{error.message}</span>}
-    </div>
-  )
 
   return (
     <Panel label={`#${channel.name}`} onClose={onClose}>
@@ -166,19 +189,6 @@ export function ChannelPanel(props: ChannelPanelProps) {
       </PanelBody>
 
       <ConfirmDialog
-        open={deleting}
-        title={t("confirm.deleteTitle", { name: channel.name })}
-        confirmLabel={remove.isPending ? t("confirm.deleting") : t("confirm.deleteAction")}
-        busy={remove.isPending}
-        onClose={() => setDeleting(false)}
-        onConfirm={() => remove.mutate(channel.id)}
-        message={<div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
-          <p className="t2" style={{ margin: 0 }}>{t("confirm.deleteBody")}</p>
-          <p className="t2" style={{ margin: 0 }}>{t("confirm.deleteKeeps")}</p>
-          {errorDetail(remove.error)}
-        </div>}
-      />
-      <ConfirmDialog
         open={Boolean(coordinating)}
         title={t("confirm.designateTitle", { name: coordinating?.label ?? "" })}
         confirmLabel={t("confirm.designateAction")}
@@ -188,7 +198,7 @@ export function ChannelPanel(props: ChannelPanelProps) {
         onConfirm={() => coordinating && designate.mutate({ channel_id: coordinating.channel_id, participant_id: coordinating.id, expected_leader_id: channel.leader_id ?? null })}
         message={<div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
           <p className="t2" style={{ margin: 0 }}>{t("confirm.designateBody")}</p>
-          {errorDetail(designate.error)}
+          <ErrorDetail error={designate.error} />
         </div>}
       />
       <ConfirmDialog
@@ -205,7 +215,7 @@ export function ChannelPanel(props: ChannelPanelProps) {
           <Field label={t("confirm.kickReason")}>
             <Input maxLength={1000} value={reason} onChange={event => setReason(event.target.value)} />
           </Field>
-          {errorDetail(kick.error)}
+          <ErrorDetail error={kick.error} />
         </div>}
       />
     </Panel>
