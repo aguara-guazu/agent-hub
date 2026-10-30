@@ -134,7 +134,7 @@ export class MemoryOperations {
   readonly chat: LocalChat
   /** Set once the P2P replica and the inter-hub chat model exist; absent where they do not run. */
   private interhubServices: InterhubServices | undefined
-  get interhub(): InterhubServices { return this.interhubServices ??= createInterhubServices(this.store) }
+  get interhub(): InterhubServices { return this.interhubServices ??= createInterhubServices(this.store, () => this.chat.events.emit("change")) }
   set interhub(value: InterhubServices | undefined) { this.interhubServices = value }
   readonly interhubTools: InterhubTools
   readonly teams: TeamOrchestration | undefined

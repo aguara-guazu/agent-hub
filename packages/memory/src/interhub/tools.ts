@@ -1,5 +1,5 @@
 import { z } from "zod"
-import type { InterhubRoster } from "@agenthub/shared"
+import type { InterhubRoster, VerifiedInterhubChatEnvelope } from "@agenthub/shared"
 import { check, id, parse } from "../contracts.js"
 import type { AgentContext } from "../agents.js"
 import type { LocalChat } from "../local-chat.js"
@@ -37,6 +37,8 @@ export interface InterhubServices {
   escalate(caller: InterhubCaller, channelId: string, threadId: string, messageId: string): Promise<{ delegated_to_hub_id: string; escalation_id?: string } | { no_other_hub: true }>
   /** Authority: only the leader of a member hub. Marks the escalation answered for every hub. */
   resolveEscalation(caller: InterhubCaller, channelId: string, threadId: string, escalationId: string): Promise<{ resolved: true }>
+  /** P2P only, after signature, membership and peer verification: materializes a chat envelope. */
+  receive(envelope: VerifiedInterhubChatEnvelope): Promise<{ duplicate: boolean }>
 }
 
 export interface InterhubPendingEscalation {

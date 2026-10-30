@@ -20,6 +20,7 @@ import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
 import { AUTHOR_SOURCE_SQL, NON_AGENT_CLI_KINDS, THREAD_AGENT_COUNT_COLUMN, agentCountField, messageKind } from "./chat-debate.js"
 import { CHAT_CHANNEL_DESCRIPTION_MAX } from "@agenthub/shared"
+import { interhubNoticeValid } from "./interhub/chat.js"
 
 const exec = promisify(execFile)
 const key = z.string().min(32).max(200)
@@ -784,6 +785,10 @@ export class LocalChat {
         if(String(alert.cause).startsWith('read_')) {
           if(await readNoticeValid(sql,alert))continue
           await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Pedido de lectura resuelto o alcance revocado' WHERE id=$1",[alert.id]);continue
+        }
+        if(String(alert.cause).startsWith("interhub_")) {
+          if(await interhubNoticeValid(sql,alert))continue
+          await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Escalada resuelta, reasignada o destinatario fuera del canal' WHERE id=$1",[alert.id]);continue
         }
         if(String(alert.cause).startsWith("leadership_")) {
           // Owed to the displaced session even while it is offline; only a removal makes it moot.

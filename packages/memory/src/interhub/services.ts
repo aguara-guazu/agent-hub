@@ -12,19 +12,22 @@ const asRole = (value: unknown): "leader" | "member" => value === "leader" ? "le
 /**
  * Connects the tools and routes to the P2P replica (InterhubNetwork) and the chat model (InterhubChat).
  * Every authority decision is taken here with Hub data (session rows, channel leader, creator hub identity),
- * never from tool input.
+ * never from tool input. `changed` wakes local listeners after inter-hub state changes.
  */
-export function createInterhubServices(store: MemoryStore): InterhubServices {
+export function createInterhubServices(store: MemoryStore, changed?: () => void): InterhubServices {
   const network = new InterhubNetwork(store), db = store.db
   const localHubId = async () => (await new SharedProjects(store).identity()).id
   const chat = new InterhubChat(store, {
     hubs: async channelId => (await network.listHubs(channelId)).map(hub => ({ id: String(hub.id), name: String(hub.name), is_local: Boolean(hub.is_local), connection: hub.connection === "online" ? "online" : "offline" })),
     localHubId,
     // Signs and appends to the local event log that peers catch up from; delivery to peers is the P2P transport's job.
+    // origin_agent_id is the signed author receivers match against the payload; escalation events are hub-level.
     publish: async (channelId, payload: InterhubChatPayload) => {
-      const envelope = await network.signEnvelope({ version: 1, channel_id: channelId, origin_agent_id: null, kind: payload.type === "thread" ? "thread" : "message", occurred_at: new Date().toISOString(), payload })
+      const agent = payload.type === "thread" ? payload.thread.author.id : payload.type === "message" ? payload.message.author.id : payload.type === "presence" ? payload.presence.session.id : null
+      const envelope = await network.signEnvelope({ version: 1, channel_id: channelId, origin_agent_id: agent, kind: payload.type === "thread" ? "thread" : "message", occurred_at: new Date().toISOString(), payload })
       await db.query("INSERT INTO interhub_events(id,channel_id,origin_hub_id,envelope,received_from) VALUES($1,$2,$3,$4,$5)", [envelope.id, channelId, envelope.origin_hub_id, JSON.stringify(envelope), "local"])
     },
+    ...(changed ? { changed } : {}),
   })
   const interhubChannel = async (channelId: string) => (await db.query("SELECT * FROM chat_channels WHERE id=$1 AND kind=$2 AND deleted_at IS NULL", [channelId, INTERHUB_CHANNEL_KIND]))[0]
   /** The caller is the current, open leader of the hub it represents in the channel. */
@@ -93,5 +96,6 @@ export function createInterhubServices(store: MemoryStore): InterhubServices {
       await chat.transport.publish(channelId, { type: "escalation_resolved", resolution: { escalation_id: escalationId, hub_id: await localHubId(), resolved_at: resolvedAt } })
       return { resolved: true as const }
     },
+    receive: envelope => chat.receive(envelope),
   }
 }

@@ -772,8 +772,9 @@ CREATE INDEX chat_channels_leader ON chat_channels(leader_id);
 ALTER TABLE chat_messages ADD COLUMN kind TEXT;
 ALTER TABLE chat_channels ADD COLUMN description TEXT;
 `, String.raw`
--- Inter-hub chat state is strictly additive. Remote agents never enter chat_sessions,
--- which keeps local liveness, wakes, leadership and team behavior unchanged.
+-- Inter-hub chat state is strictly additive. A remote author enters chat_sessions only as a closed placeholder
+-- (cli_kind 'interhub-remote', non-routable key_hash) that the message and thread FKs require; it gets no wakes,
+-- leadership, team or agent-listing behavior. The roster of remote agents lives in interhub_remote_sessions.
 CREATE TABLE interhub_remote_sessions (
   channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
   hub_id TEXT NOT NULL,
