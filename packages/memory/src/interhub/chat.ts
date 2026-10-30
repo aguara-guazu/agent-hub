@@ -55,6 +55,11 @@ export class InterhubChat {
         return { duplicate: false, kind: payload.type }
       }
       if (payload.type === "message") return this.receiveMessage(sql, envelope)
+      if (payload.type === "escalation_resolved") {
+        // Any member hub's leader can settle it; the verified origin is already a channel member.
+        await sql.query("UPDATE interhub_escalations SET answered_at=COALESCE(answered_at,$3),updated_at=now() WHERE id=$1 AND channel_id=$2", [payload.resolution.escalation_id, envelope.channel_id, payload.resolution.resolved_at])
+        return { duplicate: false, kind: payload.type }
+      }
       if (payload.type === "escalation") {
         const escalation = payload.escalation
         await sql.query(`INSERT OR IGNORE INTO interhub_escalations(id,channel_id,thread_id,question_message_id,last_hub_id,next_hub_id,escalated_at)

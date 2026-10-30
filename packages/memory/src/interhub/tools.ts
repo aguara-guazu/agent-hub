@@ -6,7 +6,7 @@ import type { LocalChat } from "../local-chat.js"
 
 const session = { session_key: z.string().min(32).max(200).optional() }
 // Length bounds only: the shape of a code is never described to a caller, so a wrong code fails like a revoked one.
-const code = z.string().trim().min(1).max(512)
+const code = z.string().trim().min(1).max(200)
 
 /** Session row of the calling agent, as resolved by the Hub from its session_key. Never built from tool input. */
 export type InterhubCaller = Record<string, any> & { id: string; channel_id: string }
@@ -18,14 +18,32 @@ export type InterhubCodeAction = "regenerate" | "revoke"
  * Every method re-checks authority with Hub data; the tool layer only validates input and resolves the caller.
  */
 export interface InterhubServices {
-  createChannel(caller: InterhubCaller, input: { name: string; project_id?: string | undefined }): Promise<{ channel_id: string; code: string }>
+  /** The caller becomes the leader of its hub in the new channel. */
+  createChannel(caller: InterhubCaller, input: { name: string; projectId?: string | null | undefined }): Promise<{ channel_id: string; code: string }>
+  /** Authority: the caller must be the current leader of its own local channel. A wrong, revoked or unknown code fails alike. */
   joinChannel(caller: InterhubCaller, code: string): Promise<{ channel_id: string; hub_id: string }>
-  rotateCode(caller: InterhubCaller, channelId: string, action: InterhubCodeAction): Promise<{ code?: string }>
+  /** Authority: only the current leader of the hub that created the channel. */
+  rotateCode(caller: InterhubCaller, channelId: string, action: InterhubCodeAction): Promise<{ code?: string; revoked?: boolean }>
   /** Null when the channel does not exist or is not an inter-hub channel. */
   roster(channelId: string): Promise<InterhubRoster | null>
-  /** Plain code, only at the creator hub and only while not revoked; null otherwise. */
+  /** Escalations addressed to this hub that no leader has resolved yet. */
+  pendingEscalations(channelId: string): Promise<InterhubPendingEscalation[]>
+  /**
+   * Plain code. The service must prove the local hub is the creator hub and the code is not revoked
+   * (an absent vault entry is not the barrier); null otherwise.
+   */
   creatorCode(channelId: string): Promise<string | null>
-  escalate(caller: InterhubCaller, channelId: string, threadId: string, messageId: string): Promise<{ delegated_to_hub_id: string } | { no_other_hub: true }>
+  /** Authority: the caller must be the current leader of its hub in the channel. */
+  escalate(caller: InterhubCaller, channelId: string, threadId: string, messageId: string): Promise<{ delegated_to_hub_id: string; escalation_id?: string } | { no_other_hub: true }>
+  /** Authority: only the leader of a member hub. Marks the escalation answered for every hub. */
+  resolveEscalation(caller: InterhubCaller, channelId: string, threadId: string, escalationId: string): Promise<{ resolved: true }>
+}
+
+export interface InterhubPendingEscalation {
+  id: string
+  thread_id: string
+  question_message_id: string
+  escalated_at: string
 }
 
 export const interhubDefinitions = {
@@ -37,14 +55,17 @@ export const interhubDefinitions = {
     z.object({ ...session, channel_id: id, action: z.enum(["regenerate", "revoke"]) }).strict()],
   chat_interhub_hubs: ["List the hubs of an inter-hub channel you belong to, each with its leader and agents (leader first), connection and agent counts. Never includes the code.",
     z.object({ ...session, channel_id: id }).strict()],
-  chat_interhub_escalate: ["Leaders only. You asked your person something in your terminal and got no answer for 5 minutes: ask the leader of ANOTHER hub in the channel to put the question to its own person. The Hub picks that hub round robin and notifies its leader; if nobody answers, escalate again and the next hub is chosen. question_message_id is your message with the question. The persons never write in the channel: answers come back through the leaders.",
+  chat_interhub_escalate: ["Leaders only. You asked your person something in your terminal and got no answer for 5 minutes: ask the leader of ANOTHER hub in the channel to put the question to its own person. The Hub picks that hub round robin and records the escalation for it (its leader sees it in pending_escalations of memory_chat_interhub_hubs); if nobody answers, escalate again and the next hub is chosen. question_message_id is your message with the question. The persons never write in the channel: answers come back through the leaders.",
     z.object({ ...session, channel_id: id, thread_id: id, question_message_id: id }).strict()],
+  chat_interhub_resolve_escalation: ["Leaders only. You received an escalation (listed as pending_escalations by memory_chat_interhub_hubs), asked your own person in your terminal and have their answer, or another hub already got one: mark the escalation resolved so no more hubs are asked. Post the person's answer in the thread with memory_chat_send (reply_to the question) before or right after. Only the leader of a hub that belongs to the channel can resolve.",
+    z.object({ ...session, channel_id: id, thread_id: id, escalation_id: id }).strict()],
 } satisfies Record<string, [string, z.ZodType]>
 
 export const interhubOperations = Object.keys(interhubDefinitions)
 export const interhubReadOperations = ["chat_interhub_hubs"]
-const writes = new Set(["chat_interhub_create", "chat_interhub_join", "chat_interhub_code", "chat_interhub_escalate"])
-export const isInterhubOperation = (operation: string) => operation in interhubDefinitions
+const writes = new Set(["chat_interhub_create", "chat_interhub_join", "chat_interhub_code", "chat_interhub_escalate", "chat_interhub_resolve_escalation"])
+// Own keys only: inherited names such as "constructor" must never reach the dispatcher.
+export const isInterhubOperation = (operation: string) => Object.hasOwn(interhubDefinitions, operation)
 
 export class InterhubTools {
   constructor(private chat: LocalChat, private services: () => InterhubServices | undefined) {}
@@ -54,7 +75,7 @@ export class InterhubTools {
     return services
   }
   async call(operation: string, raw: unknown, agent?: AgentContext) {
-    const definition = interhubDefinitions[operation as keyof typeof interhubDefinitions]
+    const definition = Object.hasOwn(interhubDefinitions, operation) ? interhubDefinitions[operation as keyof typeof interhubDefinitions] : undefined
     check(definition, "Operación de canal entre hubs inexistente", 404)
     // The person never calls these: they act as the agent's session and the UI only reads through the routes.
     check(agent, "Los canales entre hubs se manejan desde la terminal de un agente; la persona los ve en la UI.", 403)
@@ -68,15 +89,16 @@ export class InterhubTools {
   }
   private async run(services: InterhubServices, operation: string, input: any, caller: InterhubCaller) {
     switch (operation) {
-      case "chat_interhub_create": return services.createChannel(caller, { name: input.name, project_id: input.project_id })
+      case "chat_interhub_create": return services.createChannel(caller, { name: input.name, projectId: input.project_id ?? null })
       case "chat_interhub_join": return services.joinChannel(caller, input.code)
       case "chat_interhub_code": return services.rotateCode(caller, input.channel_id, input.action)
       case "chat_interhub_hubs": {
         const roster = await services.roster(input.channel_id)
         check(roster && roster.hubs.some(hub => hub.is_local && hub.agents.some(agent => agent.id === caller.id)), "No sos parte de ese canal entre hubs.", 403)
-        return roster
+        return { ...roster, pending_escalations: await services.pendingEscalations(input.channel_id) }
       }
       case "chat_interhub_escalate": return services.escalate(caller, input.channel_id, input.thread_id, input.question_message_id)
+      case "chat_interhub_resolve_escalation": return services.resolveEscalation(caller, input.channel_id, input.thread_id, input.escalation_id)
     }
     throw new Error("unreachable")
   }

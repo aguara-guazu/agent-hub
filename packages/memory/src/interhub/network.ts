@@ -19,7 +19,7 @@ export class InterhubNetwork {
   private readonly vault: Vault
   constructor(readonly store: MemoryStore) { this.vault = new Vault(store.directory) }
 
-  private secretKey(channelId: string) { return `interhub-channel-code:${channelId}` }
+  private secretKey(channelId: string) { return `interhub-channel-code-${channelId}` }
   private async localIdentity() {
     const { SharedProjects } = await import("../sharing/projects.js")
     return new SharedProjects(this.store).identity()
@@ -50,6 +50,8 @@ export class InterhubNetwork {
     const channel = rows.find(row => codeHash(String(row.channel_id), value) === row.code_hash)
     check(channel, "Código inválido o revocado", 404)
     const identity = await this.localIdentity(), peer = verifiedPeer ?? identity
+    // An active member hub keeps its leader: a valid code must not swap it from inside the same hub.
+    check(!(await this.store.db.query("SELECT 1 FROM interhub_members WHERE channel_id=$1 AND hub_id=$2 AND removed_at IS NULL", [channel.channel_id, identity.id]))[0], "Tu hub ya es parte de este canal entre hubs", 409)
     check(peer.id === identity.id, "La identidad de unión debe provenir del peer P2P autenticado", 403)
     await this.store.db.query("INSERT INTO interhub_members(channel_id,hub_id,peer_identity,leader_session_id,leader_label) SELECT $1,$2,$3,$4,COALESCE(nickname,label) FROM chat_sessions WHERE id=$4 ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL,last_seen_at=now()", [channel.channel_id, identity.id, JSON.stringify(peer), caller.id])
     return { channel_id: String(channel.channel_id), hub_id: identity.id }

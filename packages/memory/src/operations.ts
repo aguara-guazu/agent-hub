@@ -5,6 +5,7 @@ import { CLI_KINDS } from '@agenthub/shared'
 import { UsageQuotas } from './usage-quotas.js'
 import { UsageNotices } from './usage-notices.js'
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
+import { createInterhubServices } from './interhub/services.js'
 import { InterhubTools, interhubDefinitions, interhubReadOperations, isInterhubOperation, type InterhubServices } from './interhub/tools.js'
 import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
 import { callScheduleTool, scheduleDefinitions, scheduleReadOperations } from './schedule-tools.js'
@@ -132,7 +133,9 @@ export class MemoryOperations {
   readonly usageNotices: UsageNotices
   readonly chat: LocalChat
   /** Set once the P2P replica and the inter-hub chat model exist; absent where they do not run. */
-  interhub: InterhubServices | undefined
+  private interhubServices: InterhubServices | undefined
+  get interhub(): InterhubServices { return this.interhubServices ??= createInterhubServices(this.store) }
+  set interhub(value: InterhubServices | undefined) { this.interhubServices = value }
   readonly interhubTools: InterhubTools
   readonly teams: TeamOrchestration | undefined
   readonly fleet: TeamOrca | undefined

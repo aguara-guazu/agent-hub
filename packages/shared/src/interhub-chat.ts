@@ -47,11 +47,19 @@ export interface InterhubEscalationPayload {
   created_at: string
 }
 
+export interface InterhubEscalationResolutionPayload {
+  escalation_id: string
+  /** Hub whose leader took the question to its person; informative, the verified origin is the envelope's. */
+  hub_id: string
+  resolved_at: string
+}
+
 export type InterhubChatPayload =
   | { type: "thread"; thread: InterhubThreadPayload }
   | { type: "message"; message: InterhubMessagePayload }
   | { type: "presence"; presence: InterhubPresencePayload }
   | { type: "escalation"; escalation: InterhubEscalationPayload }
+  | { type: "escalation_resolved"; resolution: InterhubEscalationResolutionPayload }
 
 /**
  * P2P hands this to the chat model only after signature, membership and peer
