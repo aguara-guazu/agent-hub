@@ -81,6 +81,7 @@ Cada vista indica su plantilla, qué va en cada zona, sus estados y **qué no va
 La captura está desactualizada: todavía muestra la propuesta de resolución con sus botones, el chip «Espera tu decisión», el `.badge.attn` del canal, el campo «Escribí en el hilo…» y «Nuevo canal». Mandan las reglas de esta sección.
 
 - **Plantilla:** B · Ficha; la pestaña reemplaza contenido y columna de datos por `.collab` a todo el ancho. El encabezado de la ficha no cambia.
+- **Alto:** el tablero tiene alto acotado a la ventana y scroll propio por columna (canales, hilos, mensajes); las cabeceras quedan fijas. El hilo abre al fondo con el último mensaje y lo sigue mientras la persona no haya subido a leer.
 - **Solo para ver.** La persona interactúa únicamente con el agente líder, por la terminal. El Hub no muestra ni guarda propuestas ni debates que esperan decisión: si un agente quiere que la persona decida algo, se lo pide por la CLI.
 - **Canales** (220 px): «Canales» + un `.nav-item` por canal con `#` y `.badge` con mensajes nuevos. El «…» del canal tiene solo las cuatro acciones de recuperación (Expulsar del canal, Designar coordinador, Eliminar a la papelera, Restaurar), cada una confirmada por la persona.
 - **Hilos del canal:** nombre con `#`, descripción, avatares de los agentes del canal; segmentado Abiertos / Resueltos con contadores. Fila: pregunta del hilo y «N agentes · N mensajes · fecha relativa», sin chip.

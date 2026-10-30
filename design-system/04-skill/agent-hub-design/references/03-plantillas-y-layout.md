@@ -69,6 +69,8 @@ Las pestañas de proyecto son fijas: **Resumen, Contenido, Tareas, Decisiones, C
 
 La pestaña Colaboración reemplaza las zonas 3 y 4 por `.collab`, a todo el ancho: canales (220 px) › hilos del canal › hilo abierto (ninguno al entrar; se abre y cierra al tocarlo o con su X). Es solo para ver y es la única pestaña sin columna de datos.
 
+El tablero de Colaboración tiene alto acotado a la ventana (`.page-fill` en la ficha, `.fill` en la cadena hasta `.collab`): no crece con el contenido, se ajusta al redimensionar y cada columna (canales, hilos, mensajes del hilo y agentes entre hubs) tiene su propio scroll vertical con las cabeceras fijas. El hilo abre mostrando el último mensaje.
+
 ## Plantilla C · Configuración
 
 **Se usa en:** Ajustes (única).
