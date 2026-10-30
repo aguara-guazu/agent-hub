@@ -48,7 +48,10 @@ export class InterhubChat {
       }
       if (payload.type === "thread") {
         const thread = payload.thread
-        await sql.query("INSERT OR IGNORE INTO chat_threads(id,channel_id,title,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$5)", [thread.id, envelope.channel_id, thread.title, `interhub:${envelope.origin_hub_id}`, thread.created_at])
+        const existing = (await sql.query("SELECT channel_id FROM chat_threads WHERE id=$1", [thread.id]))[0]
+        check(!existing || existing.channel_id === envelope.channel_id, "El hilo inter-hub ya pertenece a otro canal", 409)
+        const authorId = await this.remoteAuthor(sql, envelope, thread.author)
+        await sql.query("INSERT OR IGNORE INTO chat_threads(id,channel_id,title,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$5)", [thread.id, envelope.channel_id, thread.title, authorId, thread.created_at])
         return { duplicate: false, kind: payload.type }
       }
       if (payload.type === "message") return this.receiveMessage(sql, envelope)
@@ -62,14 +65,22 @@ export class InterhubChat {
     })
   }
 
+  private async remoteAuthor(sql: Sql, envelope: VerifiedInterhubChatEnvelope, author: { id: string; label: string }) {
+    const authorId = `interhub:${envelope.origin_hub_id}:${author.id}`
+    await sql.query(`INSERT OR IGNORE INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,closed_at)
+      VALUES($1,$2,$3,$4,'interhub-remote',$5,'offline',$6,$6)`, [authorId, authorId, `interhub:${envelope.id}`, author.label, envelope.channel_id, envelope.occurred_at])
+    return authorId
+  }
+
   private async receiveMessage(sql: Sql, envelope: VerifiedInterhubChatEnvelope) {
     const message = (envelope.payload as Extract<InterhubChatPayload, { type: "message" }>).message
     const thread = (await sql.query("SELECT id FROM chat_threads WHERE id=$1 AND channel_id=$2", [message.thread_id, envelope.channel_id]))[0]
     check(thread, "El mensaje inter-hub refiere a un hilo inexistente", 409)
-    const authorId = `interhub:${envelope.origin_hub_id}:${message.author.id}`
-    await sql.query(`INSERT OR IGNORE INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,closed_at)
-      VALUES($1,$2,$3,$4,'interhub-remote',$5,'offline',$6,$6)`, [authorId, authorId, envelope.id, message.author.label, envelope.channel_id, message.created_at])
-    await sql.query("INSERT OR IGNORE INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash,kind,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)", [message.id, message.thread_id, authorId, message.text, message.reply_to, envelope.id, envelope.id, message.kind, message.created_at])
+    const authorId = await this.remoteAuthor(sql, envelope, message.author)
+    const existing = (await sql.query("SELECT thread_id,author_id FROM chat_messages WHERE id=$1", [message.id]))[0]
+    check(!existing || existing.thread_id === message.thread_id && existing.author_id === authorId, "El mensaje inter-hub ya pertenece a otro autor o hilo", 409)
+    const reply = message.reply_to && (await sql.query("SELECT id FROM chat_messages WHERE id=$1 AND thread_id=$2", [message.reply_to, message.thread_id]))[0] ? message.reply_to : null
+    await sql.query("INSERT OR IGNORE INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash,kind,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)", [message.id, message.thread_id, authorId, message.text, reply, envelope.id, envelope.id, message.kind, message.created_at])
     await sql.query("INSERT OR IGNORE INTO interhub_message_origins(message_id,envelope_id,hub_id,hub_name,peer_id,author_role) VALUES($1,$2,$3,$4,$5,$6)", [message.id, envelope.id, envelope.origin_hub_id, envelope.origin_hub_name, envelope.origin_peer_id, message.author.role])
     // Remote IDs are never recipients. Only matching local sessions receive durable local delivery and wakes.
     for (const id of message.mentions) await sql.query(`INSERT OR IGNORE INTO chat_deliveries(message_id,recipient_id)
