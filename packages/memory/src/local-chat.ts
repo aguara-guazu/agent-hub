@@ -18,6 +18,9 @@ import { canReadChannel, readAccessDefinitions, readDenied, readElevate, readInt
 import { channelProjectId, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
 import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
+import { AUTHOR_SOURCE_SQL, NON_AGENT_CLI_KINDS, THREAD_DEBATE_COLUMNS, approveResolution, createProjectChannel, debateFields, latestResolution, messageKind,
+  pendingDebates, personMessage, proposeResolution, proposeResolutionShape, rerunResolution, type createChannelInput, type pendingDebatesQuery,
+  type personMessageInput, type resolutionDecisionInput } from "./chat-debate.js"
 
 const exec = promisify(execFile)
 const key = z.string().min(32).max(200)
@@ -42,13 +45,14 @@ export const chatDefinitions = {
   chat_agents: ['Find session identities to mention, within the channels you can read. Coordinator channel_id includes linked team members. Default excludes kicked, closed and nickless sessions; stable order by registration. connection_state/last_seen_at = connection, not work. state=unknown + state_reason=activity_stale = unconfirmed activity: ask status via the Hub, never infer working or done. include_team_history shows disconnected past-team members with real state. include_removed/include_closed/include_pending: audit only. unassigned=true: projectless channels only.', z.object({ ...session, ...scope, active_only: z.boolean().default(false), include_removed: z.boolean().default(false), include_closed: z.boolean().default(false), include_team_history: z.boolean().default(false), include_pending: z.boolean().default(false), ...page }).strict()],
   chat_threads: ['Search past threads/messages by text, channel, project, author or state, within your project, your own and team channels and person-granted projects. Reading a channel never lets you write there. unassigned=true: projectless channels only. History outlives agents.', z.object({ ...session, ...scope, query: z.string().max(500).default(''), author_id: z.string().max(200).optional(), state: z.enum(['open','resolved']).optional(), ...page }).strict()],
   chat_read: ['Read thread messages. With session_key: by default only messages pending for it (not its own), marking only those returned as read; page pending with offset: 0. unread_only=false: history. Without session_key: read-only history that marks nothing. Only threads of channels you can read (same scope as chat_threads); another project needs memory_chat_read_request.', z.object({ ...session, project_id:id.optional(), thread_id: id, unread_only:z.boolean().optional(), ...page }).strict()],
-  chat_send: ['Create a task thread (channel_id,title), a short linked-team thread (team_root_thread_id,title), or reply (thread_id). Only in channels you belong to: your own, or the root and threads bound to a current team; mentions only its members. Read access never grants writing. A stable request_id makes retries duplicate-free. Linked-worker new topics auto-post to the team channel. Report in your assigned work_thread_id. To request an action/decision: response_required=true plus recipients. Reply via reply_to: notifies the author, handles only your request. Requires collaboration authorization.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), response_required: z.boolean().optional(), request_id: z.string().min(1).max(200) }).strict()],
+  chat_send: ['Create a task thread (channel_id,title), a short linked-team thread (team_root_thread_id,title), or reply (thread_id). Only in channels you belong to: your own, or the root and threads bound to a current team; mentions only its members. Read access never grants writing. A stable request_id makes retries duplicate-free. Linked-worker new topics auto-post to the team channel. Report in your assigned work_thread_id. To request an action/decision: response_required=true plus recipients. Reply via reply_to: notifies the author, handles only your request. Optional kind tags your stance: proposal, objection, fact, agreement or question. The person also writes in threads (author_source=person): that is the person speaking. Requires collaboration authorization.', z.object({ ...session, thread_id: id.optional(), team_root_thread_id:id.optional(), channel_id: id.optional(), title: z.string().trim().min(1).max(200).optional(), task_id: id.optional(), text: z.string().trim().min(1).max(16000), kind: messageKind.optional(), mentions: z.array(z.string().min(8).max(200)).max(20).default([]), reply_to: id.optional(), response_required: z.boolean().optional(), request_id: z.string().min(1).max(200) }).strict()],
   chat_inbox: ['Read your pending mentions and private notices. Private notices have no thread; ask the agent for status via work_thread_id. Read is not handled; unhandled items stay visible. No model polling: the Hub notifies.', z.object({ ...session, unread_only: z.boolean().default(false), ...page }).strict()],
   chat_kick: ['Kick a session from the channel when the person orders it. Only the current leader of that channel (also if you lead it from another channel); give the reason. Not the session that may reclaim the channel nor one that leads other channels: only the person removes those. Keeps history, cancels notices, blocks rejoin. Does not close its terminal or stop running work. Taking over a silent leader is memory_chat_take_leadership, not a kick.', chatKickInput.extend(session).strict()],
   chat_take_leadership: [`Take over or reclaim a channel's leadership; pass the leader_id you read (expected_leader_id) and a reason. Takeover: only a session outside Hub teams, from the channel's project as the Hub derives it, when the leader has had no Hub-verified liveness for over ${LEADER_LIVENESS_TIMEOUT_MS/60000} minutes; it displaces that leader only, who keeps the right to reclaim. Reclaim: the exact displaced session (same session_key) recovers the channel even if the new leader is online. Never on a guess about the leader; check team.leader_offline and leader_last_liveness_at first. Audited and rate limited; the person can always correct it in the UI.`, chatTakeLeadershipInput.extend(session).strict()],
   chat_ack: ['Mark your own mention/private notice handled (message_id=item id) after resolving or answering. Reading alone is not acceptance.', z.object({ ...session, message_id: id }).strict()],
   ...readAccessDefinitions,
-  chat_resolve: ['Close/reopen a thread in your channel. Keeps history; never marks messages of others handled.', z.object({ ...session, thread_id: id, state: z.enum(['open','resolved']) }).strict()],
+  chat_resolve: ['Close/reopen a thread in your channel. Keeps history; never marks messages of others handled. A debate the person must decide goes through memory_chat_propose_resolution instead.', z.object({ ...session, thread_id: id, state: z.enum(['open','resolved']) }).strict()],
+  chat_propose_resolution: ['Leader of the thread channel (or master of its team) only: propose how a debated thread resolves, with the text and the session ids of participants who agree (you count). The person approves it in the UI (it becomes a project decision and resolves the thread) or asks for another round; agents never approve. A new proposal replaces the pending one. Stable request_id dedupes retries.', z.object({ ...session, ...proposeResolutionShape }).strict()],
 } satisfies Record<string, [string, z.ZodType]>
 export const chatReadOperations = ['chat_work_list','chat_channels','chat_agents','chat_threads','chat_read']
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -200,6 +204,24 @@ export class LocalChat {
     check(grant,'El permiso no existe o ya terminó.',404)
     this.events.emit('change');return {grant_id:grant.id,revoked:true}
   }
+  /** Person routes of the debate (chat-debate.ts). Authenticated HTTP only; never reachable from callInner. */
+  async personMessage(threadId:string,input:z.infer<typeof personMessageInput>) {
+    const result=await this.db.transaction(sql=>personMessage(sql,threadId,input))
+    this.events.emit('change');return result
+  }
+  async approveResolution(threadId:string,input:z.infer<typeof resolutionDecisionInput>,userId:string) {
+    const result=await this.db.transaction(sql=>approveResolution(sql,this.store,threadId,input,userId))
+    this.events.emit('change');return result
+  }
+  async rerunResolution(threadId:string,input:z.infer<typeof resolutionDecisionInput>,userId:string) {
+    const result=await this.db.transaction(sql=>rerunResolution(sql,threadId,input,userId))
+    this.events.emit('change');return result
+  }
+  async createProjectChannel(input:z.infer<typeof createChannelInput>,userId:string) {
+    const result=await this.db.transaction(sql=>createProjectChannel(sql,input,userId))
+    this.events.emit('change');return result
+  }
+  pendingDebates(filter:z.infer<typeof pendingDebatesQuery>) { return pendingDebates(this.db,filter) }
   readRequests(filter:Parameters<typeof personReadRequests>[1]) { return personReadRequests(this.db,filter) }
   readGrants(filter:Parameters<typeof personReadGrants>[1]) { return personReadGrants(this.db,filter) }
   async sweepReadAccess(now=Date.now()) {
@@ -254,7 +276,7 @@ export class LocalChat {
       } else removedBy=`user:${actor.user_id}`
       // The person may also remove a leader that lives in another channel: that revokes this leadership only.
       const target=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1 AND (channel_id=$2 OR id=$3)',[input.participant_id,channel.id,'agent' in actor?null:channel.leader_id]))[0]
-      check(target,'El agente no pertenece a este canal',404)
+      check(target && !(NON_AGENT_CLI_KINDS as readonly string[]).includes(target.cli_kind),'El agente no pertenece a este canal',404)
       // A removal drops the reclaim right, so a leader that took the channel could otherwise make its takeover permanent.
       if('agent' in actor)check(target.id!==channel.displaced_leader_id,'Esa sesión puede reclamar este canal; sólo la persona puede expulsarla desde la UI.',403)
       // A removal also releases every channel the target leads; only the takeover rules or the person may end those leaderships.
@@ -810,7 +832,7 @@ export class LocalChat {
       if(operation==='chat_inbox' || operation==='chat_ack')await this.cancelInvalidTurnAlerts()
       return this.callInner(operation,raw,agent,receipt)
     }
-    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick','chat_read_interest','chat_read_request','chat_read_elevate','chat_take_leadership']
+    const writes=['chat_work_update','chat_join','chat_create_channel','chat_close_channel','chat_set_nick','chat_inbox','chat_send','chat_ack','chat_resolve','chat_kick','chat_read_interest','chat_read_request','chat_read_elevate','chat_take_leadership','chat_propose_resolution']
     // UI/history polling has no routing key and must remain a true read: no writer lock or wake-up event.
     const identifiedRead=operation==='chat_read' && typeof (raw as any)?.session_key==='string'
     let result:any
@@ -850,7 +872,8 @@ export class LocalChat {
     }
     if (operation === 'chat_channels') {
       // Folder assignments can be added after sessions and channels already exist.
-      for (const c of await this.db.query("SELECT id,path,repository,project_id FROM chat_channels WHERE NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=chat_channels.id)")) {
+      // Channels created in the UI have no folder: their project is the one the person chose.
+      for (const c of await this.db.query("SELECT id,path,repository,project_id FROM chat_channels WHERE scope_key NOT LIKE 'ui:%' AND NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=chat_channels.id)")) {
         const project=await this.project(c.path,c.repository ?? c.path)
         if ((project?.id ?? null)!==c.project_id) await this.db.query('UPDATE chat_channels SET project_id=$2 WHERE id=$1',[c.id,project?.id ?? null])
       }
@@ -874,7 +897,7 @@ export class LocalChat {
         WHERE (c.kind<>'virtual' OR c.activated_at IS NOT NULL)
         AND ($1 IS NULL OR COALESCE(master.project_id,c.project_id)=$1)
         AND ($2 IS NULL OR c.id=$2 OR p.master_channel_id=$2)
-        AND c.deleted_at IS NULL AND master.deleted_at IS NULL AND s.cli_kind<>'hub'
+        AND c.deleted_at IS NULL AND master.deleted_at IS NULL AND s.cli_kind NOT IN (${NON_AGENT_CLI_KINDS.map(kind=>`'${kind}'`).join(',')})
         AND ($3=0 OR (c.closed_at IS NULL AND s.closed_at IS NULL AND s.lease_until>now()))
         AND ($4=1 OR s.removed_at IS NULL) AND ($5=0 OR COALESCE(master.project_id,c.project_id) IS NULL)
         AND ($6=1 OR ($8=1 AND m.team_id IS NOT NULL) OR (s.closed_at IS NULL AND c.closed_at IS NULL)) AND ($7=1 OR (s.nickname IS NOT NULL AND trim(s.nickname)<>''))
@@ -882,7 +905,7 @@ export class LocalChat {
       [input.project_id ?? null,input.channel_id ?? null,input.active_only ? 1 : 0,input.include_removed ? 1 : 0,input.unassigned ? 1 : 0,input.include_closed || input.include_removed ? 1 : 0,input.include_pending ? 1 : 0,input.include_team_history ? 1 : 0,scopeProjects,scopeChannels], 'created_at ASC,id',input)
       return { ...result, items: result.items.map(s=>({...publicSession(s),role:s.team_id?'team_member':s.role,team_id:s.team_id,team_role:s.team_role,team_state:s.team_state,member_state:s.member_state,work_thread_id:s.work_thread_id,master_channel_id:s.master_channel_id})) }
     }
-    if (operation === 'chat_threads') return this.page(`SELECT t.*,c.name AS channel_name,s.label AS author_label,
+    if (operation === 'chat_threads') return this.page(`SELECT t.*,c.name AS channel_name,s.label AS author_label,${THREAD_DEBATE_COLUMNS},
       (SELECT id FROM chat_team_plans p WHERE p.root_thread_id=COALESCE(t.team_root_thread_id,t.id)) AS team_plan_id,
       (SELECT state FROM chat_team_plans p WHERE p.root_thread_id=COALESCE(t.team_root_thread_id,t.id)) AS team_plan_state,
       (SELECT group_concat(label, ' · ') FROM (SELECT DISTINCT a.label FROM chat_messages m JOIN chat_sessions a ON a.id=m.author_id WHERE m.thread_id=t.id)) AS participants,
@@ -897,6 +920,7 @@ export class LocalChat {
       AND ($5 IS NULL OR EXISTS(SELECT 1 FROM chat_messages m WHERE m.thread_id=t.id AND m.author_id=$5)) AND ($6=0 OR COALESCE(parent.project_id,c.project_id) IS NULL)
       AND ($7 IS NULL OR c.id IN (SELECT value FROM json_each($8)) OR COALESCE(parent.project_id,c.project_id) IN (SELECT value FROM json_each($7)))`,
     [input.project_id ?? null,input.channel_id ?? null,input.state ?? null,input.query,input.author_id ?? null,input.unassigned ? 1 : 0,scopeProjects,scopeChannels], 'updated_at DESC,id',input)
+      .then(result=>({...result,items:result.items.map(debateFields)}))
     if (operation === 'chat_read') {
       check(!(input.unread_only===true && !input.session_key),'unread_only=true requiere session_key; sin identidad chat_read sólo permite historial read-only.',400)
       // A routing key is the explicit reader identity. Native/UI reads without it remain historical and never write receipts.
@@ -911,9 +935,9 @@ export class LocalChat {
       if(caller)check(await canReadChannel(this.db,caller.id,thread.channel_id,scope ?? undefined),readDenied,403)
       if(input.project_id) check((await this.db.query('SELECT id FROM chat_channels WHERE id=$1 AND project_id=$2',[thread.channel_id,input.project_id])).length,'El hilo no pertenece al proyecto',404)
       const query=unreadOnly
-        ? `SELECT m.*,s.label AS author_label,s.cli_kind,CASE WHEN s.agent_id='agenthub-system' AND s.cli_kind='hub' THEN 'hub' ELSE 'agent' END AS author_source FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id
+        ? `SELECT m.*,s.label AS author_label,s.cli_kind,${AUTHOR_SOURCE_SQL} AS author_source FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id
             WHERE m.thread_id=$1 AND m.author_id<>$2 AND NOT EXISTS(SELECT 1 FROM chat_read_receipts r WHERE r.session_id=$2 AND r.message_id=m.id)`
-        : `SELECT m.*,s.label AS author_label,s.cli_kind,CASE WHEN s.agent_id='agenthub-system' AND s.cli_kind='hub' THEN 'hub' ELSE 'agent' END AS author_source FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id WHERE m.thread_id=$1`
+        : `SELECT m.*,s.label AS author_label,s.cli_kind,${AUTHOR_SOURCE_SQL} AS author_source FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id WHERE m.thread_id=$1`
       const result = await this.page(query,unreadOnly ? [thread.id,who!.id] : [thread.id],'seq',input)
       let changed=false
       if (who) for (const m of result.items) {
@@ -923,7 +947,7 @@ export class LocalChat {
       }
       // Pending pages must restart at zero: an offset can leave earlier unread messages untouched.
       const remaining=unreadOnly ? result.total-result.items.length : result.total-input.offset-result.items.length
-      const response={ ...result, thread, team:await this.team(thread.channel_id,false,who && who.channel_id===thread.channel_id?who.id:undefined),items: await this.receipts(result.items),
+      const response={ ...result, thread, resolution:await latestResolution(this.db,thread.id), team:await this.team(thread.channel_id,false,who && who.channel_id===thread.channel_id?who.id:undefined),items: await this.receipts(result.items),
         read:{unread_only:unreadOnly,remaining:Math.max(0,remaining),next_offset:remaining>0 ? unreadOnly ? 0 : input.offset+result.items.length : null} }
       Object.defineProperty(response,'__chatReadChanged',{value:changed,enumerable:false})
       return response
@@ -936,6 +960,7 @@ export class LocalChat {
     if (operation === 'chat_read_request') return readRequest(this.db,who,input)
     if (operation === 'chat_read_elevate') return readElevate(this.db,who,input)
     if (operation === 'chat_take_leadership') return this.takeLeadership(input,who)
+    if (operation === 'chat_propose_resolution') return proposeResolution(this.db,who,input)
     if (operation === 'chat_work_update' || operation === 'chat_work_list') {
       const thread=(await this.db.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread,'Hilo inexistente',404)
@@ -1007,7 +1032,7 @@ export class LocalChat {
       await this.db.query('UPDATE chat_sessions SET last_seen_at=now(),lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[who.id,new Date(Date.now()+90000).toISOString()])
       const result = await this.page(`SELECT * FROM (
         SELECT m.id,m.thread_id,m.author_id,m.text,m.reply_to,m.request_id,m.created_at,m.seq,
-          s.label AS author_label,s.cli_kind,CASE WHEN s.agent_id='agenthub-system' AND s.cli_kind='hub' THEN 'hub' ELSE 'agent' END AS author_source,'mention' AS kind,t.title,d.read_at,d.handled_at,d.response_required,
+          s.label AS author_label,s.cli_kind,${AUTHOR_SOURCE_SQL} AS author_source,'mention' AS kind,t.title,d.read_at,d.handled_at,d.response_required,
           NULL AS session_id,NULL AS turn_id,NULL AS cause,NULL AS work_thread_id
         FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id JOIN chat_threads t ON t.id=m.thread_id
           JOIN chat_sessions s ON s.id=m.author_id WHERE d.recipient_id=$1 AND d.handled_at IS NULL AND d.cancelled_at IS NULL AND ($2=0 OR d.read_at IS NULL)
@@ -1055,6 +1080,7 @@ export class LocalChat {
     // Preserve pre-team-thread request hashes exactly so durable retries still deduplicate after upgrade.
     if(input.team_root_thread_id)Object.assign(requestPayload,{team_root_thread:input.team_root_thread_id})
     if(input.response_required!==undefined)Object.assign(requestPayload,{response_required:input.response_required})
+    if(input.kind!==undefined)Object.assign(requestPayload,{kind:input.kind})
     const requestHash=hash(JSON.stringify(requestPayload))
     const result = await this.db.transaction(async sql => {
       const prior = (await sql.query('SELECT * FROM chat_messages WHERE author_id=$1 AND request_id=$2',[who.id,input.request_id]))[0]
@@ -1127,14 +1153,15 @@ export class LocalChat {
       check(thread.state==='open','Este hilo está resuelto; reabrilo antes de continuar el mismo objetivo.',409)
       for (const recipient of recipients) {
         check(recipient !== who.id,'No podés despertarte mencionándote a vos mismo',400)
-        const target=(await sql.query('SELECT id,channel_id,removed_at FROM chat_sessions WHERE id=$1',[recipient]))[0]
+        const target=(await sql.query('SELECT id,channel_id,removed_at,cli_kind FROM chat_sessions WHERE id=$1',[recipient]))[0]
+        check(!target || !(NON_AGENT_CLI_KINDS as readonly string[]).includes(target.cli_kind),'Sólo se menciona a agentes; la persona lee el hilo en la UI.',400)
         if(linkedTeam)check(await this.teamRecipient(sql,linkedTeam,recipient),'La mención debe pertenecer al equipo vinculado a este hilo.',400)
         else if(target && target.channel_id===thread.channel_id && target.id!==channelLeadership.displaced_leader_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
         else if(target && target.id===channelLeadership.leader_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
         else check(false,'La mención debe pertenecer al mismo canal.',400)
       }
-      const message = (await sql.query('INSERT INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-        [randomUUID(),thread.id,who.id,input.text,input.reply_to ?? null,input.request_id,requestHash]))[0]!
+      const message = (await sql.query('INSERT INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash,kind) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+        [randomUUID(),thread.id,who.id,input.text,input.reply_to ?? null,input.request_id,requestHash,input.kind ?? null]))[0]!
       for (const recipient of recipients) await sql.query('INSERT INTO chat_deliveries(message_id,recipient_id,response_required) VALUES($1,$2,$3)',[message.id,recipient,input.response_required?1:0])
       if(replied) {
         await sql.query('UPDATE chat_deliveries SET response_message_id=COALESCE(response_message_id,$3),read_at=COALESCE(read_at,now()),handled_at=COALESCE(handled_at,now()) WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[replied.id,who.id,message.id])

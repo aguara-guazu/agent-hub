@@ -4,6 +4,7 @@ import { registerUsageRoutes } from './usage-routes.js'
 import { chatKickInput, chatCoordinatorInput, chatDeleteChannelInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
 import { listAuthorityEvents } from './chat-access.js'
+import { createChannelInput, pendingDebatesQuery, personMessageInput, resolutionDecisionInput } from './chat-debate.js'
 import { LocalWatchdog } from './local-watchdog.js'
 import { nativeSession } from '@agenthub/gateway'
 import { sharingRoutes } from './sharing/routes.js'
@@ -170,6 +171,44 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const {operations}=await service.get()
     reply.header('Cache-Control','no-store')
     return listAuthorityEvents(operations.chat.db,{...filter,kinds:filter.kind===undefined?undefined:[filter.kind].flat()})
+  })
+  // The person's part in debates. Authorship and approval come only from this authenticated session; no MCP operation reaches them.
+  app.post('/api/memory/chat/threads/:threadId/messages', {bodyLimit:40_000}, async request=>{
+    await options.authorize(request)
+    requireCollaboration()
+    const {threadId}=parse(z.object({threadId:id}),request.params)
+    const input=parse(personMessageInput,request.body)
+    const {operations}=await service.get()
+    return operations.chat.personMessage(threadId,input)
+  })
+  app.post('/api/memory/chat/threads/:threadId/resolution/approve', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    requireCollaboration()
+    const {threadId}=parse(z.object({threadId:id}),request.params)
+    const input=parse(resolutionDecisionInput,request.body)
+    const {operations}=await service.get()
+    return operations.chat.approveResolution(threadId,input,user.id)
+  })
+  app.post('/api/memory/chat/threads/:threadId/resolution/rerun', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    requireCollaboration()
+    const {threadId}=parse(z.object({threadId:id}),request.params)
+    const input=parse(resolutionDecisionInput,request.body)
+    const {operations}=await service.get()
+    return operations.chat.rerunResolution(threadId,input,user.id)
+  })
+  app.post('/api/memory/chat/channels', {bodyLimit:4096}, async request=>{
+    const user=await options.authorize(request)
+    requireCollaboration()
+    const input=parse(createChannelInput,request.body)
+    const {operations}=await service.get()
+    return operations.chat.createProjectChannel(input,user.id)
+  })
+  app.get('/api/memory/chat/pending-decisions', {preHandler:auth}, async (request, reply) => {
+    const filter=parse(pendingDebatesQuery,request.query)
+    const {operations}=await service.get()
+    reply.header('Cache-Control','no-store')
+    return operations.chat.pendingDebates(filter)
   })
   app.get('/api/memory/teams/preferences', {preHandler:auth}, async()=>{
     const {operations}=await service.get()
