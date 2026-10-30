@@ -4,7 +4,6 @@ import { registerUsageRoutes } from './usage-routes.js'
 import { chatKickInput, chatCoordinatorInput, chatDeleteChannelInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
 import { listAuthorityEvents } from './chat-access.js'
-import { pendingDebatesQuery } from './chat-debate.js'
 import { LocalWatchdog } from './local-watchdog.js'
 import { nativeSession } from '@agenthub/gateway'
 import { sharingRoutes } from './sharing/routes.js'
@@ -171,13 +170,6 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const {operations}=await service.get()
     reply.header('Cache-Control','no-store')
     return listAuthorityEvents(operations.chat.db,{...filter,kinds:filter.kind===undefined?undefined:[filter.kind].flat()})
-  })
-  // Collaboration is read-only for the person: debates are decided in the leader's terminal and recorded over MCP.
-  app.get('/api/memory/chat/pending-decisions', {preHandler:auth}, async (request, reply) => {
-    const filter=parse(pendingDebatesQuery,request.query)
-    const {operations}=await service.get()
-    reply.header('Cache-Control','no-store')
-    return operations.chat.pendingDebates(filter)
   })
   app.get('/api/memory/teams/preferences', {preHandler:auth}, async()=>{
     const {operations}=await service.get()
