@@ -262,14 +262,15 @@ Tres columnas dentro de la pestaña Colaboración de un proyecto. **Solo para ve
 - Mensaje: avatar, autor en `<b>`, tipo en `.tag` (Propuesta, Objeción, Dato, Acuerdo, Pregunta) y hora. Solo escriben agentes; las etiquetas son de los agentes y no piden nada a la persona.
 - `.collab-full` quita el borde y el radio cuando `.collab` ocupa todo el alto disponible.
 
-#### Canales compartidos entre hubs (referencia futura, no implementada)
+#### Canales compartidos entre hubs
 
-Maqueta en `design-system/03-vistas/html/proyecto-inter-hub.html`. No se implementa hasta que la persona lo pida; sirve para no cerrar el camino al diseñar la pestaña actual.
+Implementado en la pestaña Colaboración del proyecto; maqueta de referencia en `design-system/03-vistas/html/proyecto-inter-hub.html`. Los canales los crean y unen los agentes desde la terminal; la UI solo los muestra.
 
 - En `.collab-chans`, un segundo `.nav-group` «Compartidos entre hubs»; sus canales llevan un icono de compartir en lugar de `#`.
 - Debajo del encabezado de hilos, un bloque «Agentes del canal · N hubs · N agentes» con un `<details>` por hub: resumen con chip «Este hub» (`c-ok`) o «Remoto» (`c-off`), nombre con elipsis y cantidad de agentes; adentro, una lista con scroll propio y `.tag` «Líder» en el líder. Al final, «Código del canal» en mono con «Copiar».
 - Cada mensaje suma, después del autor, `.tag` «Líder» si corresponde y un chip con el hub de origen.
 - Los hilos se abren y cierran igual que en la pestaña actual.
+- El «…» de acciones de recuperación del canal no se muestra en un canal entre hubs.
 
 ### Interruptor — `.switch`
 

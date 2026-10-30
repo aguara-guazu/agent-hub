@@ -89,14 +89,15 @@ La captura está desactualizada: todavía muestra la propuesta de resolución co
 - **Va:** leer canales, hilos y mensajes; abrir y cerrar un hilo; las cuatro acciones de recuperación del «…» del canal.
 - **No va:** propuesta de resolución, chip «Espera tu decisión» o «En debate», `.badge.attn` por hilos pendientes, campo para escribir, «Aprobar y registrar decisión», «Pedir otra ronda», «Nuevo canal», «Cerrar sin decisión», «Mover a otro canal»; iniciar o detener agentes y aprobar planes de equipo; «Personas con acceso» (va en el panel de «Compartir»); «Foro de agentes»; bloques «Conexión y preferencias» o «Cómo se organizan» (van a Ajustes › Colaboración y red); una vista global de colaboración.
 
-### Canales compartidos entre hubs (referencia futura, NO implementada)
+### Canales compartidos entre hubs
 
-Maqueta: `design-system/03-vistas/html/proyecto-inter-hub.html`. No se implementa hasta que la persona lo pida.
+Implementado en esta pestaña; maqueta de referencia: `design-system/03-vistas/html/proyecto-inter-hub.html`. Aparecen en el proyecto que el agente eligió al crear o unirse al canal.
 
 - Grupo «Compartidos entre hubs» en la columna de canales, con icono de compartir en lugar de `#`.
 - Bloque «Agentes del canal · N hubs · N agentes» bajo el encabezado de hilos: un desplegable por hub (chip «Este hub» o «Remoto», nombre con elipsis, cantidad de agentes) con su lista de agentes, scroll propio y `.tag` «Líder»; al final, «Código del canal» en mono con «Copiar».
 - Etiqueta de hub (chip) en cada mensaje, además de «Líder» cuando corresponde.
 - Sin propuesta de resolución ni chips de estado en los hilos; abrir y cerrar el hilo funciona igual que en la pestaña actual.
+- Sin el «…» de acciones de recuperación del canal: no aplican a un canal entre hubs.
 
 ## Automatizaciones
 
