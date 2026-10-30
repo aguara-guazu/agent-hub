@@ -771,4 +771,74 @@ CREATE INDEX chat_channels_leader ON chat_channels(leader_id);
 -- Optional stance label of agent messages and a channel description, both shown read-only in the Hub UI.
 ALTER TABLE chat_messages ADD COLUMN kind TEXT;
 ALTER TABLE chat_channels ADD COLUMN description TEXT;
+`, String.raw`
+-- Inter-hub chat state is strictly additive. Remote agents never enter chat_sessions,
+-- which keeps local liveness, wakes, leadership and team behavior unchanged.
+CREATE TABLE interhub_remote_sessions (
+  channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+  hub_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  cli_kind TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('leader','member')),
+  state TEXT NOT NULL CHECK(state IN ('online','offline','unknown')),
+  peer_id TEXT NOT NULL,
+  occurred_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+  PRIMARY KEY(channel_id,hub_id,session_id)
+);
+CREATE INDEX interhub_remote_sessions_channel ON interhub_remote_sessions(channel_id,hub_id,role,updated_at);
+CREATE TABLE interhub_received_envelopes (
+  envelope_id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+  origin_hub_id TEXT NOT NULL,
+  origin_peer_id TEXT NOT NULL,
+  occurred_at TIMESTAMP NOT NULL,
+  received_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX interhub_received_envelopes_channel ON interhub_received_envelopes(channel_id,occurred_at,envelope_id);
+CREATE TABLE interhub_message_origins (
+  message_id TEXT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
+  envelope_id TEXT NOT NULL UNIQUE REFERENCES interhub_received_envelopes(envelope_id) ON DELETE CASCADE,
+  hub_id TEXT NOT NULL,
+  hub_name TEXT NOT NULL,
+  peer_id TEXT NOT NULL,
+  author_role TEXT NOT NULL CHECK(author_role IN ('leader','member'))
+);
+CREATE INDEX interhub_message_origins_hub ON interhub_message_origins(hub_id,message_id);
+CREATE TABLE interhub_escalations (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  question_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+  last_hub_id TEXT,
+  next_hub_id TEXT,
+  escalated_at TIMESTAMP NOT NULL,
+  answered_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+  updated_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+  UNIQUE(channel_id,thread_id,question_message_id)
+);
+CREATE INDEX interhub_escalations_due ON interhub_escalations(answered_at,escalated_at);
+`, String.raw`
+-- Inter-hub channel replication. Creator codes are represented only by a hash here; plaintext is creator-local vault state.
+CREATE TABLE interhub_channels (
+ channel_id TEXT PRIMARY KEY REFERENCES chat_channels(id) ON DELETE CASCADE,
+ creator_hub_id TEXT NOT NULL, creator_session_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ code_hash TEXT NOT NULL, code_generation INTEGER NOT NULL DEFAULT 1, code_revoked_at TIMESTAMP,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE TABLE interhub_members (
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ hub_id TEXT NOT NULL, peer_identity JSON NOT NULL, leader_session_id TEXT, leader_label TEXT NOT NULL,
+ joined_at TIMESTAMP NOT NULL DEFAULT ${NOW}, last_seen_at TIMESTAMP NOT NULL DEFAULT ${NOW}, removed_at TIMESTAMP,
+ PRIMARY KEY(channel_id,hub_id)
+);
+CREATE TABLE interhub_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ origin_hub_id TEXT NOT NULL, envelope JSON NOT NULL, received_from TEXT NOT NULL,
+ received_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX interhub_events_channel ON interhub_events(channel_id,seq);
 `]
