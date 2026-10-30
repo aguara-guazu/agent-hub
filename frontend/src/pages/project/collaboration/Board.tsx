@@ -6,7 +6,7 @@ import { useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
 import { AgentPanel } from "./AgentPanel"
 import { ChannelPanel, DeleteChannelDialog } from "./ChannelPanel"
 import { PlanPanel } from "./PlanPanel"
-import { visibleAgents } from "./chatShared"
+import { agentInitials, visibleAgents } from "./chatShared"
 import type { Participant } from "./chatTypes"
 import { SidePanel, useWorkPanel } from "../work"
 import { useBoardParams, type BoardChannel, type BoardThread, type ThreadState } from "./collabData"
@@ -202,7 +202,7 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
             >
               {visible.slice(0, HEAD_AGENTS).map((agent, index) => (
                 <span key={agent.id} style={{ display: "flex", marginLeft: index ? "calc(var(--sp-1) * -1)" : 0, borderRadius: "var(--r-sm)", boxShadow: "0 0 0 2px var(--surface)" }}>
-                  <Avatar name={agent.label} small />
+                  <Avatar name={agent.label} text={agentInitials(agent.label, agent.cli_kind)} small />
                 </span>
               ))}
               {visible.length > HEAD_AGENTS && <span className="xs t3" style={{ alignSelf: "center", marginLeft: "var(--sp-1)" }}>+{visible.length - HEAD_AGENTS}</span>}

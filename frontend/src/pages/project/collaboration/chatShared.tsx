@@ -53,6 +53,17 @@ export function memberQuota(plan: Plan, member: { worktree_name?: string; cli: s
   return entry ? quotaState(entry.status) : null
 }
 
+const CLI_INITIALS: Record<string, readonly [string, string]> = {
+  claude_code: ["claude", "CC"], codex_cli: ["codex", "CX"], gemini_cli: ["gemini", "GC"], kiro: ["kiro", "KI"],
+  opencode: ["opencode", "OC"], antigravity: ["antigravity", "AG"], claude_desktop: ["claude", "CD"],
+}
+
+/** Iniciales del avatar cuando el nombre es el del cliente («Codex CLI» → CX, no CC); con un nick propio, las del nick. */
+export function agentInitials(label: string, cli: string | undefined): string | undefined {
+  const entry = cli ? CLI_INITIALS[cli] : undefined
+  return entry && label.toLowerCase().startsWith(entry[0]) ? entry[1] : undefined
+}
+
 const CLIS = ["claude_code", "codex_cli", "gemini_cli", "kiro", "claude_desktop", "opencode", "antigravity"] as const
 type Cli = typeof CLIS[number]
 

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom"
 import { Avatar, Empty, ErrorState, SkeletonRows, Tag } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { useMemory } from "../../../lib/memory"
-import { MESSAGE_PAGE, Pager } from "./chatShared"
+import { MESSAGE_PAGE, Pager, agentInitials } from "./chatShared"
 import { messageKind, type BoardChannel, type BoardMessage, type Resolution, type ThreadRead } from "./collabData"
 
 /**
@@ -28,7 +28,7 @@ export function ThreadView({ threadId, channel }: { threadId: string; channel: B
     <div className="collab-head">
       <div className="row-main" style={{ gap: "var(--sp-2)" }}>
         <span className="h3 clamp2" title={thread.title}>{thread.title}</span>
-        <span className="xs t3">{t("collaboration.board.origin", { channel: channel.name, author: thread.author_label, when: when(started, format, time => t("collaboration.board.today", { time })) })}</span>
+        <span className="xs t3">{t("collaboration.board.origin", { channel: channel.name, author: thread.author_label || read.data.items[0]?.author_label || "", when: when(started, format, time => t("collaboration.board.today", { time })) })}</span>
       </div>
     </div>
 
@@ -63,7 +63,7 @@ function MessageItem({ message }: { message: BoardMessage }) {
   const kind = messageKind(message.kind)
   return (
     <li id={`chat-${message.id}`} className="msg">
-      <Avatar name={message.author_label} small />
+      <Avatar name={message.author_label} text={agentInitials(message.author_label, message.cli_kind)} small />
       <div className="msg-body">
         <div className="msg-meta">
           <b className="trunc" title={message.author_label}>{message.author_label}</b>
@@ -104,7 +104,7 @@ function ResolutionBlock({ resolution }: { resolution: Resolution }) {
   const { t } = useT("project")
   return (
     <div className="resolution" role="note" aria-label={t("collaboration.board.resolutionLabel")}>
-      <span className="eyebrow" style={{ color: "var(--accent-text)" }}>
+      <span className="eyebrow" style={{ color: "var(--accent-text)", textTransform: "uppercase" }}>
         {t("collaboration.board.resolutionEyebrow", { agree: resolution.agreed_count, total: resolution.participant_count })}
       </span>
       <span className="md" style={{ fontWeight: 500, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{resolution.text}</span>

@@ -25,7 +25,7 @@ export interface Resolution {
   created_at: string
 }
 
-export interface BoardMessage extends Message { kind?: MessageKind | null; author_source?: "agent" | "hub" | "person" }
+export interface BoardMessage extends Message { kind?: MessageKind | null; author_source?: "agent" | "hub" | "person"; cli_kind?: string }
 export type ThreadRead = Page<BoardMessage> & { thread: BoardThread; resolution?: Resolution | null }
 
 export type ThreadState = "open" | "resolved"

@@ -174,7 +174,8 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
               </PanelSlotContext.Provider>
             </TabPanel>
           </div>
-          <ProjectAside detail={detail} company={company} narrow={narrow} onPanel={openPanel} />
+          {/* Colaboración ocupa todo el ancho: tres columnas canales › hilos › debate. */}
+          {tab !== "colaboracion" && <ProjectAside detail={detail} company={company} narrow={narrow} onPanel={openPanel} />}
         </div>
       </div>
 
