@@ -1,6 +1,6 @@
 import { useRef, useState } from "react"
 import { Link } from "react-router-dom"
-import { Avatar, Banner, Button, Empty, ErrorState, MoreMenu, Seg, SkeletonRows, cx, useToast, type MenuItem } from "../../../components/ui"
+import { Avatar, Banner, Button, Empty, ErrorState, Icon, MoreMenu, Seg, SkeletonRows, cx, useToast, type MenuItem } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
 import { AgentPanel } from "./AgentPanel"
@@ -12,6 +12,8 @@ import { SidePanel, useWorkPanel } from "../work"
 import { useBoardParams, type BoardChannel, type BoardThread, type ThreadState } from "./collabData"
 import { TrashPanel } from "./BoardPanels"
 import { ThreadView } from "./ThreadView"
+import { InterhubAgents } from "./InterhubAgents"
+import { isInterhub, useInterhubRoster } from "./interhubData"
 
 const CHANNEL_LIMIT = 100
 const THREAD_PAGE = 30
@@ -32,7 +34,11 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
   const trashPanel = useWorkPanel("trash")
 
   const channels = useMemory<Page<BoardChannel>>("chat_channels", { project_id: project.id, limit: CHANNEL_LIMIT, offset: 0 })
-  const items = channels.data?.items ?? []
+  const all = channels.data?.items ?? []
+  // Locales primero y compartidos entre hubs después, como se ven en la columna.
+  const local = all.filter(item => !isInterhub(item))
+  const shared = all.filter(isInterhub)
+  const items = [...local, ...shared]
   const channel = items.find(item => item.id === params.channel) ?? items[0]
 
   const selectChannel = (id: string) => params.patch({ channel: id, thread: null, tstate: null })
@@ -79,18 +85,11 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
           <div className="nav-group">{t("collaboration.board.channels")}</div>
           {channels.isPending ? <SkeletonRows count={3} avatar={false} label={t("collaboration.board.loadingChannels")} />
             : channels.error ? <ErrorState error={channels.error} title={t("collaboration.board.channelsError")} onRetry={() => void channels.refetch()} />
-            : items.map(item => (
-              <Link
-                key={item.id}
-                replace
-                className={cx("nav-item", item.id === channel?.id && "is-active")}
-                aria-current={item.id === channel?.id ? "page" : undefined}
-                to={params.href({ channel: item.id, thread: null, tstate: null })}
-              >
-                <span className="chan-hash" aria-hidden="true">#</span>
-                <span className="trunc">{item.name}</span>
-              </Link>
-            ))}
+            : <>
+              {local.map(item => <ChannelLink key={item.id} item={item} active={item.id === channel?.id} href={params.href({ channel: item.id, thread: null, tstate: null })} />)}
+              {shared.length > 0 && <div className="nav-group">{t("collaboration.interhub.group")}</div>}
+              {shared.map(item => <ChannelLink key={item.id} item={item} active={item.id === channel?.id} href={params.href({ channel: item.id, thread: null, tstate: null })} />)}
+            </>}
         </nav>
 
         {channels.data && !channel
@@ -130,6 +129,15 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
   )
 }
 
+function ChannelLink({ item, active, href }: { item: BoardChannel; active: boolean; href: string }) {
+  return (
+    <Link replace className={cx("nav-item", active && "is-active")} aria-current={active ? "page" : undefined} to={href}>
+      {isInterhub(item) ? <Icon name="interhub" small /> : <span className="chan-hash" aria-hidden="true">#</span>}
+      <span className="trunc">{item.name}</span>
+    </Link>
+  )
+}
+
 function AgentPanelLoader({ projectId, agentId, onClose }: { projectId: string; agentId: string; onClose: () => void }) {
   const agents = useMemory<Page<Participant>>("chat_agents", { project_id: projectId, include_team_history: true, limit: 100, offset: 0 })
   const agent = agents.data?.items.find(item => item.id === agentId)
@@ -159,16 +167,21 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
   const scope = { project_id: projectId, channel_id: channel.id }
   const threads = useMemory<Page<BoardThread>>("chat_threads", { ...scope, query: "", state, limit, offset: 0 })
   const other = useMemory<Page<BoardThread>>("chat_threads", { ...scope, query: "", state: state === "open" ? "resolved" : "open", limit: 1, offset: 0 })
-  const agents = useMemory<Page<Participant>>("chat_agents", { ...scope, include_team_history: true, limit: 100, offset: 0 })
+  const shared = isInterhub(channel)
+  // En un canal compartido los agentes vienen agrupados por hub (roster); chat_agents solo conoce los locales.
+  const agents = useMemory<Page<Participant>>("chat_agents", { ...scope, include_team_history: true, limit: 100, offset: 0 }, !shared)
+  const roster = useInterhubRoster(channel.id, shared)
   const visible = visibleAgents(agents.data?.items)
   const list = threads.data?.items ?? []
   const selected = list.find(item => item.id === threadId)?.id ?? threadId
   const count = (value: ThreadState) => (value === state ? threads.data?.total : other.data?.total)
 
+  // Las acciones de recuperación son de canales locales: un canal compartido no las expone.
   const menu: MenuItem[] = [{ label: t("collaboration.board.channelAgents"), onSelect: onAgents }]
   if (channel.team_plan_id) menu.push({ label: t("collaboration.board.viewTeam"), onSelect: () => onPlan(channel.team_plan_id!) })
   menu.push({ label: t("collaboration.board.trash"), onSelect: onTrash })
   menu.push({ label: t("collaboration.board.deleteChannel"), danger: true, onSelect: () => setDeleting(true) })
+  const hubCount = roster.data?.hub_count ?? channel.hub_count
 
   // Al cerrar la columna (botón X o volver a tocar el hilo) el foco vuelve a la fila del hilo.
   const rows = useRef(new Map<string, HTMLDivElement>())
@@ -180,6 +193,7 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
 
   function sub(thread: BoardThread) {
     return [
+      shared && thread.hub_count !== undefined ? plural("collaboration.interhub.hubs", thread.hub_count) : null,
       thread.agent_count !== undefined ? plural("collaboration.board.agents", thread.agent_count) : null,
       plural("collaboration.board.messages", Number(thread.messages)),
       format.relative(thread.updated_at),
@@ -191,10 +205,14 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
       <div className="collab-head">
         <div style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)", minWidth: 0 }}>
           <div className="row-main">
-            <h2 className="h2 trunc"><span className="chan-hash" aria-hidden="true">#</span> {channel.name}</h2>
-            {channel.description && <span className="row-sub" title={channel.description}>{channel.description}</span>}
+            <h2 className="h2 trunc" title={channel.name}>
+              {shared ? <Icon name="interhub" /> : <span className="chan-hash" aria-hidden="true">#</span>} {channel.name}
+            </h2>
+            {shared
+              ? <span className="row-sub">{hubCount !== undefined ? plural("collaboration.interhub.sharedBetween", hubCount) : t("collaboration.interhub.shared")}</span>
+              : channel.description && <span className="row-sub" title={channel.description}>{channel.description}</span>}
           </div>
-          {visible.length > 0 && (
+          {!shared && visible.length > 0 && (
             <button
               type="button"
               onClick={onAgents}
@@ -210,7 +228,7 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
               {visible.length > HEAD_AGENTS && <span className="xs t3" style={{ alignSelf: "center", marginLeft: "var(--sp-1)" }}>+{visible.length - HEAD_AGENTS}</span>}
             </button>
           )}
-          <MoreMenu small ghost label={t("collaboration.board.channelActions", { name: channel.name })} items={menu} />
+          {!shared && <MoreMenu small ghost label={t("collaboration.board.channelActions", { name: channel.name })} items={menu} />}
         </div>
         <div style={{ alignSelf: "flex-start" }}>
           <Seg<ThreadState>
@@ -224,6 +242,7 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
           />
         </div>
       </div>
+      {shared && <InterhubAgents channelId={channel.id} roster={roster} />}
       {threads.isPending ? <SkeletonRows count={2} avatar={false} label={t("collaboration.board.loadingThreads")} />
         : threads.error ? <ErrorState error={threads.error} title={t("collaboration.board.threadsError")} onRetry={() => void threads.refetch()} />
         : list.length === 0
@@ -263,11 +282,11 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
       </section>
     )}
 
-    <DeleteChannelDialog
+    {!shared && <DeleteChannelDialog
       channel={channel}
       open={deleting}
       onClose={() => setDeleting(false)}
       onDeleted={(_, uncertain) => { setDeleting(false); onDeleted(uncertain) }}
-    />
+    />}
   </>
 }

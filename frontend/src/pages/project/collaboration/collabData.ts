@@ -2,6 +2,7 @@ import { useCallback } from "react"
 import { useSearchParams } from "react-router-dom"
 import type { Page } from "../../../lib/memory"
 import type { Channel, Message, Thread } from "./chatTypes"
+import type { InterhubRole, OriginHub } from "./interhubData"
 
 /**
  * Campos de lectura que colab-back suma a chat_channels / chat_threads / chat_read (packages/shared/src/collaboration.ts).
@@ -10,11 +11,18 @@ import type { Channel, Message, Thread } from "./chatTypes"
 export type MessageKind = "proposal" | "objection" | "fact" | "agreement" | "question"
 export const MESSAGE_KINDS: readonly MessageKind[] = ["proposal", "objection", "fact", "agreement", "question"]
 
-export interface BoardChannel extends Channel { description?: string | null }
+export interface BoardChannel extends Channel { description?: string | null; hub_count?: number }
 
-export interface BoardThread extends Thread { created_at?: string; agent_count?: number }
+export interface BoardThread extends Thread { created_at?: string; agent_count?: number; hub_count?: number }
 
-export interface BoardMessage extends Message { kind?: MessageKind | null; author_source?: "agent" | "hub"; cli_kind?: string }
+export interface BoardMessage extends Message {
+  kind?: MessageKind | null
+  author_source?: "agent" | "hub"
+  cli_kind?: string
+  // Solo los canales compartidos entre hubs traen origen y rol.
+  origin_hub?: OriginHub | null
+  author_role?: InterhubRole | null
+}
 export type ThreadRead = Page<BoardMessage> & { thread: BoardThread }
 
 export type ThreadState = "open" | "resolved"
