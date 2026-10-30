@@ -320,10 +320,16 @@ describe('proyectos compartidos cifrados', () => {
       await vi.waitFor(async () => { expect(await progress()).toMatchObject({ state: 'synced' }) }, { timeout: 30_000 })
       const previous = (await progress())!
       expect(previous.confirmed).toBe(previous.total)
+      // Bruno acknowledges a page only after storing it; holding that keeps the 10 s
+      // background ticks from confirming the new event before progress is read.
+      let release!: () => void
+      const held = new Promise<void>(resolve => { release = resolve }), receive = b.sharing.receive.bind(b.sharing)
+      const intake = vi.spyOn(b.sharing, 'receive').mockImplementation(async (...args) => { await held; return receive(...args) })
       // Unrelated events leave holes in the global sequence, not in project progress.
       for (let i = 0; i < 3; i++) await a.sharing.message(other.id, `Otro ${i}`, new Date(Date.now() + 120_000).toISOString())
       await a.sharing.message(id, 'Nuevo cambio pendiente', new Date(Date.now() + 120_000).toISOString())
       expect(await progress()).toMatchObject({ state: 'syncing', confirmed: previous.confirmed, total: previous.total + 1 })
+      release(); intake.mockRestore()
       await a.network.tick()
       await vi.waitFor(async () => { expect(await progress()).toMatchObject({ state: 'synced', total: previous.total + 1 }) }, { timeout: 30_000 })
 
