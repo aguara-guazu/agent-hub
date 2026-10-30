@@ -2,7 +2,7 @@ import { useCallback } from "react"
 import { useSearchParams } from "react-router-dom"
 import type { Page } from "../../../lib/memory"
 import type { Channel, Message, Thread } from "./chatTypes"
-import type { InterhubRole, OriginHub } from "./interhubData"
+import type { InterhubAgentRole, InterhubMessageOrigin } from "./interhubData"
 
 /**
  * Campos de lectura que colab-back suma a chat_channels / chat_threads / chat_read (packages/shared/src/collaboration.ts).
@@ -20,8 +20,8 @@ export interface BoardMessage extends Message {
   author_source?: "agent" | "hub"
   cli_kind?: string
   // Solo los canales compartidos entre hubs traen origen y rol.
-  origin_hub?: OriginHub | null
-  author_role?: InterhubRole | null
+  origin_hub?: InterhubMessageOrigin | null
+  author_role?: InterhubAgentRole | null
 }
 export type ThreadRead = Page<BoardMessage> & { thread: BoardThread }
 

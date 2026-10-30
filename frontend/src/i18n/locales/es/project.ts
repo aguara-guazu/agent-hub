@@ -400,6 +400,7 @@ const project = {
       loadingAgents: "Cargando los agentes del canal",
       agentsError: "No se pudieron cargar los agentes del canal",
       noAgents: "Todavía no hay agentes de este hub en el canal.",
+      noAgentsChannel: "Todavía no hay agentes en este canal.",
       thisHub: "Este hub",
       remote: "Remoto",
       leader: "Líder",

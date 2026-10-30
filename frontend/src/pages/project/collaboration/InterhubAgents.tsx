@@ -1,7 +1,7 @@
 import { Avatar, Button, ErrorState, SkeletonRows, Tag, useToast } from "../../../components/ui"
 import { useT } from "../../../i18n"
 import { agentInitials } from "./chatShared"
-import { useInterhubCode, useInterhubRoster, type InterhubHub } from "./interhubData"
+import { useInterhubCode, useInterhubRoster, type InterhubRosterHub } from "./interhubData"
 
 const BLOCK = { borderBottom: "1px solid var(--border)" } as const
 const AGENT_ROW = { minHeight: "var(--sp-6)", paddingTop: "var(--sp-1)", paddingBottom: "var(--sp-1)" } as const
@@ -25,14 +25,14 @@ export function InterhubAgents({ channelId, roster }: { channelId: string; roste
       </div>
       {roster.isPending ? <SkeletonRows count={2} avatar={false} label={t("collaboration.interhub.loadingAgents")} />
         : roster.error ? <ErrorState error={roster.error} title={t("collaboration.interhub.agentsError")} onRetry={() => void roster.refetch()} />
-        : data && data.hubs.length === 0 ? <p className="xs t3" style={{ padding: "0 var(--sp-4) var(--sp-3)" }}>{t("collaboration.interhub.noAgents")}</p>
+        : data && data.hubs.length === 0 ? <p className="xs t3" style={{ padding: "0 var(--sp-4) var(--sp-3)" }}>{t("collaboration.interhub.noAgentsChannel")}</p>
         : data?.hubs.map((hub, index) => <HubGroup key={hub.id} hub={hub} defaultOpen={index === 0} />)}
       <ChannelCode channelId={channelId} />
     </div>
   )
 }
 
-function HubGroup({ hub, defaultOpen }: { hub: InterhubHub; defaultOpen: boolean }) {
+function HubGroup({ hub, defaultOpen }: { hub: InterhubRosterHub; defaultOpen: boolean }) {
   const { t, plural } = useT("project")
   // Líder primero; el resto conserva el orden que entrega el servidor.
   const agents = [...hub.agents].sort((a, b) => Number(b.role === "leader") - Number(a.role === "leader"))

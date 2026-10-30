@@ -403,6 +403,7 @@ const project = {
       loadingAgents: "Loading channel agents",
       agentsError: "Couldn't load the channel agents",
       noAgents: "This hub has no agents in the channel yet.",
+      noAgentsChannel: "No agents in this channel yet.",
       thisHub: "This hub",
       remote: "Remote",
       leader: "Leader",
