@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { z } from "zod"
 import { CHAT_MESSAGE_KINDS, INTERHUB_CHANNEL_KIND, INTERHUB_CHAT_VERSION, INTERHUB_CLOCK_SKEW_MS, INTERHUB_ESCALATION_TIMEOUT_MS } from "@agenthub/shared"
 import type { InterhubAgentRole, InterhubChatPayload, InterhubEscalationState, InterhubMessageOrigin, VerifiedInterhubChatEnvelope } from "@agenthub/shared"
-import { channelMembership } from "../chat-access.js"
+import { ACTIVE_TEAM_STATES, channelMembership } from "../chat-access.js"
 import { check, id, parse } from "../contracts.js"
 import type { Sql } from "../database.js"
 import type { MemoryStore } from "../store.js"
@@ -378,6 +378,27 @@ export async function interhubNoticeValid(sql: Sql, notice: Record<string, any>)
   const escalationId = String(notice.session_id).slice(ESCALATION_SENDER.length)
   return (await sql.query(`SELECT 1 FROM interhub_escalations e JOIN chat_channels c ON c.id=e.channel_id
     WHERE e.id=$1 AND e.answered_at IS NULL AND c.closed_at IS NULL AND c.deleted_at IS NULL AND c.leader_id=$2`, [escalationId, notice.recipient_id])).length > 0
+}
+
+const activeTeams = ACTIVE_TEAM_STATES.map(state => `'${state}'`).join(",")
+
+/**
+ * Open agent sessions this hub contributes to an inter-hub channel: its leader there, sessions of the channel and joined
+ * members of active teams mastered in it. Shared by the roster and the transport's presence announcements, so remote
+ * hubs accept as authors exactly the agents the local roster lists.
+ */
+export async function localChannelAgents(sql: Sql, channelId: string, leaderId: string | null) {
+  return sql.query(
+    `SELECT s.* FROM chat_sessions s WHERE (s.id=$2 OR s.channel_id=$1 OR s.id IN (SELECT m.session_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+       WHERE p.master_channel_id=$1 AND m.state='joined' AND p.state IN (${activeTeams})))
+     AND s.cli_kind NOT IN ($3,'hub') AND s.nickname IS NOT NULL AND s.removed_at IS NULL AND s.closed_at IS NULL ORDER BY s.created_at,s.id`, [channelId, leaderId, INTERHUB_REMOTE_CLI_KIND])
+}
+
+/** Local placeholder id of every remote agent of the channel known here (announced or hub leader), mapped to its remote id. */
+export async function remoteAgentIds(sql: Sql, channelId: string) {
+  const rows = await sql.query(`SELECT hub_id,session_id FROM interhub_remote_sessions WHERE channel_id=$1
+    UNION SELECT hub_id,leader_session_id FROM interhub_members WHERE channel_id=$1 AND leader_session_id IS NOT NULL`, [channelId])
+  return new Map(rows.map(row => [interhubRemoteSessionId(channelId, String(row.hub_id), String(row.session_id)), String(row.session_id)]))
 }
 
 type LocalHub = () => Promise<{ id: string; name: string }>

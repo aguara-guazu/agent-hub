@@ -1,5 +1,6 @@
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { SharedNetwork } from './sharing/network.js'
+import { createInterhubServices } from './interhub/services.js'
 import { MemoryDefaults, DEFAULTS_KEY } from './defaults.js'
 import { MediaRuntime } from './media-runtime.js'
 import { NativeEmbeddingPool } from './native-embeddings.js'
@@ -130,7 +131,10 @@ export class MemoryService {
     operations.chat.usageEnabled=this.usageEnabled
     if (this.orchestrationOwner) await operations.teams?.initialize()
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
-    this.current = { db, store, ai, operations, runner, network: new SharedNetwork(operations.sharing) }
+    const network = new SharedNetwork(operations.sharing)
+    // Inter-hub channels ride the same P2P network; the tools reach it through these services.
+    operations.interhub = createInterhubServices(store, { network, events: operations.chat.events })
+    this.current = { db, store, ai, operations, runner, network }
     if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
     return this.current
   }
