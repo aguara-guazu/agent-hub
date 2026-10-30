@@ -263,7 +263,6 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
 .msg-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
 .msg-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .msg-meta b { font-weight: 600; }
-.resolution { margin: 0 20px 16px; padding: 14px 16px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--accent-border); display: flex; flex-direction: column; gap: 10px; }
 .composer { display: flex; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); }
 @media (max-width: 1100px) { .collab-chans { flex-basis: 100%; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; } .collab-threads { border-right: 0; } }
 
