@@ -279,13 +279,15 @@ export class ScheduleAdmin {
     const available = availability ?? (row.delivery.some(target => target === 'gmail_self' || target === 'slack_self') ? await this.o.deliveryAvailability() : undefined)
     const label = row.created_by_session ? (await this.o.db.query<{ agent_label: string }>('SELECT agent_label FROM agent_sessions WHERE id=$1', [row.created_by_session]))[0]?.agent_label : undefined
     const quota = last?.state === 'deferred' ? last.quota as { resets_at?: string } | null : null
+    const pausedAt = row.state === 'paused' ? await this.store.lastPausedAt(row.id) : undefined
     return { id: row.id, scope: row.scope, project_id: row.project_id, template: row.template, template_version: row.template_version, kind: row.kind, title: row.title, recurrence: row.recurrence, timezone: zone,
       next_run_at: row.next_run_at, next_run_local: row.next_run_at ? localIso(Date.parse(row.next_run_at), zone) : null, delivery: row.delivery,
       delivery_unavailable: row.delivery.filter(target => (target === 'gmail_self' || target === 'slack_self') && !available?.[target]?.available), delivery_allowed: template?.allowed_targets ?? ['hub_inbox', 'app_window'], state: row.state as ScheduleState, paused_by: row.paused_by, revision: row.revision, human_override: row.human_override,
       created_by: { kind: row.created_by_kind, agent_id: row.created_by_agent, label: label ?? (row.created_by_kind === 'human' ? 'Persona' : row.created_by_kind === 'system' ? 'Hub' : 'Agente') },
       admission_note: template?.admission_note ?? '',
       ...(last ? { last_run: { id: last.id, state: last.state, scheduled_for: last.scheduled_for, trigger: last.trigger, ...(last.skip_reason ? { skip_reason: last.skip_reason } : {}), ...(last.deferred_reason ? { deferred_reason: last.deferred_reason } : {}) } } : {}),
-      ...(last?.state === 'deferred' ? { deferred: { reason: last.deferred_reason ?? 'quota', resets_at: quota?.resets_at ?? null, next_attempt_at: last.next_attempt_at } } : {}) }
+      ...(last?.state === 'deferred' ? { deferred: { reason: last.deferred_reason ?? 'quota', resets_at: quota?.resets_at ?? null, next_attempt_at: last.next_attempt_at } } : {}),
+      ...(pausedAt ? { paused_at: pausedAt } : {}) }
   }
   /** Fixed sentence the agent repeats in its chat so the person always learns about a change. */
   private async announce(verb: string, row: ScheduleRow): Promise<string> {
