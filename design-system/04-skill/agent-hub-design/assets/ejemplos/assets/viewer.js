@@ -14,8 +14,9 @@
 
   var tabs = document.querySelectorAll('[data-tab]');
   function show(id) {
-    tabs.forEach(function (t) { t.classList.toggle('is-active', t.getAttribute('data-tab') === id); });
+    tabs.forEach(function (t) { var on = t.getAttribute('data-tab') === id; if (t.tagName === 'BUTTON') t.setAttribute('aria-pressed', String(on)); else t.classList.toggle('is-active', on); });
     document.querySelectorAll('[data-pane]').forEach(function (p) { p.hidden = p.getAttribute('data-pane') !== id; });
+    document.querySelectorAll('[data-pane-not]').forEach(function (p) { p.hidden = p.getAttribute('data-pane-not') === id; });
   }
   tabs.forEach(function (t) { t.addEventListener('click', function (e) { e.preventDefault(); show(t.getAttribute('data-tab')); }); });
   document.querySelectorAll('[data-goto]').forEach(function (a) { a.addEventListener('click', function (e) { e.preventDefault(); show(a.getAttribute('data-goto')); }); });

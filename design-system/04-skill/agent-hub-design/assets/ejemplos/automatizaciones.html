@@ -13,12 +13,11 @@
 <nav class="side" aria-label="Navegación principal">
 <div class="side-brand"><span class="side-mark"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"></circle><circle cx="18" cy="6" r="2.5"></circle><circle cx="12" cy="18" r="2.5"></circle><path d="M7.5 8 11 15.5M16.5 8 13 15.5"></path></svg></span>Agent Hub</div>
 <button class="cmdk" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><span style="flex: 1">Buscar o ir a…</span><span class="kbd">⌘K</span></button>
-<a class="nav-item" href="inicio.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h4l2 3h4l2-3h4"></path><path d="M5.5 5h13L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"></path></svg>Inicio<span class="badge attn">6</span></a>
+<a class="nav-item" href="inicio.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h4l2 3h4l2-3h4"></path><path d="M5.5 5h13L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"></path></svg>Inicio<span class="badge attn">7</span></a>
 
 <div class="nav-group">Trabajo</div>
 <a class="nav-item" href="proyectos.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>Proyectos</a>
 <a class="nav-item" href="memoria.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"></ellipse><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"></path></svg>Memoria</a>
-<a class="nav-item" href="colaboracion.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path></svg>Colaboración</a>
 <a class="nav-item is-active" href="automatizaciones.html"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>Automatizaciones</a>
 
 <div class="nav-group">Conexiones</div>
@@ -36,13 +35,15 @@
 </div>
 </nav>
 <main class="main">
+
+<div data-pane="activas">
 <div class="split">
 <div class="page">
 
 <div class="ph"><div class="ph-text"><h1 class="h1">Automatizaciones</h1></div></div>
 
 <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
-<div class="seg" role="group" aria-label="Vista"><button type="button" aria-pressed="true">Activas <span class="count">4</span></button><button type="button" aria-pressed="false">Pausadas <span class="count">1</span></button><button type="button" aria-pressed="false">Historial</button></div>
+<div class="seg" role="group" aria-label="Vista"><button type="button" aria-pressed="true" data-tab="activas">Activas <span class="count">4</span></button><button type="button" aria-pressed="false" data-tab="pausadas">Pausadas <span class="count">1</span></button><button type="button" aria-pressed="false" data-tab="historial">Historial <span class="badge attn">6</span></button></div>
 <button class="btn select" type="button">Proyecto: <b>Todos</b><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
 </div>
 
@@ -77,10 +78,10 @@
 </div>
 <hr class="divider">
 <div class="section" style="gap: 10px">
-<div class="section-h" style="min-height: 0"><span class="label">Últimas entregas</span></div>
+<div class="section-h" style="min-height: 0"><span class="label">Últimas entregas</span><a class="xs" href="#" data-goto="historial">Ver en Historial</a></div>
 <div class="list">
 <div class="row" style="min-height: 46px"><div class="row-main"><span class="trunc" style="font-weight: 500">Hoy 08:00</span><span class="row-sub">3 acciones propuestas</span></div><button class="btn btn-sm btn-primary" type="button">Revisar</button></div>
-<div class="row" style="min-height: 46px"><div class="row-main"><span class="trunc" style="font-weight: 500">Ayer 08:00</span><span class="row-sub">Leída</span></div><span class="chip c-ok">Entregada</span></div>
+<div class="row" style="min-height: 46px"><div class="row-main"><span class="trunc" style="font-weight: 500">Ayer 08:00</span><span class="row-sub">Vista</span></div><span class="chip c-ok">Entregada</span></div>
 <div class="row" style="min-height: 46px"><div class="row-main"><span class="trunc" style="font-weight: 500">Lun 27 oct 08:00</span><span class="row-sub">No se pudo leer el calendario</span></div><span class="chip c-danger">Falló</span></div>
 </div>
 </div>
@@ -88,6 +89,81 @@
 <div class="panel-f" style="justify-content: flex-start"><span class="xs t3">Los cambios se guardan solos</span></div>
 </aside>
 </div>
+</div>
+
+<div data-pane="pausadas" hidden>
+<div class="page">
+<div class="ph"><div class="ph-text"><h1 class="h1">Automatizaciones</h1></div></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<div class="seg" role="group" aria-label="Vista"><button type="button" aria-pressed="true" data-tab="activas">Activas <span class="count">4</span></button><button type="button" aria-pressed="false" data-tab="pausadas">Pausadas <span class="count">1</span></button><button type="button" aria-pressed="false" data-tab="historial">Historial <span class="badge attn">6</span></button></div>
+</div>
+<div class="list">
+<div class="row"><span class="av av-sm hue2">SL</span><div class="row-main"><span class="row-title">Cierre semanal de guardias</span><span class="row-sub">Soporte administrado Lumen · pausada por vos el 20 oct</span></div><span class="chip c-off">Pausada</span><button class="switch" type="button" role="switch" aria-checked="false" aria-label="Cierre semanal de guardias"></button></div>
+</div>
+</div>
+</div>
+
+<div data-pane="historial" hidden>
+<div class="split">
+<div class="page" style="gap: 16px">
+
+<div class="ph"><div class="ph-text"><h1 class="h1">Automatizaciones</h1></div><div class="ph-actions"><button class="btn" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 12 5 5L18 7M13 17l1 1 8-8"></path></svg>Marcar todas como vistas</button></div></div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<div class="seg" role="group" aria-label="Vista"><button type="button" aria-pressed="true" data-tab="activas">Activas <span class="count">4</span></button><button type="button" aria-pressed="false" data-tab="pausadas">Pausadas <span class="count">1</span></button><button type="button" aria-pressed="false" data-tab="historial">Historial <span class="badge attn">6</span></button></div>
+<button class="btn select" type="button">Mostrar: <b>Sin ver</b><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+<button class="btn select" type="button">Proyecto: <b>Todos</b><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button>
+</div>
+
+<div class="bulkbar" role="region" aria-label="Selección">
+<strong>3 seleccionadas</strong>
+<button class="btn btn-sm" type="button">Marcar como vistas</button>
+<button class="btn btn-sm btn-ghost" type="button">Marcar como no vistas</button>
+<a class="xs" href="#" style="margin-left: 4px">Seleccionar las 6 sin ver</a>
+<button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Quitar selección" style="margin-left: auto"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+</div>
+
+<div class="list scroll-x">
+<div class="row-head" style="min-width: 600px"><input class="check" type="checkbox" aria-label="Seleccionar todas las visibles"><span style="width: 8px"></span><span style="flex: 1">Hoy · 4 sin ver</span><span class="col" style="width: 150px">Resultado</span><span class="col" style="width: 48px; text-align: right">Hora</span></div>
+<div class="row is-selected" style="min-width: 600px"><input class="check" type="checkbox" aria-label="Seleccionar Brief diario de hoy"><span class="unread is-read" aria-hidden="true"></span><div class="row-main"><span class="row-title">Brief diario</span><span class="row-sub">Migración a AWS de Northwind</span></div><span class="col" style="width: 150px"><span class="chip c-warn">3 propuestas</span></span><span class="col xs t3 num" style="width: 48px; text-align: right">08:00</span></div>
+<div class="row is-unread" style="min-width: 600px"><input class="check" type="checkbox" checked aria-label="Seleccionar aviso de Gmail"><span class="unread" aria-label="Sin ver"></span><div class="row-main"><span class="row-title">Aviso · No se envió por Gmail</span><span class="row-sub">Brief diario · Gmail no está conectado</span></div><span class="col" style="width: 150px"><span class="chip c-danger">Falló un canal</span></span><span class="col xs t3 num" style="width: 48px; text-align: right">08:00</span></div>
+<div class="row is-unread" style="min-width: 600px"><input class="check" type="checkbox" checked aria-label="Seleccionar Resumen de guardias"><span class="unread" aria-label="Sin ver"></span><div class="row-main"><span class="row-title">Resumen de guardias</span><span class="row-sub">Soporte administrado Lumen</span></div><span class="col" style="width: 150px"><span class="chip c-ok">Entregada</span></span><span class="col xs t3 num" style="width: 48px; text-align: right">07:00</span></div>
+<div class="row is-unread" style="min-width: 600px"><input class="check" type="checkbox" checked aria-label="Seleccionar Recordatorio de parches"><span class="unread" aria-label="Sin ver"></span><div class="row-main"><span class="row-title">Recordatorio de parches mensuales</span><span class="row-sub">Soporte administrado Lumen</span></div><span class="col" style="width: 150px"><span class="chip c-ok">Entregada</span></span><span class="col xs t3 num" style="width: 48px; text-align: right">06:30</span></div>
+<div class="row is-unread" style="min-width: 600px"><input class="check" type="checkbox" aria-label="Seleccionar Alerta de costos"><span class="unread" aria-label="Sin ver"></span><div class="row-main"><span class="row-title">Alerta de costos de AWS</span><span class="row-sub">Migración a AWS de Northwind · gasto diario dentro del presupuesto</span></div><span class="col" style="width: 150px"><span class="chip c-ok">Entregada</span></span><span class="col xs t3 num" style="width: 48px; text-align: right">06:00</span></div>
+<div class="row-head" style="min-width: 600px; border-top: 1px solid var(--border)"><span style="width: 16px"></span><span style="width: 8px"></span><span style="flex: 1">Ayer · 2 sin ver</span></div>
+<div class="row is-unread" style="min-width: 600px"><input class="check" type="checkbox" aria-label="Seleccionar Cierre del día de ayer"><span class="unread" aria-label="Sin ver"></span><div class="row-main"><span class="row-title">Cierre del día</span><span class="row-sub">Migración a AWS de Northwind</span></div><span class="col" style="width: 150px"><span class="chip c-ok">Entregada</span></span><span class="col xs t3 num" style="width: 48px; text-align: right">17:30</span></div>
+<div class="row is-unread" style="min-width: 600px"><input class="check" type="checkbox" aria-label="Seleccionar aviso de calendario"><span class="unread" aria-label="Sin ver"></span><div class="row-main"><span class="row-title">Aviso · No se pudo leer el calendario</span><span class="row-sub">Brief diario · el token de Google venció</span></div><span class="col" style="width: 150px"><span class="chip c-danger">Falló</span></span><span class="col xs t3 num" style="width: 48px; text-align: right">08:00</span></div>
+</div>
+
+</div>
+
+<aside class="panel" aria-label="Entrega seleccionada">
+<div class="panel-h">
+<div style="display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1"><span class="h3">Brief diario · hoy 08:00</span><span class="xs t3"><a href="proyecto.html">Migración a AWS de Northwind</a> · entregado en la app</span></div>
+<button class="btn btn-sm btn-icon btn-ghost" type="button" aria-label="Más acciones: marcar como no vista, ver automatización"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle></svg></button>
+</div>
+<div class="panel-b" style="gap: 16px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span class="label">Resumen</span>
+<ul style="margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px" class="t2">
+<li>Ola 1 (ruteo) lista para el corte del sábado.</li>
+<li>Bloqueada: validar el túnel secundario.</li>
+<li>Hilo en #infra espera tu decisión.</li>
+</ul>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<span class="label">Acciones propuestas</span>
+<label style="display: flex; gap: 10px; align-items: flex-start"><input class="check" type="checkbox" checked style="margin-top: 2px"><span>Mover «Plan de rollback de la ola 1» a En curso <span class="t3 xs">· 2 h estimadas</span></span></label>
+<label style="display: flex; gap: 10px; align-items: flex-start"><input class="check" type="checkbox" checked style="margin-top: 2px"><span>Recordar a Northwind la validación del túnel <span class="t3 xs">· mail a Bruno Ledesma</span></span></label>
+<label style="display: flex; gap: 10px; align-items: flex-start"><input class="check" type="checkbox" style="margin-top: 2px"><span>Registrar 3 h en la tarea de Terraform <span class="t3 xs">· supone jornada completa</span></span></label>
+</div>
+<div style="display: flex; gap: 8px; flex-wrap: wrap"><button class="btn btn-primary btn-sm" type="button">Aprobar 2 seleccionadas</button><button class="btn btn-sm btn-ghost" type="button">Rechazar todas</button></div>
+</div>
+<div class="panel-f" style="justify-content: space-between"><button class="btn btn-sm btn-ghost" type="button">Anterior <span class="kbd">K</span></button><button class="btn btn-sm" type="button">Siguiente sin ver <span class="kbd">J</span></button></div>
+</aside>
+</div>
+</div>
+
 </main>
 </div>
 <button class="viewer-theme" type="button" data-theme-toggle aria-label="Cambiar tema">Tema claro / oscuro</button>
