@@ -933,7 +933,10 @@ export class LocalChat {
         ? `SELECT m.*,s.label AS author_label,s.cli_kind,${AUTHOR_SOURCE_SQL} AS author_source FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id
             WHERE m.thread_id=$1 AND m.author_id<>$2 AND NOT EXISTS(SELECT 1 FROM chat_read_receipts r WHERE r.session_id=$2 AND r.message_id=m.id)`
         : `SELECT m.*,s.label AS author_label,s.cli_kind,${AUTHOR_SOURCE_SQL} AS author_source FROM chat_messages m JOIN chat_sessions s ON s.id=m.author_id WHERE m.thread_id=$1`
-      const result = await this.page(query,unreadOnly ? [thread.id,who!.id] : [thread.id],'seq',input)
+      // seq is the local arrival order, which differs between hubs; an inter-hub thread reads in the origin's created_at
+      // (carried in every envelope) with the message id as tie-break, so every hub shows the same order.
+      const interhubThread=(await this.db.query('SELECT 1 FROM chat_channels WHERE id=$1 AND kind=$2',[thread.channel_id,INTERHUB_CHANNEL_KIND])).length>0
+      const result = await this.page(query,unreadOnly ? [thread.id,who!.id] : [thread.id],interhubThread ? 'created_at,id' : 'seq',input)
       let changed=false
       if (who) for (const m of result.items) {
         changed=(await this.db.query(`INSERT OR IGNORE INTO chat_read_receipts(session_id,message_id) VALUES($1,$2) RETURNING message_id`,[who.id,m.id])).length>0 || changed
