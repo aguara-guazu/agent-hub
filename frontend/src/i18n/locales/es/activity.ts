@@ -78,10 +78,12 @@ const activity = {
     columns: { event: "Evento", actor: "Quién", time: "Hora", grant: "Permiso", state: "Estado", granted: "Otorgado" },
     kind: {
       leadership_takeover: "Tomó el liderazgo",
-      leadership_kick: "Expulsión del canal",
+      leadership_kick: "Liderazgo retirado",
       leadership_reclaim: "Recuperó el liderazgo",
       leadership_rejected: "Liderazgo rechazado",
       leadership_designated: "Líder designado",
+      leadership_assigned: "Líder asignado por el Hub",
+      session_kicked: "Expulsión del canal",
       read_interest: "Interés de lectura",
       read_request: "Pedido de lectura",
       read_elevated: "Pedido elevado",

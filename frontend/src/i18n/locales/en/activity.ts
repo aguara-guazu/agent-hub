@@ -81,10 +81,12 @@ const activity = {
     columns: { event: "Event", actor: "Who", time: "Time", grant: "Access", state: "Status", granted: "Granted" },
     kind: {
       leadership_takeover: "Took over leadership",
-      leadership_kick: "Removed from channel",
+      leadership_kick: "Leadership removed",
       leadership_reclaim: "Reclaimed leadership",
       leadership_rejected: "Leadership rejected",
       leadership_designated: "Leader designated",
+      leadership_assigned: "Leader assigned by the Hub",
+      session_kicked: "Removed from channel",
       read_interest: "Read interest",
       read_request: "Read request",
       read_elevated: "Request forwarded",

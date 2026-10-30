@@ -44,8 +44,8 @@ export interface ReadGrantRow extends ReadGrant {
 
 /** Tipos de `chat_authority_events` (`AuthorityEventKind` de memory/chat-access.ts y `CHAT_WRAP_UP_EVENT_KINDS` de shared/collaboration.ts). */
 export const AUTHORITY_KINDS = [
-  "leadership_takeover", "leadership_kick", "leadership_reclaim", "leadership_rejected", "leadership_designated",
-  "read_interest", "read_request", "read_elevated", "read_granted", "read_rejected", "read_revoked", "read_cancelled",
+  "leadership_takeover", "leadership_kick", "leadership_reclaim", "leadership_rejected", "leadership_designated", "leadership_assigned",
+  "session_kicked", "read_interest", "read_request", "read_elevated", "read_granted", "read_rejected", "read_revoked", "read_cancelled",
   "agents_cleaned", "channel_archive_proposed", "channel_archive_proposal_cancelled", "channel_archived", "channel_unarchived",
 ] as const
 export type AuthorityKind = typeof AUTHORITY_KINDS[number]
