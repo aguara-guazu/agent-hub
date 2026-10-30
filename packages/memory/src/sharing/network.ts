@@ -2,19 +2,43 @@ import { createRequire } from 'node:module'
 import { type Duplex } from 'node:stream'
 import { z } from 'zod'
 import { check, parse, MemoryError } from '../contracts.js'
-import { publicIdentity, signature, validSignature, digest, type Identity } from './crypto.js'
+import { publicIdentity, signature, validSignature, digest, type Identity, type PublicIdentity } from './crypto.js'
 import { active } from './schema.js'
 import type { SharedPublications } from './publications.js'
 
 // Hyperswarm exposes Noise-encrypted streams and a DHT, with no application server or account service.
 const require = createRequire(import.meta.url)
 type PeerSocket = Duplex & { remotePublicKey: Buffer }
+interface PeerInfo { topics: Buffer[] }
 interface Discovery { refresh(): Promise<void> }
 interface Swarm {
-  keyPair: { publicKey: Buffer }; connections: Set<PeerSocket>
-  join(topic: Buffer): Discovery; leave(topic: Buffer): Promise<void>; destroy(): Promise<void>
-  on(event: 'connection', handler: (socket: PeerSocket) => void): this
+  keyPair: { publicKey: Buffer }; connections: Set<PeerSocket>; peers: Map<string, PeerInfo>
+  join(topic: Buffer, options?: { server: boolean; client: boolean }): Discovery; leave(topic: Buffer): Promise<void>; destroy(): Promise<void>
+  on(event: 'connection', handler: (socket: PeerSocket, info: PeerInfo) => void): this
   on(event: 'error', handler: (error: Error) => void): this
+}
+
+/** Authenticated peer handed to a NetworkExtension: identity and keys come from the verified hello, never from later frames. */
+export interface NetworkPeer {
+  readonly identity: PublicIdentity
+  readonly localNoise: string
+  readonly remoteNoise: string
+  /** Hex topics through which this hub discovered the peer as a client (empty when the peer dialed in). */
+  topics(): string[]
+  send(frame: unknown): Promise<void>
+  closed(): boolean
+}
+export interface NetworkTopic { topic: string; server: boolean; client: boolean; refreshMs: number }
+/**
+ * Additional protocol multiplexed on the sharing connections. Frames whose type starts with `ih_` are routed to it.
+ * It is only ever spoken to peers the extension itself selects, so peers that predate it never receive its frames.
+ */
+export interface NetworkExtension {
+  topics(): Promise<NetworkTopic[]>
+  connected(peer: NetworkPeer): Promise<void>
+  frame(peer: NetworkPeer, frame: Record<string, unknown>, bytes: number): Promise<void>
+  disconnected(peer: NetworkPeer): void
+  tick(peers: NetworkPeer[]): Promise<void>
 }
 export const networkSettingsSchema = z.object({ enabled: z.boolean().optional().transform(() => true), bootstrap: z.array(z.string().min(1).max(300)).max(20), bind_host: z.ipv4().default('0.0.0.0') }).strict()
 const MAX_FRAME = 55_000_000
@@ -24,7 +48,7 @@ const helloSchema = z.object({ type: z.literal('hello'), identity: z.object({ id
 interface Transfer { acknowledged: number; served: number; pulling: boolean }
 interface Connection {
   socket: PeerSocket; offer: () => Promise<void>; idle: () => Promise<void>; projects: () => string[]
-  identity: () => string | undefined; transfers: Map<string, Transfer>
+  identity: () => string | undefined; transfers: Map<string, Transfer>; peer: () => NetworkPeer | null
 }
 
 export class SharedNetwork {
@@ -32,11 +56,18 @@ export class SharedNetwork {
   private timer: ReturnType<typeof setInterval> | null = null
   private joined = new Set<string>()
   private discoveries = new Map<string, { handle: Discovery; next: number; refreshing: boolean }>()
+  private extensionTopics = new Map<string, { handle: Discovery; mode: string; next: number; refreshing: boolean }>()
   private connections = new Set<Connection>()
   private running: Promise<void> | null = null
   private stopped = false
   private lastError: string | null = null
+  private extension: NetworkExtension | null = null
   constructor(readonly sharing: SharedPublications) {}
+  attach(extension: NetworkExtension) { this.extension = extension }
+  /** Authenticated peers currently connected. */
+  peers(): NetworkPeer[] { return [...this.connections].map(c => c.peer()).filter((p): p is NetworkPeer => !!p && !p.closed()) }
+  /** Runs a full update after the one in flight, so topic changes made before the call are applied. */
+  async refresh() { await this.running; return this.tick() }
   async settings() {
     const row = (await this.sharing.store.db.query("SELECT value FROM settings WHERE key='sharing-network'"))[0]
     // Older installs may have saved enabled=false. Networking is now always on.
@@ -65,7 +96,9 @@ export class SharedNetwork {
     await this.sharing.syncSources()
     const settings = await this.settings()
     const projects = await this.sharing.store.db.query<{ id: string }>('SELECT id FROM shared_projects WHERE enabled=1')
-    if (!this.swarm && !projects.length) return
+    // A failed read keeps the current extension topics instead of leaving all of them.
+    const extensionTopics = this.extension ? await this.extension.topics().catch(() => null) : []
+    if (!this.swarm && !projects.length && !extensionTopics?.length) return
     if (!this.swarm) {
       const Hyperswarm = require('hyperswarm'), DHT = require('hyperdht'), who = await this.sharing.identity()
       // Each network lifetime gets a fresh transport key. Reusing a crashed
@@ -74,12 +107,14 @@ export class SharedNetwork {
       this.swarm = new Hyperswarm({ maxPeers: 32,
         dht: new DHT({ host: settings.bind_host ?? '0.0.0.0', ...(settings.bootstrap.length ? { bootstrap: settings.bootstrap } : {}) }) }) as Swarm
       this.swarm.on('error', () => { this.lastError = 'La red P2P no está disponible; se reintentará' })
-      this.swarm.on('connection', socket => {
+      this.swarm.on('connection', (socket, info) => {
         // Attach synchronously: a reset during initialization must not crash the Hub.
         socket.on('error', () => {})
-        void this.connect(socket, who).catch(() => socket.destroy())
+        void this.connect(socket, who, info).catch(() => socket.destroy())
       })
     }
+    if (extensionTopics) await this.joinExtensionTopics(extensionTopics)
+    else this.lastError = 'No se pudieron leer los canales entre hubs; se reintentará'
     const wanted = new Set(projects.map(p => p.id))
     const changed = wanted.size !== this.joined.size || [...wanted].some(id => !this.joined.has(id))
     for (const id of wanted) if (!this.joined.has(id)) {
@@ -96,9 +131,32 @@ export class SharedNetwork {
       discovery.refreshing = true; discovery.next = Date.now() + 30_000
       void discovery.handle.refresh().catch(() => { this.lastError = 'No se pudo renovar el descubrimiento P2P; se reintentará' }).finally(() => { discovery.refreshing = false })
     }
+    await this.extension?.tick(this.peers()).catch(() => { this.lastError = 'No se pudo sincronizar un canal entre hubs; se reintentará' })
     await this.sharing.applyPending()
   }
-  private async connect(socket: PeerSocket, who: Identity) {
+  private async joinExtensionTopics(wanted: NetworkTopic[]) {
+    const swarm = this.swarm
+    if (!swarm) return
+    const next = new Map(wanted.map(t => [t.topic, t]))
+    for (const [topic, state] of this.extensionTopics) {
+      const desired = next.get(topic)
+      if (desired && `${desired.server}:${desired.client}` === state.mode) continue
+      await swarm.leave(Buffer.from(topic, 'hex')).catch(() => {})
+      this.extensionTopics.delete(topic)
+    }
+    for (const topic of wanted) {
+      const state = this.extensionTopics.get(topic.topic)
+      if (!state) {
+        const handle = swarm.join(Buffer.from(topic.topic, 'hex'), { server: topic.server, client: topic.client })
+        this.extensionTopics.set(topic.topic, { handle, mode: `${topic.server}:${topic.client}`, next: Date.now() + (topic.refreshMs || 30_000), refreshing: false })
+        continue
+      }
+      if (!topic.refreshMs || state.refreshing || Date.now() < state.next) continue
+      state.refreshing = true; state.next = Date.now() + topic.refreshMs
+      void state.handle.refresh().catch(() => { this.lastError = 'No se pudo renovar el descubrimiento P2P; se reintentará' }).finally(() => { state.refreshing = false })
+    }
+  }
+  private async connect(socket: PeerSocket, who: Identity, info?: PeerInfo) {
     const swarm = this.swarm!
     if (this.stopped || socket.destroyed || !swarm) { socket.destroy(); return }
     let remote: z.infer<typeof helloSchema> | null = null, buffer = Buffer.alloc(0), queue = Promise.resolve(), pending = 0, queuedBytes = 0
@@ -166,18 +224,32 @@ export class SharedNetwork {
       }
       return project
     }
-    const entry = { socket, offer, idle: () => queue, projects: () => remote?.projects ?? [], identity: () => remote?.identity.id, transfers }; this.connections.add(entry)
-    socket.once('close', () => { clearTimeout(timeout); void queue.finally(() => this.connections.delete(entry)) })
-    const receive = async (frame: any) => {
+    let peer: NetworkPeer | null = null
+    const entry = { socket, offer, idle: () => queue, projects: () => remote?.projects ?? [], identity: () => remote?.identity.id, transfers, peer: () => peer }; this.connections.add(entry)
+    socket.once('close', () => {
+      clearTimeout(timeout)
+      void queue.finally(() => { this.connections.delete(entry); if (peer) this.extension?.disconnected(peer) })
+    })
+    const receive = async (frame: any, bytes: number) => {
       if (!remote) {
         const hello = parse(helloSchema, frame), { signature: proof, ...unsigned } = hello
         check(hello.noise_key === socket.remotePublicKey.toString('hex') && Math.abs(Date.now() - Date.parse(hello.created_at)) < 300_000
           && validSignature(unsigned, proof, hello.identity), 'Identidad del peer inválida', 403)
         remote = hello; clearTimeout(timeout); this.lastError = null
         await this.sharing.store.db.query(`INSERT INTO shared_peers(id,name,last_seen_at) VALUES($1,$2,now()) ON CONFLICT(id) DO UPDATE SET name=excluded.name,last_seen_at=now(),error=NULL`, [hello.identity.id, hello.identity.name])
-        await offer(); return
+        const identity = publicIdentity(hello.identity)
+        const remoteNoise = socket.remotePublicKey.toString('hex')
+        // Hyperswarm may replace the PeerInfo of a key (duplicate swaps, GC); a later lookup tags the current one.
+        peer = { identity, localNoise: swarm.keyPair.publicKey.toString('hex'), remoteNoise,
+          topics: () => [...new Set([...(info?.topics ?? []), ...(swarm.peers?.get(remoteNoise)?.topics ?? [])].map(t => t.toString('hex')))], send, closed: () => socket.destroyed }
+        await offer()
+        if (this.extension) void this.extension.connected(peer).catch(() => {})
+        return
       }
-      if (frame.type === 'offer') {
+      if (typeof frame.type === 'string' && frame.type.startsWith('ih_')) {
+        check(this.extension && peer, 'Mensaje P2P desconocido')
+        await this.extension.frame(peer, frame, bytes)
+      } else if (frame.type === 'offer') {
         const id = String(frame.packet?.genesis?.id)
         // A recovery holder or newly invited member may not exist in our old
         // membership yet. The signed chain must establish their authority first.
@@ -234,7 +306,7 @@ export class SharedNetwork {
         if (++pending > 32 || queuedBytes > MAX_FRAME * 2) { socket.destroy(); return }
         // Keep draining Noise while a reply is under backpressure. Pausing both peers
         // while they send large pages simultaneously would deadlock the connection.
-        queue = queue.then(async () => { if (!socket.destroyed) await receive(JSON.parse(line.toString('utf8'))) })
+        queue = queue.then(async () => { if (!socket.destroyed) await receive(JSON.parse(line.toString('utf8')), line.length) })
           .catch(error => { this.lastError = error instanceof MemoryError ? `Conexión cerrada: ${error.message}` : 'Un peer envió datos inválidos o perdió acceso; conexión cerrada'; socket.destroy() })
           .finally(() => { pending--; queuedBytes -= line.length })
       }
@@ -270,6 +342,6 @@ export class SharedNetwork {
     for (const c of connections) c.socket.destroy()
     await this.running
     await Promise.allSettled(connections.map(c => c.idle()))
-    await this.swarm?.destroy(); this.swarm = null; this.joined.clear(); this.discoveries.clear(); this.connections.clear()
+    await this.swarm?.destroy(); this.swarm = null; this.joined.clear(); this.discoveries.clear(); this.extensionTopics.clear(); this.connections.clear()
   }
 }
