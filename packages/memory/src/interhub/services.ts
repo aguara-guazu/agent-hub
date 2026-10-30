@@ -1,13 +1,21 @@
 import type { InterhubChatPayload, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import { INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
+import { ACTIVE_TEAM_STATES } from "../chat-access.js"
 import { check } from "../contracts.js"
+import { sessionStatus } from "../local-chat.js"
 import type { MemoryStore } from "../store.js"
 import { SharedProjects } from "../sharing/projects.js"
-import { InterhubChat } from "./chat.js"
+import { InterhubChat, INTERHUB_REMOTE_CLI_KIND } from "./chat.js"
 import { InterhubNetwork } from "./network.js"
 import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
 
-const asRole = (value: unknown): "leader" | "member" => value === "leader" ? "leader" : "member"
+const activeTeams = ACTIVE_TEAM_STATES.map(state => `'${state}'`).join(",")
+const peerName = (value: unknown) => {
+  try {
+    const identity = typeof value === "string" ? JSON.parse(value) : value
+    return typeof identity?.name === "string" && identity.name.trim() ? String(identity.name) : null
+  } catch { return null }
+}
 
 /**
  * Connects the tools and routes to the P2P replica (InterhubNetwork) and the chat model (InterhubChat).
@@ -16,7 +24,8 @@ const asRole = (value: unknown): "leader" | "member" => value === "leader" ? "le
  */
 export function createInterhubServices(store: MemoryStore, changed?: () => void): InterhubServices {
   const network = new InterhubNetwork(store), db = store.db
-  const localHubId = async () => (await new SharedProjects(store).identity()).id
+  const localIdentity = () => new SharedProjects(store).identity()
+  const localHubId = async () => (await localIdentity()).id
   const chat = new InterhubChat(store, {
     hubs: async channelId => (await network.listHubs(channelId)).map(hub => ({ id: String(hub.id), name: String(hub.name), is_local: Boolean(hub.is_local), connection: hub.connection === "online" ? "online" : "offline" })),
     localHubId,
@@ -35,7 +44,6 @@ export function createInterhubServices(store: MemoryStore, changed?: () => void)
     `SELECT 1 FROM interhub_members m JOIN chat_sessions s ON s.id=m.leader_session_id
      WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL AND m.leader_session_id=$3 AND s.closed_at IS NULL AND s.removed_at IS NULL`,
     [channelId, await localHubId(), caller.id]))[0])
-  const state = (row: Record<string, any>) => row.removed_at || row.closed_at ? "offline" : String(row.state ?? "unknown")
 
   return {
     createChannel: (caller, input) => network.createChannel(caller, { name: input.name, projectId: input.projectId ?? null }),
@@ -46,26 +54,32 @@ export function createInterhubServices(store: MemoryStore, changed?: () => void)
       return network.joinChannel(caller, code)
     },
     rotateCode: (caller, channelId, action) => network.rotateCode(caller, channelId, action),
+    /**
+     * Local hub: its leader in the channel, sessions of the channel and joined members of active teams mastered there.
+     * Remote hubs: sessions announced by signed presence plus the leader of their signed membership. The role is always
+     * derived from the hub's leader_session_id, so each hub shows at most one leader.
+     */
     async roster(channelId): Promise<InterhubRoster | null> {
       if (!await interhubChannel(channelId)) return null
-      const local = await localHubId()
-      const members = await db.query("SELECT hub_id,peer_identity,leader_session_id,leader_label FROM interhub_members WHERE channel_id=$1 AND removed_at IS NULL ORDER BY hub_id=$2 DESC,joined_at", [channelId, local])
+      const local = await localIdentity()
+      const members = await db.query("SELECT hub_id,peer_identity,leader_session_id,leader_label FROM interhub_members WHERE channel_id=$1 AND removed_at IS NULL ORDER BY hub_id=$2 DESC,joined_at,hub_id", [channelId, local.id])
       const hubs: InterhubRosterHub[] = []
       for (const member of members) {
-        const isLocal = member.hub_id === local
+        const isLocal = member.hub_id === local.id, leaderId = member.leader_session_id ? String(member.leader_session_id) : null
         let agents: InterhubRosterAgent[]
         if (isLocal) {
           const rows = await db.query(
-            `SELECT id,COALESCE(nickname,label) AS label,cli_kind,state,closed_at,removed_at FROM chat_sessions
-             WHERE (id=$2 OR channel_id=$1) AND cli_kind<>'interhub-remote' AND nickname IS NOT NULL AND removed_at IS NULL AND closed_at IS NULL`, [channelId, member.leader_session_id])
-          agents = rows.map(row => ({ id: String(row.id), label: String(row.label), cli_kind: String(row.cli_kind), role: row.id === member.leader_session_id ? "leader" : "member", state: state(row) }))
+            `SELECT s.* FROM chat_sessions s WHERE (s.id=$2 OR s.channel_id=$1 OR s.id IN (SELECT m.session_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+               WHERE p.master_channel_id=$1 AND m.state='joined' AND p.state IN (${activeTeams})))
+             AND s.cli_kind NOT IN ($3,'hub') AND s.nickname IS NOT NULL AND s.removed_at IS NULL AND s.closed_at IS NULL ORDER BY s.created_at,s.id`, [channelId, leaderId, INTERHUB_REMOTE_CLI_KIND])
+          agents = rows.map(row => ({ id: String(row.id), label: String(row.nickname ?? row.label), cli_kind: String(row.cli_kind), role: row.id === leaderId ? "leader" : "member", state: sessionStatus(row).state }))
         } else {
-          const rows = await db.query("SELECT session_id,label,cli_kind,role,state FROM interhub_remote_sessions WHERE channel_id=$1 AND hub_id=$2", [channelId, member.hub_id])
-          agents = rows.map(row => ({ id: String(row.session_id), label: String(row.label), cli_kind: String(row.cli_kind), role: asRole(row.role), state: String(row.state) }))
+          const rows = await db.query("SELECT session_id,label,cli_kind,state FROM interhub_remote_sessions WHERE channel_id=$1 AND hub_id=$2 ORDER BY occurred_at,session_id", [channelId, member.hub_id])
+          agents = rows.map(row => ({ id: String(row.session_id), label: String(row.label), cli_kind: String(row.cli_kind), role: row.session_id === leaderId ? "leader" : "member", state: String(row.state) }))
+          if (leaderId && !agents.some(agent => agent.id === leaderId)) agents.push({ id: leaderId, label: String(member.leader_label), cli_kind: "unknown", role: "leader", state: "unknown" })
         }
         agents.sort((a, b) => Number(b.role === "leader") - Number(a.role === "leader"))
-        const identity = typeof member.peer_identity === "string" ? JSON.parse(member.peer_identity) : member.peer_identity
-        hubs.push({ id: String(member.hub_id), name: String(identity?.name ?? member.leader_label), is_local: isLocal, agent_count: agents.length,
+        hubs.push({ id: String(member.hub_id), name: isLocal ? local.name : peerName(member.peer_identity) ?? String(member.leader_label), is_local: isLocal, agent_count: agents.length,
           leader_id: agents.find(agent => agent.role === "leader")?.id ?? null, agents })
       }
       return { hub_count: hubs.length, agent_count: hubs.reduce((sum, hub) => sum + hub.agent_count, 0), hubs }
