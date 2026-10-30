@@ -1,3 +1,5 @@
+import { useQuery } from "@tanstack/react-query"
+import { api } from "./api"
 import { useRuns, useSchedules, type RunListItem } from "./automations"
 import { useOverview, type LocalClient } from "./local"
 import { useMemory, useMemoryStatus, type MemoryEntity, type Page } from "./memory"
@@ -15,6 +17,7 @@ import type { McpServer } from "./types"
  * - duplicados, vínculos de identidad y sugerencias de proyecto → memoria `list_duplicate_proposals`, `list_identity_proposals`, `list_project_suggestions`
  * - hechos por revisar, personas sin email y fuentes sin proyecto → memoria `review`
  * - pedidos de lectura entre proyectos que un líder elevó → `GET /memory/chat/read-requests?state=pending_person`
+ * - debates con una resolución propuesta que espera a la persona → `GET /memory/chat/pending-decisions`
  */
 
 /** Tamaño de página de cada fuente; Inicio muestra las primeras filas y el resto queda detrás de «Ver todos». */
@@ -32,6 +35,43 @@ export interface ProjectSuggestion {
   data: { source_entity_id: string; candidate_project_id?: string | null; candidate_project_title?: string | null; confidence?: string; suggested_title?: string | null; suggested_description?: string | null; reason?: string }
 }
 
+/**
+ * Fila de `GET /memory/chat/pending-decisions`: misma forma que `ChatPendingDebate` de `@agenthub/shared` (colab-back).
+ * Se declara acá hasta integrar esa rama; al integrarla, reemplazar por el import.
+ */
+export interface PendingDebate {
+  resolution_id: string
+  thread_id: string
+  thread_title: string
+  channel_id: string
+  channel_name: string
+  project_id: string | null
+  project_title: string | null
+  text: string
+  agreed_count: number
+  participant_count: number
+  proposed_by_label: string
+  created_at: string
+}
+
+/**
+ * Debates con una resolución propuesta que espera a la persona. Es una fuente opcional: si la ruta no existe todavía
+ * o falla, Inicio sigue sin esas filas y la bandeja nunca pasa a error. Solo cuentan los de canales con proyecto,
+ * porque la colaboración vive en la pestaña del proyecto.
+ */
+export function usePendingDebates() {
+  const query = useQuery({
+    queryKey: ["memory", "chat", "pending-decisions"],
+    queryFn: () => api.get<{ items: PendingDebate[] }>(`/memory/chat/pending-decisions?limit=${PENDING_PAGE}&offset=0`),
+    retry: false,
+    refetchInterval: 30_000,
+  })
+  const items = (query.data?.items ?? [])
+    .filter((debate): debate is PendingDebate & { project_id: string } => Boolean(debate.project_id))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+  return { items, refetch: query.refetch }
+}
+
 export interface PendingInbox {
   /** Sin datos de ninguna fuente todavía. */
   loading: boolean
@@ -46,6 +86,7 @@ export interface PendingInbox {
     failingConnectors: Connector[]
   }
   agents: {
+    debates: Array<PendingDebate & { project_id: string }>
     decisions: RunListItem[]
     unreadOther: number
     readRequests: ReadRequest[]
@@ -82,6 +123,7 @@ export function usePendingInbox(): PendingInbox {
   const suggestions = useMemory<Page<ProjectSuggestion>>("list_project_suggestions", { limit: PENDING_PAGE, offset: 0 }, ready)
   const review = useMemory<Page<MemoryEntity>>("review", { limit: REVIEW_PAGE, offset: 0 }, ready)
   const readRequests = usePendingReadRequests()
+  const debates = usePendingDebates()
 
   const decisions = (runs.data?.items ?? []).filter(run => run.decision?.state === "pending")
   const decided = new Set(decisions.map(run => run.run_id))
@@ -104,7 +146,7 @@ export function usePendingInbox(): PendingInbox {
       gmailScopeMissing: gmail?.reason === "scope_missing" ? { destination: gmail.destination ?? null } : null,
       failingConnectors: (connectors.data ?? []).filter(connector => connector.enabled && Boolean(connector.last_error)),
     },
-    agents: { decisions, unreadOther, readRequests: readRequests.data?.items ?? [] },
+    agents: { debates: debates.items, decisions, unreadOther, readRequests: readRequests.data?.items ?? [] },
     memory: {
       duplicates: duplicates.data?.items ?? [],
       identities: identities.data?.items ?? [],
@@ -114,13 +156,13 @@ export function usePendingInbox(): PendingInbox {
       unassignedSources,
     },
   }
-  const refetch = () => { void servers.refetch(); void overview.refetch(); void runs.refetch(); void memoryStatus.refetch(); void readRequests.refetch() }
+  const refetch = () => { void servers.refetch(); void overview.refetch(); void runs.refetch(); void memoryStatus.refetch(); void readRequests.refetch(); void debates.refetch() }
   return { ...inbox, count: pendingRows(inbox), refetch }
 }
 
 function pendingRows({ connections: c, agents: a, memory: m }: Omit<PendingInbox, "count" | "refetch">): number {
   return (c.oauthServers.length > 0 ? 1 : 0) + c.restartClients.length + (c.gmailScopeMissing ? 1 : 0) + c.failingConnectors.length
-    + a.decisions.length + (a.unreadOther > 0 ? 1 : 0) + a.readRequests.length
+    + a.debates.length + a.decisions.length + (a.unreadOther > 0 ? 1 : 0) + a.readRequests.length
     + m.duplicates.length + m.identities.length + m.suggestions.length + m.facts.length
     + (m.unresolvedPeople > 0 ? 1 : 0) + (m.unassignedSources > 0 ? 1 : 0)
 }

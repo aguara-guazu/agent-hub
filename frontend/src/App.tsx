@@ -2,7 +2,7 @@ import "./styles/fonts.css"
 import "./styles/ah.css"
 import { Outlet, Route, Routes } from "react-router-dom"
 import Layout from "./components/Layout"
-import { Redirect } from "./components/RouteFallbacks"
+import { CollaborationRedirect, Redirect } from "./components/RouteFallbacks"
 import { Button } from "./components/ui/basics"
 import { Empty, Loading } from "./components/ui/display"
 import { ToastProvider } from "./components/ui/Toast"
@@ -14,7 +14,6 @@ import MemoryPage from "./pages/memory/MemoryPage"
 import MemoryEntityView from "./pages/memory/EntityPage"
 import ProjectPage from "./pages/project/ProjectPage"
 import ProjectsPage from "./pages/projects/ProjectsPage"
-import CollaborationPage from "./pages/collaboration/CollaborationPage"
 import ActivityPage from "./pages/activity/ActivityPage"
 import SettingsPage from "./pages/settings/SettingsPage"
 import SkillsPage from "./pages/skills/SkillsPage"
@@ -53,7 +52,7 @@ export function App() {
               <Route path="projects/:id" element={<ProjectPage />} />
               <Route path="memory" element={<MemoryPage />} />
               <Route path="memory/entities/:id" element={<MemoryEntityView />} />
-              <Route path="collaboration" element={<CollaborationPage />} />
+              <Route path="collaboration/*" element={<CollaborationRedirect />} />
               <Route path="automations" element={<AutomationsPage />} />
               <Route path="automations/deliveries/:runId" element={<AutomationsPage />} />
 
@@ -67,7 +66,7 @@ export function App() {
               <Route path="schedules" element={<Redirect to="/automations" />} />
               <Route path="deliveries" element={<Redirect to="/automations?view=history" />} />
               <Route path="deliveries/:runId" element={<Redirect to={params => `/automations/deliveries/${params.runId}`} />} />
-              <Route path="memory/collaboration" element={<Redirect to="/collaboration" />} />
+              <Route path="memory/collaboration/*" element={<CollaborationRedirect />} />
               <Route path="memory/search" element={<Redirect to="/memory" />} />
               <Route path="memory/review" element={<Redirect to="/home" />} />
               <Route path="memory/sources" element={<Redirect to="/settings?section=fuentes" keepSearch={false} />} />

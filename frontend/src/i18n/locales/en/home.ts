@@ -56,6 +56,11 @@ const home = {
     title: "The “{{name}}” source isn’t syncing",
     detail: "No new content is reaching memory from this source",
   },
+  debate: {
+    title: "A debate in #{{channel}} is waiting for your decision",
+    agreed_one: "{{agreed, number}} of {{count, number}} agent in agreement",
+    agreed_other: "{{agreed, number}} of {{count, number}} agents in agreement",
+  },
   decision: {
     title_one: "{{title}} proposes {{count, number}} action",
     title_other: "{{title}} proposes {{count, number}} actions",
