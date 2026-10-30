@@ -162,7 +162,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
           </div>
         </div>
 
-        <Tabs<Tab> tabs={tabs} value={tab} onChange={value => setParam("tab", value === "resumen" ? null : value)} label={t("header.tabs.label")} idPrefix="project-tab" />
+        <Tabs<Tab> tabs={tabs} value={tab} onChange={value => setParam("tab", value === "resumen" ? null : value)} label={t("header.tabs.label")} idPrefix="project-tab" max={TABS.length} />
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-6)", alignItems: "flex-start" }}>
           <div style={{ flex: "999 1 520px", minWidth: 0 }}>

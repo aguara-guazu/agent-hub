@@ -33,9 +33,10 @@ export function Seg<T extends string>({ options, value, onChange, label }: { opt
 export interface TabItem<T extends string> { value: T; label: string; count?: number }
 
 /** Cambia el contenido de una ficha. Máximo 5: las demás se ignoran. */
-export function Tabs<T extends string>({ tabs, value, onChange, label, idPrefix = "tab" }: { tabs: readonly TabItem<T>[]; value: T; onChange: (value: T) => void; label: string; idPrefix?: string }) {
+/** Máximo cinco pestañas; `max` solo para una excepción acordada con la persona (ficha de proyecto: seis). */
+export function Tabs<T extends string>({ tabs, value, onChange, label, idPrefix = "tab", max = 5 }: { tabs: readonly TabItem<T>[]; value: T; onChange: (value: T) => void; label: string; idPrefix?: string; max?: number }) {
   const refs = useRef<Array<HTMLButtonElement | null>>([])
-  const visible = tabs.slice(0, 5)
+  const visible = tabs.slice(0, max)
   function onKeyDown(event: KeyboardEvent, index: number) {
     const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0
     if (!delta) return
