@@ -4,7 +4,7 @@ import { Link } from "react-router-dom"
 import { Avatar, Empty, ErrorState, SkeletonRows, Tag } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { useMemory } from "../../../lib/memory"
-import { MESSAGE_PAGE, Pager } from "../../collaboration/shared"
+import { MESSAGE_PAGE, Pager } from "./chatShared"
 import { messageKind, type BoardChannel, type BoardMessage, type Resolution, type ThreadRead } from "./collabData"
 
 /**

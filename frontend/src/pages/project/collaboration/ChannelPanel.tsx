@@ -3,12 +3,12 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   Avatar, Chip, ConfirmDialog, Dl, Empty, ErrorState, Field, Input, List, MoreMenu, Panel, PanelBody, PanelHeader, Row, SkeletonRows,
   absoluteTime, describeError, type ChipTone, type MenuItem,
-} from "../../components/ui"
-import { useT } from "../../i18n"
-import { api } from "../../lib/api"
-import { useMemory, type Page } from "../../lib/memory"
-import { AGENT_PAGE, AGENT_TONE, Pager, SCOPE, agentState, capabilityKey, useCliLabel, visibleAgents, TRUNC } from "./shared"
-import type { Channel, Participant } from "./types"
+} from "../../../components/ui"
+import { useT } from "../../../i18n"
+import { api } from "../../../lib/api"
+import { useMemory, type Page } from "../../../lib/memory"
+import { AGENT_PAGE, AGENT_TONE, Pager, agentState, capabilityKey, useCliLabel, visibleAgents, TRUNC } from "./chatShared"
+import type { Channel, Participant } from "./chatTypes"
 
 // Motivos que el Hub guarda en el historial; son datos de la API, no texto de la interfaz.
 const KICK_REASON = "Expulsado por la persona desde la UI"
@@ -29,8 +29,8 @@ type Uncertain = { uncertain_members?: string[] }
 
 export interface ChannelPanelProps {
   channel: Channel
-  /** Alcance de chat_agents y de la expulsión: canal del proyecto (`project_id`) o sin proyecto. */
-  projectId?: string
+  /** Proyecto del canal: alcance de chat_agents y de la expulsión. */
+  projectId: string
   agentOffset: number
   onAgentOffset: (offset: number) => void
   onThreads: (channelId: string, agentId?: string) => void
@@ -89,13 +89,12 @@ export function ChannelPanel(props: ChannelPanelProps) {
   const [removing, setRemoving] = useState<Participant | null>(null)
   const [reason, setReason] = useState("")
   const [coordinating, setCoordinating] = useState<Participant | null>(null)
-  const scope = projectId ? { project_id: projectId } : SCOPE
 
-  const agents = useMemory<Page<Participant>>("chat_agents", { ...scope, include_team_history: true, channel_id: channel.id, limit: AGENT_PAGE, offset: agentOffset })
+  const agents = useMemory<Page<Participant>>("chat_agents", { project_id: projectId, include_team_history: true, channel_id: channel.id, limit: AGENT_PAGE, offset: agentOffset })
   const refresh = () => void cache.invalidateQueries({ queryKey: ["memory"] })
 
   const kick = useMutation({
-    mutationFn: (input: { channel_id: string; participant_id: string; reason: string }) => api.post("/memory/chat/kick", projectId ? { ...input, project_id: projectId } : input),
+    mutationFn: (input: { channel_id: string; participant_id: string; reason: string }) => api.post("/memory/chat/kick", { ...input, project_id: projectId }),
     onSuccess: () => { setRemoving(null); setReason(""); onAgentOffset(0); refresh() },
   })
   const designate = useMutation({

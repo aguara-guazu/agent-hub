@@ -3,11 +3,11 @@ import { Link } from "react-router-dom"
 import { Avatar, Badge, Banner, Button, Chip, Empty, ErrorState, MoreMenu, Seg, SkeletonRows, cx, useToast, type MenuItem } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
-import { AgentPanel } from "../../collaboration/AgentPanel"
-import { ChannelPanel, DeleteChannelDialog } from "../../collaboration/ChannelPanel"
-import { PlanPanel } from "../../collaboration/PlanPanel"
-import { visibleAgents } from "../../collaboration/shared"
-import type { Participant } from "../../collaboration/types"
+import { AgentPanel } from "./AgentPanel"
+import { ChannelPanel, DeleteChannelDialog } from "./ChannelPanel"
+import { PlanPanel } from "./PlanPanel"
+import { visibleAgents } from "./chatShared"
+import type { Participant } from "./chatTypes"
 import { SidePanel, useWorkPanel } from "../work"
 import { useBoardParams, type BoardChannel, type BoardThread, type ThreadState } from "./collabData"
 import { TrashPanel } from "./BoardPanels"
@@ -25,6 +25,7 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
   const toast = useToast()
   const params = useBoardParams()
   const [notice, setNotice] = useState<Notice>(null)
+  const [agentOffset, setAgentOffset] = useState(0)
   const agentsPanel = useWorkPanel("agents")
   const agentPanel = useWorkPanel("agent")
   const planPanel = useWorkPanel("plan")
@@ -51,12 +52,12 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
         key={target.id}
         channel={target}
         projectId={project.id}
-        agentOffset={0}
-        onAgentOffset={() => undefined}
+        agentOffset={agentOffset}
+        onAgentOffset={setAgentOffset}
         onThreads={id => { agentsPanel.close(); selectChannel(id) }}
         onThread={(id, channelId) => { agentsPanel.close(); openThread(id, channelId) }}
         onPlan={id => planPanel.open(id)}
-        onChannel={id => agentsPanel.open(id)}
+        onChannel={id => { setAgentOffset(0); agentsPanel.open(id) }}
         onInspect={agent => agentPanel.open(agent.id)}
         onDesignated={uncertain => { if (uncertain) setNotice("designateUncertain"); else toast.success(t("collaboration.board.designated")) }}
         onClose={agentsPanel.close}
@@ -113,7 +114,7 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
                 threadId={params.thread}
                 onState={state => params.patch({ tstate: state === "open" ? null : state, thread: null })}
                 onThread={id => openThread(id)}
-                onAgents={() => agentsPanel.open(channel.id)}
+                onAgents={() => { setAgentOffset(0); agentsPanel.open(channel.id) }}
                 onPlan={id => planPanel.open(id)}
                 onTrash={() => trashPanel.open()}
                 onDeleted={uncertain => {

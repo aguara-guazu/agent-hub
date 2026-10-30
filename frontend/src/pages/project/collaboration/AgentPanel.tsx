@@ -1,8 +1,8 @@
-import { Avatar, Button, Chip, Dl, Panel, PanelBody, PanelHeader, absoluteTime } from "../../components/ui"
-import { useT } from "../../i18n"
+import { Avatar, Button, Chip, Dl, Panel, PanelBody, PanelHeader, absoluteTime } from "../../../components/ui"
+import { useT } from "../../../i18n"
 import { LiveOutputSlot } from "./LiveOutputSlot"
-import { AGENT_TONE, agentState, capabilityKey, useCliLabel } from "./shared"
-import type { Participant } from "./types"
+import { AGENT_TONE, agentState, capabilityKey, useCliLabel } from "./chatShared"
+import type { Participant } from "./chatTypes"
 
 /** Agente de un canal: datos de conexión y su salida en vivo. Solo lectura. */
 export function AgentPanel({ agentId, agent, onClose, onThreads }: { agentId: string; agent?: Participant; onClose: () => void; onThreads: () => void }) {

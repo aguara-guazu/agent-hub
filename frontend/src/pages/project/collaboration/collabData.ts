@@ -1,7 +1,7 @@
 import { useCallback } from "react"
 import { useSearchParams } from "react-router-dom"
 import type { Page } from "../../../lib/memory"
-import type { Channel, Message, Thread } from "../../collaboration/types"
+import type { Channel, Message, Thread } from "./chatTypes"
 
 /**
  * Campos de lectura que colab-back suma a chat_channels / chat_threads / chat_read (packages/shared/src/collaboration.ts).

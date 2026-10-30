@@ -2,11 +2,11 @@ import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   Button, Chip, Dl, ErrorState, List, Loading, MoreMenu, Panel, PanelBody, PanelHeader, Row, absoluteTime, type ChipTone, type MenuItem,
-} from "../../components/ui"
-import { useT } from "../../i18n"
-import { api } from "../../lib/api"
-import { EFFORTS, PLAN_TONE, QUOTA_TONE, memberQuota, planState, useCliLabel, type Effort, TRUNC } from "./shared"
-import type { Member, Plan } from "./types"
+} from "../../../components/ui"
+import { useT } from "../../../i18n"
+import { api } from "../../../lib/api"
+import { EFFORTS, PLAN_TONE, QUOTA_TONE, memberQuota, planState, useCliLabel, type Effort, TRUNC } from "./chatShared"
+import type { Member, Plan } from "./chatTypes"
 
 type WorkState = "delivered" | "waiting" | "progress" | "report" | "none"
 const WORK_TONE: Record<WorkState, ChipTone> = { delivered: "ok", waiting: "warn", progress: "info", report: "info", none: "off" }
