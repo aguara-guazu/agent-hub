@@ -1,14 +1,14 @@
-import { useEffect, useState } from "react"
-import { Link } from "react-router-dom"
+import { useEffect, useRef, useState } from "react"
+import { Link, useNavigate } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
-import { Button, Chip, ConfirmDialog, Dl, ErrorState, Input, List, Loading, Panel, PanelBody, PanelHeader, useToast } from "../../components/ui"
+import { Button, Chip, ConfirmDialog, Dl, ErrorState, Input, Kbd, Loading, MoreMenu, Panel, PanelBody, PanelHeader, useToast } from "../../components/ui"
 import type { ChipTone } from "../../components/ui"
 import { Markdown } from "../../components/Markdown"
 import { useFormat, useT } from "../../i18n"
 import { ApiError } from "../../lib/api"
 import { RETRY_ERROR_CODES, STORE_ITEM_TO_PUBLIC, markRunRead, useDecision, useDecisionActions, useRetryDelivery, useRun } from "../../lib/automations"
 import type { DeliveryTarget, DeliveryView, ItemKind, ItemState, PublicItem, RunDetail, RunListItem } from "../../lib/automations"
-import { ARTIFACTS, RUN_TONES, useActionError, useScheduleText } from "./shared"
+import { ARTIFACTS, RUN_TONES, runWhen, useActionError, useDayText, useScheduleText } from "./shared"
 
 /** Ítems cuyo efecto no se corrige después: se confirman viendo el efecto exacto. */
 const SENSITIVE_KINDS: readonly ItemKind[] = ["git_push", "jira_transition", "jira_comment"]
@@ -100,7 +100,7 @@ function ItemsBlock({ run }: { run: RunDetail }) {
     <section className="section" style={{ gap: "var(--sp-3)" }}>
       <span className="label">{t("decision.title")}</span>
       {notice && <span className="xs" role="status" style={{ color: "var(--warn)" }}>{notice}</span>}
-      <List>
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
         {merged.map(item => {
           const mutable = item.state === "proposed" && open
           const estimate = item.estimate
@@ -111,50 +111,57 @@ function ItemsBlock({ run }: { run: RunDetail }) {
             estimate.would_change ? t("decision.wouldChange", { text: estimate.would_change }) : null,
             estimate.approved_seconds !== undefined ? t("decision.approvedHours", { hours: text.hours(estimate.approved_seconds) }) : null,
             estimate.sent_seconds !== undefined ? t("decision.sentHours", { hours: text.hours(estimate.sent_seconds) }) : null,
-          ].filter(Boolean).join(" · ") : null
+          ].filter(Boolean).join(" · ") : undefined
+          // Lo que alcanza para decidir en la línea; el detalle completo de la estimación queda en el título.
+          const hint = estimate
+            ? [t("decision.estimatedInline", { hours: text.hours(estimate.seconds) }), estimate.assumptions?.[0]].filter(Boolean).join(" · ")
+            : ts(`item.${item.kind}`)
           const revisable = mutable && item.kind === "jira_worklog"
           return (
-            <div className="row" key={item.ordinal} style={{ alignItems: "flex-start" }}>
-              <input
-                type="checkbox"
-                aria-label={t("decision.select", { ordinal: item.ordinal })}
-                style={{ accentColor: "var(--accent)", marginTop: "var(--sp-1)" }}
-                disabled={!mutable}
-                checked={mutable && chosen.has(item.ordinal)}
-                onChange={() => toggle(item.ordinal)}
-              />
-              <div className="row-main">
-                <span className="clamp2" style={{ fontWeight: 500 }}>{item.summary}</span>
-                <span className="row-sub">{ts(`item.${item.kind}`)}</span>
-                {details && <span className="xs t3 clamp2" title={details}>{details}</span>}
-                {revisable && (
-                  <div style={{ display: "flex", gap: "var(--sp-2)", alignItems: "center", marginTop: "var(--sp-1)" }}>
-                    <Input
-                      mono
-                      inputMode="decimal"
-                      aria-label={t("decision.reviseLabel", { ordinal: item.ordinal })}
-                      style={{ width: 76 }}
-                      value={hours[item.ordinal] ?? ""}
-                      onChange={event => setHours(current => ({ ...current, [item.ordinal]: event.target.value }))}
-                      onKeyDown={event => { if (event.key === "Enter") revise(item.ordinal) }}
-                    />
-                    <Button small disabled={actions.revise.isPending || !(Number((hours[item.ordinal] ?? "").replace(",", ".")) >= 0.5)} onClick={() => revise(item.ordinal)}>{t("decision.revise")}</Button>
-                  </div>
-                )}
-              </div>
-              <Chip tone={ITEM_TONES[item.state]}>{ts(`itemState.${item.state}`)}</Chip>
+            <div key={item.ordinal} style={{ display: "flex", flexDirection: "column", gap: "var(--sp-1)" }}>
+              <label style={{ display: "flex", gap: "var(--sp-3)", alignItems: "flex-start", cursor: mutable ? "pointer" : undefined }} title={details}>
+                <input
+                  className="check"
+                  type="checkbox"
+                  aria-label={t("decision.select", { ordinal: item.ordinal })}
+                  style={{ marginTop: "var(--sp-1)" }}
+                  disabled={!mutable}
+                  checked={mutable && chosen.has(item.ordinal)}
+                  onChange={() => toggle(item.ordinal)}
+                />
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  {item.summary} <span className="t3 xs">· {hint}</span>
+                </span>
+                {item.state !== "proposed" && <Chip tone={ITEM_TONES[item.state]}>{ts(`itemState.${item.state}`)}</Chip>}
+              </label>
+              {revisable && (
+                <div style={{ display: "flex", gap: "var(--sp-2)", alignItems: "center", paddingLeft: "calc(var(--sp-4) + var(--sp-3))" }}>
+                  <Input
+                    mono
+                    inputMode="decimal"
+                    aria-label={t("decision.reviseLabel", { ordinal: item.ordinal })}
+                    style={{ width: 76 }}
+                    value={hours[item.ordinal] ?? ""}
+                    onChange={event => setHours(current => ({ ...current, [item.ordinal]: event.target.value }))}
+                    onKeyDown={event => { if (event.key === "Enter") revise(item.ordinal) }}
+                  />
+                  <Button small variant="ghost" disabled={actions.revise.isPending || !(Number((hours[item.ordinal] ?? "").replace(",", ".")) >= 0.5)} onClick={() => revise(item.ordinal)}>{t("decision.revise")}</Button>
+                </div>
+              )}
             </div>
           )
         })}
-      </List>
+      </div>
       {open && request && (
         <>
+          <div style={{ display: "flex", gap: "var(--sp-2)", flexWrap: "wrap" }}>
+            <Button small variant="primary" disabled={actions.approve.isPending || chosenItems.length === 0 || !verified} onClick={() => (sensitive ? setConfirming("approve") : approve())}>
+              {chosenItems.length > 0 ? plural("decision.approveCount", chosenItems.length) : t("decision.approve")}
+            </Button>
+            <Button small variant="ghost" disabled={actions.reject.isPending || proposed.length === 0} onClick={() => setConfirming("reject")}>{t("decision.rejectAll")}</Button>
+          </div>
           {merged.some(item => item.kind === "jira_worklog") && <span className="hint">{t("decision.reviseHint")}</span>}
           <span className="hint">{t("decision.codeHint")}</span>
-          <div style={{ display: "flex", gap: "var(--sp-2)", flexWrap: "wrap" }}>
-            <Button variant="primary" disabled={actions.approve.isPending || chosenItems.length === 0 || !verified} onClick={() => (sensitive ? setConfirming("approve") : approve())}>{t("decision.approve")}</Button>
-            <Button disabled={actions.reject.isPending || proposed.length === 0} onClick={() => setConfirming("reject")}>{t("decision.rejectAll")}</Button>
-          </div>
         </>
       )}
       {request?.state === "expired" && (
@@ -249,54 +256,84 @@ function Channels({ run }: { run: RunDetail }) {
   )
 }
 
-/** Detalle de una entrega (`/automations/deliveries/:runId`): nota generada, canales y decisiones pendientes. */
-export function DeliveryPanel({ runId, projectName, onClose }: { runId: string; projectName: (id: string | null) => string | null; onClose: () => void }) {
+export interface DeliveryPanelProps {
+  runId: string
+  projectName: (id: string | null) => string | null
+  onClose: () => void
+  /** Entrega anterior de la lista visible (K); sin valor, el botón queda deshabilitado. */
+  onPrevious?: (() => void) | undefined
+  /** Siguiente entrega sin ver de la lista visible (J). */
+  onNextUnread?: (() => void) | undefined
+  onMarkUnread: (run: RunDetail) => void
+}
+
+/** Detalle de una entrega (`/automations/deliveries/:runId`): resumen, acciones propuestas, canales y navegación J/K. */
+export function DeliveryPanel({ runId, projectName, onClose, onPrevious, onNextUnread, onMarkUnread }: DeliveryPanelProps) {
   const { t } = useT("automations")
   const ts = useT("status").t
   const format = useFormat()
+  const days = useDayText()
   const cache = useQueryClient()
+  const navigate = useNavigate()
   const run = useRun(runId)
+  // Una sola vez por apertura: «Marcar como no vista» no debe deshacerse sola con el siguiente refresco.
+  const marked = useRef(false)
   const unread = run.data !== undefined && run.data.read_at === null
   useEffect(() => {
-    if (!unread) return
-    void markRunRead(runId).then(() => cache.invalidateQueries({ queryKey: ["schedule-runs"] })).catch(() => undefined)
+    if (!unread || marked.current) return
+    marked.current = true
+    void markRunRead(runId).then(() => cache.invalidateQueries({ queryKey: ["schedule-runs"] })).catch(() => { marked.current = false })
   }, [unread, runId, cache])
 
   const data = run.data
   const note = data ? generatedNote(data) : null
   const project = data ? projectName(data.project_id) : null
+  const inApp = data?.deliveries?.some(item => item.target === "hub_inbox" && item.state === "sent") ?? false
+  const title = data ? t("delivery.titleAt", { title: data.title, when: days.when(runWhen(data)) }) : t("delivery.label")
   return (
     <Panel label={data?.title ?? t("delivery.label")} onClose={onClose} wide>
       <PanelHeader
-        title={data?.title ?? t("delivery.label")}
+        title={title}
         status={data && (
-          <span style={{ display: "inline-flex", gap: "var(--sp-2)", alignItems: "center", minWidth: 0 }}>
-            <Chip tone={RUN_TONES[data.state]}>{ts(`delivery.${data.state}`)}</Chip>
-            {data.artifact_kind && (ARTIFACTS as readonly string[]).includes(data.artifact_kind) && <span className="xs t3">{t(`artifact.${data.artifact_kind}`)}</span>}
+          <span className="xs t3 trunc" style={{ display: "block" }}>
+            {data.project_id && project ? <Link to={`/projects/${encodeURIComponent(data.project_id)}`}>{project}</Link> : t("scope.owner")}
+            {" · "}{inApp ? t("delivery.inApp") : ts(`delivery.${data.state}`)}
           </span>
         )}
+        actions={data && <MoreMenu small ghost items={[
+          { label: t("delivery.markUnread"), onSelect: () => onMarkUnread(data) },
+          { label: t("delivery.viewAutomation"), onSelect: () => navigate(`/automations?focus=${encodeURIComponent(data.schedule_id)}`) },
+        ]} />}
       />
       <PanelBody>
         {run.isPending ? <Loading />
           : run.error || !data ? <ErrorState error={run.error} title={t("delivery.errorTitle")} onRetry={() => void run.refetch()} />
           : <>
-              <Dl items={[
-                { label: t("delivery.scheduled"), value: format.date(data.scheduled_for, "datetime") },
-                { label: t("delivery.generated"), value: data.started_at || note
-                  ? [data.started_at ? format.date(data.started_at, "datetime") : null, note ? t(`delivery.${note}`) : null].filter(Boolean).join(" · ")
-                  : null },
-                { label: t("delivery.automation"), value: <Link to={`/automations?focus=${encodeURIComponent(data.schedule_id)}`}>{project ?? t("delivery.viewAutomation")}</Link> },
-                ...((data.deliveries ?? []).some(item => item.target !== "hub_inbox") ? [{ label: t("delivery.channels"), value: <Channels run={data} /> }] : []),
-              ]} />
+              <section className="section" style={{ gap: "var(--sp-2)" }}>
+                <span className="label">{t("delivery.summary")}</span>
+                {data.body_md.trim() ? <div className="prose t2"><Markdown source={data.body_md} /></div> : <span className="t3">{t("delivery.emptyBody")}</span>}
+              </section>
+              <ItemsBlock run={data} />
               {data.incidents?.map(incident => <span key={incident.observed_at} className="xs" style={{ color: "var(--warn)" }}>{t("delivery.incident", { action: incident.action })}</span>)}
               <hr className="divider" />
               <section className="section" style={{ gap: "var(--sp-3)" }}>
-                <span className="label">{t("delivery.content")}</span>
-                {data.body_md.trim() ? <div className="prose"><Markdown source={data.body_md} /></div> : <span className="t3">{t("delivery.emptyBody")}</span>}
+                <span className="label">{t("panel.details")}</span>
+                <Dl items={[
+                  { label: t("delivery.state"), value: <Chip tone={RUN_TONES[data.state]}>{ts(`delivery.${data.state}`)}</Chip> },
+                  ...(data.artifact_kind && (ARTIFACTS as readonly string[]).includes(data.artifact_kind) ? [{ label: t("panel.kind"), value: t(`artifact.${data.artifact_kind}`) }] : []),
+                  { label: t("delivery.scheduled"), value: format.date(data.scheduled_for, "datetime") },
+                  { label: t("delivery.generated"), value: data.started_at || note
+                    ? [data.started_at ? format.date(data.started_at, "datetime") : null, note ? t(`delivery.${note}`) : null].filter(Boolean).join(" · ")
+                    : null },
+                  ...((data.deliveries ?? []).some(item => item.target !== "hub_inbox") ? [{ label: t("delivery.channels"), value: <Channels run={data} /> }] : []),
+                ]} />
               </section>
-              <ItemsBlock run={data} />
             </>}
       </PanelBody>
+      <div className="panel-f" style={{ justifyContent: "space-between" }}>
+        <Button small variant="ghost" disabled={!onPrevious} onClick={onPrevious} aria-keyshortcuts="K">{t("history.previous")} <Kbd>K</Kbd></Button>
+        <Button small disabled={!onNextUnread} onClick={onNextUnread} aria-keyshortcuts="J">{t("history.nextUnread")} <Kbd>J</Kbd></Button>
+      </div>
     </Panel>
   )
 }

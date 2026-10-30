@@ -142,7 +142,10 @@ function RecentRuns({ schedule }: { schedule: ScheduleView }) {
   const open = (runId: string) => navigate(`/automations/deliveries/${encodeURIComponent(runId)}`)
   return (
     <section className="section" style={{ gap: "var(--sp-3)" }}>
-      <div className="section-h" style={{ minHeight: 0 }}><span className="label">{t("panel.recent")}</span></div>
+      <div className="section-h" style={{ minHeight: 0 }}>
+        <span className="label">{t("panel.recent")}</span>
+        <Link className="xs" to="/automations?view=history">{t("panel.viewHistory")}</Link>
+      </div>
       {runs.isPending ? <SkeletonRows count={2} avatar={false} />
         : runs.error ? <span className="xs t3" role="alert">{t("panel.recentError")}</span>
         : items.length === 0 ? <span className="xs t3">{t("panel.recentEmpty")}</span>

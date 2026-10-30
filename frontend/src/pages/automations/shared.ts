@@ -99,9 +99,17 @@ export function useScheduleText() {
   const channelReason = useCallback((value: string | null | undefined): string =>
     includes(CHANNEL_REASONS, value) ? t(`reason.channel.${value}`) : t("reason.other"), [t])
 
+  /** «pausada por vos el 20 oct»; sin fecha con un core anterior que no informa `paused_at`. */
+  const pausedBy = useCallback((schedule: ScheduleView): string | null => {
+    if (schedule.state !== "paused") return null
+    const who = schedule.paused_by === "agent" ? "agent" : schedule.paused_by === "system" ? "system" : "human"
+    if (!schedule.paused_at) return t(`paused.${who}`)
+    return t(`paused.${who}On`, { date: new Intl.DateTimeFormat(format.language, { day: "numeric", month: "short" }).format(new Date(schedule.paused_at)) })
+  }, [t, format])
+
   const hours = useCallback((seconds: number): string => t("decision.hours", { value: format.number(seconds / 3600, { maximumFractionDigits: 1 }) }), [t, format])
 
-  return { recurrence, next, nextOf, template, creator, skipReason, deferredReason, channelReason, hours }
+  return { recurrence, next, nextOf, template, creator, skipReason, deferredReason, channelReason, hours, pausedBy }
 }
 
 /** Resumen de la decisión de una entrega para una línea de detalle. `null` si el core no la informa. */
@@ -141,4 +149,49 @@ export function useProjects() {
 
 export function runWhen(run: Pick<RunListItem, "started_at" | "scheduled_for">): string {
   return run.started_at ?? run.scheduled_for
+}
+
+/** Días transcurridos entre el día local de `iso` y hoy (0 = hoy, 1 = ayer). */
+export function daysAgo(iso: string, now = Date.now()): number {
+  return Math.round((startOfDay(new Date(now)) - startOfDay(new Date(iso))) / DAY_MS)
+}
+
+/** Clave estable del día local de una entrega, para agruparlas. */
+export function dayKey(iso: string): string {
+  const at = new Date(iso)
+  return `${at.getFullYear()}-${at.getMonth() + 1}-${at.getDate()}`
+}
+
+/** «Hoy», «Ayer» o «Lun 27 oct» para un encabezado; `when` agrega la hora en minúscula: «hoy 08:00». */
+export function useDayText() {
+  const { t } = useT("automations")
+  const format = useFormat()
+  const day = useCallback((iso: string): string => {
+    const ago = daysAgo(iso)
+    if (ago === 0) return t("history.today")
+    if (ago === 1) return t("history.yesterday")
+    const text = new Intl.DateTimeFormat(format.language, { weekday: "short", day: "numeric", month: "short" }).format(new Date(iso))
+    return text.charAt(0).toLocaleUpperCase(format.language) + text.slice(1)
+  }, [t, format])
+  const when = useCallback((iso: string): string => {
+    const ago = daysAgo(iso)
+    const time = format.date(iso, "time")
+    if (ago === 0) return t("next.today", { time })
+    if (ago === 1) return t("history.yesterdayAt", { time })
+    return t("next.other", { day: new Intl.DateTimeFormat(format.language, { weekday: "short", day: "numeric", month: "short" }).format(new Date(iso)), time })
+  }, [t, format])
+  return { day, when }
+}
+
+const CHANNELS_OUTSIDE_APP = new Set(["gmail_self", "slack_self"])
+
+/** Chip «Resultado» de una entrega: propuestas por revisar, falla de un canal externo o el estado del run. */
+export function useRunResult() {
+  const { plural, t } = useT("automations")
+  const ts = useT("status").t
+  return useCallback((run: RunListItem): { tone: ChipTone; label: string } => {
+    if (run.decision?.state === "pending") return { tone: "warn", label: plural("history.proposals", run.decision.total - run.decision.approved) }
+    if (run.state !== "failed" && (run.deliveries ?? []).some(item => CHANNELS_OUTSIDE_APP.has(item.target) && item.state === "failed")) return { tone: "danger", label: t("history.channelFailed") }
+    return { tone: RUN_TONES[run.state], label: ts(`delivery.${run.state}`) }
+  }, [plural, t, ts])
 }

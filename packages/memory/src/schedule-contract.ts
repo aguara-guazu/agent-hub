@@ -183,4 +183,6 @@ export interface ScheduleView {
   last_run?: { id: string; state: RunState; scheduled_for: string; trigger: RunTrigger; skip_reason?: string; deferred_reason?: string }
   /** Present while a run waits for quota or for the machine to wake. */
   deferred?: { reason: string; resets_at: string | null; next_attempt_at: string | null }
+  /** Only on paused schedules: time of the last `schedule.paused` event, when there is one. */
+  paused_at?: string
 }
