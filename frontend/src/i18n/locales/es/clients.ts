@@ -116,6 +116,14 @@ const clients = {
       unknown: "unidades",
       percent: "%",
     },
+    glance: {
+      weekly: "Semanal",
+      monthly: "Mensual",
+      fiveHours: "5 h",
+      used: "{{value}} %",
+      resets: "se renueva {{when}}",
+      label: "Cuota de {{client}}: {{window}} {{value}} % usado",
+    },
     windows: {
       fiveHours: "5 horas",
       sevenDays: "7 días",

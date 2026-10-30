@@ -4,12 +4,15 @@ import { Avatar, Button, ConfirmDialog, Empty, EmptyFiltered, ErrorState, List, 
 import { useFormat, useT } from "../../i18n"
 import { api } from "../../lib/api"
 import { useAuth } from "../../lib/auth"
+import { useMemory } from "../../lib/memory"
 import { LOCAL_KEY, useOverview } from "../../lib/local"
 import type { LocalClient } from "../../lib/local"
 import { invalidateAfterMachineChange, useMachines } from "../../lib/queries"
 import { CLI_LABELS } from "../../lib/types"
 import type { CliKind, Machine } from "../../lib/types"
 import { ClientPanel } from "./ClientPanel"
+import { UsageGlance } from "./UsageGlance"
+import type { UsageStatus } from "./UsageSection"
 import { EnrollDialog } from "./EnrollDialog"
 import { ClientChip } from "./state"
 
@@ -25,6 +28,7 @@ export default function ClientsPage() {
   const { isAdmin } = useAuth()
   const overview = useOverview()
   const machines = useMachines()
+  const quota = useMemory<UsageStatus>("usage_status")
   const toast = useToast()
   const cache = useQueryClient()
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -119,7 +123,7 @@ export default function ClientsPage() {
                       lead={<Avatar name={name} />}
                       title={name}
                       sub={detail(client)}
-                      meta={<ClientChip client={client} />}
+                      meta={<div style={{ display: "flex", alignItems: "center", gap: "var(--sp-4)" }}><UsageGlance client={client} data={quota.data} /><ClientChip client={client} /></div>}
                       action={<Switch checked={client.enabled} disabled={pause.isPending} label={t("row.toggle", { client: name })} onChange={value => setEnabled(client, value)} />}
                     />
                   )

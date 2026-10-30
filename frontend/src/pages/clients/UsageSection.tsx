@@ -17,14 +17,14 @@ export function usageOf(data: UsageStatus | undefined, client: LocalClient): { s
   return { status: pools.length && entry ? entry.status : "unknown", reason: entry?.reason, pools }
 }
 
-function percentOf(window: UsageQuotaWindow): number | null {
+export function percentOf(window: UsageQuotaWindow): number | null {
   if (window.unit === "percent" && window.used !== undefined) return window.used
   if (window.used !== undefined && window.limit) return (window.used / window.limit) * 100
   if (window.remaining !== undefined && window.limit) return ((window.limit - window.remaining) / window.limit) * 100
   return null
 }
 
-function isWeekly(window: UsageQuotaWindow): boolean {
+export function isWeekly(window: UsageQuotaWindow): boolean {
   return window.duration_minutes === WEEK_MINUTES || window.id === "seven_day"
 }
 
