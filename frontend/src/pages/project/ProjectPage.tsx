@@ -12,6 +12,7 @@ import { STAGE_CHOICES, isRelation, listDate, projectActivity, projectStage, use
 import { AttachDialog, NoteDialog } from "./dialogs"
 import { AutomationPanel, CollectionPanel, DetailsPanel, HistoryPanel, LinkPanel, type EntityLink, type ProjectDetail } from "./panels"
 import { StageChip, useErrorText, useMemoryAction, useNarrow } from "./shared"
+import { SharePanel } from "./collaboration/SharePanel"
 import { PanelSlotContext } from "./work"
 
 const Resumen = lazy(() => import("./tabs/Resumen"))
@@ -19,11 +20,13 @@ const Contenido = lazy(() => import("./tabs/Contenido"))
 const Tareas = lazy(() => import("./tabs/Tareas"))
 const Decisiones = lazy(() => import("./tabs/Decisiones"))
 const Colaboracion = lazy(() => import("./tabs/Colaboracion"))
+const Notas = lazy(() => import("./tabs/Notas"))
 
-type Tab = "resumen" | "contenido" | "tareas" | "decisiones" | "colaboracion"
-const TABS: readonly Tab[] = ["resumen", "contenido", "tareas", "decisiones", "colaboracion"]
-type PanelKind = "details" | "link" | "history" | "automation" | "collection"
-const PANELS: readonly PanelKind[] = ["details", "link", "history", "automation", "collection"]
+// Seis pestañas: excepción acordada con la persona al máximo de cinco (Notas va aparte de Colaboración).
+type Tab = "resumen" | "contenido" | "tareas" | "decisiones" | "colaboracion" | "notas"
+const TABS: readonly Tab[] = ["resumen", "contenido", "tareas", "decisiones", "colaboracion", "notas"]
+type PanelKind = "details" | "link" | "history" | "automation" | "collection" | "share"
+const PANELS: readonly PanelKind[] = ["details", "link", "history", "automation", "collection", "share"]
 type AddKind = "note" | "files"
 
 const BARE: CSSProperties = { border: 0, background: "transparent", padding: 0, font: "inherit", color: "inherit", cursor: "pointer", textAlign: "left" }
@@ -104,6 +107,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
     { value: "tareas", label: t("header.tabs.tareas"), count: tasks.data?.total || undefined },
     { value: "decisiones", label: t("header.tabs.decisiones"), count: decisionCount || undefined },
     { value: "colaboracion", label: t("header.tabs.colaboracion") },
+    { value: "notas", label: t("header.tabs.notas") },
   ]
 
   const addItems: MenuItem[] = [
@@ -147,7 +151,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
               </div>
             </div>
             <div className="ph-actions">
-              <Button icon="collaboration" onClick={() => setParam("tab", "colaboracion")}>{t("header.share")}</Button>
+              <Button icon="collaboration" onClick={() => openPanel("share")}>{t("header.share")}</Button>
               <Menu
                 items={addItems}
                 label={t("header.addMenu")}
@@ -158,7 +162,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
           </div>
         </div>
 
-        <Tabs<Tab> tabs={tabs} value={tab} onChange={value => setParam("tab", value === "resumen" ? null : value)} label={t("header.tabs.label")} idPrefix="project-tab" />
+        <Tabs<Tab> tabs={tabs} value={tab} onChange={value => setParam("tab", value === "resumen" ? null : value)} label={t("header.tabs.label")} idPrefix="project-tab" max={TABS.length} />
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-6)", alignItems: "flex-start" }}>
           <div style={{ flex: "999 1 520px", minWidth: 0 }}>
@@ -170,6 +174,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
                 {tab === "tareas" && <Tareas project={project} />}
                 {tab === "decisiones" && <Decisiones project={project} />}
                 {tab === "colaboracion" && <Colaboracion project={project} />}
+                {tab === "notas" && <Notas project={project} />}
               </Suspense>
               </PanelSlotContext.Provider>
             </TabPanel>
@@ -186,6 +191,7 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
       {panel === "history" && <HistoryPanel detail={detail} onClose={() => openPanel(null)} />}
       {panel === "automation" && <AutomationPanel project={project} onClose={() => openPanel(null)} />}
       {panel === "collection" && <CollectionPanel projectId={project.id} onClose={() => openPanel(null)} />}
+      {panel === "share" && <SharePanel project={project} onClose={() => openPanel(null)} />}
 
       <NoteDialog open={adding === "note"} projectId={project.id} onClose={() => setAdding(null)} />
       <AttachDialog open={adding === "files"} projectId={project.id} onClose={() => setAdding(null)} />
