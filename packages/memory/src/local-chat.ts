@@ -60,9 +60,10 @@ const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 export function sessionStatus(s: Record<string, any>,now=Date.now()) {
   const connected=Date.parse(s.lease_until)>now
   // PID checks and listener heartbeats prove connection only. They cannot renew busy evidence.
-  const activityStale=s.state==='busy' && !(Date.parse(s.event_at)>=now-90_000)
+  // Output evidence of a Hub-owned process may extend a busy interval, but only lifecycle events open or close it.
+  const activityStale=s.state==='busy' && !(Math.max(Date.parse(s.event_at) || 0,Date.parse(s.output_at) || 0)>=now-90_000)
   const state=s.removed_at?'removed':s.closed_at?'offline':!connected||activityStale?'unknown':s.state
-  return {state,state_reason:state==='unknown'?(connected?'activity_stale':'connection_stale'):null,state_observed_at:s.event_at,
+  return {state,state_reason:state==='unknown'?(connected?'activity_stale':'connection_stale'):null,state_observed_at:s.event_at,output_observed_at:s.output_at ?? null,
     connection_state:s.removed_at||s.closed_at?'offline':connected?'online':'unknown'}
 }
 const publicSession = (s: Record<string, any>) => {
@@ -764,9 +765,42 @@ export class LocalChat {
       await sql.query('UPDATE chat_deliveries SET response_alerted_at=$3 WHERE message_id=$1 AND recipient_id=$2',[item.id,item.recipient_id,new Date(now).toISOString()])
     })
   }
+  /**
+   * One durable notice per mention the Hub never delivered. The Hub owns waking Hub-managed and queue-native recipients,
+   * so a long-unread delivery is a transport failure the sender must see. Independent of response_required.
+   */
+  async processStalledDeliveries(now=Date.now(),graceMs=600_000) {
+    const pending=await this.db.query(`SELECT d.recipient_id,d.attempts,m.id,m.author_id,m.thread_id,t.channel_id,s.label,s.state
+      FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id JOIN chat_threads t ON t.id=m.thread_id
+      JOIN chat_sessions s ON s.id=d.recipient_id JOIN chat_channels c ON c.id=t.channel_id
+      WHERE d.read_at IS NULL AND d.notified_at IS NULL AND d.cancelled_at IS NULL AND s.capability IN ('codex_queue','hub_fleet')
+      AND s.closed_at IS NULL AND s.removed_at IS NULL AND m.created_at<=$1 AND m.created_at>$2 AND d.response_alerted_at IS NULL
+      AND t.state='open' AND c.closed_at IS NULL AND c.deleted_at IS NULL`,
+      [new Date(now-graceMs).toISOString(),new Date(now-86_400_000).toISOString()])
+    for(const item of pending)await this.db.transaction(async sql=>{
+      const notice={session_id:item.recipient_id,recipient_id:item.author_id,work_thread_id:item.thread_id,turn_id:'stalled:'+item.id}
+      if(!await this.stalledAlertValid(sql,notice))return
+      if((await sql.query('SELECT 1 FROM chat_status_notices WHERE session_id=$1 AND recipient_id=$2 AND handled_at IS NULL AND cancelled_at IS NULL',[item.recipient_id,item.author_id])).length)return
+      const text=`Message ${item.id} to ${item.label} has not been delivered for over ${Math.round(graceMs/60_000)} minutes (recipient state: ${item.state}, wake attempts: ${item.attempts}). A busy Kiro or Claude worker cannot take input mid-turn, so this can be a long turn; an idle or unowned recipient is a transport failure. Check the recipient state through the Hub before deciding. If it is an idle Hub worker you coordinate, nudge it with team_control send; otherwise tell the person. Never duplicate the message, restart the agent or read its terminal. Private notice, not a thread.`
+      await sql.query(`INSERT OR IGNORE INTO chat_status_notices(id,session_id,turn_id,cause,channel_id,recipient_id,work_thread_id,text,created_at)
+        VALUES($1,$2,$3,'delivery_stalled',$4,$5,$6,$7,$8)`,[randomUUID(),item.recipient_id,notice.turn_id,item.channel_id,item.author_id,item.thread_id,text,new Date(now).toISOString()])
+    })
+  }
   private async responseAlertValid(sql:Sql,notice:Record<string,any>) {
+    return this.requestInScope(sql,notice,9,'d.response_required=1 AND d.response_message_id IS NULL',false)
+  }
+  /** Still undelivered to a live recipient and still inside the channel or team authority that produced it. */
+  private async stalledAlertValid(sql:Sql,notice:Record<string,any>) {
+    if(!(await sql.query('SELECT 1 FROM chat_sessions WHERE id=$1 AND closed_at IS NULL AND removed_at IS NULL',[notice.session_id])).length)return false
+    return this.requestInScope(sql,notice,8,'d.read_at IS NULL AND d.notified_at IS NULL',true)
+  }
+  /**
+   * prefix: length of the turn_id marker ('response:' or 'stalled:') that precedes the message id.
+   * strictTeam: require the recipient to still belong to the team; response_due keeps its historical leniency there.
+   */
+  private async requestInScope(sql:Sql,notice:Record<string,any>,prefix:number,pending:string,strictTeam:boolean) {
     const request=(await sql.query(`SELECT m.author_id FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id
-      WHERE m.id=$1 AND d.recipient_id=$2 AND d.response_required=1 AND d.response_message_id IS NULL AND d.cancelled_at IS NULL`,[String(notice.turn_id).slice(9),notice.session_id]))[0]
+      WHERE m.id=$1 AND d.recipient_id=$2 AND ${pending} AND d.cancelled_at IS NULL`,[String(notice.turn_id).slice(prefix),notice.session_id]))[0]
     if(request?.author_id!==notice.recipient_id)return false
     const thread=(await sql.query(`SELECT t.* FROM chat_threads t JOIN chat_channels c ON c.id=t.channel_id WHERE t.id=$1 AND t.state='open' AND c.closed_at IS NULL AND c.deleted_at IS NULL`,[notice.work_thread_id]))[0]
     const author=(await sql.query('SELECT * FROM chat_sessions WHERE id=$1 AND closed_at IS NULL AND removed_at IS NULL',[notice.recipient_id]))[0]
@@ -776,8 +810,9 @@ export class LocalChat {
       const team=await this.teamForThread(sql,author,thread)
       if(!team)return false
       // A disconnected recipient still owes a response; expulsion/revocation cancels delivery separately.
-      return (await sql.query(`SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.removed_at IS NULL AND
-        ((s.id=$2 AND s.channel_id=$3) OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=$4 AND m.session_id=s.id AND m.channel_id=s.channel_id AND m.state='joined'))`,[notice.session_id,team.created_by,team.master_channel_id,team.id])).length>0
+      const member=await sql.query(`SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.removed_at IS NULL AND
+        ((s.id=$2 AND s.channel_id=$3) OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=$4 AND m.session_id=s.id AND m.channel_id=s.channel_id AND m.state='joined'))`,[notice.session_id,team.created_by,team.master_channel_id,team.id])
+      return strictTeam ? member.length>0 : true
     }
     return thread.channel_id===author.channel_id && (await sql.query('SELECT 1 FROM chat_sessions WHERE id=$1 AND channel_id=$2 AND removed_at IS NULL',[notice.session_id,thread.channel_id])).length>0
   }
@@ -826,6 +861,10 @@ export class LocalChat {
         if(alert.cause==='response_due') {
           if(await this.responseAlertValid(sql,alert))continue
           await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Pedido respondido o alcance cerrado' WHERE id=$1",[alert.id]);continue
+        }
+        if(alert.cause==='delivery_stalled') {
+          if(await this.stalledAlertValid(sql,alert))continue
+          await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Entrega resuelta o alcance cerrado' WHERE id=$1",[alert.id]);continue
         }
         const route=await this.turnAlertRoute(sql,alert)
         const newer=(await sql.query(`SELECT 1 FROM chat_turns WHERE session_id=$1 AND opened_at>(
@@ -1002,7 +1041,7 @@ export class LocalChat {
       if(operation==='chat_work_update')return updateWork(this.db,who.id,input)
       const result=await this.page(`SELECT w.*,s.state AS session_state,s.closed_at AS session_closed_at,'agent' AS source,
         s.removed_at AS session_removed_at,s.lease_until AS session_lease_until,
-        s.event_at AS session_event_at,o.work_version AS observed_version,o.policy_version,o.decision,o.last_observed_at,o.snapshot AS watchdog_snapshot,
+        s.event_at AS session_event_at,s.output_at AS session_output_at,o.work_version AS observed_version,o.policy_version,o.decision,o.last_observed_at,o.snapshot AS watchdog_snapshot,
         t.state AS watched_thread_state,c.closed_at AS watched_channel_closed_at,c.leader_id AS watched_recipient_id,
         recipient.closed_at AS watched_recipient_closed_at,recipient.removed_at AS watched_recipient_removed_at,recipient.lease_until AS watched_recipient_lease_until,
         d.message_id AS receipt_id,d.notified_at AS receipt_notified_at,d.read_at AS receipt_read_at,d.handled_at AS receipt_handled_at,
@@ -1013,11 +1052,11 @@ export class LocalChat {
         LEFT JOIN chat_watchdog_observations o ON o.session_id=w.session_id AND o.work_id=w.work_id
         LEFT JOIN chat_deliveries d ON d.message_id=w.report_message_id AND d.recipient_id=c.leader_id
         WHERE w.thread_id=$1`,[thread.id],'updated_at DESC,session_id,work_id',input)
-      return {...result,items:result.items.map(({session_event_at,session_removed_at,session_lease_until,observed_version,policy_version,decision,last_observed_at,watchdog_snapshot,
+      return {...result,items:result.items.map(({session_event_at,session_output_at,session_removed_at,session_lease_until,observed_version,policy_version,decision,last_observed_at,watchdog_snapshot,
         watched_thread_state,watched_channel_closed_at,watched_recipient_id,watched_recipient_closed_at,watched_recipient_removed_at,watched_recipient_lease_until,
         receipt_id,receipt_notified_at,receipt_read_at,receipt_handled_at,
         receipt_cancelled_at,receipt_attempts,receipt_next_attempt_at,receipt_error,...item})=>{
-        const presence=sessionStatus({state:item.session_state,event_at:session_event_at,closed_at:item.session_closed_at,removed_at:session_removed_at,lease_until:session_lease_until})
+        const presence=sessionStatus({state:item.session_state,event_at:session_event_at,output_at:session_output_at,closed_at:item.session_closed_at,removed_at:session_removed_at,lease_until:session_lease_until})
         item.session_state=presence.state
         const at=(value:unknown)=>typeof value==='string'?Date.parse(value):null
         const receipt=receipt_id?{notifiedAt:at(receipt_notified_at),readAt:at(receipt_read_at),handledAt:at(receipt_handled_at),

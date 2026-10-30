@@ -5,8 +5,11 @@ import { promisify } from 'node:util'
 import { findExtractionCli } from './cli-extraction.js'
 import { LocalChat } from './local-chat.js'
 import { teamBootstrap } from './local-chat-team.js'
+import { markSessionActivity } from './chat-wrap-up.js'
 
 const exec = promisify(execFile)
+/** Delivery state of a Hub-owned process as seen by its manager: only 'idle' and 'mid_turn' accept input without error. */
+export type FleetReadiness = 'idle' | 'mid_turn' | 'busy' | 'unowned'
 export const chatWakeText = (ids: string[]) => `Agent Hub: pending mentions/private notices (${ids.join(', ')}). Before continuing, read memory_chat_inbox (your session_key) and verify team.leader_id. Requests: reply in-thread via reply_to. response_due: check your pending request in work_thread_id. Other status notices: request any missing report in the existing thread. Never read another agent's terminal, output, logs or transcript. memory_chat_ack the id only once handled. No polling or empty auto-replies.`
 
 /** Only the local Hub owns the dispatcher. No inference process is created to listen. */
@@ -16,6 +19,7 @@ export class LocalChatRuntime {
   private stopped = false
   private watchers = new Map<string,{ started:string; controller:AbortController }>()
   private controllers = new Set<AbortController>()
+  private activityWritten = new Map<string,{at:string;written:number}>()
   constructor(readonly chat: LocalChat, private queue = async (nativeId: string, text: string) => {
     const binary = findExtractionCli('codex_cli')
     if (!binary) throw new Error('Codex CLI no está instalado')
@@ -31,7 +35,7 @@ export class LocalChatRuntime {
   }, private enabled: (agentId:string) => boolean = () => true,
   private inspectProcess:typeof inspectNativeProcess = inspectNativeProcess,
   private collaborationEnabled: () => boolean = () => true,
-  private fleet?: {wake(sessionId:string,text:string):Promise<boolean>;connected(sessionId:string):Promise<boolean>}) {}
+  private fleet?: {wake(sessionId:string,text:string):Promise<boolean>;connected(sessionId:string):Promise<boolean>;readiness?(sessionId:string):Promise<FleetReadiness>;activityAt?(sessionId:string):Promise<{at:string;turn_id:string}|undefined>}) {}
   start() {
     if (this.timer) return
     this.chat.events.on('change',this.kick)
@@ -51,7 +55,10 @@ export class LocalChatRuntime {
     // regain one; a failure in any later step of the tick must not postpone revocation.
     await this.chat.sweepReadAccess().catch(() => undefined)
     if(this.fleet)for(const session of await this.chat.db.query("SELECT id FROM chat_sessions WHERE capability='hub_fleet' AND closed_at IS NULL")) {
-      if(await this.fleet.connected(String(session.id)))await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[session.id,new Date(Date.now()+90000).toISOString()])
+      if(await this.fleet.connected(String(session.id))) {
+        await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[session.id,new Date(Date.now()+90000).toISOString()])
+        await this.recordFleetActivity(String(session.id))
+      }
     }
     // PID birth time prevents a recycled PID from keeping a dead session online.
     const processes = await this.chat.db.query('SELECT s.id,s.process_id,s.process_started FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.closed_at IS NULL AND c.closed_at IS NULL AND s.process_id IS NOT NULL')
@@ -75,15 +82,20 @@ export class LocalChatRuntime {
     // Native queue addresses the exact conversation and verifies it at delivery time.
     // A managed app-server may not expose a per-TUI PID to hooks; its idle lease is
     // advisory presence, not a reason to silently suppress durable notifications.
+    // Recipients of a stalled-delivery notice go last: the original delivery of this tick may resolve that notice before it wakes anyone.
     const sessions = await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
-      WHERE s.nickname IS NOT NULL AND s.capability IN ('codex_queue','hub_fleet') AND s.native_id IS NOT NULL AND (s.state='idle' OR (s.state='busy' AND s.cli_kind='codex_cli')) AND s.closed_at IS NULL AND c.closed_at IS NULL
+      WHERE s.nickname IS NOT NULL AND s.capability IN ('codex_queue','hub_fleet') AND (s.capability='hub_fleet' OR s.native_id IS NOT NULL) AND (s.state='idle' OR s.capability='hub_fleet' OR (s.state='busy' AND s.cli_kind='codex_cli')) AND s.closed_at IS NULL AND c.closed_at IS NULL
       AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL OR EXISTS(SELECT 1 FROM chat_channels led WHERE led.leader_id=s.id AND led.closed_at IS NULL))
       AND (EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.notified_at IS NULL AND d.cancelled_at IS NULL AND d.next_attempt_at<=now() AND d.attempts<5)
-        OR EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.handled_at IS NULL AND n.cancelled_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5) OR EXISTS(SELECT 1 FROM usage_quota_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5))`)
+        OR EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.handled_at IS NULL AND n.cancelled_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5) OR EXISTS(SELECT 1 FROM usage_quota_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.notified_at IS NULL AND n.next_attempt_at<=now() AND n.attempts<5))
+      ORDER BY EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.cause='delivery_stalled' AND n.handled_at IS NULL AND n.cancelled_at IS NULL)`)
     for (const s of sessions) {
       if (this.stopped) return
       if (!this.enabled(s.agent_id)) continue
-      const deliveries = await this.claim(s.id,true)
+      // The persisted row of a Hub worker can lag its process; the manager decides whether input is accepted now.
+      const readiness=s.capability==='hub_fleet' ? await this.fleetReadiness(s) : undefined
+      if (readiness==='busy') continue
+      const deliveries = await this.claim(s.id,true,readiness!==undefined)
       const quota=new UsageNotices(this.chat),notices=await quota.claim(s.id)
       if (!deliveries.length && !notices.length) continue
       try {
@@ -92,6 +104,7 @@ export class LocalChatRuntime {
         await quota.notified(s.id,notices.map(n=>String(n.id)))
         await this.notified(s.id,deliveries.map(d=>d.message_id))
       } catch (error) {
+        if((error as {retryLater?:boolean}).retryLater) {await this.release(s.id,deliveries,notices);continue}
         const uncertain=(error as {retryable?:boolean}).retryable===false
         await this.chat.db.query('UPDATE chat_sessions SET wake_error=$2 WHERE id=$1',[s.id,uncertain?'Entrega incierta; no se reenvía automáticamente. El mensaje sigue en inbox.':'No se pudo notificar a la sesión; comprobá versión, sesión y conexión. Se reintentará hasta 5 veces.'])
         if(uncertain)for(const notice of notices)await this.chat.db.query('UPDATE usage_quota_notices SET attempts=5 WHERE id=$1 AND recipient_id=$2',[notice.id,s.id])
@@ -110,6 +123,37 @@ export class LocalChatRuntime {
       if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) continue
       try {await this.dispatch(s,s.nickname?teamBootstrap:'Agent Hub: register a nickname via memory_chat_set_nick.')}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
     }
+    // After dispatch, so a delivery this tick could still make never raises a notice that is cancelled moments later.
+    await this.chat.processStalledDeliveries()
+  }
+  /**
+   * Persists output evidence of a busy Hub worker at most every 30 s. Only output_at moves, plus the session activity record: the lifecycle
+   * columns and chat_turns stay owned by native turn events, and an idle or closed row ignores a late timestamp.
+   */
+  private async recordFleetActivity(sid:string) {
+    const evidence=await this.fleet?.activityAt?.(sid)
+    if(!evidence)return
+    const last=this.activityWritten.get(sid)
+    if(last?.at===evidence.at || (last && Date.now()-last.written<30_000))return
+    // Only an open turn with the same id may extend the busy interval; a late chunk of an earlier turn finds no match.
+    const written=await this.chat.db.query(`UPDATE chat_sessions SET output_at=$2 WHERE id=$1 AND capability='hub_fleet' AND state='busy'
+      AND closed_at IS NULL AND removed_at IS NULL AND (output_at IS NULL OR output_at<$2)
+      AND EXISTS(SELECT 1 FROM chat_turns t WHERE t.session_id=$1 AND t.turn_id=$3 AND t.terminal_at IS NULL) RETURNING id`,[sid,evidence.at,evidence.turn_id])
+    if(!written.length)return
+    this.activityWritten.set(sid,{at:evidence.at,written:Date.now()})
+    await markSessionActivity(this.chat.db,sid)
+  }
+  /** Undefined when the fleet cannot report readiness: the persisted state then gates delivery exactly as for any other session. */
+  private async fleetReadiness(session:Record<string,any>):Promise<FleetReadiness | undefined> {
+    return this.fleet?.readiness?.(String(session.id))
+  }
+  /** Returns the attempt a claim consumed when the target was only transiently unable to accept input. */
+  private async release(sid:string,deliveries:{message_id:string;kind:string}[],notices:Record<string,any>[]) {
+    for(const d of deliveries) {
+      const table=d.kind==='status_notice'?'chat_status_notices':'chat_deliveries',column=d.kind==='status_notice'?'id':'message_id'
+      await this.chat.db.query(`UPDATE ${table} SET attempts=MAX(attempts-1,0) WHERE recipient_id=$1 AND ${column}=$2 AND notified_at IS NULL AND read_at IS NULL AND cancelled_at IS NULL`,[sid,d.message_id])
+    }
+    for(const n of notices)await this.chat.db.query('UPDATE usage_quota_notices SET attempts=MAX(attempts-1,0) WHERE id=$1 AND recipient_id=$2 AND notified_at IS NULL AND read_at IS NULL',[n.id,sid])
   }
   private async dispatch(session:Record<string,any>,text:string) {
     if(session.capability==='hub_fleet') {
@@ -121,15 +165,16 @@ export class LocalChatRuntime {
       WHERE id=$1 AND team_seen=0 AND bootstrap_attempts<5 AND state='idle' AND closed_at IS NULL
       AND (bootstrap_sent_at IS NULL OR bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) RETURNING id`,[sid])).length>0
   }
-  private async claim(sid: string, midTurn=false) {
+  /** managerApproved: the caller verified readiness with the process owner, so the persisted state does not gate the claim. */
+  private async claim(sid: string, midTurn=false, managerApproved=false) {
     return this.chat.db.transaction(async()=>{
       await this.chat.cancelInvalidTurnAlerts()
       const mentions=await this.chat.db.query(`UPDATE chat_deliveries SET attempts=attempts+1,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
-      WHERE recipient_id=$1 AND read_at IS NULL AND notified_at IS NULL AND cancelled_at IS NULL AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND (s.state='idle' OR ($2=1 AND s.state='busy' AND s.cli_kind='codex_cli'))) AND attempts<5 AND next_attempt_at<=now() RETURNING message_id`,[sid,midTurn?1:0])
+      WHERE recipient_id=$1 AND read_at IS NULL AND notified_at IS NULL AND cancelled_at IS NULL AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND (s.state='idle' OR $3=1 OR ($2=1 AND s.state='busy' AND s.cli_kind='codex_cli'))) AND attempts<5 AND next_attempt_at<=now() RETURNING message_id`,[sid,midTurn?1:0,managerApproved?1:0])
       const notices=await this.chat.db.query(`UPDATE chat_status_notices SET attempts=attempts+1,next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||min(300,30*(attempts+1))||' seconds')
         WHERE recipient_id=$1 AND read_at IS NULL AND handled_at IS NULL AND cancelled_at IS NULL AND notified_at IS NULL
-        AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND (s.state='idle' OR ($2=1 AND s.state='busy' AND s.cli_kind='codex_cli')))
-        AND attempts<5 AND next_attempt_at<=now() RETURNING id AS message_id`,[sid,midTurn?1:0])
+        AND EXISTS(SELECT 1 FROM chat_sessions s WHERE s.id=$1 AND s.closed_at IS NULL AND s.removed_at IS NULL AND (s.state='idle' OR $3=1 OR ($2=1 AND s.state='busy' AND s.cli_kind='codex_cli')))
+        AND attempts<5 AND next_attempt_at<=now() RETURNING id AS message_id`,[sid,midTurn?1:0,managerApproved?1:0])
       return [...mentions.map(d=>({message_id:String(d.message_id),kind:'mention'})),...notices.map(d=>({message_id:String(d.message_id),kind:'status_notice'}))]
     })
   }

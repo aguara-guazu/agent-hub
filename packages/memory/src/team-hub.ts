@@ -488,6 +488,41 @@ export class HubTeamRuntime implements TeamOrca {
         AND child.closed_at IS NULL AND child.path=m.workspace_path`, [handle, sessionId, allowClosedSession ? 1 : 0]))[0]
     check(authorized, 'El equipo o sus sesiones ya no están autorizados para recibir el aviso.', 403)
   }
+  /**
+   * Delivery readiness from the process this Hub owns, never from the persisted session row, which can lag a state change.
+   * 'unowned' covers a missing runtime, generation drift, a restart and stopped or failed processes.
+   */
+  async readiness(sessionId: string): Promise<'idle' | 'mid_turn' | 'busy' | 'unowned'> {
+    const members = await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE session_id=$1', [sessionId])
+    for (const member of members) {
+      const handle = String(member.id)
+      const runtime = this.runtime(member.runtime)
+      const owned = this.manager.status(handle)
+      if (!runtime || !owned || this.generations.get(handle) !== runtime.generation) continue
+      if (owned.state === 'idle') return 'idle'
+      if (owned.state === 'busy') return this.manager.supportsMidTurn(handle) ? 'mid_turn' : 'busy'
+      return owned.state === 'starting' || owned.state === 'waiting_input' ? 'busy' : 'unowned'
+    }
+    return 'unowned'
+  }
+  /** Last output time of the process this Hub owns for the session; undefined when unowned or silent. */
+  async activityAt(sessionId: string): Promise<{ at: string; turn_id: string } | undefined> {
+    const members = await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE session_id=$1', [sessionId])
+    for (const member of members) {
+      const handle = String(member.id)
+      const runtime = this.runtime(member.runtime)
+      if (runtime && this.manager.status(handle) && this.generations.get(handle) === runtime.generation) return this.manager.activityAt(handle)
+    }
+    return undefined
+  }
+  private accepting(handle: string, state: string | undefined): boolean {
+    return state === 'idle' || (state === 'busy' && this.manager.supportsMidTurn(handle))
+  }
+  /** retryLater marks a transient state: the dispatcher must not spend a delivery attempt on it. Stopped or failed processes do consume attempts. */
+  private notReady(state: string | undefined): MemoryError {
+    return Object.assign(new MemoryError(409, 'El agente del Hub todavía no está disponible para recibir el aviso. Reintentá después.'),
+      { retryLater: state !== undefined && ['starting', 'busy', 'waiting_input'].includes(state) })
+  }
   /** False permits another wake provider; an owned but unavailable worker must be retried. */
   async wake(sessionId: string, text: string): Promise<boolean> {
     const members = await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE session_id=$1', [sessionId])
@@ -497,9 +532,16 @@ export class HubTeamRuntime implements TeamOrca {
       const owned = this.manager.status(handle)
       if (!runtime || !owned || this.generations.get(handle) !== runtime.generation) continue
       this.requireEnabled()
-      check(owned.state === 'idle' || (owned.state === 'busy' && this.manager.supportsMidTurn(handle)), 'El agente del Hub todavía no está disponible para recibir el aviso. Reintentá después.', 409)
+      if (!this.accepting(handle, owned.state)) throw this.notReady(owned.state)
       await this.assertAuthorized(handle, sessionId)
-      const result = await this.send(handle, text)
+      // The authorization query yields; another control action may have taken the process since the first check.
+      const current = this.manager.status(handle)
+      if (!current || !this.accepting(handle, current.state)) throw this.notReady(current?.state)
+      let result: FleetStatus
+      try { result = await this.send(handle, text) } catch (error) {
+        if (error instanceof Error && error.message === 'fleet_not_idle') throw this.notReady('busy')
+        throw error
+      }
       check(result.state === 'busy' || result.state === 'idle', 'El agente del Hub no confirmó la entrega del aviso. Reintentá después.', 503)
       return true
     }

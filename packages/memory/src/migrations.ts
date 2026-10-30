@@ -893,4 +893,9 @@ UPDATE chat_sessions SET activity_at=max(created_at,
   COALESCE((SELECT max(m.created_at) FROM chat_messages m WHERE m.author_id=chat_sessions.id),created_at),
   COALESCE((SELECT max(w.updated_at) FROM chat_work_state w WHERE w.session_id=chat_sessions.id),created_at));
 CREATE INDEX chat_channels_archived ON chat_channels(archived_at);
+`, String.raw`
+-- Last assistant or tool output of a Hub-owned process; it extends a busy interval without touching lifecycle events.
+-- Distinct from activity_at, which dates any Hub-observed activity for wrap up and archive decisions.
+-- Rollback: ALTER TABLE chat_sessions DROP COLUMN output_at; then delete this version from schema_versions.
+ALTER TABLE chat_sessions ADD COLUMN output_at TIMESTAMP;
 `]

@@ -24,6 +24,8 @@ export class FleetActivityBuffer {
   private redactionFull = false
   private tails = new Map<string, string>()
   private tailBytes = 0
+  /** Epoch ms of the last assistant or tool output accepted. A timestamp only: content never leaves this buffer. */
+  lastWorkAt: number | undefined
   private batch: { key: string; kind: FleetActivityItem['kind']; text: string; bytes: number } | undefined
   private streams = new Map<string, { length: number; final: boolean }>()
   constructor(prompt: string) { this.rememberSecrets(prompt) }
@@ -49,9 +51,10 @@ export class FleetActivityBuffer {
     this.batch = undefined
     if (batch) this.emit(batch.kind, batch.text)
   }
+  private markWork(kind: FleetActivityItem['kind']) { if (kind === 'assistant' || kind === 'tool') this.lastWorkAt = Date.now() }
   add(kind: FleetActivityItem['kind'], value: unknown) {
     this.flush()
-    if (typeof value === 'string' && value) this.emit(kind, value)
+    if (typeof value === 'string' && value) { this.markWork(kind); this.emit(kind, value) }
   }
   private emit(kind: FleetActivityItem['kind'], value: string) {
     let text = this.redact(value)
@@ -68,6 +71,7 @@ export class FleetActivityBuffer {
     const previous = this.streams.get(key)
     if (previous?.final) return
     const suffix = final ? value.slice(previous?.length ?? 0) : value
+    if (suffix) this.markWork(kind)
     const tail = this.tails.get(key) ?? ''
     this.tailBytes -= Buffer.byteLength(tail)
     this.tails.delete(key)
