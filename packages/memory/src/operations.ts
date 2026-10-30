@@ -5,6 +5,7 @@ import { CLI_KINDS } from '@agenthub/shared'
 import { UsageQuotas } from './usage-quotas.js'
 import { UsageNotices } from './usage-notices.js'
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
+import { InterhubTools, interhubDefinitions, interhubReadOperations, isInterhubOperation, type InterhubServices } from './interhub/tools.js'
 import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
 import { callScheduleTool, scheduleDefinitions, scheduleReadOperations } from './schedule-tools.js'
 import { callProjectAutomationTool, projectAutomationDefinitions, projectAutomationReadOperations } from './project-automation-tools.js'
@@ -40,6 +41,7 @@ const definitions = {
   skill_reference: ['Only when needed: collaboration guides or the full tool reference. Runs nothing; grants no permissions.', z.object({section:z.enum(['memory-tools','local-collaboration','team-orchestration'])}).strict()],
   usage_status: ['Native quotas and team notices: windows, resets, source, freshness. Unknown does not mean available; quota guarantees neither access nor completion. No inference or provider refresh.', z.object({session_key:z.string().min(32).max(200).optional(),cli:z.enum(CLI_KINDS).optional(),model:z.string().max(300).optional()}).strict()],
   ...chatDefinitions,
+  ...interhubDefinitions,
   ...teamDefinitions,
   ...scheduleDefinitions,
   ...projectAutomationDefinitions,
@@ -123,12 +125,15 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...interhubReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
   readonly usage: UsageQuotas
   readonly usageNotices: UsageNotices
   readonly chat: LocalChat
+  /** Set once the P2P replica and the inter-hub chat model exist; absent where they do not run. */
+  interhub: InterhubServices | undefined
+  readonly interhubTools: InterhubTools
   readonly teams: TeamOrchestration | undefined
   readonly fleet: TeamOrca | undefined
   /** Set by the service once the schedule runtime exists; absent in worker processes, where schedule tools are unavailable. */
@@ -139,6 +144,7 @@ export class MemoryOperations {
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime,
     teamRuntime?: { catalog: TeamCatalog; orca: TeamOrca | ((chat:LocalChat)=>TeamOrca) }, readonly collaborationEnabled: () => boolean = () => true) {
     this.chat = new LocalChat(store)
+    this.interhubTools = new InterhubTools(this.chat, () => this.interhub)
     this.usage = new UsageQuotas(store.db)
     this.usageNotices = new UsageNotices(this.chat)
     this.fleet = typeof teamRuntime?.orca === 'function' ? teamRuntime.orca(this.chat) : teamRuntime?.orca
@@ -172,6 +178,10 @@ export class MemoryOperations {
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
     if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
       check(this.collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
+    if (isInterhubOperation(operation)) {
+      check(actor !== 'mcp' || agent, 'La colaboración por MCP requiere la identidad de agente que agrega el gateway.', 403)
+      return this.interhubTools.call(operation, raw, agent)
+    }
     if (operation.startsWith('chat_')) {
       // The MCP endpoint only serves agents through the gateway, which always attaches their identity. A call without it
       // would run unscoped like the person's authenticated /api/memory/call, so it is refused.
