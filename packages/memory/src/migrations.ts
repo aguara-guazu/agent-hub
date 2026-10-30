@@ -841,4 +841,20 @@ CREATE TABLE interhub_events (
  received_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
 CREATE INDEX interhub_events_channel ON interhub_events(channel_id,seq);
+`, String.raw`
+-- Inter-hub transport. Replicated events are stored before they are applied, so an event that arrives
+-- before its thread waits and is retried. The outbox records which local rows were already published.
+-- Rollback: DROP TABLE interhub_outbox; DROP INDEX interhub_events_pending; then drop the three added columns.
+ALTER TABLE interhub_events ADD COLUMN applied_at TIMESTAMP;
+ALTER TABLE interhub_events ADD COLUMN apply_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE interhub_events ADD COLUMN apply_error TEXT;
+UPDATE interhub_events SET applied_at=received_at;
+CREATE INDEX interhub_events_pending ON interhub_events(applied_at,seq);
+CREATE TABLE interhub_outbox (
+ key TEXT PRIMARY KEY,
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ envelope_id TEXT NOT NULL, digest TEXT NOT NULL,
+ updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX interhub_outbox_channel ON interhub_outbox(channel_id);
 `]
