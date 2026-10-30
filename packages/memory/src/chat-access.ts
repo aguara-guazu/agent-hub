@@ -16,7 +16,21 @@ export async function channelMembership(sql: Sql, sessionId: string, channelId: 
   if (!session || session.closed_at || session.removed_at) return null
   if ((await sql.query("SELECT 1 FROM chat_channels WHERE id=$1 AND leader_id=$2", [channelId, sessionId])).length) return "leader"
   if (session.channel_id === channelId) return "member"
+  if (await interhubLocalAgent(sql, sessionId, channelId)) return "member"
   return (await teamChannelIds(sql, sessionId)).includes(channelId) ? "team" : null
+}
+
+const interhubAgentRows = `SELECT a.channel_id FROM interhub_local_agents a JOIN chat_channels c ON c.id=a.channel_id
+  WHERE a.session_id=$1 AND a.removed_at IS NULL AND c.kind='inter-hub' AND c.deleted_at IS NULL`
+
+/** True when this hub's leader in the inter-hub channel associated the session with it and has not released it. */
+export async function interhubLocalAgent(sql: Sql, sessionId: string, channelId: string): Promise<boolean> {
+  return (await sql.query(`${interhubAgentRows} AND a.channel_id=$2`, [sessionId, channelId])).length > 0
+}
+
+/** Inter-hub channels the session was associated with as a local agent. */
+export async function interhubAgentChannelIds(sql: Sql, sessionId: string): Promise<string[]> {
+  return (await sql.query(interhubAgentRows, [sessionId])).map(row => String(row.channel_id))
 }
 
 /** Master and worker channels of the active plans this session coordinates or joined. */

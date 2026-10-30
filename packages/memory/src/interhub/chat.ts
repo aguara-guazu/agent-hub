@@ -383,15 +383,38 @@ export async function interhubNoticeValid(sql: Sql, notice: Record<string, any>)
 const activeTeams = ACTIVE_TEAM_STATES.map(state => `'${state}'`).join(",")
 
 /**
- * Open agent sessions this hub contributes to an inter-hub channel: its leader there, sessions of the channel and joined
- * members of active teams mastered in it. Shared by the roster and the transport's presence announcements, so remote
- * hubs accept as authors exactly the agents the local roster lists.
+ * Open agent sessions this hub contributes to an inter-hub channel: its leader there, sessions of the channel, local
+ * agents the leader associated with it and joined members of active teams mastered in it. Shared by the roster and the
+ * transport's presence announcements, so remote hubs accept as authors exactly the agents the local roster lists.
  */
 export async function localChannelAgents(sql: Sql, channelId: string, leaderId: string | null) {
   return sql.query(
     `SELECT s.* FROM chat_sessions s WHERE (s.id=$2 OR s.channel_id=$1 OR s.id IN (SELECT m.session_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
-       WHERE p.master_channel_id=$1 AND m.state='joined' AND p.state IN (${activeTeams})))
+       WHERE p.master_channel_id=$1 AND m.state='joined' AND p.state IN (${activeTeams}))
+       OR s.id IN (SELECT a.session_id FROM interhub_local_agents a WHERE a.channel_id=$1 AND a.removed_at IS NULL))
      AND s.cli_kind NOT IN ($3,'hub') AND s.nickname IS NOT NULL AND s.removed_at IS NULL AND s.closed_at IS NULL ORDER BY s.created_at,s.id`, [channelId, leaderId, INTERHUB_REMOTE_CLI_KIND])
+}
+
+/**
+ * Mentions of an inter-hub thread. An id that is not a local session but is a remote agent of the channel (its id in its
+ * own hub, as memory_chat_interhub_hubs lists it) becomes that agent's local placeholder, created when it has not written
+ * here yet. Any other id is returned unchanged for the caller's usual validation.
+ */
+export async function interhubMentions(sql: Sql, channelId: string, mentions: string[]) {
+  const resolved: string[] = []
+  for (const mention of mentions) {
+    if ((await sql.query("SELECT 1 FROM chat_sessions WHERE id=$1", [mention])).length) { resolved.push(mention); continue }
+    const remote = (await sql.query(`SELECT r.hub_id,r.label FROM interhub_remote_sessions r JOIN interhub_members m ON m.channel_id=r.channel_id AND m.hub_id=r.hub_id AND m.removed_at IS NULL
+        WHERE r.channel_id=$1 AND r.session_id=$2
+      UNION ALL SELECT hub_id,leader_label FROM interhub_members WHERE channel_id=$1 AND leader_session_id=$2 AND removed_at IS NULL LIMIT 1`, [channelId, mention]))[0]
+    if (!remote) { resolved.push(mention); continue }
+    const placeholder = interhubRemoteSessionId(channelId, String(remote.hub_id), mention)
+    await sql.query(`INSERT OR IGNORE INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,closed_at)
+      VALUES($1,$1,$1,$2,$3,$4,'offline',now(),now())`, [placeholder, String(remote.label), INTERHUB_REMOTE_CLI_KIND, channelId])
+    const row = (await sql.query("SELECT cli_kind,channel_id FROM chat_sessions WHERE id=$1", [placeholder]))[0]
+    resolved.push(row?.cli_kind === INTERHUB_REMOTE_CLI_KIND && row.channel_id === channelId ? placeholder : mention)
+  }
+  return resolved
 }
 
 /** Local placeholder id of every remote agent of the channel known here (announced or hub leader), mapped to its remote id. */

@@ -1,13 +1,13 @@
 import type { EventEmitter } from "node:events"
 import type { InterhubChatPayload, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import { INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
-import { channelProjectId, sessionProjectId } from "../chat-access.js"
+import { ACTIVE_TEAM_STATES, channelProjectId, sessionProjectId } from "../chat-access.js"
 import { check } from "../contracts.js"
 import { sessionStatus } from "../local-chat.js"
 import type { MemoryStore } from "../store.js"
 import type { SharedNetwork } from "../sharing/network.js"
 import { SharedProjects } from "../sharing/projects.js"
-import { InterhubChat, localChannelAgents } from "./chat.js"
+import { INTERHUB_REMOTE_CLI_KIND, InterhubChat, localChannelAgents } from "./chat.js"
 import { InterhubNetwork, chatKind } from "./network.js"
 import { InterhubTransport } from "./transport.js"
 import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
@@ -86,6 +86,36 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       // Resolved before the P2P wait so an unknown project fails at once.
       const project = await channelProject(caller, projectId)
       return transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code, project)
+    },
+    async localAgent(caller, channelId, sessionId, action) {
+      const local = await localHubId()
+      const result = await db.transaction(async sql => {
+        const channel = (await sql.query("SELECT * FROM chat_channels WHERE id=$1 AND kind=$2 AND closed_at IS NULL AND deleted_at IS NULL", [channelId, INTERHUB_CHANNEL_KIND]))[0]
+        check(channel, "Canal entre hubs inexistente.", 404)
+        const leads = (await sql.query("SELECT 1 FROM interhub_members WHERE channel_id=$1 AND hub_id=$2 AND removed_at IS NULL AND leader_session_id=$3", [channelId, local, caller.id])).length > 0
+        check(channel.leader_id === caller.id && leads, "Sólo el líder de tu hub en el canal puede sumar o quitar agentes locales.", 403)
+        check(sessionId !== caller.id, "Ya participás del canal como líder de tu hub.", 400)
+        if (action === "remove") {
+          const removed = await sql.query("UPDATE interhub_local_agents SET removed_at=now(),removed_by=$3 WHERE channel_id=$1 AND session_id=$2 AND removed_at IS NULL RETURNING session_id", [channelId, sessionId, caller.id])
+          if (removed.length) await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Agente quitado del canal entre hubs' WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL
+            AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_threads t ON t.id=m.thread_id WHERE t.channel_id=$2)`, [sessionId, channelId])
+          return { channel_id: channelId, session_id: sessionId, associated: false }
+        }
+        const target = (await sql.query("SELECT * FROM chat_sessions WHERE id=$1", [sessionId]))[0]
+        check(target && target.cli_kind !== INTERHUB_REMOTE_CLI_KIND && target.cli_kind !== "hub" && target.nickname && !target.closed_at && !target.removed_at,
+          "La sesión no es un agente abierto y con nick de este hub.", 404)
+        // Same project as the channel or as its leader here, or a joined member of an active team the leader coordinates.
+        const project = await sessionProjectId(sql, target.id)
+        const sameProject = Boolean(project && (project === channel.project_id || project === await sessionProjectId(sql, caller.id)))
+        const teamMember = !sameProject && (await sql.query(`SELECT 1 FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+          WHERE p.created_by=$1 AND m.session_id=$2 AND m.state='joined' AND p.state IN (${ACTIVE_TEAM_STATES.map(state => `'${state}'`).join(",")}) LIMIT 1`, [caller.id, target.id])).length > 0
+        check(sameProject || teamMember, "Sólo podés sumar agentes de tu mismo proyecto o miembros de un equipo activo que coordinás.", 403)
+        await sql.query(`INSERT INTO interhub_local_agents(channel_id,session_id,added_by) VALUES($1,$2,$3)
+          ON CONFLICT(channel_id,session_id) DO UPDATE SET added_by=excluded.added_by,added_at=now(),removed_by=NULL,removed_at=NULL`, [channelId, target.id, caller.id])
+        return { channel_id: channelId, session_id: String(target.id), associated: true }
+      })
+      events?.emit("change")
+      return result
     },
     async rotateCode(caller, channelId, action) {
       const result = await network.rotateCode(caller, channelId, action)

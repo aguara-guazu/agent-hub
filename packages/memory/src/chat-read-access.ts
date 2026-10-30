@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { check, id, MemoryError } from "./contracts.js"
 import type { Sql } from "./database.js"
-import { ACTIVE_TEAM_STATES, channelMembership, channelProjectId, recordAuthorityEvent, sessionProjectId, teamChannelIds } from "./chat-access.js"
+import { ACTIVE_TEAM_STATES, channelMembership, channelProjectId, interhubAgentChannelIds, recordAuthorityEvent, sessionProjectId, teamChannelIds } from "./chat-access.js"
 
 /** Hard cap of a cross-project read grant, even while the agent keeps working. */
 export const READ_GRANT_MAX_TTL_MS = 8 * 60 * 60 * 1000
@@ -47,7 +47,8 @@ export async function readScope(sql: Sql, sessionId: string): Promise<ReadScope>
     WHERE g.session_id=$1 AND ${grantValid.replace("$CUTOFF", "$2")}`, [sessionId, graceCutoff()])
   const session = (await sql.query("SELECT channel_id FROM chat_sessions WHERE id=$1", [sessionId]))[0]
   const led = await sql.query("SELECT id FROM chat_channels WHERE leader_id=$1", [sessionId])
-  const channels = new Set<string>([...(session ? [String(session.channel_id)] : []), ...led.map(row => String(row.id)), ...await teamChannelIds(sql, sessionId)])
+  const channels = new Set<string>([...(session ? [String(session.channel_id)] : []), ...led.map(row => String(row.id)), ...await teamChannelIds(sql, sessionId),
+    ...await interhubAgentChannelIds(sql, sessionId)])
   return { projects: [...new Set([...(own ? [own] : []), ...grants.map(row => String(row.project_id))])], channels: [...channels] }
 }
 

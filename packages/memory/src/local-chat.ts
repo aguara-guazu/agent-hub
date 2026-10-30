@@ -15,12 +15,12 @@ import type { Sql } from './database.js'
 import { teamGuidance, teamGuidanceVersion } from './local-chat-team.js'
 import { canReadChannel, readAccessDefinitions, readDenied, readElevate, readInterest, readNoticeValid, readRequest, readScope, sweepReadAccess,
   READ_GRANT_LIVENESS_GRACE_MS, confirmReadRequest, rejectReadRequest, revokeReadGrant, personReadGrants, personReadRequests, type ReadScope } from './chat-read-access.js'
-import { channelProjectId, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
+import { channelProjectId, interhubAgentChannelIds, interhubLocalAgent, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
 import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
 import { AUTHOR_SOURCE_SQL, NON_AGENT_CLI_KINDS, THREAD_AGENT_COUNT_COLUMN, agentCountField, messageKind } from "./chat-debate.js"
 import { CHAT_CHANNEL_DESCRIPTION_MAX, INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
-import { INTERHUB_REMOTE_CLI_KIND, interhubChannelFields, interhubMessageFields, interhubNoticeValid, interhubThreadFields } from "./interhub/chat.js"
+import { INTERHUB_REMOTE_CLI_KIND, interhubChannelFields, interhubMentions, interhubMessageFields, interhubNoticeValid, interhubThreadFields } from "./interhub/chat.js"
 
 const exec = promisify(execFile)
 const key = z.string().min(32).max(200)
@@ -1067,9 +1067,11 @@ export class LocalChat {
       if(input.state==='resolved')check(!(await this.db.query('SELECT 1 FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id WHERE m.thread_id=$1 AND d.response_required=1 AND d.response_message_id IS NULL AND d.cancelled_at IS NULL',[thread.id])).length,'Hay pedidos pendientes de respuesta en este hilo.',409)
       return (await this.db.query('UPDATE chat_threads SET state=$2,updated_at=now() WHERE id=$1 RETURNING *',[input.thread_id,input.state]))[0]
     }
-    // Single-channel sessions keep the original upfront check; a session that leads other channels is checked per target below.
+    // Single-channel sessions keep the original upfront check; a session that leads other channels, or takes part in an
+    // inter-hub channel as a local agent of this hub, is checked per target below.
     const leadsElsewhere=(await this.db.query('SELECT 1 FROM chat_channels WHERE leader_id=$1 AND id<>$2 AND closed_at IS NULL AND deleted_at IS NULL LIMIT 1',[who.id,who.channel_id])).length>0
-    if(!leadsElsewhere)await this.writableChannel(who.channel_id)
+    const perTarget=leadsElsewhere || (await interhubAgentChannelIds(this.db,who.id)).length>0
+    if(!perTarget)await this.writableChannel(who.channel_id)
     check(who.nickname, 'Elegí tu propio nick con chat_set_nick antes de escribir.',409)
     const requestPayload={thread:input.thread_id ?? null,channel:input.channel_id ?? null,title:input.title ?? null,task:input.task_id ?? null,text:input.text,reply:input.reply_to ?? null,mentions:[...new Set(input.mentions)].sort()}
     // Preserve pre-team-thread request hashes exactly so durable retries still deduplicate after upgrade.
@@ -1105,7 +1107,9 @@ export class LocalChat {
       else {
         const membership=(await sql.query(`SELECT p.root_thread_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
           WHERE m.session_id=$1 AND m.channel_id=$2 AND m.state='joined' AND p.state IN ('launching','launched','partial','uncertain','active')`,[who.id,who.channel_id]))[0]
-        if(membership) {
+        // A team worker associated with an inter-hub channel opens threads there by naming that channel.
+        const interhubTarget=Boolean(input.channel_id && input.channel_id!==who.channel_id && await interhubLocalAgent(sql,who.id,input.channel_id))
+        if(membership && !interhubTarget) {
           check(input.title && (!input.channel_id || input.channel_id===who.channel_id),'Para iniciar un tema usá title y el channel_id propio, o team_root_thread_id.',400)
           const root=(await sql.query('SELECT * FROM chat_threads WHERE id=$1',[membership.root_thread_id]))[0]!
           const team=await this.teamForThread(sql,who,root)
@@ -1114,7 +1118,7 @@ export class LocalChat {
           thread=(await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,task_id,team_root_thread_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',
             [randomUUID(),root.channel_id,input.title,who.id,input.task_id ?? root.task_id,root.id]))[0]
         } else {
-        check(input.title && input.channel_id && (input.channel_id===who.channel_id || await writeAssociation(sql,who.id,input.channel_id)==='leader'), 'Para iniciar un hilo usá el channel_id de tu sesión (o de un canal que liderás) y un título',400)
+        check(input.title && input.channel_id && (input.channel_id===who.channel_id || interhubTarget || await writeAssociation(sql,who.id,input.channel_id)==='leader'), 'Para iniciar un hilo usá el channel_id de tu sesión (o de un canal que liderás) y un título',400)
         if (input.task_id) check((await sql.query('SELECT id FROM tasks WHERE id=$1 AND project_id=(SELECT project_id FROM chat_channels WHERE id=$2)',[input.task_id,input.channel_id])).length,'La tarea no pertenece al proyecto',400)
         thread = (await sql.query('INSERT INTO chat_threads(id,channel_id,title,created_by,task_id) VALUES($1,$2,$3,$4,$5) RETURNING *',[randomUUID(),input.channel_id,input.title,who.id,input.task_id ?? null]))[0]
         }
@@ -1127,10 +1131,11 @@ export class LocalChat {
         linkedTeam=await this.teamForThread(sql,who,thread)
         check(linkedTeam || teamRoot,'No estás asociado a este canal (o fuiste desplazado de su liderazgo): podés leerlo, no escribir. Para recuperar un canal tomado usá memory_chat_take_leadership.',403)
         check(linkedTeam,'Sólo el master y miembros vinculados pueden escribir en un hilo activo de su equipo.',403)
-        if(leadsElsewhere)await this.writableChannel(who.channel_id)
+        if(perTarget)await this.writableChannel(who.channel_id)
       } else await this.writableChannel(thread.channel_id)
       const channelLeadership=(await sql.query('SELECT leader_id,displaced_leader_id FROM chat_channels WHERE id=$1',[thread.channel_id]))[0]!
-      const recipients=new Set<string>(input.mentions)
+      const interhubThread=(await sql.query('SELECT 1 FROM chat_channels WHERE id=$1 AND kind=$2',[thread.channel_id,INTERHUB_CHANNEL_KIND])).length>0
+      const recipients=new Set<string>(interhubThread ? await interhubMentions(sql,thread.channel_id,input.mentions) : input.mentions)
       let replied:Record<string,any>|undefined
       if(input.reply_to) {
         replied=(await sql.query('SELECT * FROM chat_messages WHERE id=$1 AND thread_id=$2',[input.reply_to,thread.id]))[0]
@@ -1153,6 +1158,7 @@ export class LocalChat {
         if(linkedTeam)check(await this.teamRecipient(sql,linkedTeam,recipient),'La mención debe pertenecer al equipo vinculado a este hilo.',400)
         else if(target && target.channel_id===thread.channel_id && target.id!==channelLeadership.displaced_leader_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
         else if(target && target.id===channelLeadership.leader_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
+        else if(target && interhubThread && await interhubLocalAgent(sql,target.id,thread.channel_id))check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
         else check(false,'La mención debe pertenecer al mismo canal.',400)
       }
       const message = (await sql.query('INSERT INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash,kind) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',

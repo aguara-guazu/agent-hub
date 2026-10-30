@@ -28,6 +28,12 @@ export interface InterhubServices {
    * The local copy takes `projectId` (validated here) or, without it, the same default as createChannel.
    */
   joinChannel(caller: InterhubCaller, code: string, projectId?: string | null): Promise<{ channel_id: string; hub_id: string; project_id: string | null }>
+  /**
+   * Authority: only the current leader of this hub in the channel. add associates an open, nicknamed local session of this
+   * hub from the leader's or the channel's project, or a joined member of an active team the leader coordinates; it then
+   * reads, writes and is mentioned there as a member of this hub. remove ends that and cancels its pending mentions there.
+   */
+  localAgent(caller: InterhubCaller, channelId: string, sessionId: string, action: "add" | "remove"): Promise<{ channel_id: string; session_id: string; associated: boolean }>
   /** Authority: only the current leader of the hub that created the channel. */
   rotateCode(caller: InterhubCaller, channelId: string, action: InterhubCodeAction): Promise<{ code?: string; revoked?: boolean }>
   /** Null when the channel does not exist or is not an inter-hub channel. */
@@ -63,6 +69,10 @@ export const interhubDefinitions = {
     z.object({ ...session, code, project_id: id.optional() }).strict()],
   chat_interhub_code: ["Regenerate or revoke the join code of an inter-hub channel. Only the leader of the hub that created the channel. regenerate invalidates the previous code and returns the new one (never expires, no use limit); revoke invalidates it without a replacement, so nobody new can join. Hubs already joined keep their membership. Give a new code to the person only in your terminal.",
     z.object({ ...session, channel_id: id, action: z.enum(["regenerate", "revoke"]) }).strict()],
+  chat_interhub_add_local_agent: ["Leaders only (your hub's leader in that inter-hub channel). Add a local agent session of THIS hub to the channel: one of your project, or a member of a Hub team you coordinate (its session id, e.g. from memory_team_status or memory_chat_agents). It can then read and write threads there, be mentioned, and appears in memory_chat_interhub_hubs as an agent of your hub; every hub sees its messages with your hub as origin. You stay your hub's only leader. Agents of other hubs are never added here: their own leader adds them.",
+    z.object({ ...session, channel_id: id, session_id: z.string().min(8).max(200) }).strict()],
+  chat_interhub_remove_local_agent: ["Leaders only. Remove a local agent you added to an inter-hub channel: it stops reading, writing and being mentioned there, its pending mentions from that channel are cancelled and the other hubs see it offline. History stays.",
+    z.object({ ...session, channel_id: id, session_id: z.string().min(8).max(200) }).strict()],
   chat_interhub_hubs: ["List the hubs of an inter-hub channel you belong to, each with its leader and agents (leader first), connection and agent counts. Never includes the code.",
     z.object({ ...session, channel_id: id }).strict()],
   chat_interhub_escalate: ["Leaders only. When you ask your person something in your terminal, record it in the thread with memory_chat_send(kind='question'). If 5 minutes pass without an answer, call this with that message as question_message_id: the Hub asks the leader of ANOTHER hub (round robin in a stable order) to put the question to its own person and notifies that leader privately (it also sees it in pending_escalations of memory_chat_interhub_hubs). Every 5 minutes without resolution the Hub moves on to the next hub by itself, until a leader calls memory_chat_interhub_resolve_escalation; a resolved escalation never restarts. The persons never write in the channel: answers come back through the leaders.",
@@ -73,7 +83,7 @@ export const interhubDefinitions = {
 
 export const interhubOperations = Object.keys(interhubDefinitions)
 export const interhubReadOperations = ["chat_interhub_hubs"]
-const writes = new Set(["chat_interhub_create", "chat_interhub_join", "chat_interhub_code", "chat_interhub_escalate", "chat_interhub_resolve_escalation"])
+const writes = new Set(["chat_interhub_create", "chat_interhub_join", "chat_interhub_code", "chat_interhub_add_local_agent", "chat_interhub_remove_local_agent", "chat_interhub_escalate", "chat_interhub_resolve_escalation"])
 // Own keys only: inherited names such as "constructor" must never reach the dispatcher.
 export const isInterhubOperation = (operation: string) => Object.hasOwn(interhubDefinitions, operation)
 
@@ -102,6 +112,8 @@ export class InterhubTools {
       case "chat_interhub_create": return services.createChannel(caller, { name: input.name, projectId: input.project_id ?? null })
       case "chat_interhub_join": return services.joinChannel(caller, input.code, input.project_id ?? null)
       case "chat_interhub_code": return services.rotateCode(caller, input.channel_id, input.action)
+      case "chat_interhub_add_local_agent": return services.localAgent(caller, input.channel_id, input.session_id, "add")
+      case "chat_interhub_remove_local_agent": return services.localAgent(caller, input.channel_id, input.session_id, "remove")
       case "chat_interhub_hubs": {
         const roster = await services.roster(input.channel_id)
         check(roster && roster.hubs.some(hub => hub.is_local && hub.agents.some(agent => agent.id === caller.id)), "No sos parte de ese canal entre hubs.", 403)

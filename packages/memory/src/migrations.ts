@@ -858,4 +858,16 @@ CREATE TABLE interhub_outbox (
  updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
 CREATE INDEX interhub_outbox_channel ON interhub_outbox(channel_id);
+`, String.raw`
+-- Local agent sessions that this hub's leader in an inter-hub channel associated with it: they read, write and are
+-- mentioned there as members of this hub. removed_at ends the association and keeps the audit row.
+-- Rollback: DROP TABLE interhub_local_agents.
+CREATE TABLE interhub_local_agents (
+ channel_id TEXT NOT NULL REFERENCES interhub_channels(channel_id) ON DELETE CASCADE,
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+ added_by TEXT NOT NULL, added_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ removed_by TEXT, removed_at TIMESTAMP,
+ PRIMARY KEY(channel_id,session_id)
+);
+CREATE INDEX interhub_local_agents_session ON interhub_local_agents(session_id,removed_at);
 `]
