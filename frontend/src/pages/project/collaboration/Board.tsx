@@ -1,6 +1,6 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
-import { Avatar, Banner, Button, Empty, ErrorState, Icon, MoreMenu, Seg, SkeletonRows, cx, useToast, type MenuItem } from "../../../components/ui"
+import { Avatar, Banner, Button, Chip, Empty, ErrorState, Icon, MoreMenu, Seg, SkeletonRows, absoluteTime, cx, useToast, type MenuItem } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
 import { AgentPanel } from "./AgentPanel"
@@ -9,7 +9,8 @@ import { PlanPanel } from "./PlanPanel"
 import { agentInitials, visibleAgents } from "./chatShared"
 import type { Participant } from "./chatTypes"
 import { SidePanel, useWorkPanel } from "../work"
-import { useBoardParams, type BoardChannel, type BoardThread, type ThreadState } from "./collabData"
+import { archiveCause, useBoardParams, type BoardChannel, type BoardThread, type ThreadState } from "./collabData"
+import { ArchivedChannels } from "./ArchivedChannels"
 import { TrashPanel } from "./BoardPanels"
 import { ThreadView } from "./ThreadView"
 import { InterhubAgents } from "./InterhubAgents"
@@ -33,13 +34,26 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
   const planPanel = useWorkPanel("plan")
   const trashPanel = useWorkPanel("trash")
 
+  const [archiveOpen, setArchiveOpen] = useState(false)
+
   const channels = useMemory<Page<BoardChannel>>("chat_channels", { project_id: project.id, limit: CHANNEL_LIMIT, offset: 0 })
   const all = channels.data?.items ?? []
   // Locales primero y compartidos entre hubs después, como se ven en la columna.
   const local = all.filter(item => !isInterhub(item))
   const shared = all.filter(isInterhub)
   const items = [...local, ...shared]
-  const channel = items.find(item => item.id === params.channel) ?? items[0]
+  const listed = items.find(item => item.id === params.channel)
+  // Un canal que no está en la lista activa (archivado o fuera de la primera página) se busca por id: esa consulta ignora el filtro de archivo.
+  const lookingUp = Boolean(params.channel) && Boolean(channels.data) && !listed
+  const lookup = useMemory<Page<BoardChannel>>("chat_channels", { project_id: project.id, channel_id: params.channel, limit: 1, offset: 0 }, lookingUp)
+  const resolving = lookingUp && lookup.isPending
+  const channel = listed ?? (lookingUp ? lookup.data?.items[0] : undefined) ?? (resolving ? undefined : items[0])
+  const archivedCount = useMemory<Page<BoardChannel>>("chat_channels", { project_id: project.id, archived: true, limit: 1, offset: 0 }, Boolean(channels.data) && items.length === 0)
+  const hasArchived = (archivedCount.data?.total ?? 0) > 0
+
+  // Abrir un canal archivado (enlace o recarga) despliega la sección para que se vea cuál está abierto.
+  const archivedSelected = channel?.archived_at ? channel.id : null
+  useEffect(() => { if (archivedSelected) setArchiveOpen(true) }, [archivedSelected])
 
   const selectChannel = (id: string) => params.patch({ channel: id, thread: null, tstate: null })
   const openThread = (threadId: string, channelId?: string) => params.patch({ thread: threadId, ...(channelId ? { channel: channelId } : {}) })
@@ -90,17 +104,31 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
               {shared.length > 0 && <div className="nav-group">{t("collaboration.interhub.group")}</div>}
               {shared.map(item => <ChannelLink key={item.id} item={item} active={item.id === channel?.id} href={params.href({ channel: item.id, thread: null, tstate: null })} />)}
             </>}
+          <ArchivedChannels
+            projectId={project.id}
+            open={archiveOpen}
+            onToggle={() => setArchiveOpen(value => !value)}
+            activeId={channel?.id}
+            href={id => params.href({ channel: id, thread: null, tstate: null })}
+          />
         </nav>
 
-        {channels.data && !channel
+        {channels.data && !channel && !resolving && !(items.length === 0 && archivedCount.isPending)
           ? (
             <section className="collab-threads" aria-label={t("collaboration.board.threads")} style={{ borderRight: 0 }}>
-              <Empty
-                icon="collaboration"
-                title={t("collaboration.board.noChannelsTitle")}
-                detail={t("collaboration.board.noChannelsDetail")}
-                action={<Button small onClick={() => trashPanel.open()}>{t("collaboration.board.trash")}</Button>}
-              />
+              {hasArchived
+                ? <Empty
+                    icon="collaboration"
+                    title={t("collaboration.board.noActiveTitle")}
+                    detail={t("collaboration.board.noActiveDetail")}
+                    action={!archiveOpen && <Button small onClick={() => setArchiveOpen(true)}>{t("collaboration.archive.show")}</Button>}
+                  />
+                : <Empty
+                    icon="collaboration"
+                    title={t("collaboration.board.noChannelsTitle")}
+                    detail={t("collaboration.board.noChannelsDetail")}
+                    action={<Button small onClick={() => trashPanel.open()}>{t("collaboration.board.trash")}</Button>}
+                  />}
             </section>
           )
           : channel
@@ -168,8 +196,11 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
   const threads = useMemory<Page<BoardThread>>("chat_threads", { ...scope, query: "", state, limit, offset: 0 })
   const other = useMemory<Page<BoardThread>>("chat_threads", { ...scope, query: "", state: state === "open" ? "resolved" : "open", limit: 1, offset: 0 })
   const shared = isInterhub(channel)
+  // Un canal archivado es solo lectura: sin agentes ni acciones de recuperación (designar coordinador lo reactivaría).
+  const archived = Boolean(channel.archived_at)
+  const cause = archiveCause(channel.archive_cause)
   // En un canal compartido los agentes vienen agrupados por hub (roster); chat_agents solo conoce los locales.
-  const agents = useMemory<Page<Participant>>("chat_agents", { ...scope, include_team_history: true, limit: 100, offset: 0 }, !shared)
+  const agents = useMemory<Page<Participant>>("chat_agents", { ...scope, include_team_history: true, limit: 100, offset: 0 }, !shared && !archived)
   const roster = useInterhubRoster(channel.id, shared)
   const visible = visibleAgents(agents.data?.items)
   const list = threads.data?.items ?? []
@@ -212,7 +243,12 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
               ? <span className="row-sub">{hubCount !== undefined ? plural("collaboration.interhub.sharedBetween", hubCount) : t("collaboration.interhub.shared")}</span>
               : channel.description && <span className="row-sub" title={channel.description}>{channel.description}</span>}
           </div>
-          {!shared && visible.length > 0 && (
+          {archived && (
+            <Chip tone="off" title={[t("collaboration.archive.on", { date: absoluteTime(channel.archived_at) }), cause && t(`collaboration.archive.causeDetail.${cause}`)].filter(Boolean).join(" · ")}>
+              {t("collaboration.archive.chip")}
+            </Chip>
+          )}
+          {!shared && !archived && visible.length > 0 && (
             <button
               type="button"
               onClick={onAgents}
@@ -228,7 +264,7 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
               {visible.length > HEAD_AGENTS && <span className="xs t3" style={{ alignSelf: "center", marginLeft: "var(--sp-1)" }}>+{visible.length - HEAD_AGENTS}</span>}
             </button>
           )}
-          {!shared && <MoreMenu small ghost label={t("collaboration.board.channelActions", { name: channel.name })} items={menu} />}
+          {!shared && !archived && <MoreMenu small ghost label={t("collaboration.board.channelActions", { name: channel.name })} items={menu} />}
         </div>
         <div style={{ alignSelf: "flex-start" }}>
           <Seg<ThreadState>
@@ -282,7 +318,7 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
       </section>
     )}
 
-    {!shared && <DeleteChannelDialog
+    {!shared && !archived && <DeleteChannelDialog
       channel={channel}
       open={deleting}
       onClose={() => setDeleting(false)}

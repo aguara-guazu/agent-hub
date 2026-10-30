@@ -468,6 +468,28 @@ const project = {
       trashEmpty: "The trash is empty",
       restore: "Restore",
       restored: "#{{name}} restored",
+      noActiveTitle: "No active channels",
+      noActiveDetail: "They appear when an agent uses an archived channel again or opens a new one.",
+    },
+    archive: {
+      title: "Archived",
+      label: "Archived channels",
+      count_one: "{{count, number}} archived channel",
+      count_other: "{{count, number}} archived channels",
+      show: "View archived",
+      loading: "Loading archived channels",
+      error: "Couldn't load the archived channels",
+      chip: "Archived",
+      on: "Archived on {{date}}",
+      sub: "{{when}} · {{cause}}",
+      cause: {
+        inactive: "inactive",
+        proposed: "by the leader",
+      },
+      causeDetail: {
+        inactive: "inactive",
+        proposed: "proposed by the leader",
+      },
     },
     sharing: {
       title: "People with access",

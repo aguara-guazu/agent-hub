@@ -283,7 +283,21 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
 .collab-full { border-width: 1px 0 0; border-radius: 0; flex: 1; }
 .collab-chans { flex: 0 0 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; background: var(--bg); border-right: 1px solid var(--border); overflow-y: auto; }
 .collab-chans .nav-group:first-child { padding-top: 4px; }
-.chan-hash { font-family: var(--mono); color: var(--text-3); width: 12px; text-align: center; }
+.chan-hash { flex: none; font-family: var(--mono); color: var(--text-3); width: 12px; text-align: center; }
+/* La columna scrollea por sí sola: sus ítems conservan el alto en lugar de encogerse para entrar. */
+.collab-chans > * { flex-shrink: 0; }
+/* Archivados: sección plegable al pie de la columna de canales; solo para ver. */
+.collab-archive { margin-top: auto; padding-top: var(--sp-2); border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+.collab-archive-toggle { display: flex; align-items: center; gap: var(--sp-2); width: 100%; height: var(--control-h); padding: 0 10px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-3); font: inherit; font-size: var(--fs-xs); font-weight: 500; text-align: left; cursor: pointer; }
+.collab-archive-toggle:hover { background: var(--surface-2); color: var(--text); }
+.collab-archive-toggle .ico { transition: transform var(--dur) var(--ease); }
+.collab-archive-toggle[aria-expanded="true"] .ico { transform: rotate(90deg); }
+.collab-archive-toggle .badge { margin-left: auto; }
+.collab-archive-list { display: flex; flex-direction: column; gap: 2px; }
+.collab-archive-list > * { flex-shrink: 0; }
+.nav-item-2 { height: auto; min-height: calc(var(--control-h) + var(--sp-3)); padding-top: var(--sp-1); padding-bottom: var(--sp-1); }
+.nav-item-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; line-height: 1.3; }
+.nav-item-text .xs { font-weight: 400; }
 .collab-threads { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); }
 .collab-threads .list { border: 0; border-radius: 0; }
 .collab-threads > .list { flex: 1 1 0; min-height: 0; overflow-y: auto; }
@@ -300,6 +314,8 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
   .collab { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); grid-template-rows: auto minmax(0, 1fr); }
   .collab-chans { grid-column: 1 / -1; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; align-content: flex-start; max-height: calc(var(--control-h) * 3 + var(--sp-6)); }
   .collab:not(:has(> .collab-thread)) > .collab-threads { grid-column: 1 / -1; border-right: 0; }
+  .collab-archive { flex-basis: 100%; margin-top: 0; }
+  .collab-archive-list { flex-direction: row; flex-wrap: wrap; }
 }
 
 /* Documentación (solo en las tablas del lienzo) */

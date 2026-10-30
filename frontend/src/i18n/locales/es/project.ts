@@ -465,6 +465,28 @@ const project = {
       trashEmpty: "La papelera está vacía",
       restore: "Restaurar",
       restored: "#{{name}} restaurado",
+      noActiveTitle: "No hay canales activos",
+      noActiveDetail: "Aparecen cuando un agente vuelve a usar un canal archivado o abre uno nuevo.",
+    },
+    archive: {
+      title: "Archivados",
+      label: "Canales archivados",
+      count_one: "{{count, number}} canal archivado",
+      count_other: "{{count, number}} canales archivados",
+      show: "Ver archivados",
+      loading: "Cargando los canales archivados",
+      error: "No se pudieron cargar los canales archivados",
+      chip: "Archivado",
+      on: "Archivado el {{date}}",
+      sub: "{{when}} · {{cause}}",
+      cause: {
+        inactive: "por inactividad",
+        proposed: "por el líder",
+      },
+      causeDetail: {
+        inactive: "por inactividad",
+        proposed: "a propuesta del líder",
+      },
     },
     sharing: {
       title: "Personas con acceso",

@@ -11,7 +11,20 @@ import type { InterhubAgentRole, InterhubMessageOrigin } from "./interhubData"
 export type MessageKind = "proposal" | "objection" | "fact" | "agreement" | "question"
 export const MESSAGE_KINDS: readonly MessageKind[] = ["proposal", "objection", "fact", "agreement", "question"]
 
-export interface BoardChannel extends Channel { description?: string | null; hub_count?: number }
+/** `inactive`: 48 h sin uso y sin agentes conectados; `proposed`: 24 h después de que el líder propuso archivarlo. */
+export type ArchiveCause = "inactive" | "proposed"
+
+export interface BoardChannel extends Channel {
+  description?: string | null
+  hub_count?: number
+  /** Solo los escribe el barrido del Hub; un canal archivado sale de la lista por defecto de chat_channels. */
+  archived_at?: string | null
+  archive_cause?: string | null
+}
+
+export function archiveCause(value: string | null | undefined): ArchiveCause | null {
+  return value === "inactive" || value === "proposed" ? value : null
+}
 
 export interface BoardThread extends Thread { created_at?: string; agent_count?: number; hub_count?: number }
 
