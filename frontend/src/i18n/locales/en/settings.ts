@@ -631,6 +631,25 @@ const settings = {
         unavailable: "Not responding",
       },
     },
+    version: {
+      title: "Version",
+      current: { label: "Installed version" },
+      latest: {
+        label: "Latest release",
+        hint: {
+          checkedAt: "Checked {{when}}",
+          unknown: "Couldn't reach GitHub. Check your connection.",
+        },
+      },
+      state: {
+        upToDate: "Up to date",
+        outdated: "Update available",
+        unknown: "Not checked",
+        checking: "Checking…",
+      },
+      openRelease: "View release",
+      browserHint: "Checked from the desktop app",
+    },
     computer: {
       label: "This computer",
       platform: {

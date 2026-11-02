@@ -26,6 +26,20 @@ export interface ClientRestartResult {
   detail: string
 }
 
+export type VersionState = "up-to-date" | "outdated" | "unknown"
+
+export interface VersionInfo {
+  /** Versión de la app en ejecución. */
+  current: string
+  /** Última release publicada, o `null` si no se pudo consultar. */
+  latest: string | null
+  /** Página de la última release, o `null` si no se pudo consultar. */
+  page: string | null
+  state: VersionState
+  /** Momento de la consulta, en ISO 8601. */
+  checkedAt: string
+}
+
 export interface AgentHubBridge {
   getCoreStatus(): Promise<CoreStatus>
   restartCore(): Promise<void>
@@ -45,6 +59,8 @@ export interface AgentHubBridge {
   getLanguage?(): Promise<"es" | "en" | "auto">
   /** Guarda la preferencia para la bandeja, las notificaciones y los diálogos; devuelve la vigente. Ausente en versiones anteriores del escritorio. */
   setLanguage?(preference: "es" | "en" | "auto"): Promise<"es" | "en" | "auto">
+  /** Versión en ejecución y última release publicada; sólo lectura, con la consulta en caché. Ausente en versiones anteriores del escritorio. */
+  getVersionInfo?(): Promise<VersionInfo>
 }
 
 declare global {

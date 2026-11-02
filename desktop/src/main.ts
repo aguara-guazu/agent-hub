@@ -21,7 +21,8 @@ import { AutostartOffer } from './autostart-offer.js'
 import { ClockWake } from './clock-wake.js'
 import { holdLimitFor, KeepAwake } from './keep-awake.js'
 import { deliveryNotice, FeedPoller, ScheduleNoticeBatcher, type FeedResponse, type Notice } from './schedule-feed.js'
-import { AutoUpdater, type UpdateStatus } from './updater.js'
+import { AutoUpdater, fetchLatestRelease, type UpdateStatus } from "./updater.js"
+import { createVersionInfoReader } from "./version-info.js"
 import { SilentUpdates, hiddenUpdateLaunch, updateRelaunchArgs } from './silent-updates.js'
 import { defaultClientDeps, isClientRunning, restartClient, supportsClientRestart } from './clients.js'
 import { DaemonApp, loadConfig } from '@agenthub/daemon'
@@ -171,6 +172,12 @@ const autostart = new AutostartManager({
   linuxFs,
 })
 
+// Para probar contra un servidor propio sin publicar una release.
+const updateSource = {
+  ...(process.env.AGENTHUB_UPDATE_API ? { apiBase: process.env.AGENTHUB_UPDATE_API } : {}),
+  ...(process.env.AGENTHUB_UPDATE_REPO ? { repo: process.env.AGENTHUB_UPDATE_REPO } : {}),
+}
+
 const updater = new AutoUpdater({
   currentVersion: app.getVersion(),
   platform: process.platform,
@@ -180,10 +187,13 @@ const updater = new AutoUpdater({
   env: process.env,
   bundleId: APP_BUNDLE_ID,
   enabled: app.isPackaged,
-  // Para probar contra un servidor propio sin publicar una release.
-  ...(process.env.AGENTHUB_UPDATE_API ? { apiBase: process.env.AGENTHUB_UPDATE_API } : {}),
-  ...(process.env.AGENTHUB_UPDATE_REPO ? { repo: process.env.AGENTHUB_UPDATE_REPO } : {}),
+  ...updateSource,
   log: (line) => console.error(line),
+})
+
+const readVersionInfo = createVersionInfoReader({
+  currentVersion: app.getVersion(),
+  fetchRelease: () => fetchLatestRelease(updateSource),
 })
 
 function notify(title: string, body: string): void {
@@ -720,6 +730,7 @@ function registerIpc(): void {
   })
   ipcMain.handle(IPC.getLanguage, () => languagePreference)
   ipcMain.handle(IPC.setLanguage, (_event, preference: unknown) => saveLanguagePreference(preference))
+  ipcMain.handle(IPC.getVersionInfo, readVersionInfo)
   ipcMain.handle(IPC.getAutostart, safeAutostart)
   ipcMain.handle(IPC.setAutostart, (_event, enabled: boolean) => {
     autostart.setEnabled(Boolean(enabled))

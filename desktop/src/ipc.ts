@@ -33,6 +33,8 @@ export const IPC = {
   getLanguage: "agenthub:language-get",
   /** invoke: renderer -> main, guarda la preferencia de idioma y devuelve la que quedó vigente. */
   setLanguage: "agenthub:language-set",
+  /** invoke: renderer -> main, versión en ejecución y última release publicada. Sólo lectura: no descarga ni instala. */
+  getVersionInfo: "agenthub:version-info",
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -42,6 +44,20 @@ export interface CoreStatus {
   apiBaseUrl: string
   pid: number | undefined
   daemonState?: SupervisorState
+}
+
+export type VersionState = "up-to-date" | "outdated" | "unknown"
+
+export interface VersionInfo {
+  /** Versión de la app en ejecución. */
+  current: string
+  /** Última release publicada, o `null` si no se pudo consultar. */
+  latest: string | null
+  /** Página de la última release, o `null` si no se pudo consultar. */
+  page: string | null
+  state: VersionState
+  /** Momento de la consulta, en ISO 8601. */
+  checkedAt: string
 }
 
 export interface ClientRestartResult {
@@ -70,6 +86,7 @@ export interface AgentHubBridge {
   onNavigate(listener: (route: string) => void): () => void
   getLanguage(): Promise<LanguagePreference>
   setLanguage(preference: LanguagePreference): Promise<LanguagePreference>
+  getVersionInfo(): Promise<VersionInfo>
 }
 
 /** Lista blanca de canales que el preload puede usar en cada dirección. */
@@ -85,6 +102,7 @@ export const INVOKE_CHANNELS: readonly IpcChannel[] = [
   IPC.attachNavigation,
   IPC.getLanguage,
   IPC.setLanguage,
+  IPC.getVersionInfo,
 ]
 
 export const RECEIVE_CHANNELS: readonly IpcChannel[] = [IPC.coreStateChanged, IPC.navigate]

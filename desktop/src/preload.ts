@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { LanguagePreference } from "./i18n.js"
-import { IPC, type AgentHubBridge, type ClientRestartResult, type CoreStatus, type OpenFileResult } from './ipc.js'
+import { IPC, type AgentHubBridge, type ClientRestartResult, type CoreStatus, type OpenFileResult, type VersionInfo } from "./ipc.js"
 
 /**
  * Preload seguro. Con `contextIsolation` y `sandbox` activos, el renderer sólo
@@ -38,6 +38,7 @@ const bridge: AgentHubBridge = {
   },
   getLanguage: () => ipcRenderer.invoke(IPC.getLanguage) as Promise<LanguagePreference>,
   setLanguage: (preference: LanguagePreference) => ipcRenderer.invoke(IPC.setLanguage, preference) as Promise<LanguagePreference>,
+  getVersionInfo: () => ipcRenderer.invoke(IPC.getVersionInfo) as Promise<VersionInfo>,
 }
 
 /**

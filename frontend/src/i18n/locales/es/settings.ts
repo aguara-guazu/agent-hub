@@ -629,6 +629,25 @@ const settings = {
         unavailable: "No responde",
       },
     },
+    version: {
+      title: "Versión",
+      current: { label: "Versión instalada" },
+      latest: {
+        label: "Último release",
+        hint: {
+          checkedAt: "Consultado {{when}}",
+          unknown: "No se pudo consultar GitHub. Revisá tu conexión.",
+        },
+      },
+      state: {
+        upToDate: "Al día",
+        outdated: "Hay una nueva",
+        unknown: "Sin consultar",
+        checking: "Consultando…",
+      },
+      openRelease: "Ver release",
+      browserHint: "Se consulta desde la app de escritorio",
+    },
     computer: {
       label: "Esta computadora",
       platform: {
