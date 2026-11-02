@@ -641,7 +641,7 @@ const settings = {
       },
       state: {
         upToDate: "Al día",
-        outdated: "Hay una nueva",
+        outdated: "Nueva versión",
         unknown: "No disponible",
         checking: "Consultando…",
       },
