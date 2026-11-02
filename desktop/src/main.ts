@@ -731,6 +731,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.getLanguage, () => languagePreference)
   ipcMain.handle(IPC.setLanguage, (_event, preference: unknown) => saveLanguagePreference(preference))
   ipcMain.handle(IPC.getVersionInfo, readVersionInfo)
+  ipcMain.handle(IPC.getAppVersion, () => app.getVersion())
   ipcMain.handle(IPC.getAutostart, safeAutostart)
   ipcMain.handle(IPC.setAutostart, (_event, enabled: boolean) => {
     autostart.setEnabled(Boolean(enabled))

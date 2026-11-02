@@ -39,6 +39,7 @@ const bridge: AgentHubBridge = {
   getLanguage: () => ipcRenderer.invoke(IPC.getLanguage) as Promise<LanguagePreference>,
   setLanguage: (preference: LanguagePreference) => ipcRenderer.invoke(IPC.setLanguage, preference) as Promise<LanguagePreference>,
   getVersionInfo: () => ipcRenderer.invoke(IPC.getVersionInfo) as Promise<VersionInfo>,
+  getAppVersion: () => ipcRenderer.invoke(IPC.getAppVersion) as Promise<string>,
 }
 
 /**

@@ -35,6 +35,8 @@ export const IPC = {
   setLanguage: "agenthub:language-set",
   /** invoke: renderer -> main, versión en ejecución y última release publicada. Sólo lectura: no descarga ni instala. */
   getVersionInfo: "agenthub:version-info",
+  /** invoke: renderer -> main, versión de la app en ejecución. Sólo lectura y sin red. */
+  getAppVersion: "agenthub:app-version",
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -87,6 +89,7 @@ export interface AgentHubBridge {
   getLanguage(): Promise<LanguagePreference>
   setLanguage(preference: LanguagePreference): Promise<LanguagePreference>
   getVersionInfo(): Promise<VersionInfo>
+  getAppVersion(): Promise<string>
 }
 
 /** Lista blanca de canales que el preload puede usar en cada dirección. */
@@ -103,6 +106,7 @@ export const INVOKE_CHANNELS: readonly IpcChannel[] = [
   IPC.getLanguage,
   IPC.setLanguage,
   IPC.getVersionInfo,
+  IPC.getAppVersion,
 ]
 
 export const RECEIVE_CHANNELS: readonly IpcChannel[] = [IPC.coreStateChanged, IPC.navigate]

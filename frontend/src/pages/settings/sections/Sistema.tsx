@@ -12,6 +12,7 @@ import { SettingRow, SettingsSection, useErrorDetail } from "../SettingRow"
 /** Misma clave que `useShellStatus`: el pie de la barra lateral y esta sección comparten el estado del escritorio. */
 const DESKTOP_STATUS_KEY = ["desktop-status"] as const
 const VERSION_QUERY_KEY = ["desktop-version"] as const
+const APP_VERSION_QUERY_KEY = ["desktop-app-version"] as const
 
 const CORE_TONES: Record<CoreState, ChipTone> = { running: "ok", starting: "info", restarting: "info", stopping: "info", stopped: "off", failed: "danger" }
 type MemoryState = "ready" | "migrating" | "migration_pending" | "unavailable"
@@ -49,6 +50,7 @@ export default function Sistema() {
   })
   const canCheckVersion = Boolean(desktop?.getVersionInfo)
   const version = useQuery({ queryKey: VERSION_QUERY_KEY, queryFn: () => desktop!.getVersionInfo!(), enabled: canCheckVersion, staleTime: VERSION_STALE_MS, retry: false })
+  const appVersion = useQuery({ queryKey: APP_VERSION_QUERY_KEY, queryFn: () => desktop!.getAppVersion!(), enabled: Boolean(desktop?.getAppVersion), staleTime: Infinity, retry: false })
   const memory = useMemoryStatus()
   const overview = useOverview()
   const state = core.data?.state
@@ -57,6 +59,7 @@ export default function Sistema() {
   const platform = desktop ? PLATFORMS[desktop.platform] : undefined
   const computer = [overview.data?.hostname, platform ? t(`system.computer.platform.${platform}`) : null].filter(Boolean).join(" · ")
   const release = version.data
+  const installedVersion = appVersion.data ?? release?.current
   const releaseState: VersionState = release?.state ?? "unknown"
   const releaseHint = !canCheckVersion
     ? t("system.version.browserHint")
@@ -100,7 +103,7 @@ export default function Sistema() {
       <SettingsSection title={t("system.version.title")}>
         <List>
           <SettingRow label={t("system.version.current.label")}>
-            {release ? <span className="mono">{release.current}</span> : <span className="xs t3">—</span>}
+            {installedVersion ? <span className="mono">{installedVersion}</span> : <span className="xs t3">—</span>}
           </SettingRow>
           <SettingRow label={t("system.version.latest.label")} hint={releaseHint}>
             {release?.latest && <span className="mono">{release.latest}</span>}

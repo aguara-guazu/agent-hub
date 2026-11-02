@@ -61,6 +61,8 @@ export interface AgentHubBridge {
   setLanguage?(preference: "es" | "en" | "auto"): Promise<"es" | "en" | "auto">
   /** Versión en ejecución y última release publicada; sólo lectura, con la consulta en caché. Ausente en versiones anteriores del escritorio. */
   getVersionInfo?(): Promise<VersionInfo>
+  /** Versión de la app en ejecución, sin consultar la red. Ausente en versiones anteriores del escritorio. */
+  getAppVersion?(): Promise<string>
 }
 
 declare global {
