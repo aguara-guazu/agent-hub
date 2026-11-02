@@ -644,7 +644,7 @@ const settings = {
       state: {
         upToDate: "Up to date",
         outdated: "Update available",
-        unknown: "Not checked",
+        unknown: "Unavailable",
         checking: "Checking…",
       },
       openRelease: "View release",

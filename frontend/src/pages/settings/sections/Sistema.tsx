@@ -18,8 +18,8 @@ type MemoryState = "ready" | "migrating" | "migration_pending" | "unavailable"
 const MEMORY_TONES: Record<MemoryState, ChipTone> = { ready: "ok", migrating: "info", migration_pending: "warn", unavailable: "danger" }
 const VERSION_TONES: Record<VersionState, ChipTone> = { "up-to-date": "ok", outdated: "warn", unknown: "off" }
 const VERSION_STATE_KEYS = { "up-to-date": "upToDate", outdated: "outdated", unknown: "unknown" } as const
-/** El último release cambia pocas veces al día y el proceso principal ya lo guarda en caché; la vista no lo vuelve a pedir al volver a ella. */
-const VERSION_STALE_MS = 5 * 60 * 1000
+/** El proceso principal guarda en caché la consulta (1 h si salió bien, 60 s si falló): volver a pedirla pasado este plazo solo cuesta un IPC. */
+const VERSION_STALE_MS = 60 * 1000
 const PLATFORMS: Record<string, "mac" | "windows" | "linux"> = { darwin: "mac", win32: "windows", linux: "linux" }
 
 /** `http://127.0.0.1:47320/api` → `127.0.0.1:47320`. */

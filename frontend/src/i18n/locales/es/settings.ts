@@ -642,7 +642,7 @@ const settings = {
       state: {
         upToDate: "Al día",
         outdated: "Hay una nueva",
-        unknown: "Sin consultar",
+        unknown: "No disponible",
         checking: "Consultando…",
       },
       openRelease: "Ver release",
