@@ -39,7 +39,8 @@ export const AgentHubMemory = async ({ directory, client }) => {
     if (state?.child.stdin.writable) state.child.stdin.write(JSON.stringify({ event }) + '\\n')
     if (event === 'SessionEnd') { state?.child.stdin.end(); sessions.delete(id) }
   }
-  const dispose = () => { for (const s of sessions.values()) { s.child.stdin.end(); s.child.kill() } sessions.clear() }
+  // The bridge is not killed here: with stdin closed it delivers what is pending (SessionEnd included) and exits by itself.
+  const dispose = () => { for (const s of sessions.values()) s.child.stdin.end(); sessions.clear() }
   process.once('exit', dispose)
   return {
     'chat.message': async input => { await lifecycle(input.sessionID, 'UserPromptSubmit') },
