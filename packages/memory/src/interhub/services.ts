@@ -10,6 +10,7 @@ import { SharedProjects } from "../sharing/projects.js"
 import { INTERHUB_REMOTE_CLI_KIND, InterhubChat, localChannelAgents } from "./chat.js"
 import { InterhubNetwork, chatKind } from "./network.js"
 import { InterhubTransport } from "./transport.js"
+import { assignProject, backfillProjects, listOrphans } from "./project-association.js"
 import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
 
 const peerName = (value: unknown) => {
@@ -65,6 +66,14 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
     }
     return projects.size === 1 ? [...projects][0]! : null
   }
+  /** Assigns the channels whose current shared-project policies leave exactly one candidate; notifies listeners on any change. */
+  const backfill = async (channelId?: string) => {
+    const result = await backfillProjects(db, await localHubId(), channelId ? { channelId } : {})
+    if (result.resolved.length) events?.emit("change")
+    return result
+  }
+  // Repairs channels saved without project by earlier versions; a failure must not block the service.
+  void backfill().catch(() => {})
   /** The caller is the current, open leader of the hub it represents in the channel. */
   const isHubLeader = async (channelId: string, caller: InterhubCaller) => Boolean((await db.query(
     `SELECT 1 FROM interhub_members m JOIN chat_sessions s ON s.id=m.leader_session_id
@@ -83,9 +92,25 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       const own = (await db.query("SELECT leader_id,kind FROM chat_channels WHERE id=$1", [caller.channel_id]))[0]
       check(own && own.leader_id === caller.id && own.kind !== INTERHUB_CHANNEL_KIND, "Sólo el líder de tu canal local puede unir tu hub a un canal entre hubs.", 403)
       check(transport, "La red P2P entre hubs no está disponible en este servicio.", 503)
-      // Resolved before the P2P wait so an unknown project fails at once.
-      const project = await channelProject(caller, projectId)
-      return transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code, project)
+      // Resolved before the P2P wait so an unknown project fails at once. Without an explicit project the local context
+      // is only a fallback: the policies of the shared projects decide first, once the creator hub is a member.
+      const context = await channelProject(caller, projectId)
+      const joined = await transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code, projectId ? context : null)
+      if (joined.project_id) return joined
+      const { resolved, unresolved } = await backfill(joined.channel_id)
+      if (resolved.length) return { ...joined, project_id: resolved[0]!.project_id }
+      // Context fills the gap only when no shared project is a candidate, so it cannot contradict the policies.
+      if (context && unresolved.some(entry => entry.channel_id === joined.channel_id && entry.candidates.length === 0)) {
+        const updated = await db.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1 AND project_id IS NULL RETURNING id", [joined.channel_id, context])
+        if (updated.length) { events?.emit("change"); return { ...joined, project_id: context } }
+      }
+      return joined
+    },
+    async listOrphans() { return listOrphans(db, await localHubId()) },
+    async assignProject(caller, channelId, projectId) {
+      const result = await assignProject(db, await localHubId(), caller.id, channelId, projectId)
+      events?.emit("change")
+      return result
     },
     async localAgent(caller, channelId, sessionId, action) {
       const local = await localHubId()
