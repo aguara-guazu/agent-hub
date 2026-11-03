@@ -507,7 +507,7 @@ const project = {
       loading: "Cargando personas con acceso",
       errorTitle: "No se pudo consultar el proyecto compartido",
       emptyTitle: "El proyecto no está compartido",
-      emptyDetail: "Compartilo para trabajar con otros hubs.",
+      emptyDetail: "Compártelo para trabajar con otros hubs.",
       enable: "Compartir proyecto",
       enabled: "Proyecto compartido",
       you: "{{name}} (tú)",

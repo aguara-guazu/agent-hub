@@ -4,8 +4,12 @@ import { check } from "../contracts.js"
 export const INVITATION_PREFIX = "ahinv1."
 /** Upper bound for the decompressed JSON; protects against decompression bombs in pasted codes. */
 export const MAX_INVITATION_BYTES = 32 * 1024 * 1024
+/** Longest pasted text still decoded: base64url of the maximum payload plus slack for whitespace and wrapping. */
+const MAX_CODE_CHARS = Math.ceil(MAX_INVITATION_BYTES * 4 / 3) + 1024 * 1024
 
 const INVALID = "El código de invitación no es válido o está incompleto; cópialo completo de nuevo"
+const OVERSIZED = "La invitación supera el tamaño máximo admitido"
+const MULTIPLE = "El texto contiene más de un código de invitación; pega solo uno"
 const INVISIBLE = /[\s\u200b-\u200d\u2060\ufeff]/g
 const LEADING_NOISE = /^[\s\u200b-\u200d\u2060\ufeff"'`\u201c\u201d\u2018\u2019]+/
 const CODE = new RegExp(`${INVITATION_PREFIX.replace(".", "\\.")}([A-Za-z0-9_-]+)`)
@@ -16,6 +20,7 @@ const CODE = new RegExp(`${INVITATION_PREFIX.replace(".", "\\.")}([A-Za-z0-9_-]+
  */
 export function encodeInvitation(packet: unknown): string {
   const json = Buffer.from(JSON.stringify(packet))
+  check(json.length <= MAX_INVITATION_BYTES, OVERSIZED)
   const compressed = brotliCompressSync(json, {
     params: {
       [constants.BROTLI_PARAM_QUALITY]: constants.BROTLI_MAX_QUALITY,
@@ -39,7 +44,10 @@ export function decodeInvitation(input: unknown): unknown {
     const end = text.lastIndexOf("}")
     return parseJson(end < 0 ? text : text.slice(0, end + 1))
   }
-  const match = CODE.exec(text.replace(INVISIBLE, ""))
+  check(text.length <= MAX_CODE_CHARS, OVERSIZED)
+  const compact = text.replace(INVISIBLE, "")
+  check(compact.split(INVITATION_PREFIX).length <= 2, MULTIPLE)
+  const match = CODE.exec(compact)
   check(match, INVALID)
   const bytes = Buffer.from(match[1]!, "base64url")
   check(bytes.length > 0, INVALID)
