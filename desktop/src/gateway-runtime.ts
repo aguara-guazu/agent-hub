@@ -195,6 +195,14 @@ async function writeAtomic(path: string, content: string, mode: number): Promise
   await fsyncPath(dirname(path))
 }
 
+/** La copia desde la que corre la app no es un bundle válido de esta versión: se conserva tal cual y no se promueve. */
+export class RuntimeCopyInvalidError extends Error {
+  constructor(readonly path: string) {
+    super(`La copia del runtime en ${path} no pasa la verificación`)
+    this.name = "RuntimeCopyInvalidError"
+  }
+}
+
 /** El estado del runtime existe pero no se puede leer con certeza: nada se borra mientras dure. */
 export class RuntimeStateError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -275,8 +283,12 @@ export async function ensureGatewayRuntime(options: EnsureOptions): Promise<Ensu
   const verifySignature = options.verifySignature ?? true
   // Si la app ya corre desde una copia del runtime (relanzada por el vigía), esa copia es la versión.
   const inRuntime = bundle.startsWith(paths.versions + sep)
-  let usable = inRuntime
-  if (!inRuntime && await stat(versionDir).then(() => true, () => false)) {
+  let usable = false
+  if (inRuntime) {
+    // La app corre desde esta copia: nunca se mueve ni se borra. Si no pasa la verificación no se promueve y se aborta sin tocar `current`.
+    if (!(await runtimeCopyValid(bundle, executable, options.version, run, verifySignature))) throw new RuntimeCopyInvalidError(bundle)
+    usable = true
+  } else if (await stat(versionDir).then(() => true, () => false)) {
     usable = await runtimeCopyValid(appPath, executable, options.version, run, verifySignature)
     // Una copia existente que no pasa la verificación no se promueve ni se borra: se aparta como evidencia y se vuelve a clonar.
     if (!usable) await rename(versionDir, `${versionDir}.invalid-${Date.now()}`)
@@ -311,6 +323,8 @@ export async function ensureGatewayRuntime(options: EnsureOptions): Promise<Ensu
 
   const state = await readRuntimeStateOrQuarantine(paths)
   const current = inRuntime ? basename(dirname(bundle)) : options.version
+  // Una copia ya existente puede venir de un arranque que se cortó antes de volverse durable: se asegura antes de promoverla.
+  if (!cloned && state.current !== current) await fsyncTree(inRuntime ? dirname(bundle) : versionDir)
   await pointCurrent(paths, current)
   const next: RuntimeState = state.current === current ? state : { current, previous: state.current }
   if (next !== state) await writeAtomic(paths.state, JSON.stringify(next), 0o600)
