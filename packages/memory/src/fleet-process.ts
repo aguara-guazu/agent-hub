@@ -99,6 +99,10 @@ export class FleetProcessManager {
   private starting = new Set<string>()
   constructor(readonly directory: string, private options: FleetProcessOptions = {}) {}
 
+  /** Children this manager launched that are still running, plus launches in progress. */
+  liveCount(): number {
+    return this.starting.size + [...this.sessions.values()].filter(s => this.live(s)).length
+  }
   status(id: string): FleetStatus | undefined {
     const value = this.sessions.get(id)?.status
     return value ? this.snapshot(value) : undefined

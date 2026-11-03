@@ -1,6 +1,7 @@
 import { isCollaborationTool } from './collaboration.js'
 import { orcaWorkspaceSchema } from './agents.js'
 import { registerUsageRoutes } from './usage-routes.js'
+import { registerUpdateDrain } from './update-drain.js'
 import { chatKickInput, chatCoordinatorInput, chatDeleteChannelInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
 import { listAuthorityEvents } from './chat-access.js'
@@ -62,6 +63,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const requireCollaboration = () => check(collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
   registerUsageRoutes(app,service,options)
+  registerUpdateDrain(app, service, options.authorize)
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }

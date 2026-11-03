@@ -96,6 +96,7 @@ export class HubTeamRuntime implements TeamOrca {
       }),
     })
   }
+  liveCount(): number { return this.manager.liveCount() }
   private cleanEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     const env = { ...source }
     for (const key of Object.keys(env)) if (/^(AGENTHUB_|ORCA_|GIT_|ELECTRON_RUN_AS_NODE$)/i.test(key)) delete env[key]

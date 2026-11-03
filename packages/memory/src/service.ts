@@ -240,6 +240,10 @@ export class MemoryService {
     const fleet=(await this.get()).operations.fleet
     return fleet instanceof HubTeamRuntime ? fleet.readiness(sessionId) : 'unowned' as const
   }
+  async fleetLiveCount() {
+    const fleet=(await this.get()).operations.fleet
+    return fleet instanceof HubTeamRuntime ? fleet.liveCount() : 0
+  }
   async fleetActivityAt(sessionId:string) {
     const fleet=(await this.get()).operations.fleet
     return fleet instanceof HubTeamRuntime ? fleet.activityAt(sessionId) : undefined
