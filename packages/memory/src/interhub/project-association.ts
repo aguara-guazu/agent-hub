@@ -1,6 +1,6 @@
 import { INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
 import { check } from "../contracts.js"
-import type { Sql } from "../database.js"
+import type { Sql, TransactionSql } from "../database.js"
 import { active, type Policy } from "../sharing/schema.js"
 
 /**
@@ -25,6 +25,11 @@ export interface InterhubBackfillResult {
   resolved: { channel_id: string; project_id: string }[]
   /** Channels whose evidence is a tie or empty; they keep project_id NULL. */
   unresolved: { channel_id: string; candidates: string[] }[]
+}
+
+/** Database handle whose reads and writes of one decision must share a transaction. */
+export interface TransactionalDatabase extends Sql {
+  transaction<T>(fn: (sql: TransactionSql) => Promise<T>): Promise<T>
 }
 
 interface Candidate { project_id: string; title: string }
@@ -90,18 +95,21 @@ export async function listOrphans(db: Sql, localHubId: string): Promise<Interhub
  * so a concurrent explicit assignment wins and a second run changes nothing. Zero or several candidates leave the
  * channel orphan. Returns the assignments made so the caller can notify listeners.
  */
-export async function backfillProjects(db: Sql, localHubId: string, options: { channelId?: string } = {}): Promise<InterhubBackfillResult> {
+export async function backfillProjects(db: TransactionalDatabase, localHubId: string, options: { channelId?: string } = {}): Promise<InterhubBackfillResult> {
   const result: InterhubBackfillResult = { resolved: [], unresolved: [] }
   const ids = options.channelId
     ? [options.channelId]
     : (await db.query("SELECT id FROM chat_channels WHERE kind=$1 AND project_id IS NULL AND deleted_at IS NULL ORDER BY id", [INTERHUB_CHANNEL_KIND])).map(row => String(row.id))
   for (const channelId of ids) {
-    const found = await evidence(db, channelId, localHubId)
-    if (!found || found.projectId) continue
-    if (found.candidates.length !== 1) { result.unresolved.push({ channel_id: channelId, candidates: found.candidates.map(c => c.project_id) }); continue }
-    const projectId = found.candidates[0]!.project_id
-    const updated = await db.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1 AND project_id IS NULL AND deleted_at IS NULL RETURNING id", [channelId, projectId])
-    if (updated.length) result.resolved.push({ channel_id: channelId, project_id: projectId })
+    // Evidence and write share one transaction so a policy change cannot slip between them.
+    await db.transaction(async sql => {
+      const found = await evidence(sql, channelId, localHubId)
+      if (!found || found.projectId) return
+      if (found.candidates.length !== 1) { result.unresolved.push({ channel_id: channelId, candidates: found.candidates.map(c => c.project_id) }); return }
+      const projectId = found.candidates[0]!.project_id
+      const updated = await sql.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1 AND project_id IS NULL AND deleted_at IS NULL RETURNING id", [channelId, projectId])
+      if (updated.length) result.resolved.push({ channel_id: channelId, project_id: projectId })
+    })
   }
   return result
 }
@@ -110,16 +118,19 @@ export async function backfillProjects(db: Sql, localHubId: string, options: { c
  * Explicit assignment by the current local leader of the channel. The project must be one of the evidence candidates;
  * a channel that already has a project is never reassigned.
  */
-export async function assignProject(db: Sql, localHubId: string, callerId: string, channelId: string, projectId: string) {
-  const channel = (await db.query("SELECT id,project_id,leader_id FROM chat_channels WHERE id=$1 AND kind=$2 AND deleted_at IS NULL", [channelId, INTERHUB_CHANNEL_KIND]))[0]
-  check(channel, "Canal entre hubs inexistente.", 404)
-  check(!channel.project_id, "El canal ya pertenece a un proyecto.", 409)
-  const leads = (await db.query(`SELECT 1 FROM interhub_members m JOIN chat_sessions s ON s.id=m.leader_session_id
-    WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL AND m.leader_session_id=$3 AND s.closed_at IS NULL AND s.removed_at IS NULL`, [channelId, localHubId, callerId]))[0]
-  check(channel.leader_id === callerId && leads, "Sólo el líder de tu hub en el canal puede asignarle un proyecto.", 403)
-  const found = await evidence(db, channelId, localHubId)
-  check(found?.candidates.some(candidate => candidate.project_id === projectId), "El proyecto no es compartido con todos los hubs activos del canal.", 422)
-  const updated = await db.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1 AND project_id IS NULL AND deleted_at IS NULL RETURNING id", [channelId, projectId])
-  check(updated.length, "El canal ya pertenece a un proyecto.", 409)
-  return { channel_id: channelId, project_id: projectId }
+export async function assignProject(db: TransactionalDatabase, localHubId: string, callerId: string, channelId: string, projectId: string) {
+  // Leadership, membership policies and the write are decided inside one transaction.
+  return db.transaction(async sql => {
+    const channel = (await sql.query("SELECT id,project_id,leader_id FROM chat_channels WHERE id=$1 AND kind=$2 AND deleted_at IS NULL", [channelId, INTERHUB_CHANNEL_KIND]))[0]
+    check(channel, "Canal entre hubs inexistente.", 404)
+    check(!channel.project_id, "El canal ya pertenece a un proyecto.", 409)
+    const leads = (await sql.query(`SELECT 1 FROM interhub_members m JOIN chat_sessions s ON s.id=m.leader_session_id
+      WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL AND m.leader_session_id=$3 AND s.closed_at IS NULL AND s.removed_at IS NULL`, [channelId, localHubId, callerId]))[0]
+    check(channel.leader_id === callerId && leads, "Sólo el líder de tu hub en el canal puede asignarle un proyecto.", 403)
+    const found = await evidence(sql, channelId, localHubId)
+    check(found?.candidates.some(candidate => candidate.project_id === projectId), "El proyecto no es compartido con todos los hubs activos del canal.", 422)
+    const updated = await sql.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1 AND project_id IS NULL AND deleted_at IS NULL RETURNING id", [channelId, projectId])
+    check(updated.length, "El canal ya pertenece a un proyecto.", 409)
+    return { channel_id: channelId, project_id: projectId }
+  })
 }

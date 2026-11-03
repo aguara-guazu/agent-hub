@@ -4,6 +4,7 @@ import { check, parse } from '../contracts.js'
 import { Vault } from '../config.js'
 import { requireEntity, type MemoryStore } from '../store.js'
 import { digest, identity, publicIdentity, recovery, signature, validSignature, seal, unseal, randomKey, type Identity, type PublicIdentity } from './crypto.js'
+import { backfillProjects } from '../interhub/project-association.js'
 import { active, genesisSchema, invitationSchema, withoutSignature, type Genesis, type Member, type Policy } from './schema.js'
 
 export const LEASE_MS = 14 * 24 * 60 * 60 * 1000
@@ -180,6 +181,8 @@ export class SharedProjects {
         ON CONFLICT(id) DO UPDATE SET policy_hash=excluded.policy_hash,conflict=NULL,updated_at=now()`, [genesis.id, JSON.stringify(genesis), digest(latest)])
       for (const policy of verified.values()) await sql.query('INSERT INTO shared_policies(hash,project_id,revision,document) VALUES($1,$2,$3,$4) ON CONFLICT(hash) DO NOTHING', [digest(policy), genesis.id, policy.revision, JSON.stringify(policy)])
     })
+    // A channel joined before this membership arrived stays without project until the policies can vouch for one.
+    await backfillProjects(this.store.db, (await this.identity()).id).catch(() => {})
     return { project_id: genesis.id, role: latest.members.find(m => m.identity.id === me.id)?.role ?? null }
   }
   async changeMember(projectId: string, target: PublicIdentity, role: Member['role'], invite: boolean, revoke = false) {
