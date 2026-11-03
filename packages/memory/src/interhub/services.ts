@@ -10,7 +10,7 @@ import { SharedProjects } from "../sharing/projects.js"
 import { INTERHUB_REMOTE_CLI_KIND, InterhubChat, localChannelAgents } from "./chat.js"
 import { InterhubNetwork, chatKind } from "./network.js"
 import { InterhubTransport } from "./transport.js"
-import { assignProject, backfillProjects, isLocalHubLeader, listOrphans, projectReconcilers } from "./project-association.js"
+import { assignProject, backfillProjects, isLocalHubLeader, listOrphans, projectReconcilers, sharedProjectUsable } from "./project-association.js"
 import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
 
 const peerName = (value: unknown) => {
@@ -91,10 +91,12 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
     ready: backfilled,
     reconcileProjects,
     async createChannel(caller, input) {
-      const projectId = await channelProject(caller, input.projectId)
+      const requested = await channelProject(caller, input.projectId)
+      // Only a shared project this hub belongs to can ever be seen by the other hubs; any other starts without project.
+      const projectId = requested && await sharedProjectUsable(db, requested, [await localHubId()]) ? requested : null
       const created = await network.createChannel(caller, { name: input.name, projectId })
       transport?.topicsChanged()
-      return { ...created, project_id: projectId }
+      return { ...created, project_id: projectId, ...(requested && !projectId ? { project_notice: "El proyecto indicado no es un proyecto compartido activo de este hub; el canal quedó sin proyecto hasta que se asigne uno compartido." } : {}) }
     },
     async joinChannel(caller, code, projectId) {
       // Joining represents the whole local hub: only the leader of the caller's own local channel may do it.

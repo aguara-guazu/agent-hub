@@ -27,9 +27,10 @@ export interface InterhubServices {
   assignProject(caller: InterhubCaller, channelId: string, projectId: string): Promise<{ channel_id: string; project_id: string }>
   /**
    * The caller becomes the leader of its hub in the new channel. An explicit project must exist in this hub; without one
-   * the channel takes the single project of the caller's local workspace channels, or none.
+   * the channel takes the single project of the caller's local workspace channels, or none. The project is kept only when
+   * it is an active shared project of this hub; otherwise the channel starts without project and `project_notice` says so.
    */
-  createChannel(caller: InterhubCaller, input: { name: string; projectId?: string | null | undefined }): Promise<{ channel_id: string; code: string; project_id: string | null }>
+  createChannel(caller: InterhubCaller, input: { name: string; projectId?: string | null | undefined }): Promise<{ channel_id: string; code: string; project_id: string | null; project_notice?: string }>
   /**
    * Authority: the caller must be the current leader of its own local channel. A wrong, revoked or unknown code fails alike.
    * The local copy takes `projectId` (validated here) or, without it, the same default as createChannel.
