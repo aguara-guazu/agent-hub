@@ -50,7 +50,8 @@ export async function runChatBridge(stateDir:string,agentId:string) {
 
   // SessionEnd es el único evento que no se puede reconstruir después: queda en disco antes del primer intento y se borra
   // sólo al entregarse o ante un rechazo fatal. Un SIGKILL o el cierre del host lo dejan para el próximo bridge del host.
-  const pendingDir=join(stateDir,"chat-bridge","pending")
+  // Un subdirectorio por agente: el drenaje de un bridge solo ve (y reclama) los pendientes de su propio agente.
+  const pendingDir=join(stateDir,"chat-bridge","pending",createHash("sha256").update(agentId).digest("hex"))
   const pendingFile=(sessionId:string)=>createHash("sha256").update(JSON.stringify([agentId,sessionId])).digest("hex")+".json"
   const pidAlive=(pid:number)=>{try{process.kill(pid,0);return true}catch(error){return (error as NodeJS.ErrnoException).code!=="ESRCH"}}
   const persistEnd=async(record:PendingEnd)=>{

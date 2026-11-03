@@ -375,6 +375,7 @@ export class HubTeamRuntime implements TeamOrca {
    */
   async resumeMember(handle: string, request: HubResumeRequest): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
+    // Invariante: del chequeo exterior a `launching.add` no hay ningún await, así que un lanzamiento admitido siempre es visible en liveCount().
     this.options.admission?.require()
     check(safeId(handle) && handle.length <= 200, 'Identificador de miembro inválido.', 400)
     check(request.prompt.length > 0 && request.prompt.length <= 24_000 && !request.prompt.includes('\0'), 'Instrucción de reanudación inválida.', 400)
