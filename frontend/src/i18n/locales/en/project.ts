@@ -392,6 +392,9 @@ const project = {
   },
   collaboration: {
     interhub: {
+      unlinkExpired: "Project access expired",
+      unlinkRevoked: "Project access revoked",
+      unlinkUnavailable: "Project unavailable",
       group: "Shared between hubs",
       orphans: "Global channels between hubs without a project",
       orphanGlobal: "No project · Global",

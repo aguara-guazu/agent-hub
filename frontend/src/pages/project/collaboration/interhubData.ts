@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { api } from "../../../lib/api"
 import { MEMORY_REFRESH_MS } from "../../../lib/memory"
-import type { InterhubAgentRole, InterhubMessageOrigin, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
+import type { InterhubAgentRole, InterhubMessageOrigin, InterhubOrphanChannel, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import type { Channel } from "./chatTypes"
 
 /**
@@ -15,15 +15,7 @@ export function isInterhub(channel: Pick<Channel, "kind"> | undefined): boolean 
   return channel?.kind === INTERHUB_CHANNEL_KIND
 }
 
-export type { InterhubAgentRole, InterhubMessageOrigin, InterhubRoster, InterhubRosterAgent, InterhubRosterHub }
-
-export interface InterhubOrphanChannel {
-  channel_id: string
-  name: string
-  created_at: string
-  archived_at: string | null
-  closed_at: string | null
-}
+export type { InterhubAgentRole, InterhubMessageOrigin, InterhubOrphanChannel, InterhubRoster, InterhubRosterAgent, InterhubRosterHub }
 
 export function useInterhubOrphans() {
   return useQuery({

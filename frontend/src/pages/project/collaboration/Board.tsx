@@ -37,7 +37,7 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
 
   const channels = useMemory<Page<BoardChannel>>("chat_channels", { project_id: project.id, limit: CHANNEL_LIMIT, offset: 0 })
   const orphans = useInterhubOrphans()
-  const unassigned: BoardChannel[] = (orphans.data?.items ?? []).map(item => ({ id: item.channel_id, name: item.name, path: "", branch: null, threads: 0, kind: "inter-hub", archived_at: item.archived_at, closed_at: item.closed_at }))
+  const unassigned: BoardChannel[] = (orphans.data?.items ?? []).map(item => ({ id: item.channel_id, name: item.name, path: "", branch: null, threads: 0, kind: "inter-hub", archived_at: item.archived_at, closed_at: item.closed_at, project_unlink_reason: item.project_unlink_reason }))
   const all = channels.data?.items ?? []
   // Locales primero y compartidos entre hubs después, como se ven en la columna.
   const local = all.filter(item => !isInterhub(item))
@@ -175,13 +175,19 @@ function OrphanChannels({ orphans, items, activeId, href }: { orphans: ReturnTyp
     <div className="nav-group">{t("collaboration.interhub.orphans")}</div>
     {orphans.isPending ? <SkeletonRows count={1} avatar={false} label={t("collaboration.board.loadingChannels")} />
       : orphans.error ? <ErrorState error={orphans.error} title={t("collaboration.board.channelsError")} onRetry={() => void orphans.refetch()} />
-      : items.map(item => <Link replace key={item.id} className={cx("nav-item", "nav-item-2", activeId === item.id && "is-active")} aria-current={activeId === item.id ? "page" : undefined} to={href(item.id)}>
+      : items.map(item => {
+        const reason = item.project_unlink_reason === "membership_expired" ? t("collaboration.interhub.unlinkExpired")
+          : item.project_unlink_reason === "membership_revoked" ? t("collaboration.interhub.unlinkRevoked")
+          : item.project_unlink_reason === "project_unavailable" ? t("collaboration.interhub.unlinkUnavailable") : null
+        const detail = [item.closed_at ? t("collaboration.interhub.orphanClosed") : item.archived_at ? t("collaboration.interhub.orphanArchived") : null, reason].filter(Boolean).join(" · ")
+        return <Link replace key={item.id} className={cx("nav-item", "nav-item-2", activeId === item.id && "is-active")} aria-current={activeId === item.id ? "page" : undefined} to={href(item.id)}>
           <Icon name="interhub" small />
           <span className="nav-item-text">
             <span className="trunc" title={item.name}>{item.name}</span>
-            {(item.closed_at || item.archived_at) && <span className="xs t3 trunc">{t(item.closed_at ? "collaboration.interhub.orphanClosed" : "collaboration.interhub.orphanArchived")}</span>}
+            {detail && <span className="xs t3 trunc" title={detail}>{detail}</span>}
           </span>
-        </Link>)}
+        </Link>
+      })}
   </section>
 }
 

@@ -41,3 +41,14 @@ export interface InterhubMessageOrigin {
   name: string
   is_local: boolean
 }
+
+/** Read-only orphan channel information; the reason is absent on older servers. */
+export type InterhubProjectUnlinkReason = "membership_expired" | "membership_revoked" | "project_unavailable"
+export interface InterhubOrphanChannel {
+  channel_id: string
+  name: string
+  created_at: string
+  archived_at: string | null
+  closed_at: string | null
+  project_unlink_reason?: InterhubProjectUnlinkReason | null
+}

@@ -1,5 +1,6 @@
 import { useCallback } from "react"
 import { useSearchParams } from "react-router-dom"
+import type { InterhubProjectUnlinkReason } from "@agenthub/shared"
 import type { Page } from "../../../lib/memory"
 import type { Channel, Message, Thread } from "./chatTypes"
 import type { InterhubAgentRole, InterhubMessageOrigin } from "./interhubData"
@@ -17,6 +18,7 @@ export type ArchiveCause = "inactive" | "proposed"
 export interface BoardChannel extends Channel {
   description?: string | null
   hub_count?: number
+  project_unlink_reason?: InterhubProjectUnlinkReason | null
   /** Solo los escribe el barrido del Hub; un canal archivado sale de la lista por defecto de chat_channels. */
   archived_at?: string | null
   archive_cause?: string | null
