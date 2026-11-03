@@ -27,6 +27,12 @@ export interface InterhubBackfillResult {
   unresolved: { channel_id: string; candidates: string[] }[]
 }
 
+/**
+ * Per-store hook that reconciles the projects of inter-hub channels. The inter-hub service registers itself so that code
+ * outside it (shared-project import) reaches the same logging and change notification without importing the service.
+ */
+export const projectReconcilers = new WeakMap<object, () => Promise<void>>()
+
 /** Database handle whose reads and writes of one decision must share a transaction. */
 export interface TransactionalDatabase extends Sql {
   transaction<T>(fn: (sql: TransactionSql) => Promise<T>): Promise<T>
@@ -67,6 +73,21 @@ export async function candidateProjects(db: Sql, hubs: { id: string; is_local: b
     if (hubs.every(hub => active(policy.members.find(member => member.identity.id === hub.id), now))) result.push({ project_id: String(row.id), title: String(row.title) })
   }
   return result
+}
+
+/**
+ * Settles the project of a channel whose membership just changed. A stored project survives only while it is still a
+ * candidate for every active hub; otherwise it is replaced by `requested` when that one is a candidate, or cleared.
+ * Nothing is chosen by heuristic: an invalid value never selects an alternative project.
+ */
+export async function settleChannelProject(db: Sql, channelId: string, localHubId: string, requested: string | null = null): Promise<string | null> {
+  const row = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1 AND kind=$2", [channelId, INTERHUB_CHANNEL_KIND]))[0]
+  if (!row) return null
+  const candidates = new Set((await candidateProjects(db, await channelHubs(db, channelId, localHubId))).map(candidate => candidate.project_id))
+  const current = row.project_id ? String(row.project_id) : null
+  const settled = current && candidates.has(current) ? current : requested && candidates.has(requested) ? requested : null
+  if (settled !== current) await db.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1", [channelId, settled])
+  return settled
 }
 
 /** The session is the current, open leader of the local hub in the channel. */

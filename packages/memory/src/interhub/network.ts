@@ -7,6 +7,7 @@ import type { MemoryStore } from "../store.js"
 import { SharedProjects } from "../sharing/projects.js"
 import { canonical, digest, publicIdentity, publicIdentitySchema, signature, validSignature, validateIdentity, type Identity, type PublicIdentity } from "../sharing/crypto.js"
 import { INTERHUB_REMOTE_CLI_KIND, interhubChatPayloadSchema, interhubRemoteSessionId } from "./chat.js"
+import { settleChannelProject } from "./project-association.js"
 
 /** Upper bound of one envelope on the wire; the largest legitimate payload is a 16 000 character message. */
 export const MAX_ENVELOPE_BYTES = 96_000
@@ -211,8 +212,8 @@ export class InterhubNetwork {
 
   /**
    * Joiner side: verifies the creator-signed roster and creates the local copy of the channel with the caller as this
-   * hub's leader. `projectId` was already validated against this hub's projects; a rejoin keeps the current project
-   * when none is given.
+   * hub's leader. After the roster is applied the project is settled against the shared-project policies: a valid
+   * stored project is kept, an invalid one is replaced by `projectId` when that one is valid, or cleared.
    */
   async completeJoin(caller: { id: string; label: string }, creator: PublicIdentity, raw: unknown, projectId: string | null = null) {
     const roster = parse(rosterSchema, raw), local = await this.localIdentity()
@@ -232,10 +233,11 @@ export class InterhubNetwork {
     }
     // Same placeholder the chat model derives for this author, so the creator's leader has a single local stand-in.
     const placeholder = interhubRemoteSessionId(channelId, creator.id, creatorEntry.leader_session_id ?? "creator")
+    let project: string | null = null
     await this.store.db.transaction(async sql => {
       if (!existing) await sql.query("INSERT INTO chat_channels(id,project_id,scope_key,path,name,kind,leader_id,activated_at,description) VALUES($1,$6,$2,'',$3,'inter-hub',$4,now(),$5)",
-        [channelId, `interhub:${channelId}`, roster.channel.name, caller.id, roster.channel.description, projectId])
-      else await sql.query("UPDATE chat_channels SET leader_id=$2,project_id=COALESCE($3,project_id),deleted_at=NULL,closed_at=NULL,updated_at=now() WHERE id=$1", [channelId, caller.id, projectId])
+        [channelId, `interhub:${channelId}`, roster.channel.name, caller.id, roster.channel.description, null])
+      else await sql.query("UPDATE chat_channels SET leader_id=$2,deleted_at=NULL,closed_at=NULL,updated_at=now() WHERE id=$1", [channelId, caller.id])
       // interhub_channels references a local session: the creator's leader is represented by a closed remote placeholder.
       await sql.query(`INSERT OR IGNORE INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,closed_at)
         VALUES($1,$1,$1,$2,$3,$4,'offline',now(),now())`, [placeholder, creatorEntry.leader_label || "Líder", INTERHUB_REMOTE_CLI_KIND, channelId])
@@ -247,10 +249,10 @@ export class InterhubNetwork {
           ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL`,
         [channelId, member.hub_id, JSON.stringify(own ? publicIdentity(local) : member.peer_identity), own ? caller.id : member.leader_session_id, own ? label(caller.label) : member.leader_label, member.joined_at])
       }
+      project = await settleChannelProject(sql, channelId, local.id, projectId)
     })
     const recorded = roster.members.find(m => m.hub_id === local.id)!
-    const project = (await this.store.db.query("SELECT project_id FROM chat_channels WHERE id=$1", [channelId]))[0]?.project_id ?? null
-    return { channel_id: channelId, hub_id: local.id, project_id: project === null ? null : String(project), leader_changed: recorded.leader_session_id !== caller.id }
+    return { channel_id: channelId, hub_id: local.id, project_id: project, leader_changed: recorded.leader_session_id !== caller.id }
   }
 
   /**

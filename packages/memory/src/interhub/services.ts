@@ -10,7 +10,7 @@ import { SharedProjects } from "../sharing/projects.js"
 import { INTERHUB_REMOTE_CLI_KIND, InterhubChat, localChannelAgents } from "./chat.js"
 import { InterhubNetwork, chatKind } from "./network.js"
 import { InterhubTransport } from "./transport.js"
-import { assignProject, backfillProjects, isLocalHubLeader, listOrphans } from "./project-association.js"
+import { assignProject, backfillProjects, isLocalHubLeader, listOrphans, projectReconcilers } from "./project-association.js"
 import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
 
 const peerName = (value: unknown) => {
@@ -78,11 +78,18 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   /** The caller is the current, open leader of the hub it represents in the channel. */
   // A hub that becomes a member after the channel exists (creator side) can complete the evidence for its project.
   network.afterMembership = channelId => backfill(channelId).then(() => undefined, error => { console.error("interhub: project backfill after membership failed:", error instanceof Error ? error.message : "unknown error") })
+  /** Backfill over every orphan channel for callers that must not fail: awaits the startup pass, logs without channel data. */
+  const reconcileProjects = async () => {
+    await backfilled
+    await backfill().then(() => undefined, error => { console.error("interhub: project reconciliation failed:", error instanceof Error ? error.message : "unknown error") })
+  }
+  projectReconcilers.set(store, reconcileProjects)
   const isHubLeader = async (channelId: string, caller: InterhubCaller) => isLocalHubLeader(db, channelId, await localHubId(), caller.id)
 
   return {
     /** Settles once the startup backfill has run; it never rejects. */
     ready: backfilled,
+    reconcileProjects,
     async createChannel(caller, input) {
       const projectId = await channelProject(caller, input.projectId)
       const created = await network.createChannel(caller, { name: input.name, projectId })
