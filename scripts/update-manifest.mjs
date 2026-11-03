@@ -8,6 +8,10 @@
  *   AGENTHUB_UPDATE_SIGNING_KEY      PKCS#8 PEM of the Ed25519 private key; absent ⇒ unsigned manifest
  *   AGENTHUB_UPDATE_SIGNING_KEY_ID   id of that key in the embedded trust store (required with the key)
  *   AGENTHUB_UPDATE_NEXT_TRUST       optional rotation {keys:[{id, ed25519_spki_b64}], revoked:[id]}; only with a key
+ *   AGENTHUB_UPDATE_TRUST            public trust store embedded in every build ({schema:1, keys, revoked}).
+ *                                    It and the signing key go together: a signed manifest with no embedded trust is
+ *                                    accepted only as integrity_only, and an embedded trust with an unsigned manifest
+ *                                    is rejected by every client. The signing key must be an active key of that trust.
  * The canonical form must match desktop/src/update-trust.ts canonicalJson and parseManifest byte for byte.
  */
 import { Buffer } from "node:buffer"
@@ -16,6 +20,7 @@ import { createReadStream, readdirSync, readFileSync, statSync, writeFileSync } 
 import { basename, join } from "node:path"
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+const isSemver = (value) => SEMVER.test(value) && value.split(".").every(part => Number.isSafeInteger(Number(part)))
 const KEY_ID = /^[A-Za-z0-9._-]{1,64}$/
 const MANIFEST = "AgentHub-update.json"
 
@@ -53,6 +58,7 @@ function nextTrust(raw) {
   const ids = new Set()
   const keys = trust.keys.map(entry => {
     if (!entry || Object.keys(entry).some(k => k !== "id" && k !== "ed25519_spki_b64") || typeof entry.id !== "string" || !KEY_ID.test(entry.id) || ids.has(entry.id)) fail("AGENTHUB_UPDATE_NEXT_TRUST: clave inválida o repetida")
+    if (typeof entry.ed25519_spki_b64 !== "string") fail(`AGENTHUB_UPDATE_NEXT_TRUST: ${entry.id} no es Ed25519 DER SPKI`)
     let key
     try { key = createPublicKey({ key: Buffer.from(entry.ed25519_spki_b64, "base64"), format: "der", type: "spki" }) } catch { key = null }
     if (key?.asymmetricKeyType !== "ed25519") fail(`AGENTHUB_UPDATE_NEXT_TRUST: ${entry.id} no es Ed25519 DER SPKI`)
@@ -67,7 +73,7 @@ function nextTrust(raw) {
 const [artifactsDir, tag, outDir] = process.argv.slice(2)
 if (!artifactsDir || !tag || !outDir) fail("uso: update-manifest.mjs <artifacts> <tag> <out>")
 const version = tag.replace(/^v/, "")
-if (!/^v/.test(tag) || !SEMVER.test(version)) fail(`tag no canónico: ${tag}`)
+if (!/^v/.test(tag) || !isSemver(version)) fail(`tag no canónico: ${tag}`)
 const packaged = JSON.parse(readFileSync("desktop/package.json", "utf8")).version
 if (packaged !== version) fail(`la versión del tag (${version}) no coincide con desktop/package.json (${packaged})`)
 
@@ -86,9 +92,13 @@ for (const path of paths) {
 if (!assets.length) fail("no hay artefactos")
 assets.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 
-const privatePem = process.env.AGENTHUB_UPDATE_SIGNING_KEY
-const rotation = process.env.AGENTHUB_UPDATE_NEXT_TRUST
+// Unset GitHub secrets and variables expand to empty strings.
+const privatePem = process.env.AGENTHUB_UPDATE_SIGNING_KEY || null
+const rotation = process.env.AGENTHUB_UPDATE_NEXT_TRUST || null
+const embedded = process.env.AGENTHUB_UPDATE_TRUST || null
 if (rotation && !privatePem) fail("AGENTHUB_UPDATE_NEXT_TRUST requiere firma: una rotación sin firma se descarta en el cliente")
+if (embedded && !privatePem) fail("los builds embeben AGENTHUB_UPDATE_TRUST pero falta AGENTHUB_UPDATE_SIGNING_KEY: todos los clientes rechazarían un manifiesto sin firma")
+if (privatePem && !embedded) fail("hay AGENTHUB_UPDATE_SIGNING_KEY pero los builds no embeben AGENTHUB_UPDATE_TRUST: la firma no autenticaría nada")
 const manifest = { schema: 1, version, assets, ...(rotation ? { next_trust: nextTrust(rotation) } : {}) }
 const bytes = Buffer.from(canonicalJson(manifest), "utf8")
 writeFileSync(join(outDir, MANIFEST), bytes)
@@ -99,6 +109,13 @@ if (privatePem) {
   if (!keyId || !KEY_ID.test(keyId)) fail("AGENTHUB_UPDATE_SIGNING_KEY_ID ausente o inválido")
   const key = createPrivateKey(privatePem)
   if (key.asymmetricKeyType !== "ed25519") fail("la clave de firma no es Ed25519")
+  // The signing key must be the public key the builds trust under that id, and not revoked.
+  const trust = JSON.parse(embedded)
+  const entry = Array.isArray(trust?.keys) ? trust.keys.find(k => k?.id === keyId) : undefined
+  if (!entry || typeof entry.ed25519_spki_b64 !== "string") fail(`AGENTHUB_UPDATE_SIGNING_KEY_ID ${keyId} no está en AGENTHUB_UPDATE_TRUST`)
+  if (Array.isArray(trust.revoked) && trust.revoked.includes(keyId)) fail(`la clave ${keyId} está revocada en AGENTHUB_UPDATE_TRUST`)
+  const derived = createPublicKey(key).export({ format: "der", type: "spki" })
+  if (!derived.equals(Buffer.from(entry.ed25519_spki_b64, "base64"))) fail(`la clave privada no corresponde a la clave pública ${keyId} de AGENTHUB_UPDATE_TRUST`)
   const signature = sign(null, bytes, key)
   writeFileSync(join(outDir, `${MANIFEST}.sig`), canonicalJson({ key_id: keyId, sig_b64: signature.toString("base64") }))
   console.log(`update-manifest: firmado con ${keyId}`)

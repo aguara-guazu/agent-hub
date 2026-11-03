@@ -17,7 +17,8 @@ const KEY_ID = /^[A-Za-z0-9._-]{1,64}$/
  * is not revoked. Any violation fails the build: a store the updater would reject must never ship.
  */
 function canonicalTrustStore() {
-  const inline = process.env.AGENTHUB_UPDATE_TRUST
+  // An unset GitHub variable expands to an empty string: treat it as absent.
+  const inline = process.env.AGENTHUB_UPDATE_TRUST || null
   const source = inline ?? (process.env.AGENTHUB_UPDATE_TRUST_FILE ? readFileSync(process.env.AGENTHUB_UPDATE_TRUST_FILE, 'utf8') : null)
   if (!source) return null
   const fail = (reason) => { throw new Error(`AGENTHUB_UPDATE_TRUST inválido: ${reason}`) }
@@ -28,9 +29,10 @@ function canonicalTrustStore() {
   const keys = trust.keys.map(entry => {
     if (!entry || typeof entry !== 'object' || Object.keys(entry).some(name => name !== 'id' && name !== 'ed25519_spki_b64')) fail('cada clave es {id, ed25519_spki_b64}')
     if (typeof entry.id !== 'string' || !KEY_ID.test(entry.id) || ids.has(entry.id)) fail(`id de clave inválido o repetido: ${entry.id}`)
+    if (typeof entry.ed25519_spki_b64 !== 'string') fail(`la clave ${entry.id} no es Ed25519 DER SPKI`)
     let key
     try { key = createPublicKey({ key: Buffer.from(entry.ed25519_spki_b64, 'base64'), format: 'der', type: 'spki' }) } catch { key = null }
-    if (typeof entry.ed25519_spki_b64 !== 'string' || key?.asymmetricKeyType !== 'ed25519') fail(`la clave ${entry.id} no es Ed25519 DER SPKI`)
+    if (key?.asymmetricKeyType !== 'ed25519') fail(`la clave ${entry.id} no es Ed25519 DER SPKI`)
     ids.add(entry.id)
     return { id: entry.id, ed25519_spki_b64: entry.ed25519_spki_b64 }
   })

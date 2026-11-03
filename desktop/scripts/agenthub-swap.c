@@ -33,7 +33,7 @@ static int ends_with(const char *value, const char *suffix) {
 
 static int valid_transaction_id(const char *id) {
   size_t length = strlen(id);
-  if (length < 4 || length > 64) return 0;
+  if (length < 8 || length > 64) return 0;
   for (const char *c = id; *c; c++)
     if (!((*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '-')) return 0;
   return 1;
