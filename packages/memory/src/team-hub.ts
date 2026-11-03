@@ -318,7 +318,7 @@ export class HubTeamRuntime implements TeamOrca {
       attempted = true
       const result = await this.manager.start({ id, cli: member.cli, cwd: current.path, model: member.model, prompt: member.prompt,
         ...(member.effort ? { effort: member.effort } : {}), ...(plan?.rung === 'fork' ? { resume_id: plan.native_id!, fork: true } : {}),
-        ...(member.profile ? { isolate_connectors: true } : {}) })
+        ...(member.profile ? { isolate_connectors: true } : {}) }, { admitted: true })
       await this.verifyLaunchEnabled(id)
       if (!['busy', 'idle', 'waiting_input'].includes(result.state)) {
         throw new MemoryError(503, 'El agente del Hub no confirmó la entrega inicial. Inspeccioná su estado antes de volver a lanzar.')
@@ -400,7 +400,7 @@ export class HubTeamRuntime implements TeamOrca {
       this.nextGenerations.set(handle, randomUUID())
       attempted = true
       const result = await this.manager.start({ id: handle, cli: runtime.cli, cwd: current.path, model: runtime.model, prompt: request.prompt,
-        ...(runtime.effort ? { effort: runtime.effort } : {}), resume_id: plan!.native_id!, ...(derived ? { isolate_connectors: true } : {}) })
+        ...(runtime.effort ? { effort: runtime.effort } : {}), resume_id: plan!.native_id!, ...(derived ? { isolate_connectors: true } : {}) }, { admitted: true })
       await this.verifyLaunchEnabled(handle)
       if (!['busy', 'idle', 'waiting_input'].includes(result.state)) throw new MemoryError(503, 'El agente del Hub no confirmó la reanudación.')
       const status = await this.status(handle)

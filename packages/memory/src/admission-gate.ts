@@ -4,8 +4,10 @@ import { MemoryError } from "./contracts.js"
 /** Subsystems that start work which would be lost or repeated if core stopped in the middle of it. */
 export type AdmissionKind = "fleet" | "schedule" | "job" | "sync" | "backup"
 
-/** A closed gate that nobody reopens frees itself, so a vanished desktop cannot leave core refusing work. */
-export const ADMISSION_MAX_CLOSED_MS = 11 * 60_000
+/** Longest an update drain lease lives; `update-drain` expires the lease with this value and the desktop sizes its work against it. */
+export const UPDATE_LEASE_TTL_MS = 10 * 60_000
+/** A closed gate that nobody reopens frees itself, so a vanished desktop cannot leave core refusing work. Always longer than the lease. */
+export const ADMISSION_MAX_CLOSED_MS = UPDATE_LEASE_TTL_MS + 60_000
 /** `settings` row that publishes a closed gate to the worker process: `{ token, until }` with `until` in epoch milliseconds. */
 export const ADMISSION_SETTING = "update_admission"
 
@@ -24,6 +26,7 @@ export class AdmissionGate {
   private token: symbol | null = null
   private expiry: ReturnType<typeof setTimeout> | undefined
   private published: Promise<void> = Promise.resolve()
+  private failure: unknown
   private readonly tracked = new Map<AdmissionKind, number>()
 
   constructor(private readonly publisher?: AdmissionPublisher) {}
@@ -78,11 +81,30 @@ export class AdmissionGate {
   /** Resolves when the last publication finished; rejects when it failed (the caller must treat the blockers as unknown). */
   flush(): Promise<void> { return this.published }
 
+  /**
+   * `reopen` plus confirmation: resolves `true` once the worker row is gone, `false` when the deletion failed. In that case the
+   * gate is open in this process but the worker keeps refusing claims until the row expires (`ADMISSION_MAX_CLOSED_MS`), so the
+   * caller must not report the update system as reopened.
+   */
+  async reopenConfirmed(token: symbol): Promise<boolean> {
+    this.reopen(token)
+    try { await this.flush(); return !this.failure } catch { return false }
+  }
+
+  /** Last publication error, cleared by the next successful one. */
+  get publicationError(): unknown { return this.failure }
+
   private publish(state: { token: string; until: number } | null): void {
     if (!this.publisher) return
     const publisher = this.publisher
     // Publications are chained so a reopen can never be overtaken by the close that preceded it.
-    this.published = this.published.catch(() => undefined).then(() => publisher(state))
+    this.published = this.published.catch(() => undefined).then(() => publisher(state)).then(
+      () => { this.failure = undefined },
+      error => {
+        this.failure = error
+        console.error(`[admission] no se pudo publicar ${state ? "el cierre" : "la reapertura"} al worker: ${error instanceof Error ? error.message : String(error)}`)
+        throw error
+      })
     // A failed publication is surfaced by flush(); this keeps it from being an unhandled rejection meanwhile.
     this.published.catch(() => undefined)
   }
