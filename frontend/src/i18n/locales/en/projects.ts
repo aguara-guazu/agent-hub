@@ -89,8 +89,7 @@ const projects = {
   join: {
     title: "Join with an invitation",
     invitation: "Invitation",
-    invitationHint: "Paste the full text the project admin shared with you.",
-    invalid: "The invitation isn't valid. Copy the whole text again.",
+    invitationHint: "Paste the invitation code the project admin shared with you.",
     phrase: "Recovery phrase",
     phraseHint: "Optional: the 24 words to join as owner.",
     submit: "Join project",

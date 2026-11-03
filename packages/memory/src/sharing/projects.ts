@@ -8,6 +8,7 @@ import { requireWritableEntity, workFolder, type MemoryStore } from "../store.js
 import { normalizePath, samePath } from "../agents.js"
 import { digest, identity, publicIdentity, recovery, signature, validSignature, seal, unseal, randomKey, type Identity, type PublicIdentity } from './crypto.js'
 import { backfillProjects, projectReconcilers } from '../interhub/project-association.js'
+import { decodeInvitation } from './invitation-code.js'
 import { active, genesisSchema, invitationSchema, withoutSignature, type Genesis, type Member, type Policy } from './schema.js'
 
 export const LEASE_MS = 14 * 24 * 60 * 60 * 1000
@@ -215,7 +216,7 @@ export class SharedProjects {
     return this.store.update(projectId, { data: { folders: [...current, folder] } }, actor)
   }
   async acceptInvitation(raw: unknown, folder?: string, phrase?: string, actor = "user") {
-    const packet = parse(invitationSchema, raw)
+    const packet = parse(invitationSchema, decodeInvitation(raw))
     const prepared = await this.prepareLocalFolder(packet.genesis.id, folder)
     const result = await this.join(packet, phrase)
     if (prepared) await this.associateLocalFolder(result.project_id, prepared, actor)

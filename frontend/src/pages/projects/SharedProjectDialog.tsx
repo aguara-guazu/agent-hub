@@ -42,9 +42,7 @@ export function SharedProjectDialog({ mode, onClose }: { mode: SharedMode | null
     if (!ready || busy) return
     const secret = phrase.trim() ? { phrase: phrase.trim() } : {}
     if (mode === "join") {
-      let parsed: unknown
-      try { parsed = JSON.parse(invitation) } catch { setError(t("join.invalid")); return }
-      call.mutate({ operation: "join", invitation: parsed, folder: folder.trim(), ...secret })
+      call.mutate({ operation: "join", invitation, folder: folder.trim(), ...secret })
     } else {
       call.mutate({ operation: "restore", archive: archive!.value, folder: folder.trim(), ...secret })
     }

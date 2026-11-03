@@ -7,6 +7,7 @@ import { publicIdentity, publicIdentitySchema } from './crypto.js'
 import { roleSchema } from './schema.js'
 import { networkSettingsSchema } from './network.js'
 import { exportProject, restoreProject } from './archive.js'
+import { encodeInvitation } from './invitation-code.js'
 
 const adminInput = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
@@ -37,7 +38,7 @@ export function sharingRoutes(app: FastifyInstance, service: MemoryService, auth
       case 'network': return network.configure(input.settings)
       case 'create': { const result = await sharing.create(input.project_id); await network.tick(); return result }
       case "join": { const result = await sharing.acceptInvitation(input.invitation, input.folder, input.phrase); await network.tick(); return result }
-      case 'member': return sharing.store.db.transaction(() => sharing.changeMember(input.project_id, input.identity, input.role, input.invite, input.revoke))
+      case 'member': return { invitation: encodeInvitation(await sharing.store.db.transaction(() => sharing.changeMember(input.project_id, input.identity, input.role, input.invite, input.revoke))) }
       case 'recover': return sharing.store.db.transaction(() => sharing.recover(input.project_id, input.phrase))
       case 'recovery_phrase': return db.transaction(() => sharing.recoveryPhrase(input.project_id), 'read')
       case 'export': return exportProject(sharing, input.project_id)

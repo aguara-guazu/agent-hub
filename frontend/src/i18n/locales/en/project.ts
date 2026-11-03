@@ -561,7 +561,7 @@ const project = {
       submit: "Create invitation",
       created: "Invitation created",
       result: "Invitation",
-      resultHint: "Send it to the invited person so they can join from Projects.",
+      resultHint: "Send this code to the invited person so they can join from Projects.",
       copy: "Copy invitation",
       copyFailed: "Couldn't copy. Select the text and copy it.",
     },

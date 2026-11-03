@@ -184,7 +184,7 @@ function InvitePanel({ project, owner, onClose }: { project: MemoryEntity; owner
   const toast = useToast()
   const errorText = useErrorText()
   const roleLabel = useRoleLabel()
-  const create = useSharingAction<unknown>()
+  const create = useSharingAction<{ invitation: string }>()
   const [identity, setIdentity] = useState("")
   const [role, setRole] = useState<Role>("maintainer")
   const [canInvite, setCanInvite] = useState<"yes" | "no">("no")
@@ -204,7 +204,7 @@ function InvitePanel({ project, owner, onClose }: { project: MemoryEntity; owner
     if (!parsed) { setError(t("collaboration.invite.identityInvalid")); return }
     setError("")
     create.mutate({ operation: "member", project_id: project.id, identity: parsed, role, invite: owner && role !== "reader" && canInvite === "yes" }, {
-      onSuccess: result => { setInvitation(JSON.stringify(result)); toast.success(t("collaboration.invite.created")) },
+      onSuccess: result => { setInvitation(result.invitation); toast.success(t("collaboration.invite.created")) },
       onError: failure => setError(errorText(failure)),
     })
   }
@@ -218,7 +218,7 @@ function InvitePanel({ project, owner, onClose }: { project: MemoryEntity; owner
         <PanelBody>
           {invitation ? (
             <Field label={t("collaboration.invite.result")} hint={t("collaboration.invite.resultHint")}>
-              <Textarea mono rows={6} readOnly value={invitation} />
+              <Textarea mono rows={3} readOnly value={invitation} />
             </Field>
           ) : <>
             <Field label={t("collaboration.invite.identity")} hint={t("collaboration.invite.identityHint")} error={error || undefined}>

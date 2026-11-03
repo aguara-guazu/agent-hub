@@ -50,7 +50,7 @@ const definitions = {
   ...scheduleDefinitions,
   ...projectAutomationDefinitions,
   shared_status: ['Shared project members, permissions, identity, versions. Work on it per skill hub-collaboration.', z.object({ project_id: id }).strict()],
-  shared_join: ["Join a shared project only when the person asks. Requires an existing local folder and never accepts a recovery phrase.", z.object({ invitation: z.unknown(), folder: workFolder }).strict()],
+  shared_join: ["Join a shared project only when the person asks. The invitation is the one-line ahinv1. code or the legacy agenthub-invitation-v1 JSON. Requires an existing local folder and never accepts a recovery phrase.", z.object({ invitation: z.unknown(), folder: workFolder }).strict()],
   shared_pause: ["Pause or resume synchronization of a shared project on this hub, only when the person asks. Resuming reconsiders unassigned inter-hub channels.", z.object({ project_id: id, paused: z.boolean() }).strict()],
   shared_version: ['Full shared version with author, agent and origin peer; read before resolving a conflict. No attachment bytes.', z.object({ project_id: id, event_id: z.string().length(64) }).strict()],
   publish_source: ['Publish a source early (normally automatic) or share a task/collection. Keeps provenance, dedupes; shares only project fragments.', z.object({ project_id: id, entity_id: id, key: z.string().max(1000).optional() }).strict()],
