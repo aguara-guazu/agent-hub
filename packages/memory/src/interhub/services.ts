@@ -68,7 +68,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   }
   /** Assigns the channels whose current shared-project policies leave exactly one candidate; notifies listeners on any change. */
   const backfill = async (channelId?: string) => {
-    const result = await backfillProjects(db, await localHubId(), channelId ? { channelId } : {})
+    const result = await backfillProjects(db, localHubId, channelId ? { channelId } : {})
     if (result.resolved.length) events?.emit("change")
     return result
   }
@@ -109,7 +109,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       const { resolved } = await backfill(joined.channel_id)
       return resolved.length ? { ...joined, project_id: resolved[0]!.project_id } : joined
     },
-    async listOrphans() { await backfilled; return listOrphans(db, await localHubId()) },
+    async listOrphans() { await backfilled; return listOrphans(db, localHubId) },
     async assignProject(caller, channelId, projectId) {
       await backfilled
       const result = await assignProject(db, await localHubId(), caller.id, channelId, projectId)

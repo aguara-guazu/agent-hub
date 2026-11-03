@@ -182,7 +182,7 @@ export class SharedProjects {
       for (const policy of verified.values()) await sql.query('INSERT INTO shared_policies(hash,project_id,revision,document) VALUES($1,$2,$3,$4) ON CONFLICT(hash) DO NOTHING', [digest(policy), genesis.id, policy.revision, JSON.stringify(policy)])
     })
     // A channel joined before this membership arrived stays without project until the policies can vouch for one.
-    await backfillProjects(this.store.db, (await this.identity()).id).catch(() => {})
+    await backfillProjects(this.store.db, async () => (await this.identity()).id).catch(() => {})
     return { project_id: genesis.id, role: latest.members.find(m => m.identity.id === me.id)?.role ?? null }
   }
   async changeMember(projectId: string, target: PublicIdentity, role: Member['role'], invite: boolean, revoke = false) {

@@ -84,11 +84,14 @@ async function evidence(db: Sql, channelId: string, localHubId: string) {
 }
 
 /** Inter-hub channels without project anywhere in this hub, archived and closed ones included, trash excluded. */
-export async function listOrphans(db: Sql, localHubId: string): Promise<InterhubOrphanChannel[]> {
+export async function listOrphans(db: Sql, localHubId: () => Promise<string>): Promise<InterhubOrphanChannel[]> {
   const rows = await db.query("SELECT id,name,created_at,archived_at,closed_at FROM chat_channels WHERE kind=$1 AND project_id IS NULL AND deleted_at IS NULL ORDER BY updated_at DESC,id", [INTERHUB_CHANNEL_KIND])
   const result: InterhubOrphanChannel[] = []
+  // The hub identity is created on first use; an installation without orphan channels must not trigger that.
+  if (!rows.length) return result
+  const local = await localHubId()
   for (const row of rows) {
-    const hubs = await channelHubs(db, String(row.id), localHubId)
+    const hubs = await channelHubs(db, String(row.id), local)
     result.push({ channel_id: String(row.id), name: String(row.name), created_at: String(row.created_at),
       archived_at: row.archived_at ? String(row.archived_at) : null, closed_at: row.closed_at ? String(row.closed_at) : null,
       hubs, candidates: await candidateProjects(db, hubs) })
@@ -101,15 +104,18 @@ export async function listOrphans(db: Sql, localHubId: string): Promise<Interhub
  * so a concurrent explicit assignment wins and a second run changes nothing. Zero or several candidates leave the
  * channel orphan. Returns the assignments made so the caller can notify listeners.
  */
-export async function backfillProjects(db: TransactionalDatabase, localHubId: string, options: { channelId?: string } = {}): Promise<InterhubBackfillResult> {
+export async function backfillProjects(db: TransactionalDatabase, localHubId: () => Promise<string>, options: { channelId?: string } = {}): Promise<InterhubBackfillResult> {
   const result: InterhubBackfillResult = { resolved: [], unresolved: [] }
   const ids = options.channelId
     ? [options.channelId]
     : (await db.query("SELECT id FROM chat_channels WHERE kind=$1 AND project_id IS NULL AND deleted_at IS NULL ORDER BY id", [INTERHUB_CHANNEL_KIND])).map(row => String(row.id))
+  // Resolved only when there is something to evaluate, so installations that never used inter-hub channels create no identity.
+  if (!ids.length) return result
+  const local = await localHubId()
   for (const channelId of ids) {
     // Evidence and write share one transaction so a policy change cannot slip between them.
     await db.transaction(async sql => {
-      const found = await evidence(sql, channelId, localHubId)
+      const found = await evidence(sql, channelId, local)
       if (!found || found.projectId) return
       if (found.candidates.length !== 1) { result.unresolved.push({ channel_id: channelId, candidates: found.candidates.map(c => c.project_id) }); return }
       const projectId = found.candidates[0]!.project_id
