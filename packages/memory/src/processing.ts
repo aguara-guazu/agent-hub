@@ -115,7 +115,7 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
         for (const fact of facts) {
           // A single hallucinated citation discards that fact, not the whole source.
           if (!fact.evidence_ids.every(e => allowed.has(e))) { extractionRejected++; continue }
-          await validateEvidence(sql, fact.evidence_ids); await validateProjects(sql, fact.project_ids)
+          await validateEvidence(sql, fact.evidence_ids); await validateProjects(sql, fact.project_ids, "read")
           const key = hash({ versionId, processingKey, category: fact.category, evidence: [...fact.evidence_ids].sort(), text: fact.text })
           const old = await sql.query("SELECT id FROM entities WHERE kind='fact' AND data->>'dedupe_key'=$1", [key])
           if (old.length) continue

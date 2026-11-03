@@ -159,6 +159,6 @@ export async function mergeProjects(store: MemoryStore, raw: unknown, actor: str
     await audit(sql, into.id, "project_merge_destination", actor, into, { data, from_id: from.id, moved, conflicts, retained })
     await audit(sql, from.id, "project_merged", actor, from, { data: merged, into_id: into.id, moved, conflicts, retained })
     return { project_id: into.id, archived_project_id: from.id, moved, conflicts, memory_conflicts: memoryConflicts, retained: { sources: retainedSources, references: retained },
-      guidance: "El origen y sus datos se conservan archivados. Los campos en conflicto y las referencias retenidas requieren revisión; no se transfirieron permisos ni automatizaciones." }
+      guidance: "El origen y sus datos se conservan archivados. Los campos en conflicto y las referencias retenidas requieren revisión; no se transfirieron permisos ni automatizaciones. Los conectores retenidos siguen importando al origen privado; la persona puede reasignarlos explícitamente." }
   })
 }

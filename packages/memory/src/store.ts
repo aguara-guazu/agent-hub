@@ -33,13 +33,12 @@ export async function requireWritableEntity(sql: Sql, entityId: string, kind?: E
 /** Reject explicit writes to consolidated identities even when a tool validates through its own SQL. */
 export async function assertWritableEntityTargets(sql: Sql, raw: unknown): Promise<void> {
   const targets = new Set<string>()
-  const keys = new Set(["id", "entity_id", "project_id", "from_id", "to_id", "collection_id", "person_id", "project_ids", "memory_project_id"])
-  const visit = (value: unknown, target = false) => {
-    if (typeof value === "string" && target && id.safeParse(value).success) targets.add(value)
-    else if (Array.isArray(value)) value.forEach(item => visit(item, target))
-    else if (value && typeof value === "object") for (const [key, item] of Object.entries(value)) visit(item, keys.has(key))
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return
+  const input = raw as Record<string, unknown>
+  for (const key of ["id", "entity_id", "project_id", "project_ids", "from_id", "to_id"]) {
+    const values = Array.isArray(input[key]) ? input[key] : [input[key]]
+    for (const value of values) if (typeof value === "string" && id.safeParse(value).success) targets.add(value)
   }
-  visit(raw)
   if (!targets.size) return
   const merged = (await sql.query("SELECT id,data->>'merged_into' AS into_id FROM entities WHERE id IN (SELECT value FROM json_each($1)) AND data->>'merged_into' IS NOT NULL LIMIT 1", [[...targets]]))[0]
   check(!merged, `La entidad ${merged?.id} fue unificada; escribe en into_id=${merged?.into_id}`, 409)
@@ -52,8 +51,11 @@ export async function uniqueProjectTitle(sql: Sql, title: string, projectId: str
   check(!matches.length, `Ya existe un proyecto con título equivalente: ${matches.map(project => `${project.title} (${project.id})`).join(", ")}. Reutiliza su id; para asociar la carpeta usa memory_update_entity con data.folders (rutas absolutas, conservando las existentes). Si es otro proyecto, usa allow_duplicate:true.`, 409)
 }
 
-export async function validateProjects(sql: Sql, ids: string[]): Promise<void> {
-  for (const project of new Set(ids)) await requireWritableEntity(sql, project, "project")
+export async function validateProjects(sql: Sql, ids: string[], access: "read" | "write" = "write"): Promise<void> {
+  for (const project of new Set(ids)) {
+    if (access === "write") await requireWritableEntity(sql, project, "project")
+    else await requireEntity(sql, project, "project")
+  }
 }
 export async function audit(sql: Sql, entityId: string, action: string, actor: string, before: unknown, after: unknown) {
   await sql.query('INSERT INTO changes(entity_id,action,actor,before_value,after_value) VALUES($1,$2,$3,$4,$5)',
@@ -64,8 +66,8 @@ export async function validateEvidence(sql: Sql, ids: string[]): Promise<void> {
   const rows = await sql.query('SELECT id FROM fragments WHERE id IN (SELECT value FROM json_each($1))', [ids])
   check(rows.length === new Set(ids).size, 'La evidencia debe referenciar fragmentos existentes')
 }
-async function attachProjects(sql: Sql, entityId: string, projects: string[]) {
-  await validateProjects(sql, projects)
+async function attachProjects(sql: Sql, entityId: string, projects: string[], access: "read" | "write" = "write") {
+  await validateProjects(sql, projects, access)
   for (const project of new Set(projects)) {
     if (entityId === project) continue
     await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'project') ON CONFLICT(from_id,to_id,type) DO NOTHING", [randomUUID(), entityId, project])
@@ -133,7 +135,10 @@ export class MemoryStore {
       if (!source?.current_version_id) return this.updateRow(entityId, input, actor)
       const original = parse(importInput, await this.original(source.current_version_id))
       const text = parse(z.string().trim().min(1).max(5_000_000), input.data!.text)
-      const next = parse(importInput, { ...original, title: input.title ?? original.title, text, fragments: [], metadata: { ...original.metadata, ...input.data } })
+      const current = await requireWritableEntity(this.db, entityId)
+      const projects = await this.db.query("SELECT to_id FROM links WHERE from_id=$1 AND type='project'", [entityId])
+      const next = parse(importInput, { ...original, provider: source.provider, account: source.account, external_id: source.external_id, title: input.title ?? original.title, text, fragments: [], project_ids: projects.map(project => project.to_id),
+        metadata: { ...original.metadata, ...current.data, ...input.data } })
       await this.updateRow(entityId, input, actor)
       await this.ingestWithinOriginals(next, actor)
       return requireEntity(this.db, entityId)
@@ -290,7 +295,6 @@ export class MemoryStore {
     return this.db.transaction(async sql => {
       const row = (await sql.query('DELETE FROM links WHERE id=$1 RETURNING *', [parse(id, linkId)]))[0]
       check(row, 'Relación inexistente', 404)
-      await requireWritableEntity(sql, row.from_id); await requireWritableEntity(sql, row.to_id)
       if (row.type === 'project') {
         await sql.query(`DELETE FROM fragment_projects WHERE project_id=$2 AND fragment_id IN
           (SELECT f.id FROM fragments f JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE s.entity_id=$1)`, [row.from_id, row.to_id])
@@ -323,7 +327,7 @@ export class MemoryStore {
     return this.db.withOriginals(() => this.ingestWithinOriginals(raw, actor, indexOnly))
   }
 
-  /** Internal compound writes must already hold db.withOriginals before entering a transaction. */
+  /** Internal ingestion preserves historical project scope, including merged private donors; callers must hold db.withOriginals. */
   async ingestWithinOriginals(raw: unknown, actor: string, indexOnly = false) {
     const input = parse(importInput, raw)
     const parts = input.fragments.length ? input.fragments : input.kind === 'meeting' ? parseTranscript(input.text) : splitText(input.text)
@@ -333,7 +337,7 @@ export class MemoryStore {
     const directory = join(this.directory, 'originals')
     const originalPath = `${digest}.json`
     return this.db.transaction(async sql => {
-      await validateProjects(sql, input.project_ids)
+      await validateProjects(sql, input.project_ids, "read")
       let source = (await sql.query('SELECT * FROM sources WHERE provider=$1 AND account=$2 AND external_id=$3', [input.provider, input.account, input.external_id]))[0]
       const entityData = { ...input.metadata, occurred_at: input.occurred_at ?? null, timezone: input.timezone ?? null, provider: input.provider }
       if (!source) {
@@ -347,7 +351,7 @@ export class MemoryStore {
         await sql.query(`UPDATE entities SET title=CASE WHEN (data->>'manual_title') IN (1,'true') THEN title ELSE $2 END,
           data=jsonb_merge(data,$3),updated_at=clock_timestamp() WHERE id=$1`, [source.entity_id, input.title, JSON.stringify(entityData)])
       }
-      await attachProjects(sql, source.entity_id, input.project_ids)
+      await attachProjects(sql, source.entity_id, input.project_ids, "read")
       const inheritedProjects = (await sql.query("SELECT to_id FROM links WHERE from_id=$1 AND type='project'", [source.entity_id])).map(row => row.to_id as string)
       // Identity enrichment must run even when the source text is unchanged.
       const participants = new Map<string, string>()
@@ -386,12 +390,12 @@ export class MemoryStore {
           if (correction) speakerId = correction.speaker_id ?? undefined
           const explicit = Boolean(correction) || part.project_ids !== undefined
           const projects: string[] = correction?.project_ids ?? part.project_ids ?? inheritedProjects
-          await validateProjects(sql, projects)
+          await validateProjects(sql, projects, "read")
           await sql.query('INSERT INTO fragments(id,version_id,ordinal,text,speaker_id,start_time,end_time,offset_ms,metadata) VALUES($1,$2,$3,$4,$5,ts($6),ts($7),$8,$9)',
             [fragmentId, versionId, ordinal, part.text, speakerId ?? null, part.start_time ?? null, part.end_time ?? null, part.offset_ms ?? null,
               JSON.stringify({ ...part.metadata, external_id: part.external_id ?? null, explicit_projects: explicit, speaker_label: part.speaker ?? null, ...(correction ? { manual_assignment: true, corrected_from: correction.id } : {}) })])
           for (const project of new Set(projects)) await sql.query('INSERT INTO fragment_projects VALUES($1,$2)', [fragmentId, project])
-          await attachProjects(sql, source.entity_id, projects)
+          await attachProjects(sql, source.entity_id, projects, "read")
           if (speakerId) await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'participant') ON CONFLICT DO NOTHING", [randomUUID(), source.entity_id, speakerId])
         }
       }

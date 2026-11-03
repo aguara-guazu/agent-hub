@@ -190,8 +190,8 @@ export class MemoryOperations {
   }
   /** `agent` identifies the calling agent session (from the gateway); it attributes notes and keeps the session alive for the notes board. */
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
-    // Deletion validates under the originals lock to preserve concurrent lifecycle ordering.
-    if (!READ_OPERATIONS.has(operation) && operation !== "delete_entity") await assertWritableEntityTargets(this.store.db, raw)
+    // Cleanup remains allowed and deletion keeps its original lifecycle lock ordering.
+    if (!READ_OPERATIONS.has(operation) && !["delete_entity", "unlink_entities"].includes(operation)) await assertWritableEntityTargets(this.store.db, raw)
     if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
       check(this.collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
     if (isInterhubOperation(operation)) {
@@ -325,7 +325,10 @@ export class MemoryOperations {
       case 'process_files': return queueMedia(store, input, false, this.media)
       case 'import_file': return importFile(store, input, author)
       case 'get_file': return getFile(store, input, signal)
-      case 'import_source': return store.ingest(input, actor)
+      case "import_source": {
+        for (const fragment of input.fragments) if (fragment.project_ids) await validateProjects(db, fragment.project_ids)
+        return store.ingest(input, actor)
+      }
       case 'search': return searchMemory(db, this.ai, input)
       case 'transcript': return store.fragments(input.entity_id, input)
       case 'get_evidence': {
