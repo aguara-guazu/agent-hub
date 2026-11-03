@@ -77,7 +77,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       return result
     } finally {
       // Rearmed even when a step failed: the previous timer was cancelled by the last pass and the expiry must stay watched.
-      await scheduleExpiry().catch(() => {})
+      await scheduleExpiry().catch(error => { console.error("interhub: project expiry timer could not be rearmed:", error instanceof Error ? error.message : "unknown error") })
     }
   }
   /**
@@ -89,7 +89,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   const scheduleExpiry = async () => {
     clearTimeout(expiryTimer)
     expiryTimer = undefined
-    const expires = await nextLocalExpiry(db, localHubId).catch(() => null)
+    const expires = await nextLocalExpiry(db, localHubId)
     if (expires === null || disposed) return
     expiryTimer = setTimeout(() => { void reconcileProjects() }, Math.min(Math.max(expires - Date.now(), 1_000), MAX_EXPIRY_DELAY_MS))
     expiryTimer.unref()
