@@ -40,12 +40,12 @@ export function SharePanel({ project, onClose }: { project: MemoryEntity; onClos
     })
   }
 
-  function resumeSharing() {
-    resume.mutate({ operation: "pause", project_id: project.id, paused: false }, {
+  function setPaused(paused: boolean) {
+    resume.mutate({ operation: "pause", project_id: project.id, paused }, {
       onSuccess: () => toast.show({
         kind: "success",
-        message: t("collaboration.sharing.resumed"),
-        undo: () => resume.mutate({ operation: "pause", project_id: project.id, paused: true }, {
+        message: t(paused ? "collaboration.sharing.pausedToast" : "collaboration.sharing.resumed"),
+        undo: () => resume.mutate({ operation: "pause", project_id: project.id, paused: !paused }, {
           onError: failure => toast.error(errorText(failure)),
         }),
       }),
@@ -60,8 +60,8 @@ export function SharePanel({ project, onClose }: { project: MemoryEntity; onClos
     <Panel label={t("collaboration.sharing.title")} onClose={onClose}>
       <PanelHeader
         title={t("collaboration.sharing.title")}
-        status={shared && !shared.enabled ? <Chip tone="off">{t("collaboration.sharing.paused")}</Chip> : <span className="xs t3 trunc" title={project.title}>{project.title}</span>}
-        actions={shared && !shared.enabled ? <Button small disabled={resume.isPending} onClick={resumeSharing}>{t("collaboration.sharing.resume")}</Button> : shared && canInvite ? <Button small onClick={() => setView({ kind: "invite" })}>{t("collaboration.sharing.invite")}</Button> : undefined}
+        status={shared ? <Chip tone={shared.enabled ? "ok" : "off"}>{t(shared.enabled ? "collaboration.sharing.active" : "collaboration.sharing.paused")}</Chip> : <span className="xs t3 trunc" title={project.title}>{project.title}</span>}
+        actions={shared ? shared.enabled ? <>{canInvite && <Button small onClick={() => setView({ kind: "invite" })}>{t("collaboration.sharing.invite")}</Button>}<MoreMenu small ghost items={[{ label: t("collaboration.sharing.pause"), disabled: resume.isPending, onSelect: () => setPaused(true) }]} /></> : <Button small disabled={resume.isPending} onClick={() => setPaused(false)}>{t("collaboration.sharing.resume")}</Button> : undefined}
       />
       <PanelBody>
         {conflict && <Banner tone="danger">{conflict}</Banner>}

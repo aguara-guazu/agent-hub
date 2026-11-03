@@ -492,6 +492,9 @@ const project = {
       },
     },
     sharing: {
+      active: "Sync active",
+      pause: "Pause sync",
+      pausedToast: "Sync paused",
       paused: "Sync paused",
       resume: "Resume sync",
       resumed: "Sync resumed",

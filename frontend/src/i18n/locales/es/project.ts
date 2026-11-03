@@ -489,6 +489,9 @@ const project = {
       },
     },
     sharing: {
+      active: "Sincronización activa",
+      pause: "Pausar sincronización",
+      pausedToast: "Sincronización pausada",
       paused: "Sincronización pausada",
       resume: "Reanudar sincronización",
       resumed: "Sincronización reanudada",
