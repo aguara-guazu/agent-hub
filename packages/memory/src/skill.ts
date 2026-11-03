@@ -13,7 +13,7 @@ const groups: [string, string[]][] = [
   ['Durable memories and maintenance', ['remember', 'list_memories', 'manage_memory', 'tidy_memory', 'health']],
   ['Work context, tasks and agent notes', ['context', 'list_notes', 'write_note', 'finish_notes', 'list_tasks', 'get_task', 'save_task', 'sync_tasks', 'task_stats']],
   ['Explore and read', ['list_entities', 'get_entity', 'search', 'transcript', 'get_evidence', 'get_file', 'list_versions', 'timeline', 'review']],
-  ['Write and link', ['create_entity', 'update_entity', 'import_source', 'import_file', 'link_entities', 'unlink_entities', 'assign_fragment']],
+  ["Write and link", ["create_entity", "merge_projects", "update_entity", "import_source", "import_file", "link_entities", "unlink_entities", "assign_fragment"]],
   ['Collections and tracking rules', ['add_record', 'update_record', 'list_records', 'create_rule', 'list_rules', 'update_rule']],
   ['People and identities', ['merge_people', 'infer_identities', 'list_identity_proposals', 'review_identity', 'dedupe_people', 'list_duplicate_proposals', 'review_duplicate']],
   ['Projects for unassigned meetings', ['list_project_suggestions', 'review_project_suggestion', 'infer_projects']],
@@ -68,7 +68,7 @@ No memory_chat_* tools = local collaboration off: keep using memory; don't regis
 
 1. **Project and context.** Without a confirmed project, memory_context resolves the current folder's (pass \`path\` only if the Hub doesn't know it) and returns tasks and other agents' notes. Keep that context for the task; refetch if missing, changed or lost on resume. Identity and local notices: local-collaboration first; this is not a second registration sequence.
 2. **Search the project first.** Pass the confirmed \`project_id\` to memory_search, memory_list_entities, memory_list_tasks. Widen to all memory only if insufficient, and say so. Material in no project yet (loose meetings, general notes): \`unassigned: true\`.
-3. **Folder in no project:** \`projects\` lists existing ones; ask the person which, then add the folder via memory_update_entity (\`data.folders\`, absolute paths) or ask them to add it from the project.
+3. **Folder in no project:** Received shared projects also need a local folder association; never create a second project to attach a folder. Equivalent project titles are rejected by default; use \`allow_duplicate:true\` only for a deliberately distinct namesake. Consolidate an existing local duplicate explicitly with memory_merge_projects after reading both updated_at values; it archives the donor and reports retained references. **Folder association:** \`projects\` lists existing ones; ask the person which, then add the folder via memory_update_entity (\`data.folders\`, absolute paths) or ask them to add it from the project.
 
 ## Shared-project collaboration
 

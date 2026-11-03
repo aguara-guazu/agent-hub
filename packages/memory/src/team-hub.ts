@@ -96,6 +96,8 @@ export class HubTeamRuntime implements TeamOrca {
       }),
     })
   }
+  /** Children alive plus launches still preparing (worktree, preflight): both would be lost by a stop. */
+  liveCount(): number { return new Set([...this.manager.liveIds(), ...this.launching]).size }
   private cleanEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     const env = { ...source }
     for (const key of Object.keys(env)) if (/^(AGENTHUB_|ORCA_|GIT_|ELECTRON_RUN_AS_NODE$)/i.test(key)) delete env[key]
@@ -286,6 +288,8 @@ export class HubTeamRuntime implements TeamOrca {
   }
   async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean; continuation?: HubContinuation; authorize?: () => Promise<void> }): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
+    // Same synchronous segment as `launching.add`: a launch past this point is always visible to liveCount().
+    this.options.admission?.require()
     const id = member.member_id ?? randomUUID()
     check(safeId(id) && id.length <= 200, 'Identificador de miembro inválido.', 400)
     check(!this.launching.has(id), 'El miembro ya tiene un lanzamiento en curso.', 409)
@@ -314,7 +318,7 @@ export class HubTeamRuntime implements TeamOrca {
       attempted = true
       const result = await this.manager.start({ id, cli: member.cli, cwd: current.path, model: member.model, prompt: member.prompt,
         ...(member.effort ? { effort: member.effort } : {}), ...(plan?.rung === 'fork' ? { resume_id: plan.native_id!, fork: true } : {}),
-        ...(member.profile ? { isolate_connectors: true } : {}) })
+        ...(member.profile ? { isolate_connectors: true } : {}) }, { admitted: true })
       await this.verifyLaunchEnabled(id)
       if (!['busy', 'idle', 'waiting_input'].includes(result.state)) {
         throw new MemoryError(503, 'El agente del Hub no confirmó la entrega inicial. Inspeccioná su estado antes de volver a lanzar.')
@@ -371,6 +375,8 @@ export class HubTeamRuntime implements TeamOrca {
    */
   async resumeMember(handle: string, request: HubResumeRequest): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
+    // Invariante: del chequeo exterior a `launching.add` no hay ningún await, así que un lanzamiento admitido siempre es visible en liveCount().
+    this.options.admission?.require()
     check(safeId(handle) && handle.length <= 200, 'Identificador de miembro inválido.', 400)
     check(request.prompt.length > 0 && request.prompt.length <= 24_000 && !request.prompt.includes('\0'), 'Instrucción de reanudación inválida.', 400)
     check(!this.launching.has(handle), 'El miembro ya tiene un lanzamiento en curso.', 409)
@@ -395,7 +401,7 @@ export class HubTeamRuntime implements TeamOrca {
       this.nextGenerations.set(handle, randomUUID())
       attempted = true
       const result = await this.manager.start({ id: handle, cli: runtime.cli, cwd: current.path, model: runtime.model, prompt: request.prompt,
-        ...(runtime.effort ? { effort: runtime.effort } : {}), resume_id: plan!.native_id!, ...(derived ? { isolate_connectors: true } : {}) })
+        ...(runtime.effort ? { effort: runtime.effort } : {}), resume_id: plan!.native_id!, ...(derived ? { isolate_connectors: true } : {}) }, { admitted: true })
       await this.verifyLaunchEnabled(handle)
       if (!['busy', 'idle', 'waiting_input'].includes(result.state)) throw new MemoryError(503, 'El agente del Hub no confirmó la reanudación.')
       const status = await this.status(handle)

@@ -24,8 +24,8 @@ jobs:
             platform: linux
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: npm
@@ -35,7 +35,9 @@ jobs:
       - run: npx electron-builder --${{ matrix.platform }} --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-      - uses: actions/upload-artifact@v7
+          # Public trust store embedded in every build (after-pack.cjs). Same value is checked in publish.
+          AGENTHUB_UPDATE_TRUST: ${{ vars.AGENTHUB_UPDATE_TRUST }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ matrix.platform }}
           path: |
@@ -53,18 +55,33 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Resolve versioned release notes
         shell: bash
         run: |
           notes="docs/release-${GITHUB_REF_NAME#v}.md"
           test -s "$notes"
           echo "RELEASE_NOTES=$notes" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts
       - run: ls -R artifacts
-      - uses: softprops/action-gh-release@v3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+      # Update manifest with sha256 and size of every published artifact. It is signed only when the signing
+      # secret exists; the private key lives solely in the repository secrets and never reaches a file or a log.
+      - name: Update manifest
+        shell: bash
+        env:
+          AGENTHUB_UPDATE_SIGNING_KEY: ${{ secrets.AGENTHUB_UPDATE_SIGNING_KEY }}
+          AGENTHUB_UPDATE_SIGNING_KEY_ID: ${{ vars.AGENTHUB_UPDATE_SIGNING_KEY_ID }}
+          AGENTHUB_UPDATE_NEXT_TRUST: ${{ vars.AGENTHUB_UPDATE_NEXT_TRUST }}
+          AGENTHUB_UPDATE_TRUST: ${{ vars.AGENTHUB_UPDATE_TRUST }}
+        run: |
+          mkdir -p artifacts/update-manifest
+          node scripts/update-manifest.mjs artifacts "$GITHUB_REF_NAME" artifacts/update-manifest
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: Agent Hub ${{ github.ref_name }}
           body_path: ${{ env.RELEASE_NOTES }}

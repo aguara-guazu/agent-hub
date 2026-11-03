@@ -10,6 +10,7 @@ import { SharedProjects } from "../sharing/projects.js"
 import { INTERHUB_REMOTE_CLI_KIND, InterhubChat, localChannelAgents } from "./chat.js"
 import { InterhubNetwork, chatKind } from "./network.js"
 import { InterhubTransport } from "./transport.js"
+import { assignProject, backfillProjects, isLocalHubLeader, listOrphans, nextLocalExpiry, projectReconcilers, sharedProjectUsable, unlinkInvalidProjects } from "./project-association.js"
 import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
 
 const peerName = (value: unknown) => {
@@ -65,27 +66,108 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
     }
     return projects.size === 1 ? [...projects][0]! : null
   }
+  /** Assigns the channels whose current shared-project policies leave exactly one candidate; notifies listeners on any change. */
+  const backfill = async (channelId?: string) => {
+    // Existing associations are checked first so a project this hub no longer belongs to is released before the channel is evaluated.
+    try {
+      const unlinked = await unlinkInvalidProjects(db, localHubId, channelId ? { channelId } : {})
+      const result = await backfillProjects(db, localHubId, channelId ? { channelId } : {})
+      const announced = await announceProjects(channelId)
+      if (unlinked.length || result.resolved.length || announced) events?.emit("change")
+      return result
+    } finally {
+      // Rearmed even when a step failed: the previous timer was cancelled by the last pass and the expiry must stay watched.
+      await scheduleExpiry().catch(error => { console.error("interhub: project expiry timer could not be rearmed:", error instanceof Error ? error.message : "unknown error") })
+    }
+  }
+  /**
+   * One timer per service for the next expiry of this hub's own membership in a project that has channels assigned.
+   * It wakes at most once per hour so a Mac that slept recomputes the deadline, and it is replaced after every pass.
+   */
+  const MAX_EXPIRY_DELAY_MS = 3_600_000
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined
+  const scheduleExpiry = async () => {
+    clearTimeout(expiryTimer)
+    expiryTimer = undefined
+    const expires = await nextLocalExpiry(db, localHubId)
+    if (expires === null || disposed) return
+    expiryTimer = setTimeout(() => { void reconcileProjects() }, Math.min(Math.max(expires - Date.now(), 1_000), MAX_EXPIRY_DELAY_MS))
+    expiryTimer.unref()
+  }
+  let disposed = false
+  /** Creator side: declares in the signed log the project of every channel of this hub whose last announced value differs; true when something was announced. */
+  const announceProjects = async (channelId?: string) => {
+    const pending = await db.query(`SELECT c.id,c.project_id,i.creator_hub_id FROM chat_channels c JOIN interhub_channels i ON i.channel_id=c.id
+      WHERE c.kind=$1 AND c.deleted_at IS NULL AND c.project_id IS NOT NULL AND ($2 IS NULL OR c.id=$2)
+      AND (i.shared_project_hint IS NULL OR i.shared_project_hint<>c.project_id)`, [INTERHUB_CHANNEL_KIND, channelId ?? null])
+    // The hub identity is created on first use; installations without such channels must not trigger that.
+    if (!pending.length) return false
+    const local = await localHubId()
+    const rows = pending.filter(row => row.creator_hub_id === local)
+    let announced = false
+    for (const row of rows) {
+      // A project that is not an enabled shared project of this hub is never declared to the others.
+      if (!await sharedProjectUsable(db, String(row.project_id), [local])) continue
+      if (transport ? await transport.announceProject(String(row.id)) : await network.announceProject(String(row.id))) announced = true
+    }
+    return announced
+  }
+  // Repairs channels saved without project by earlier versions. Reads that must see the result await `backfilled`;
+  // a failure is logged without channel data and never blocks the service.
+  const backfilled = backfill().then(() => undefined, error => { console.error("interhub: project backfill failed:", error instanceof Error ? error.message : "unknown error") })
   /** The caller is the current, open leader of the hub it represents in the channel. */
-  const isHubLeader = async (channelId: string, caller: InterhubCaller) => Boolean((await db.query(
-    `SELECT 1 FROM interhub_members m JOIN chat_sessions s ON s.id=m.leader_session_id
-     WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL AND m.leader_session_id=$3 AND s.closed_at IS NULL AND s.removed_at IS NULL`,
-    [channelId, await localHubId(), caller.id]))[0])
+  // A hub that becomes a member after the channel exists (creator side) can complete the evidence for its project.
+  network.afterMembership = channelId => backfill(channelId).then(() => undefined, error => { console.error("interhub: project backfill after membership failed:", error instanceof Error ? error.message : "unknown error") })
+  /** Backfill over every orphan channel for callers that must not fail: awaits the startup pass, logs without channel data. */
+  const reconcileProjects = async () => {
+    await backfilled
+    await backfill().then(() => undefined, error => { console.error("interhub: project reconciliation failed:", error instanceof Error ? error.message : "unknown error") })
+  }
+  projectReconcilers.set(store, reconcileProjects)
+  const isHubLeader = async (channelId: string, caller: InterhubCaller) => isLocalHubLeader(db, channelId, await localHubId(), caller.id)
 
   return {
+    /** Settles once the startup backfill has run; it never rejects. */
+    ready: backfilled,
+    reconcileProjects,
+    dispose() { disposed = true; clearTimeout(expiryTimer); expiryTimer = undefined },
     async createChannel(caller, input) {
-      const projectId = await channelProject(caller, input.projectId)
+      const requested = await channelProject(caller, input.projectId)
+      const usable = requested ? await sharedProjectUsable(db, requested, [await localHubId()]) : false
+      // An explicit project that other hubs could never see is refused before the channel and its code exist; a project
+      // inferred from the caller's context only starts the channel without project.
+      check(!input.projectId || usable, "El proyecto indicado no es un proyecto compartido activo de este hub. Compártelo y reintenta, o crea el canal sin proyecto.", 422)
+      const projectId = usable ? requested : null
       const created = await network.createChannel(caller, { name: input.name, projectId })
       transport?.topicsChanged()
-      return { ...created, project_id: projectId }
+      return { ...created, project_id: projectId, ...(requested && !projectId ? { project_notice: "El proyecto indicado no es un proyecto compartido activo de este hub; el canal quedó sin proyecto hasta que se asigne uno compartido." } : {}) }
     },
     async joinChannel(caller, code, projectId) {
       // Joining represents the whole local hub: only the leader of the caller's own local channel may do it.
       const own = (await db.query("SELECT leader_id,kind FROM chat_channels WHERE id=$1", [caller.channel_id]))[0]
       check(own && own.leader_id === caller.id && own.kind !== INTERHUB_CHANNEL_KIND, "Sólo el líder de tu canal local puede unir tu hub a un canal entre hubs.", 403)
       check(transport, "La red P2P entre hubs no está disponible en este servicio.", 503)
-      // Resolved before the P2P wait so an unknown project fails at once.
-      const project = await channelProject(caller, projectId)
-      return transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code, project)
+      // Validated before the P2P wait so an unknown project fails at once. The policies of the shared projects are the
+      // only evidence once the creator hub is a member, so the project is decided after the join and never from local context.
+      const explicit = projectId ? await channelProject(caller, projectId) : null
+      const joined = await transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code, null)
+      if (explicit) {
+        // An explicit project must be shared with every active hub of the channel.
+        try { await assignProject(db, await localHubId(), caller.id, joined.channel_id, explicit) } catch (error) {
+          check(false, `Tu hub se unió al canal ${joined.channel_id}, pero no se pudo asociar al proyecto indicado: ${error instanceof Error ? error.message : "error desconocido"} Asígnalo después con chat_interhub_assign_project.`, 422)
+        }
+        events?.emit("change")
+        return { ...joined, project_id: explicit }
+      }
+      const { resolved } = await backfill(joined.channel_id)
+      return resolved.length ? { ...joined, project_id: resolved[0]!.project_id } : joined
+    },
+    async listOrphans() { await backfilled; return listOrphans(db, localHubId) },
+    async assignProject(caller, channelId, projectId) {
+      await backfilled
+      const result = await assignProject(db, await localHubId(), caller.id, channelId, projectId)
+      events?.emit("change")
+      return result
     },
     async localAgent(caller, channelId, sessionId, action) {
       const local = await localHubId()
@@ -154,12 +236,6 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
     async pendingEscalations(channelId): Promise<InterhubPendingEscalation[]> {
       const rows = await db.query("SELECT id,thread_id,question_message_id,escalated_at FROM interhub_escalations WHERE channel_id=$1 AND next_hub_id=$2 AND answered_at IS NULL ORDER BY escalated_at", [channelId, await localHubId()])
       return rows.map(row => ({ id: String(row.id), thread_id: String(row.thread_id), question_message_id: String(row.question_message_id), escalated_at: String(row.escalated_at) }))
-    },
-    async creatorCode(channelId) {
-      const row = (await db.query("SELECT creator_hub_id FROM interhub_channels WHERE channel_id=$1 AND code_revoked_at IS NULL", [channelId]))[0]
-      // The local hub must be the creator: a joined hub never shows the code, whatever its vault holds.
-      if (!row || row.creator_hub_id !== await localHubId()) return null
-      return network.creatorCode(channelId)
     },
     async escalate(caller, channelId, threadId, messageId) {
       check(await interhubChannel(channelId), "Canal entre hubs inexistente.", 404)

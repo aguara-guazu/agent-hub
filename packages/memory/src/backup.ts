@@ -5,9 +5,10 @@ import { randomUUID } from 'node:crypto'
 import { renameRetry } from '@agenthub/gateway/platform'
 import { z } from 'zod'
 import type { MemoryStore } from './store.js'
-import { canonical, hash } from './store.js'
+import { canonical, hash } from "./store.js"
 import { check, parse, id } from './contracts.js'
 import { storageConverter, vectorValues } from './database.js'
+import { releaseDeletedProject } from "./interhub/project-association.js"
 
 const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identities', 'fragments', 'fragment_projects', 'links', 'evidence', 'link_evidence',
   'embeddings', 'collection_records', 'record_evidence', 'rules', 'rule_runs', 'changes'] as const
@@ -156,6 +157,7 @@ async function deleteEntityRows(store: MemoryStore, entityId: string) {
   return store.db.transaction(async sql => {
     const before = (await sql.query('SELECT * FROM entities WHERE id=$1', [entityId]))[0]
     check(before, 'Entidad inexistente', 404)
+    if (before.kind === "project") await releaseDeletedProject(sql, entityId)
     // Remove derived facts if any of their supporting fragments is being erased, rather than leaving ungrounded assertions.
     await sql.query(`DELETE FROM entities WHERE kind='fact' AND id IN(SELECT ev.entity_id FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id
       JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE s.entity_id=$1)`, [entityId])

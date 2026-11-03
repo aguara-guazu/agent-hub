@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { check, id, instant, parse } from './contracts.js'
-import { hash, requireEntity, validateEvidence, type MemoryStore } from './store.js'
+import { hash, requireEntity, requireWritableEntity, validateEvidence, type MemoryStore } from "./store.js"
 import { splitText } from './transcript.js'
 
 export const rememberInput = z.object({ key: z.string().trim().min(1).max(200), title: z.string().trim().min(1).max(500),
@@ -16,7 +16,7 @@ export const manageMemoryInput = z.object({ id, action: z.enum(['archive', 'rest
 
 export async function remember(store: MemoryStore, raw: unknown, actor: string) {
   const input = parse(rememberInput, raw)
-  if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
+  if (input.project_id) await requireWritableEntity(store.db, input.project_id, "project")
   await validateEvidence(store.db, input.evidence_ids)
   const { expected_updated_at, ...value } = input
   const signature = hash(value), external = `memory:${input.project_id ?? 'global'}:${input.key}`
@@ -48,7 +48,7 @@ export async function remember(store: MemoryStore, raw: unknown, actor: string) 
 export async function manageMemory(store: MemoryStore, raw: unknown, actor: string) {
   const input = parse(manageMemoryInput, raw)
   return store.db.transaction(async sql => {
-    const entity = await requireEntity(sql, input.id)
+    const entity = await requireWritableEntity(sql, input.id)
     check(entity.data.agent_memory === true, 'Esta operación es sólo para recuerdos del agente; los originales se conservan', 409)
     check(Date.parse(entity.updated_at) === Date.parse(input.expected_updated_at), 'El recuerdo cambió; volvé a leerlo antes de modificarlo', 409)
     if (input.duplicate_of) {

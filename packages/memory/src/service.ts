@@ -1,5 +1,7 @@
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { SharedNetwork } from './sharing/network.js'
+import { UpdateHints } from './sharing/update-hint.js'
+import { observeReceipts } from './sharing/events.js'
 import { createInterhubServices } from './interhub/services.js'
 import { MemoryDefaults, DEFAULTS_KEY } from './defaults.js'
 import { MediaRuntime } from './media-runtime.js'
@@ -17,6 +19,7 @@ import { CliExtractionRuntime, extractionClis, isExtractionCli, validCliModel } 
 import { TeamCatalog } from './team-catalog.js'
 import { HubTeamRuntime } from './team-hub.js'
 import { JobRunner } from './jobs.js'
+import { AdmissionGate, ADMISSION_SETTING } from "./admission-gate.js"
 import { check, MemoryError, parse } from './contracts.js'
 import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
 import { reasoningEffortSchema } from './reasoning.js'
@@ -95,9 +98,12 @@ export class MemoryService {
   readonly nativeEmbeddings: NativeEmbeddingPool
   readonly vault: Vault
   readonly google: GoogleAuth
+  /** Closed by the silent update for the duration of its drain lease (`admission.close()`); `nonMcpBlockers()` waits for the worker publication. */
+  readonly admission = new AdmissionGate(state => this.publishAdmission(state))
+  get admissionGate(): AdmissionGate { return this.admission }
   readonly openCode: OpenCodeRuntime
   readonly cliExtraction: CliExtractionRuntime
-  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: () => AttentionReaders } } | null = null
+  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; hints: UpdateHints; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: () => AttentionReaders } } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true,
@@ -125,16 +131,32 @@ export class MemoryService {
       throw new MemoryError(503, 'No se pudo abrir la base de memoria local')
     }
     const store = new MemoryStore(db, this.directory)
+    // A gate left published by a core that died while closed would hold back the worker's claims until it expires.
+    if (this.orchestrationOwner) await db.query("DELETE FROM settings WHERE key=$1", [ADMISSION_SETTING]).catch(() => undefined)
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media,
-      { catalog: new TeamCatalog(this.cliExtraction), orca: chat => new HubTeamRuntime(chat,this.directory,this.collaborationEnabled) }, this.collaborationEnabled)
+      { catalog: new TeamCatalog(this.cliExtraction), orca: chat => new HubTeamRuntime(chat,this.directory,this.collaborationEnabled,{ admission: this.admission }) }, this.collaborationEnabled)
+    operations.admission = this.admission
     operations.chat.usageEnabled=this.usageEnabled
     if (this.orchestrationOwner) await operations.teams?.initialize()
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     const network = new SharedNetwork(operations.sharing)
     // Inter-hub channels ride the same P2P network; the tools reach it through these services.
     operations.interhub = createInterhubServices(store, { network, events: operations.chat.events })
-    this.current = { db, store, ai, operations, runner, network }
+    operations.setSharedPaused = async (projectId, paused) => {
+      await operations.sharing.get(projectId)
+      await db.query("UPDATE shared_projects SET enabled=$2 WHERE id=$1", [projectId, !paused])
+      await network.tick()
+      if (!paused) await operations.interhub.reconcileProjects()
+      return { paused }
+    }
+    // Peer update hints are observed where the network runs; they only wake the desktop's own check of the official feed.
+    const hints = new UpdateHints(db, operations.sharing, async () => { await network.refresh() }, line => { process.stderr.write(`${line}\n`) })
+    // Only the orchestration owner (core) evaluates hints: it serves the long-poll, and a second evaluator in the worker would race on the same limits.
+    if (this.orchestrationOwner) { observeReceipts(store, message => hints.observe(message)); void hints.sweep().catch(() => undefined) }
+    // The service is published only after the project backfill settled, so the first read already sees repaired channels.
+    await operations.interhub.ready
+    this.current = { db, store, ai, operations, runner, network, hints }
     if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
     return this.current
   }
@@ -146,7 +168,7 @@ export class MemoryService {
       uncertain_deliveries: async () => (await schedules.uncertainDeliveries()).map(row => ({ ref: String(row.id), summary: `Entrega ${row.target} incierta`, at: String(row.updated_at), ...(row.project_id ? { project_id: String(row.project_id) } : {}) })),
       overdue_close: async () => (await schedules.overdueCloses()).map(row => ({ ref: String(row.id), summary: 'Cierre del día no ejecutado', at: String(row.scheduled_for) })),
     }
-    const runtime = new ScheduleRuntime({ store: schedules, db, memory: store, automation, usage: operations.usage, signals: operations.chat.events, deps: () => scheduleDeps(own, operations.projectAutomation, automation),
+    const runtime = new ScheduleRuntime({ store: schedules, db, memory: store, automation, admission: this.admission, usage: operations.usage, signals: operations.chat.events, deps: () => scheduleDeps(own, operations.projectAutomation, automation),
       synthesizer: new EngineSynthesizer({ settings: () => this.aiSettings(), cli: this.cliExtraction, ai }),
       ...(operations.teams ? { derivedPlans: { closeAll: (reason: string) => operations.teams!.closeAllDerived(reason) } } : {}) })
     const unavailable = { available: false, reason: 'not_connected' }
@@ -240,6 +262,31 @@ export class MemoryService {
     const fleet=(await this.get()).operations.fleet
     return fleet instanceof HubTeamRuntime ? fleet.readiness(sessionId) : 'unowned' as const
   }
+  async fleetLiveCount() {
+    const fleet=(await this.get()).operations.fleet
+    return fleet instanceof HubTeamRuntime ? fleet.liveCount() : 0
+  }
+  /** Mirrors the gate into `settings` so the worker process refuses claims inside the statement that would take a job. */
+  private async publishAdmission(state: { token: string; until: number } | null): Promise<void> {
+    const { db } = await this.get()
+    if (state) await db.query("INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [ADMISSION_SETTING, JSON.stringify(state)])
+    else await db.query("DELETE FROM settings WHERE key=$1", [ADMISSION_SETTING])
+  }
+  /**
+   * Work a stop would lose or repeat, outside the MCP path. Conservative on purpose: every `running` job counts (a lease can
+   * lapse during a macOS sleep while the job still runs), live Hub workers are the union of children and launches in
+   * preparation, and schedule runs and periodic dispatch count while claimed or in progress.
+   */
+  async nonMcpBlockers(): Promise<{ fleet_live: number; jobs_nonresumable: number }> {
+    // The worker must already refuse claims before any counter is read; a failed publication rejects (blockers_unknown).
+    await this.admission.flush()
+    const { db, schedules } = await this.get()
+    const count = async (sql: string) => Number((await db.query<{ n: number | string }>(sql))[0]?.n ?? 0)
+    const jobs = await count("SELECT COUNT(*) AS n FROM jobs WHERE state='running'")
+    const runs = await count("SELECT COUNT(*) AS n FROM schedule_runs WHERE state='running'")
+    const busy = schedules?.runtime.busy() ?? { runs: 0, periodic: 0 }
+    return { fleet_live: await this.fleetLiveCount(), jobs_nonresumable: jobs + Math.max(runs, busy.runs) + busy.periodic + this.admission.active() }
+  }
   async fleetActivityAt(sessionId:string) {
     const fleet=(await this.get()).operations.fleet
     return fleet instanceof HubTeamRuntime ? fleet.activityAt(sessionId) : undefined
@@ -255,5 +302,5 @@ export class MemoryService {
     const status=member ? await operations.fleet?.status?.(String(member.id)) : undefined
     return !!status && ['starting','busy','idle','waiting_input'].includes(status.state ?? '')
   }
-  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.current?.schedules?.runtime.close(); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.operations.fleet?.close?.(); await current.network.stop(); await current.db.close() } }
+  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.current?.schedules?.runtime.close(); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.operations.fleet?.close?.(); current.operations.closeInterhub(); await current.network.stop(); await current.db.close() } }
 }

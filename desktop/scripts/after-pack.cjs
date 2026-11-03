@@ -1,10 +1,59 @@
 const { execFileSync } = require('node:child_process')
 const { dirname, join } = require('node:path')
-const { copyFileSync, readdirSync, readFileSync, rmSync, existsSync } = require('node:fs')
+const { copyFileSync, readdirSync, readFileSync, rmSync, existsSync, mkdirSync, writeFileSync } = require('node:fs')
+const { Buffer } = require('node:buffer')
+const { createPublicKey } = require('node:crypto')
 const { Arch } = require('builder-util')
 const { prepareArgon2, prepareSharp, preparePty } = require('./prepare-sharp.cjs')
 
 const CRT = /^(?:msvcp140|vcruntime140)[\w]*\.dll$/i
+
+const KEY_ID = /^[A-Za-z0-9._-]{1,64}$/
+
+/**
+ * Trust store embedded from CI (`AGENTHUB_UPDATE_TRUST` JSON or the file named by `AGENTHUB_UPDATE_TRUST_FILE`).
+ * Same rules the updater applies when loading it (update-trust.ts parseTrustSet): only {id, ed25519_spki_b64}
+ * entries, unique ids, keys that decode as DER SPKI Ed25519, revocations as unique ids, and at least one key that
+ * is not revoked. Any violation fails the build: a store the updater would reject must never ship.
+ */
+function canonicalTrustStore() {
+  // An unset GitHub variable expands to an empty string: treat it as absent.
+  const inline = process.env.AGENTHUB_UPDATE_TRUST || null
+  const source = inline ?? (process.env.AGENTHUB_UPDATE_TRUST_FILE ? readFileSync(process.env.AGENTHUB_UPDATE_TRUST_FILE, 'utf8') : null)
+  if (!source) return null
+  const fail = (reason) => { throw new Error(`AGENTHUB_UPDATE_TRUST inválido: ${reason}`) }
+  const trust = JSON.parse(source)
+  if (!trust || typeof trust !== 'object' || trust.schema !== 1 || !Array.isArray(trust.keys) || !Array.isArray(trust.revoked)) fail('se espera {schema:1, keys:[], revoked:[]}')
+  if (Object.keys(trust).some(name => !['schema', 'keys', 'revoked'].includes(name))) fail('campos desconocidos')
+  const ids = new Set()
+  const keys = trust.keys.map(entry => {
+    if (!entry || typeof entry !== 'object' || Object.keys(entry).some(name => name !== 'id' && name !== 'ed25519_spki_b64')) fail('cada clave es {id, ed25519_spki_b64}')
+    if (typeof entry.id !== 'string' || !KEY_ID.test(entry.id) || ids.has(entry.id)) fail(`id de clave inválido o repetido: ${entry.id}`)
+    if (typeof entry.ed25519_spki_b64 !== 'string') fail(`la clave ${entry.id} no es Ed25519 DER SPKI`)
+    let key
+    try { key = createPublicKey({ key: Buffer.from(entry.ed25519_spki_b64, 'base64'), format: 'der', type: 'spki' }) } catch { key = null }
+    if (key?.asymmetricKeyType !== 'ed25519') fail(`la clave ${entry.id} no es Ed25519 DER SPKI`)
+    ids.add(entry.id)
+    return { id: entry.id, ed25519_spki_b64: entry.ed25519_spki_b64 }
+  })
+  if (!trust.revoked.every(id => typeof id === 'string' && KEY_ID.test(id)) || new Set(trust.revoked).size !== trust.revoked.length) fail('revocaciones inválidas o repetidas')
+  if (!keys.some(key => !trust.revoked.includes(key.id))) fail('se necesita al menos una clave no revocada')
+  return JSON.stringify({ schema: 1, keys: keys.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)), revoked: [...trust.revoked].sort() })
+}
+
+function embedTrustStore(appDir) {
+  const trust = canonicalTrustStore()
+  if (!trust) return
+  const output = join(appDir, 'desktop', 'dist', 'update-trust.json')
+  mkdirSync(dirname(output), { recursive: true })
+  writeFileSync(output, trust, { encoding: 'utf8', mode: 0o644 })
+}
+
+function compileSwapHelper(projectDir, resources) {
+  const outputDir = join(resources, 'bin'), output = join(outputDir, 'agenthub-swap')
+  mkdirSync(outputDir, { recursive: true })
+  execFileSync('clang', ['-arch', 'arm64', '-O2', '-Wall', '-Werror', '-o', output, join(projectDir, 'desktop', 'scripts', 'agenthub-swap.c')], { stdio: 'inherit' })
+}
 
 /** Folder with the Visual C++ runtime DLLs for `arch` from the newest MSVC redist installed on this Windows builder. */
 function vcRuntimeFolder(arch) {
@@ -62,6 +111,7 @@ exports.default = async (context) => {
   await preparePty(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   await prepareSharp(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   await prepareArgon2(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
+  embedTrustStore(join(resources, 'app'))
   const binaries = join(resources, 'app', 'node_modules', 'onnxruntime-node', 'bin', 'napi-v6')
   // The npm package includes bindings for five targets. Ship only the current platform/architecture.
   if (existsSync(binaries)) for (const platform of readdirSync(binaries)) {
@@ -76,5 +126,6 @@ exports.default = async (context) => {
   }
   if (context.electronPlatformName !== 'darwin') return
   const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
+  if (Arch[context.arch] === 'arm64') compileSwapHelper(context.packager.projectDir, resources)
   execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' })
 }

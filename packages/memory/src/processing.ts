@@ -92,7 +92,7 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
   const processed = (await store.db.query(`SELECT metadata->>'extraction_key' AS key,metadata->'extraction_progress' AS "progress:json" FROM versions WHERE id=$1`, [versionId]))[0]
   if (extractionAllowed && (force || processed?.key !== processingKey)) {
     dedupeNeeded = true
-    const projects = await store.db.query("SELECT id,title FROM entities WHERE kind='project' AND ($1=0 OR COALESCE(data->>'remote_processing','true') NOT IN (0,'false')) ORDER BY title LIMIT 500", [usesRemoteExtraction(config)])
+    const projects = await store.db.query("SELECT id,title FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND ($1=0 OR COALESCE(data->>'remote_processing','true') NOT IN (0,'false')) ORDER BY title LIMIT 500", [usesRemoteExtraction(config)])
     const planned = batches(fragments)
     // A retry of the same run skips batches already committed instead of extracting (and duplicating) them again.
     const progressKey = force ? `${processingKey}:${options.runKey ?? 'forced'}` : processingKey
@@ -115,7 +115,7 @@ export async function processVersion(store: MemoryStore, ai: MemoryAI, versionId
         for (const fact of facts) {
           // A single hallucinated citation discards that fact, not the whole source.
           if (!fact.evidence_ids.every(e => allowed.has(e))) { extractionRejected++; continue }
-          await validateEvidence(sql, fact.evidence_ids); await validateProjects(sql, fact.project_ids)
+          await validateEvidence(sql, fact.evidence_ids); await validateProjects(sql, fact.project_ids, "read")
           const key = hash({ versionId, processingKey, category: fact.category, evidence: [...fact.evidence_ids].sort(), text: fact.text })
           const old = await sql.query("SELECT id FROM entities WHERE kind='fact' AND data->>'dedupe_key'=$1", [key])
           if (old.length) continue

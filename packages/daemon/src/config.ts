@@ -10,7 +10,7 @@
  */
 
 import { homedir, platform } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -81,6 +81,12 @@ export interface GatewayLaunchContext {
   pkg: boolean
   /** `dist/cli.js` del daemon para un Node del sistema. */
   cliEntry: string
+  /**
+   * Lanzador estable (`runtime/bin/agenthub-node`) que resuelve la versión vigente de la app.
+   * Si existe, los configs de los CLIs, los hooks y los lanzadores apuntan a él en vez de al
+   * bundle, que se reemplaza al actualizar.
+   */
+  gatewayRuntime?: string | null
 }
 
 /**
@@ -105,6 +111,10 @@ export function resolveGatewayLaunch(ctx: GatewayLaunchContext): GatewayLaunch {
     if (ctx.appImagePath) {
       return { command: ctx.appImagePath, args: ['-e', APPIMAGE_BOOTSTRAP, '--', '--agenthub-headless'], env: { ELECTRON_RUN_AS_NODE: '1' } }
     }
+    if (ctx.gatewayRuntime && ctx.packagedAppRoot) {
+      // El lanzador agrega el ejecutable y `entry.js` de la versión vigente; la ruta de este comando no cambia entre versiones.
+      return { command: ctx.gatewayRuntime, args: ['--agenthub-headless'], env: { ELECTRON_RUN_AS_NODE: '1' } }
+    }
     const entry = ctx.packagedAppRoot ? join(ctx.packagedAppRoot, 'desktop', 'dist', 'entry.js') : ctx.devEntry
     return { command: ctx.execPath, args: [entry, '--agenthub-headless'], env: { ELECTRON_RUN_AS_NODE: '1' } }
   }
@@ -121,6 +131,14 @@ export function packagedAppRoot(execPath: string): string | null {
   return null
 }
 
+/** Variable con la ruta al lanzador estable; la define la app de escritorio sólo si lo dejó en su sitio. */
+export const GATEWAY_RUNTIME_ENV = 'AGENTHUB_GATEWAY_RUNTIME'
+
+export function stableGatewayRuntime(env: NodeJS.ProcessEnv = process.env): string | null {
+  const path = env[GATEWAY_RUNTIME_ENV]?.trim()
+  return path && isAbsolute(path) && existsSync(path) ? path : null
+}
+
 export function daemonCommand(): GatewayLaunch {
   return resolveGatewayLaunch({
     electron: Boolean(process.versions.electron),
@@ -130,6 +148,7 @@ export function daemonCommand(): GatewayLaunch {
     devEntry: resolve(fileURLToPath(new URL('../../../desktop/dist/entry.js', import.meta.url))),
     pkg: Boolean((process as { pkg?: unknown }).pkg),
     cliEntry: fileURLToPath(new URL('../dist/cli.js', import.meta.url)),
+    gatewayRuntime: stableGatewayRuntime(),
   })
 }
 

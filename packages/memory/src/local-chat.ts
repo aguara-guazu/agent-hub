@@ -251,7 +251,7 @@ export class LocalChat {
       const exact = await projectForPath(this.db,path)
       if (exact) return exact
     }
-    const projects = await this.db.query("SELECT id,data FROM entities WHERE kind='project' AND json_type(data,'$.folders')='array'")
+    const projects = await this.db.query("SELECT id,data FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND json_type(data,'$.folders')='array'")
     for (const project of projects) for (const raw of project.data.folders as string[]) {
       const folder = await realpath(resolve(raw)).catch(()=>resolve(raw))
       for (const path of paths) if ((path===folder || path.startsWith(`${folder}/`)) && (!best || folder.length>best.length)) best={ id:project.id,length:folder.length }

@@ -7,6 +7,7 @@ import type { MemoryStore } from "../store.js"
 import { SharedProjects } from "../sharing/projects.js"
 import { canonical, digest, publicIdentity, publicIdentitySchema, signature, validSignature, validateIdentity, type Identity, type PublicIdentity } from "../sharing/crypto.js"
 import { INTERHUB_REMOTE_CLI_KIND, interhubChatPayloadSchema, interhubRemoteSessionId } from "./chat.js"
+import { settleChannelProject } from "./project-association.js"
 
 /** Upper bound of one envelope on the wire; the largest legitimate payload is a 16 000 character message. */
 export const MAX_ENVELOPE_BYTES = 96_000
@@ -32,9 +33,10 @@ const iso = z.string().datetime()
 const membershipSchema = z.object({ action: z.enum(["joined", "removed"]), hub_id: hubId, leader_id: z.string().max(200), leader_label: z.string().max(200),
   peer_public_key: z.string().max(200), peer_identity: publicIdentitySchema }).strict()
 const codeSchema = z.object({ action: z.enum(["revoked", "regenerated"]), generation: z.number().int().nonnegative() }).strict()
+const projectSchema = z.object({ project_id: uuid }).strict()
 const envelopeSchema = z.object({
   version: z.literal(1), id: uuid, channel_id: uuid, origin_hub_id: hubId, origin_peer_public_key: z.string().min(1).max(200),
-  origin_agent_id: z.string().max(200).nullable(), kind: z.enum(["membership", "message", "thread", "presence", "escalation", "code"]),
+  origin_agent_id: z.string().max(200).nullable(), kind: z.enum(["membership", "message", "thread", "presence", "escalation", "code", "project"]),
   occurred_at: iso, payload: z.unknown(), signature: z.string().min(1).max(200),
 }).strict()
 export const rosterSchema = z.object({
@@ -53,11 +55,18 @@ export type VerifiedEnvelope =
   | { kind: "chat"; envelope: InterHubEnvelope<InterhubChatPayload>; originName: string }
   | { kind: "membership"; envelope: InterHubEnvelope<z.infer<typeof membershipSchema>> }
   | { kind: "code"; envelope: InterHubEnvelope<z.infer<typeof codeSchema>> }
+  | { kind: "project"; envelope: InterHubEnvelope<z.infer<typeof projectSchema>> }
 
 /** P2P-owned durable state of inter-hub channels: codes, membership, the signed event log and its verification. */
 export class InterhubNetwork {
   private readonly vault: Vault
   constructor(readonly store: MemoryStore) { this.vault = new Vault(store.directory) }
+
+  /**
+   * Invoked after a hub becomes (or is reactivated as) an active member of a channel, once the change is committed.
+   * Failures are reported by the callback owner; they never fail the membership change itself.
+   */
+  afterMembership: ((channelId: string) => Promise<void>) | undefined
 
   private secretKey(channelId: string) { return `interhub-channel-code-${channelId}` }
   async localIdentity(): Promise<Identity> { return new SharedProjects(this.store).identity() }
@@ -114,12 +123,6 @@ export class InterhubNetwork {
   }
   private async generation(channelId: string) {
     return Number((await this.store.db.query("SELECT code_generation FROM interhub_channels WHERE channel_id=$1", [channelId]))[0]?.code_generation ?? 0)
-  }
-
-  async creatorCode(channelId: string) {
-    const row = (await this.store.db.query("SELECT code_revoked_at FROM interhub_channels WHERE channel_id=$1", [channelId]))[0]
-    if (!row || row.code_revoked_at) return null
-    return this.vault.read<{ code: string }>(this.secretKey(channelId))?.code ?? null
   }
 
   async listHubs(channelId: string) {
@@ -187,7 +190,8 @@ export class InterhubNetwork {
     const match = (await this.activeCodes()).find(candidate => proves(codeKey(candidate.code)))
     if (!match) return null
     const key = codeKey(match.code)
-    return this.store.db.transaction(async sql => {
+    let added = false
+    const admitted = await this.store.db.transaction(async sql => {
       // Re-read inside the transaction: a revoke or regenerate committed meanwhile wins.
       const current = (await sql.query("SELECT code_hash,code_revoked_at FROM interhub_channels WHERE channel_id=$1", [match.channel_id]))[0]
       if (!current || current.code_revoked_at || current.code_hash !== codeHash(match.channel_id, match.code)) return null
@@ -201,14 +205,17 @@ export class InterhubNetwork {
       else await sql.query("UPDATE interhub_members SET peer_identity=$3,last_seen_at=now() WHERE channel_id=$1 AND hub_id=$2", [match.channel_id, joiner.id, JSON.stringify(publicIdentity(joiner))])
       if (!keep) await this.append(match.channel_id, "membership", { action: "joined", hub_id: joiner.id, leader_id: leaderId, leader_label: leaderLabel,
         peer_public_key: joiner.signing, peer_identity: publicIdentity(joiner) })
+      added = !keep
       return { channel_id: match.channel_id, key, roster: await this.signedRoster(match.channel_id) }
     })
+    if (admitted && added) await this.afterMembership?.(admitted.channel_id)
+    return admitted
   }
 
   /**
    * Joiner side: verifies the creator-signed roster and creates the local copy of the channel with the caller as this
-   * hub's leader. `projectId` was already validated against this hub's projects; a rejoin keeps the current project
-   * when none is given.
+   * hub's leader. After the roster is applied the project is settled locally: a stored project is kept while this
+   * hub is still an active member of that shared project, otherwise `projectId` replaces it when this hub and the creator hub are active members, or it is cleared.
    */
   async completeJoin(caller: { id: string; label: string }, creator: PublicIdentity, raw: unknown, projectId: string | null = null) {
     const roster = parse(rosterSchema, raw), local = await this.localIdentity()
@@ -228,10 +235,11 @@ export class InterhubNetwork {
     }
     // Same placeholder the chat model derives for this author, so the creator's leader has a single local stand-in.
     const placeholder = interhubRemoteSessionId(channelId, creator.id, creatorEntry.leader_session_id ?? "creator")
+    let project: string | null = null
     await this.store.db.transaction(async sql => {
       if (!existing) await sql.query("INSERT INTO chat_channels(id,project_id,scope_key,path,name,kind,leader_id,activated_at,description) VALUES($1,$6,$2,'',$3,'inter-hub',$4,now(),$5)",
-        [channelId, `interhub:${channelId}`, roster.channel.name, caller.id, roster.channel.description, projectId])
-      else await sql.query("UPDATE chat_channels SET leader_id=$2,project_id=COALESCE($3,project_id),deleted_at=NULL,closed_at=NULL,updated_at=now() WHERE id=$1", [channelId, caller.id, projectId])
+        [channelId, `interhub:${channelId}`, roster.channel.name, caller.id, roster.channel.description, null])
+      else await sql.query("UPDATE chat_channels SET leader_id=$2,deleted_at=NULL,closed_at=NULL,updated_at=now() WHERE id=$1", [channelId, caller.id])
       // interhub_channels references a local session: the creator's leader is represented by a closed remote placeholder.
       await sql.query(`INSERT OR IGNORE INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,closed_at)
         VALUES($1,$1,$1,$2,$3,$4,'offline',now(),now())`, [placeholder, creatorEntry.leader_label || "Líder", INTERHUB_REMOTE_CLI_KIND, channelId])
@@ -243,10 +251,10 @@ export class InterhubNetwork {
           ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL`,
         [channelId, member.hub_id, JSON.stringify(own ? publicIdentity(local) : member.peer_identity), own ? caller.id : member.leader_session_id, own ? label(caller.label) : member.leader_label, member.joined_at])
       }
+      project = await settleChannelProject(sql, channelId, local.id, creator.id, projectId)
     })
     const recorded = roster.members.find(m => m.hub_id === local.id)!
-    const project = (await this.store.db.query("SELECT project_id FROM chat_channels WHERE id=$1", [channelId]))[0]?.project_id ?? null
-    return { channel_id: channelId, hub_id: local.id, project_id: project === null ? null : String(project), leader_changed: recorded.leader_session_id !== caller.id }
+    return { channel_id: channelId, hub_id: local.id, project_id: project, leader_changed: recorded.leader_session_id !== caller.id }
   }
 
   /**
@@ -297,6 +305,11 @@ export class InterhubNetwork {
       const payload = parse(codeSchema, event.payload)
       return { kind: "code", envelope: { ...event, payload } as InterHubEnvelope<typeof payload> }
     }
+    if (event.kind === "project") {
+      check(fromCreator, "Sólo el hub creador declara el proyecto del canal", 403)
+      const payload = parse(projectSchema, event.payload)
+      return { kind: "project", envelope: { ...event, payload } as InterHubEnvelope<typeof payload> }
+    }
     const payload = parse(interhubChatPayloadSchema, event.payload) as InterhubChatPayload
     check(chatKind(payload) === event.kind, "Tipo de evento inter-hub inválido", 403)
     if (payload.type === "escalation") {
@@ -307,13 +320,37 @@ export class InterhubNetwork {
     return { kind: "chat", envelope: { ...event, payload } as InterHubEnvelope<InterhubChatPayload>, originName: identityOf(origin.peer_identity).name }
   }
 
-  /** Applies membership and code events; chat events are materialized by InterhubChat. */
+  /**
+   * Creator side: declares the shared project of the channel in the signed log when it differs from the last value
+   * announced. The value is recorded on the creator's own row so a restart or a later reconciliation does not repeat it.
+   */
+  async announceProject(channelId: string): Promise<boolean> {
+    const local = (await this.localIdentity()).id
+    const row = (await this.store.db.query(`SELECT c.project_id,i.shared_project_hint FROM chat_channels c JOIN interhub_channels i ON i.channel_id=c.id
+      WHERE c.id=$1 AND c.kind='inter-hub' AND c.deleted_at IS NULL AND i.creator_hub_id=$2`, [channelId, local]))[0]
+    if (!row?.project_id || row.project_id === row.shared_project_hint) return false
+    const envelope = await this.append(channelId, "project", { project_id: String(row.project_id) })
+    await this.store.db.query("UPDATE interhub_channels SET shared_project_hint=$2,shared_project_hint_at=$3,shared_project_hint_event=$4 WHERE channel_id=$1", [channelId, String(row.project_id), envelope.occurred_at, envelope.id])
+    return true
+  }
+
+  /** Applies membership, code and project events; chat events are materialized by InterhubChat. */
   async applyControl(verified: Exclude<VerifiedEnvelope, { kind: "chat" }>) {
     const local = (await this.localIdentity()).id, event = verified.envelope
     if (verified.kind === "code") {
       // The creator keeps its own row authoritative; members only mirror the generation for display.
       await this.store.db.query(`UPDATE interhub_channels SET code_generation=MAX(code_generation,$2),code_revoked_at=$3,updated_at=now()
         WHERE channel_id=$1 AND creator_hub_id<>$4`, [event.channel_id, verified.envelope.payload.generation, verified.envelope.payload.action === "revoked" ? event.occurred_at : null, local])
+      return
+    }
+    if (verified.kind === "project") {
+      // The hint is only recorded here; the local reconciliation decides whether it can become the channel project.
+      // The latest declaration of the creator wins; a replay from seq 0 may deliver several in any order. The timestamp is
+      // normalized to toISOString so the text comparison in SQL matches chronological order.
+      const updated = await this.store.db.query(`UPDATE interhub_channels SET shared_project_hint=$2,shared_project_hint_at=$3,shared_project_hint_event=$4,updated_at=now()
+        WHERE channel_id=$1 AND creator_hub_id<>$5 AND (shared_project_hint_at IS NULL OR shared_project_hint_at<$3 OR shared_project_hint_at=$3 AND shared_project_hint_event<$4) RETURNING channel_id`,
+      [event.channel_id, verified.envelope.payload.project_id, new Date(event.occurred_at).toISOString(), event.id, local])
+      if (updated.length) await this.afterMembership?.(event.channel_id)
       return
     }
     const payload = verified.envelope.payload
@@ -326,5 +363,6 @@ export class InterhubNetwork {
     await this.store.db.query(`INSERT INTO interhub_members(channel_id,hub_id,peer_identity,leader_session_id,leader_label) VALUES($1,$2,$3,$4,$5)
       ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL`,
     [event.channel_id, payload.hub_id, JSON.stringify(payload.peer_identity), payload.leader_id || null, label(payload.leader_label)])
+    await this.afterMembership?.(event.channel_id)
   }
 }

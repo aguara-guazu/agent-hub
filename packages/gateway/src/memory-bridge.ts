@@ -27,7 +27,7 @@ export function isMemorySpec(spec: UpstreamSpec): boolean {
   if (!spec.url) return false
   try {
     const url = new URL(spec.url)
-    return LOOPBACK.has(url.hostname) && url.pathname.replace(/\/+$/, '') === MEMORY_PATH
+    return (url.protocol === 'http:' || url.protocol === 'https:') && LOOPBACK.has(url.hostname) && url.pathname.replace(/\/+$/, '') === MEMORY_PATH
   } catch {
     return false
   }

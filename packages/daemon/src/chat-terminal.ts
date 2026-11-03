@@ -1,12 +1,12 @@
 import { startQuotaCollector } from './usage-quota-collector.js'
 import { createInterface } from 'node:readline'
-import { fileURLToPath } from 'node:url'
 import { delimiter, join } from 'node:path'
 import { homedir } from 'node:os'
 import { existsSync, readFileSync } from 'node:fs'
 import { NativeChatClient } from './local-chat-client.js'
 import { ChatProtocol } from './chat-protocol.js'
 import { DaemonState } from './state.js'
+import { daemonCommand } from './config.js'
 
 export const chatInvocation = (kind:string, extra:string[], resume?:string): {command:string;args:string[];format:'acp'|'antigravity'|'codex'} => {
   if(kind==='codex_cli')return {command:'codex',args:['app-server',...extra],format:'codex'}
@@ -119,7 +119,9 @@ export async function runChatTerminal(stateDir:string,agentId:string,extra:strin
       return {outcome:{outcome:'selected',optionId:selected.optionId}}
     },{...process.env,PATH:executablePath,...(executable.prefix.length?{ELECTRON_RUN_AS_NODE:'1'}:{})})
     void protocol.closed.then(exit)
-    const mcpServers=[{name:'hub',command:process.execPath,args:[fileURLToPath(new URL('./cli.js',import.meta.url)),'gateway','--agent',agentId,'--state-dir',stateDir],env:[{name:'ELECTRON_RUN_AS_NODE',value:'1'}]}]
+    // Mismo origen que los configs de los CLIs: con el runtime versionado, el gateway no depende del bundle que se reemplaza al actualizar.
+    const gateway=daemonCommand()
+    const mcpServers=[{name:'hub',command:gateway.command,args:[...gateway.args,'gateway','--agent',agentId,'--state-dir',stateDir],env:[{name:'ELECTRON_RUN_AS_NODE',value:'1'}]}]
     const nativeId=await protocol.start(cwd,mcpServers,resume)
     if(inputEnded)return 0
     const broker=new NativeChatClient(state,agentId,nativeId,cwd,invocation.format==='codex'?'codex_appserver':invocation.format==='acp'?'acp_prompt':'antigravity_stream')

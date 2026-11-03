@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { check, id, parse } from './contracts.js'
 import type { Sql } from './database.js'
-import { requireEntity, type MemoryStore } from './store.js'
+import { requireEntity, requireWritableEntity, type MemoryStore } from "./store.js"
 import { ScheduleStore } from './schedule-store.js'
 
 /** Identity the gateway attaches to every memory call (MCP `_meta`). Absent for the hub UI and for older gateways. */
@@ -34,7 +34,7 @@ function normalizePath(path: string) { return path.replace(/\\/g, '/').replace(/
 export async function projectForPath(sql: Sql, path: string | null | undefined) {
   if (!path) return null
   const target = normalizePath(path)
-  const projects = await sql.query("SELECT id,title,data FROM entities WHERE kind='project' AND json_type(data,'$.folders')='array' AND json_array_length(data,'$.folders')>0")
+  const projects = await sql.query("SELECT id,title,data FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND json_type(data,'$.folders')='array' AND json_array_length(data,'$.folders')>0")
   let best: { project: Record<string, any>; folder: string } | null = null
   for (const project of projects) for (const raw of project.data.folders as string[]) {
     const folder = normalizePath(raw)
@@ -83,7 +83,7 @@ export async function writeNote(store: MemoryStore, raw: unknown, actor: string,
   const input = parse(writeNoteInput, raw)
   const sessionProject = agent ? await touchSession(store, agent) : null
   const projectId = input.project_id === undefined ? sessionProject : input.project_id
-  if (projectId) await requireEntity(store.db, projectId, 'project')
+  if (projectId) await requireWritableEntity(store.db, projectId, "project")
   if (input.task_id) check((await store.db.query('SELECT 1 FROM tasks WHERE id=$1', [input.task_id])).length, 'Tarea inexistente', 404)
   const who = author(agent, actor)
   return store.db.transaction(async sql => {
@@ -149,7 +149,7 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
       ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END,updated_at DESC LIMIT 15`, scope),
     store.db.query(`SELECT id,agent_label,cli_kind,text,task_id,updated_at,session_id FROM agent_notes WHERE state='working' AND project_id IS $1 ORDER BY updated_at DESC LIMIT 20`, scope),
     store.db.query(`SELECT id,agent_label,text,state,finish_reason,updated_at FROM agent_notes WHERE state<>'working' AND project_id IS $1 ORDER BY updated_at DESC LIMIT 10`, scope),
-    match ? Promise.resolve([]) : store.db.query("SELECT id,title,data->'folders' AS \"folders:json\",data->>'jira_project_key' AS jira_project_key FROM entities WHERE kind='project' ORDER BY updated_at DESC LIMIT 30"),
+    match ? Promise.resolve([]) : store.db.query("SELECT id,title,data->'folders' AS \"folders:json\",data->>'jira_project_key' AS jira_project_key FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL ORDER BY updated_at DESC LIMIT 30"),
   ])
   const memories = await store.db.query(`SELECT id,title,substr(data->>'text',1,1200) AS text,data->>'memory_category' AS category,
     data->>'memory_confidence' AS confidence,data->>'memory_expires_at' AS expires_at,

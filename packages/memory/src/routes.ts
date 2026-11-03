@@ -1,6 +1,7 @@
 import { isCollaborationTool } from './collaboration.js'
 import { orcaWorkspaceSchema } from './agents.js'
 import { registerUsageRoutes } from './usage-routes.js'
+import { registerUpdateDrain } from './update-drain.js'
 import { chatKickInput, chatCoordinatorInput, chatDeleteChannelInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
 import { listAuthorityEvents } from './chat-access.js'
@@ -38,6 +39,7 @@ import { requestMigrationRetry } from './legacy-postgres.js'
 import { registerScheduleRoutes } from './schedule-routes.js'
 import { registerDecisionRoutes } from './decision-routes.js'
 import { registerProjectAutomationRoutes } from './project-automation-routes.js'
+import { registerUpdateHintRoutes } from './sharing/update-hint.js'
 
 const VERSION = String((createRequire(import.meta.url)('../package.json') as { version: string }).version)
 
@@ -54,6 +56,8 @@ export interface MemoryRouteOptions {
   /** Switch of the scheduler and the effects the core injects (deliveries, approved actions, decisions); absent means enabled and no external adapters. */
   automationsEnabled?(): boolean
   scheduleEffects?: import('./schedule-contract.js').ScheduleEffects
+  /** Desktop update credential; without it the internal update routes are not registered. */
+  authorizeUpdate?(request: FastifyRequest): Promise<void>
 }
 export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions) {
   const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true, options.collaborationEnabled,
@@ -62,6 +66,8 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const requireCollaboration = () => check(collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
   registerUsageRoutes(app,service,options)
+  registerUpdateDrain(app, service, options.authorize)
+  if (options.authorizeUpdate) registerUpdateHintRoutes(app, async () => (await service.get()).hints, options.authorizeUpdate)
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }
@@ -353,7 +359,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const data = streamBackup((await service.get()).store, backupId)
     return reply.header('Content-Type', 'application/json').header('Content-Disposition', `attachment; filename="agenthub-memory-${backupId}.json"`).send(data)
   })
-  app.post('/api/memory/restore', { preHandler: auth, bodyLimit: 128_000_000 }, async request => restoreMemory((await service.get()).store, request.body))
+  app.post('/api/memory/restore', { preHandler: auth, bodyLimit: 128_000_000 }, async request => service.admission.track("backup", async () => restoreMemory((await service.get()).store, request.body)))
   app.get('/api/memory/files/:version/pages/:page', { preHandler: auth }, async (request, reply) => {
     const input = parse(z.object({ version: id, page: z.coerce.number().int().min(1).max(200) }), request.params)
     const file = await readFileAttachment((await service.get()).store, input.version)

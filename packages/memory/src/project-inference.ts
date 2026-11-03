@@ -32,7 +32,7 @@ async function projectContext(store: MemoryStore, remote: boolean) {
     (SELECT json_group_array(u.title ORDER BY u.n DESC,u.title) FROM (SELECT person.title,count(*) AS n FROM links l JOIN links part ON part.from_id=l.from_id AND part.type='participant'
       JOIN entities person ON person.id=part.to_id WHERE l.to_id=p.id AND l.type='project' GROUP BY person.id,person.title ORDER BY n DESC,person.title LIMIT 15) u) AS "usual_people:json"
     FROM entities p LEFT JOIN entities c ON c.id=p.data->>'company_id'
-    WHERE p.kind='project' AND COALESCE(p.data->>'status','') NOT IN ('completed') AND (NOT $1 OR COALESCE(p.data->>'remote_processing',1) NOT IN (0,'false'))
+    WHERE p.kind='project' AND p.data->>'merged_into' IS NULL AND COALESCE(p.data->>'status','') NOT IN ('completed') AND (NOT $1 OR COALESCE(p.data->>'remote_processing',1) NOT IN (0,'false'))
     ORDER BY p.updated_at DESC LIMIT 150`, [remote])
   return projects
 }
@@ -149,7 +149,7 @@ export function extractionHash(fragments: Record<string, any>[]) {
 
 export const projectSuggestionReview = z.discriminatedUnion('decision', [
   z.object({ id, decision: z.literal('assign'), project_id: id }).strict(),
-  z.object({ id, decision: z.literal('create'), title: z.string().trim().min(1).max(500), description: z.string().trim().max(4000).default(''), company_id: id.optional() }).strict(),
+  z.object({ id, decision: z.literal('create'), allow_duplicate: z.boolean().default(false), title: z.string().trim().min(1).max(500), description: z.string().trim().max(4000).default(''), company_id: id.optional() }).strict(),
   z.object({ id, decision: z.literal('none') }).strict(),
 ])
 
@@ -163,7 +163,7 @@ export async function reviewProjectSuggestion(store: MemoryStore, raw: unknown, 
     await requireEntity(sql, sourceId)
     let projectId: string | null = null
     if (input.decision === 'create') {
-      const project = await store.create({ kind: 'project', title: input.title, data: { description: input.description, status: 'discovery',
+      const project = await store.create({ kind: "project", title: input.title, allow_duplicate: input.allow_duplicate, data: { description: input.description, status: 'discovery',
         ...(input.company_id ? { company_id: input.company_id } : {}) } }, actor, sql)
       projectId = project.id
     } else if (input.decision === 'assign') projectId = input.project_id

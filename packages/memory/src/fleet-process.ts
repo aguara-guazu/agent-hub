@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { inspectNativeProcess } from '@agenthub/gateway'
 import { isAbsolute } from 'node:path'
 import { FleetActivityBuffer, unavailableActivity, type FleetActivity } from './fleet-activity.js'
+import type { AdmissionGate } from "./admission-gate.js"
 
 export type FleetState = 'starting' | 'busy' | 'idle' | 'stopped' | 'failed' | 'unknown' | 'waiting_input'
 export interface FleetStart {
@@ -58,6 +59,8 @@ export interface FleetProcessOptions {
   onEvent?: (event: FleetEvent) => void | Promise<void>
   requestTimeoutMs?: number
   shutdownTimeoutMs?: number
+  /** Closed during a silent update: launches and resumes are refused at the outer edge (HubTeamRuntime). */
+  admission?: AdmissionGate
 }
 const FORK_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type Packet = Record<string, any>
@@ -99,6 +102,13 @@ export class FleetProcessManager {
   private starting = new Set<string>()
   constructor(readonly directory: string, private options: FleetProcessOptions = {}) {}
 
+  /** Children this manager launched that are still running, plus launches in progress. */
+  liveIds(): Set<string> {
+    const ids = new Set(this.starting)
+    for (const [id, session] of this.sessions) if (this.live(session)) ids.add(id)
+    return ids
+  }
+  liveCount(): number { return this.liveIds().size }
   status(id: string): FleetStatus | undefined {
     const value = this.sessions.get(id)?.status
     return value ? this.snapshot(value) : undefined
@@ -439,8 +449,14 @@ export class FleetProcessManager {
     return this.snapshot(s.status)
   }
 
-  async start(input: FleetStart): Promise<FleetStatus> {
+  /**
+   * `entry.admitted` is for the caller that already passed the outer gate and holds the launch in its own counters
+   * (HubTeamRuntime.launch/resumeMember): such a launch finishes, and the drain is refused because it is counted.
+   * Any other caller is refused synchronously, before `starting.add`, while the gate is closed.
+   */
+  async start(input: FleetStart, entry: { admitted?: boolean } = {}): Promise<FleetStatus> {
     if (this.starting.has(input.id)) throw new Error('fleet_already_running')
+    if (!entry.admitted && this.options.admission && !this.options.admission.admit("fleet")) throw new Error('fleet_admission_closed')
     this.starting.add(input.id)
     try { return await this.startSession(input) } finally { this.starting.delete(input.id) }
   }

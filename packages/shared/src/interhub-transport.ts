@@ -1,7 +1,10 @@
 export const INTERHUB_TRANSPORT_VERSION = 1 as const
 
-/** thread/message carry chat, presence the agent list of a hub, escalation both escalation payloads. */
-export type InterHubEventKind = "membership" | "message" | "thread" | "presence" | "escalation" | "code"
+/**
+ * thread/message carry chat, presence the agent list of a hub, escalation both escalation payloads. `project` is the
+ * creator hub declaring the shared project of the channel; hubs that do not know the kind discard the event.
+ */
+export type InterHubEventKind = "membership" | "message" | "thread" | "presence" | "escalation" | "code" | "project"
 
 export interface InterHubEnvelope<T = unknown> {
   version: typeof INTERHUB_TRANSPORT_VERSION

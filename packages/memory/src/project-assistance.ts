@@ -3,7 +3,7 @@ import type { MemoryAI } from './ai.js'
 import { defaultAI, usesRemoteExtraction } from './config.js'
 import { check, id, instant, parse } from './contracts.js'
 import { queryVector } from './database.js'
-import { requireEntity, type MemoryStore } from './store.js'
+import { requireEntity, requireWritableEntity, type MemoryStore } from "./store.js"
 
 export const suggestProjectsInput = z.object({ entity_id: id, query: z.string().trim().max(500).default('') }).strict()
 const normalized = (text: string) => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
@@ -17,14 +17,14 @@ export async function suggestProjects(store: MemoryStore, ai: MemoryAI, raw: unk
   const title = normalized(input.query || source.title), content = normalized(text)
   // No recent-project cap: old projects and companies must remain discoverable.
   const projects = await store.db.query(`SELECT p.id,p.title,p.data->>'description' AS description,c.title AS company,
-    p.data->>'jira_project_key' AS jira_key FROM entities p LEFT JOIN entities c ON c.id=p.data->>'company_id' WHERE p.kind='project'`)
+    p.data->>'jira_project_key' AS jira_key FROM entities p LEFT JOIN entities c ON c.id=p.data->>'company_id' WHERE p.kind='project' AND p.data->>'merged_into' IS NULL`)
   const semantic = new Map<string, number>(); let semanticStatus = 'unavailable'
   try {
     const { model, vectors } = await ai.embedQuery(text, AbortSignal.timeout(8000)), query = vectors[0]!
     const rows = await store.db.query(`SELECT p.id,max(1-vec_distance(emb.embedding,$1)) AS score FROM entities p
       JOIN entity_embeddings emb ON emb.entity_id IN (p.id,p.data->>'company_id')
       JOIN entities ix ON ix.id=emb.entity_id
-      WHERE p.kind='project' AND emb.model=$2 AND emb.dimension=$3 AND emb.content_hash=md5(memory_entity_text(ix.title,ix.data))
+      WHERE p.kind='project' AND p.data->>'merged_into' IS NULL AND emb.model=$2 AND emb.dimension=$3 AND emb.content_hash=md5(memory_entity_text(ix.title,ix.data))
       GROUP BY p.id`, [queryVector(query),model,query.length])
     rows.forEach(row => semantic.set(row.id, Number(row.score)))
     semanticStatus = rows.length < projects.length ? 'indexing' : 'ready'
@@ -110,7 +110,7 @@ export const saveProjectCompanyInput = z.object({ project_id: id, expected_updat
 export async function saveProjectCompany(store: MemoryStore, raw: unknown, actor: string) {
   const input = parse(saveProjectCompanyInput,raw)
   return store.db.transaction(async sql => {
-    const project = await requireEntity(sql,input.project_id,'project')
+    const project = await requireWritableEntity(sql, input.project_id, "project")
     check(project.updated_at === input.expected_updated_at,'El proyecto cambió; recarga antes de asociar la empresa',409)
     const company = input.company_id ? await requireEntity(sql,input.company_id,'company')
       : await store.create({ kind: 'company', title: input.company!.title, data: { description: input.company!.description } },actor,sql)

@@ -24,8 +24,38 @@ export async function requireEntity(sql: Sql, entityId: string, kind?: EntityKin
   check(row && (!kind || row.kind === kind), 'Entidad inexistente o de otro tipo', 404)
   return row
 }
-export async function validateProjects(sql: Sql, ids: string[]): Promise<void> {
-  for (const project of new Set(ids)) await requireEntity(sql, project, 'project')
+export async function requireWritableEntity(sql: Sql, entityId: string, kind?: EntityKind): Promise<Entity> {
+  const row = await requireEntity(sql, entityId, kind)
+  check(!row.data.merged_into, `La entidad fue unificada; escribe en into_id=${row.data.merged_into}`, 409)
+  return row
+}
+
+/** Reject explicit writes to consolidated identities even when a tool validates through its own SQL. */
+export async function assertWritableEntityTargets(sql: Sql, raw: unknown): Promise<void> {
+  const targets = new Set<string>()
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return
+  const input = raw as Record<string, unknown>
+  for (const key of ["id", "entity_id", "project_id", "project_ids", "from_id", "to_id"]) {
+    const values = Array.isArray(input[key]) ? input[key] : [input[key]]
+    for (const value of values) if (typeof value === "string" && id.safeParse(value).success) targets.add(value)
+  }
+  if (!targets.size) return
+  const merged = (await sql.query("SELECT id,data->>'merged_into' AS into_id FROM entities WHERE id IN (SELECT value FROM json_each($1)) AND data->>'merged_into' IS NOT NULL LIMIT 1", [[...targets]]))[0]
+  check(!merged, `La entidad ${merged?.id} fue unificada; escribe en into_id=${merged?.into_id}`, 409)
+}
+
+export async function uniqueProjectTitle(sql: Sql, title: string, projectId: string | null = null) {
+  const normalized = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim()
+  const projects = await sql.query<Entity>("SELECT * FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND ($1 IS NULL OR id<>$1)", [projectId])
+  const matches = projects.filter(project => normalized(project.title) === normalized(title))
+  check(!matches.length, `Ya existe un proyecto con título equivalente: ${matches.map(project => `${project.title} (${project.id})`).join(", ")}. Reutiliza su id; para asociar la carpeta usa memory_update_entity con data.folders (rutas absolutas, conservando las existentes). Si es otro proyecto, usa allow_duplicate:true.`, 409)
+}
+
+export async function validateProjects(sql: Sql, ids: string[], access: "read" | "write" = "write"): Promise<void> {
+  for (const project of new Set(ids)) {
+    if (access === "write") await requireWritableEntity(sql, project, "project")
+    else await requireEntity(sql, project, "project")
+  }
 }
 export async function audit(sql: Sql, entityId: string, action: string, actor: string, before: unknown, after: unknown) {
   await sql.query('INSERT INTO changes(entity_id,action,actor,before_value,after_value) VALUES($1,$2,$3,$4,$5)',
@@ -36,8 +66,8 @@ export async function validateEvidence(sql: Sql, ids: string[]): Promise<void> {
   const rows = await sql.query('SELECT id FROM fragments WHERE id IN (SELECT value FROM json_each($1))', [ids])
   check(rows.length === new Set(ids).size, 'La evidencia debe referenciar fragmentos existentes')
 }
-async function attachProjects(sql: Sql, entityId: string, projects: string[]) {
-  await validateProjects(sql, projects)
+async function attachProjects(sql: Sql, entityId: string, projects: string[], access: "read" | "write" = "write") {
+  await validateProjects(sql, projects, access)
   for (const project of new Set(projects)) {
     if (entityId === project) continue
     await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'project') ON CONFLICT(from_id,to_id,type) DO NOTHING", [randomUUID(), entityId, project])
@@ -56,10 +86,10 @@ function validateData(data: Record<string, any>) {
   if (data.folders != null) data.folders = [...new Set(parse(z.array(workFolder).max(20), data.folders).map(f => f.replace(/[\\/]+$/, '') || '/'))]
 }
 
-async function uniqueJiraKey(sql: Sql, projectId: string | null, key: unknown, site: unknown) {
+export async function uniqueJiraKey(sql: Sql, projectId: string | null, key: unknown, site: unknown) {
   if (!key) return
   const defaultSite = await effectiveJiraSite(sql,null)
-  const other = (await sql.query(`SELECT title FROM entities WHERE kind='project' AND data->>'jira_project_key'=$1 AND ($2 IS NULL OR id<>$2)
+  const other = (await sql.query(`SELECT title FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND data->>'jira_project_key'=$1 AND ($2 IS NULL OR id<>$2)
     AND ($3 IS NULL OR COALESCE(NULLIF(data->>'jira_site_url',''),$4) IS NULL
       OR COALESCE(NULLIF(data->>'jira_site_url',''),$4)=$3)`, [key, projectId, site || defaultSite,defaultSite]))[0]
   check(!other, `La clave de Jira ${key} ya está asignada al proyecto «${other?.title}»`, 409)
@@ -85,6 +115,7 @@ export class MemoryStore {
       validateData(data)
       if (input.kind === 'collection') { data.fields = parse(fieldsSchema, data.fields ?? []); data.schema_version = 1 }
       if (input.kind === 'project' && data.company_id) await requireEntity(sql, String(data.company_id), 'company')
+      if (input.kind === "project" && !input.allow_duplicate) await uniqueProjectTitle(sql, input.title)
       if (input.kind === 'project') await uniqueJiraKey(sql, null, data.jira_project_key, data.jira_site_url)
       const row = (await sql.query<Entity>('INSERT INTO entities(id,kind,title,data) VALUES($1,$2,$3,$4) RETURNING *',
         [randomUUID(), input.kind, input.title, JSON.stringify(data)]))[0]!
@@ -104,7 +135,10 @@ export class MemoryStore {
       if (!source?.current_version_id) return this.updateRow(entityId, input, actor)
       const original = parse(importInput, await this.original(source.current_version_id))
       const text = parse(z.string().trim().min(1).max(5_000_000), input.data!.text)
-      const next = parse(importInput, { ...original, title: input.title ?? original.title, text, fragments: [], metadata: { ...original.metadata, ...input.data } })
+      const current = await requireWritableEntity(this.db, entityId)
+      const projects = await this.db.query("SELECT to_id FROM links WHERE from_id=$1 AND type='project'", [entityId])
+      const next = parse(importInput, { ...original, provider: source.provider, account: source.account, external_id: source.external_id, title: input.title ?? original.title, text, fragments: [], project_ids: projects.map(project => project.to_id),
+        metadata: { ...original.metadata, ...current.data, ...input.data } })
       await this.updateRow(entityId, input, actor)
       await this.ingestWithinOriginals(next, actor)
       return requireEntity(this.db, entityId)
@@ -114,7 +148,8 @@ export class MemoryStore {
   private async updateRow(entityId: string, raw: unknown, actor: string): Promise<Entity> {
     const input = parse(entityPatch, raw)
     return this.db.transaction(async sql => {
-      const old = await requireEntity(sql, entityId)
+      const old = await requireWritableEntity(sql, entityId)
+      if (old.kind === "project" && input.title && !input.allow_duplicate) await uniqueProjectTitle(sql, input.title, entityId)
       if (input.expected_updated_at) check(old.updated_at === input.expected_updated_at, 'La entidad cambió; recargá antes de guardar', 409)
       const data = { ...old.data, ...input.data }
       validateData(data)
@@ -234,7 +269,7 @@ export class MemoryStore {
   async link(raw: unknown, actor = 'user', transaction?: Sql) {
     const input = parse(linkInput, raw)
     const run = async (sql: Sql) => {
-      await requireEntity(sql, input.from_id); await requireEntity(sql, input.to_id)
+      await requireWritableEntity(sql, input.from_id); await requireWritableEntity(sql, input.to_id)
       if (input.type === 'project') await requireEntity(sql, input.to_id, 'project')
       await validateEvidence(sql, input.evidence_ids)
       const row = (await sql.query('INSERT INTO links(id,from_id,to_id,type,data) VALUES($1,$2,$3,$4,$5) ON CONFLICT(from_id,to_id,type) DO UPDATE SET data=excluded.data RETURNING *',
@@ -275,7 +310,7 @@ export class MemoryStore {
       const before = (await sql.query<Fragment>('SELECT * FROM fragments WHERE id=$1', [parse(id, fragmentId)]))[0]
       check(before, 'Fragmento inexistente', 404)
       await validateProjects(sql, projects)
-      if (personId) await requireEntity(sql, personId, 'person')
+      if (personId) await requireWritableEntity(sql, personId, "person")
       await sql.query('DELETE FROM fragment_projects WHERE fragment_id=$1', [fragmentId])
       for (const project of new Set(projects)) await sql.query('INSERT INTO fragment_projects VALUES($1,$2)', [fragmentId, project])
       await sql.query(`UPDATE fragments SET speaker_id=$2,metadata=jsonb_merge(metadata,'{"explicit_projects":true,"manual_assignment":true}') WHERE id=$1`, [fragmentId, personId === undefined ? before.speaker_id : personId])
@@ -292,7 +327,7 @@ export class MemoryStore {
     return this.db.withOriginals(() => this.ingestWithinOriginals(raw, actor, indexOnly))
   }
 
-  /** Internal compound writes must already hold db.withOriginals before entering a transaction. */
+  /** Internal ingestion preserves historical project scope, including merged private donors; callers must hold db.withOriginals. */
   async ingestWithinOriginals(raw: unknown, actor: string, indexOnly = false) {
     const input = parse(importInput, raw)
     const parts = input.fragments.length ? input.fragments : input.kind === 'meeting' ? parseTranscript(input.text) : splitText(input.text)
@@ -302,7 +337,7 @@ export class MemoryStore {
     const directory = join(this.directory, 'originals')
     const originalPath = `${digest}.json`
     return this.db.transaction(async sql => {
-      await validateProjects(sql, input.project_ids)
+      await validateProjects(sql, input.project_ids, "read")
       let source = (await sql.query('SELECT * FROM sources WHERE provider=$1 AND account=$2 AND external_id=$3', [input.provider, input.account, input.external_id]))[0]
       const entityData = { ...input.metadata, occurred_at: input.occurred_at ?? null, timezone: input.timezone ?? null, provider: input.provider }
       if (!source) {
@@ -311,12 +346,12 @@ export class MemoryStore {
         source = (await sql.query('INSERT INTO sources(id,entity_id,provider,account,external_id,url,connector_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
           [sourceId, entityId, input.provider, input.account, input.external_id, input.url ?? null, input.connector_id ?? null]))[0]!
       } else {
-        const entity = await requireEntity(sql, source.entity_id)
+        const entity = await requireWritableEntity(sql, source.entity_id)
         check(entity.kind === input.kind, 'El ID externo ya pertenece a otro tipo de fuente', 409)
         await sql.query(`UPDATE entities SET title=CASE WHEN (data->>'manual_title') IN (1,'true') THEN title ELSE $2 END,
           data=jsonb_merge(data,$3),updated_at=clock_timestamp() WHERE id=$1`, [source.entity_id, input.title, JSON.stringify(entityData)])
       }
-      await attachProjects(sql, source.entity_id, input.project_ids)
+      await attachProjects(sql, source.entity_id, input.project_ids, "read")
       const inheritedProjects = (await sql.query("SELECT to_id FROM links WHERE from_id=$1 AND type='project'", [source.entity_id])).map(row => row.to_id as string)
       // Identity enrichment must run even when the source text is unchanged.
       const participants = new Map<string, string>()
@@ -355,12 +390,12 @@ export class MemoryStore {
           if (correction) speakerId = correction.speaker_id ?? undefined
           const explicit = Boolean(correction) || part.project_ids !== undefined
           const projects: string[] = correction?.project_ids ?? part.project_ids ?? inheritedProjects
-          await validateProjects(sql, projects)
+          await validateProjects(sql, projects, "read")
           await sql.query('INSERT INTO fragments(id,version_id,ordinal,text,speaker_id,start_time,end_time,offset_ms,metadata) VALUES($1,$2,$3,$4,$5,ts($6),ts($7),$8,$9)',
             [fragmentId, versionId, ordinal, part.text, speakerId ?? null, part.start_time ?? null, part.end_time ?? null, part.offset_ms ?? null,
               JSON.stringify({ ...part.metadata, external_id: part.external_id ?? null, explicit_projects: explicit, speaker_label: part.speaker ?? null, ...(correction ? { manual_assignment: true, corrected_from: correction.id } : {}) })])
           for (const project of new Set(projects)) await sql.query('INSERT INTO fragment_projects VALUES($1,$2)', [fragmentId, project])
-          await attachProjects(sql, source.entity_id, projects)
+          await attachProjects(sql, source.entity_id, projects, "read")
           if (speakerId) await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'participant') ON CONFLICT DO NOTHING", [randomUUID(), source.entity_id, speakerId])
         }
       }
@@ -468,7 +503,7 @@ export class MemoryStore {
   async addRecord(collectionId: string, raw: unknown, origin = 'manual') {
     const input = parse(recordInput, raw)
     return this.db.transaction(async sql => {
-      const collection = await requireEntity(sql, collectionId, 'collection')
+      const collection = await requireWritableEntity(sql, collectionId, "collection")
       const fields = parse(fieldsSchema, collection.data.fields)
       await this.validateValues(sql, fields, input.values)
       await validateEvidence(sql, input.evidence_ids)
@@ -486,7 +521,7 @@ export class MemoryStore {
     return this.db.transaction(async sql => {
       const row = (await sql.query('SELECT * FROM collection_records WHERE id=$1', [parse(id, recordId)]))[0]
       check(row, 'Registro inexistente', 404)
-      const collection = await requireEntity(sql, row.collection_id, 'collection')
+      const collection = await requireWritableEntity(sql, row.collection_id, "collection")
       await this.validateValues(sql, parse(fieldsSchema, collection.data.fields), input.values)
       await validateEvidence(sql, input.evidence_ids)
       await sql.query('DELETE FROM record_evidence WHERE record_id=$1', [recordId])
@@ -506,7 +541,7 @@ export class MemoryStore {
       if (field.type === 'boolean') check(typeof value === 'boolean', `${field.label} requiere verdadero/falso`)
       if (field.type === 'date') parse(z.iso.date(), value)
       if (field.type === 'datetime') parse(z.iso.datetime({ offset: true }), value)
-      if (field.type === 'entity') await requireEntity(sql, parse(id, value))
+      if (field.type === "entity") await requireWritableEntity(sql, parse(id, value))
     }
   }
 

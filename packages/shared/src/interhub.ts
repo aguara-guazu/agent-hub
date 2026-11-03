@@ -1,6 +1,6 @@
 /**
  * Read-only inter-hub channel fields the UI gets from `/api/memory/interhub/*` and `chat_read`.
- * The join code is a secret: it only travels in `InterhubChannelCode`, never in the roster.
+ * The UI does not request the secret join code; it is never included in the roster.
  */
 
 /** Value of `chat_channels.kind` for a channel shared between several hubs. */
@@ -42,7 +42,13 @@ export interface InterhubMessageOrigin {
   is_local: boolean
 }
 
-/** Only for the authenticated person of the creator hub, and in the `create`/`regenerate` tool results. */
-export interface InterhubChannelCode {
-  code: string
+/** Read-only orphan channel information; the reason is absent on older servers. */
+export type InterhubProjectUnlinkReason = "membership_expired" | "membership_revoked" | "project_unavailable"
+export interface InterhubOrphanChannel {
+  channel_id: string
+  name: string
+  created_at: string
+  archived_at: string | null
+  closed_at: string | null
+  project_unlink_reason?: InterhubProjectUnlinkReason | null
 }

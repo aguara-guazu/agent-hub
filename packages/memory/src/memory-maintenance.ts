@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { check, id, parse } from './contracts.js'
-import { hash, requireEntity, type MemoryStore } from './store.js'
+import { hash, requireEntity, requireWritableEntity, type MemoryStore } from "./store.js"
 import { manageMemory } from './remember.js'
 import type { AIConfig } from './config.js'
 
@@ -18,6 +18,7 @@ export async function maintenanceStatus(store: MemoryStore, project?: string) {
 }
 export async function requestTidy(store: MemoryStore, raw: unknown, actor: string) {
   const input = parse(tidyInput, raw), status = await maintenanceStatus(store, input.project_id)
+  if (input.project_id) await requireWritableEntity(store.db, input.project_id, "project")
   if (status.active) return { queued: true, job_id: status.active.id, duplicate: true }
   if (!input.force && !status.due) return { queued: false, reason: 'La memoria ya se revisó en las últimas 24 horas', last: status.last }
   const job = await store.enqueue('tidy_memory', { ...input, actor }, key(input.project_id))
@@ -41,7 +42,7 @@ export async function tidyMemory(store: MemoryStore, config: AIConfig, raw: unkn
   progress: (value: Record<string, unknown>) => Promise<void>) {
   const { actor, ...input } = raw as z.infer<typeof tidyInput> & { actor: string }
   const scope = parse(tidyInput, input)
-  if (scope.project_id) await requireEntity(store.db, scope.project_id, 'project')
+  if (scope.project_id) await requireWritableEntity(store.db, scope.project_id, "project")
   await progress({ source_title: 'Organización de la memoria', stage: 'memory_maintenance', provider: 'local', model: config.embeddings_enabled ? config.embedding_model : null })
   const rows = await store.db.query(`SELECT e.* FROM entities e WHERE e.data->>'agent_memory' IN (1,'true')
     AND COALESCE(e.data->>'memory_state','active')='active' AND ($1 IS NULL OR e.data->>'memory_project_id'=$1)

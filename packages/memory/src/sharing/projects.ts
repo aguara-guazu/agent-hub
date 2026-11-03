@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { check, parse } from '../contracts.js'
 import { Vault } from '../config.js'
-import { requireEntity, type MemoryStore } from '../store.js'
+import { requireWritableEntity, type MemoryStore } from "../store.js"
 import { digest, identity, publicIdentity, recovery, signature, validSignature, seal, unseal, randomKey, type Identity, type PublicIdentity } from './crypto.js'
+import { backfillProjects, projectReconcilers } from '../interhub/project-association.js'
 import { active, genesisSchema, invitationSchema, withoutSignature, type Genesis, type Member, type Policy } from './schema.js'
 
 export const LEASE_MS = 14 * 24 * 60 * 60 * 1000
@@ -56,7 +57,7 @@ export class SharedProjects {
     return { recovery_phrase: phrase }
   }
   async create(projectId: string) {
-    const entity = await requireEntity(this.store.db, projectId, 'project')
+    const entity = await requireWritableEntity(this.store.db, projectId, "project")
     check(!(await this.store.db.query('SELECT id FROM shared_projects WHERE id=$1', [projectId])).length, 'El proyecto ya está compartido', 409)
     const me = await this.identity(), root = await recovery(), now = new Date().toISOString()
     const unsigned = { id: projectId, title: entity.title, description: String(entity.data.description ?? '').slice(0, 8000), recovery: publicIdentity(root.identity), owner: publicIdentity(me), created_at: now }
@@ -180,6 +181,10 @@ export class SharedProjects {
         ON CONFLICT(id) DO UPDATE SET policy_hash=excluded.policy_hash,conflict=NULL,updated_at=now()`, [genesis.id, JSON.stringify(genesis), digest(latest)])
       for (const policy of verified.values()) await sql.query('INSERT INTO shared_policies(hash,project_id,revision,document) VALUES($1,$2,$3,$4) ON CONFLICT(hash) DO NOTHING', [digest(policy), genesis.id, policy.revision, JSON.stringify(policy)])
     })
+    // A channel joined before this membership arrived stays without project until the policies can vouch for one.
+    const reconcile = projectReconcilers.get(this.store)
+    if (reconcile) await reconcile()
+    else await backfillProjects(this.store.db, async () => (await this.identity()).id).catch(error => { console.error("interhub: project backfill after import failed:", error instanceof Error ? error.message : "unknown error") })
     return { project_id: genesis.id, role: latest.members.find(m => m.identity.id === me.id)?.role ?? null }
   }
   async changeMember(projectId: string, target: PublicIdentity, role: Member['role'], invite: boolean, revoke = false) {
