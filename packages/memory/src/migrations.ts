@@ -898,4 +898,13 @@ CREATE INDEX chat_channels_archived ON chat_channels(archived_at);
 -- Distinct from activity_at, which dates any Hub-observed activity for wrap up and archive decisions.
 -- Rollback: ALTER TABLE chat_sessions DROP COLUMN output_at; then delete this version from schema_versions.
 ALTER TABLE chat_sessions ADD COLUMN output_at TIMESTAMP;
+`, String.raw`
+-- Shared project declared by the creator hub of an inter-hub channel through a signed project event. It is a pending hint
+-- revalidated locally before it is applied to chat_channels.project_id; (shared_project_hint_at, shared_project_hint_event)
+-- orders competing events. On the creator hub it records the last value announced.
+-- Rollback: ALTER TABLE interhub_channels DROP COLUMN for shared_project_hint_event, shared_project_hint_at, shared_project_hint;
+-- then delete this version from schema_versions.
+ALTER TABLE interhub_channels ADD COLUMN shared_project_hint TEXT;
+ALTER TABLE interhub_channels ADD COLUMN shared_project_hint_at TEXT;
+ALTER TABLE interhub_channels ADD COLUMN shared_project_hint_event TEXT;
 `]

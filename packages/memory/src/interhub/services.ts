@@ -69,8 +69,26 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   /** Assigns the channels whose current shared-project policies leave exactly one candidate; notifies listeners on any change. */
   const backfill = async (channelId?: string) => {
     const result = await backfillProjects(db, localHubId, channelId ? { channelId } : {})
-    if (result.resolved.length) events?.emit("change")
+    const announced = await announceProjects(channelId)
+    if (result.resolved.length || announced) events?.emit("change")
     return result
+  }
+  /** Creator side: declares in the signed log the project of every channel of this hub whose last announced value differs; true when something was announced. */
+  const announceProjects = async (channelId?: string) => {
+    const pending = await db.query(`SELECT c.id,c.project_id,i.creator_hub_id FROM chat_channels c JOIN interhub_channels i ON i.channel_id=c.id
+      WHERE c.kind=$1 AND c.deleted_at IS NULL AND c.project_id IS NOT NULL AND ($2 IS NULL OR c.id=$2)
+      AND (i.shared_project_hint IS NULL OR i.shared_project_hint<>c.project_id)`, [INTERHUB_CHANNEL_KIND, channelId ?? null])
+    // The hub identity is created on first use; installations without such channels must not trigger that.
+    if (!pending.length) return false
+    const local = await localHubId()
+    const rows = pending.filter(row => row.creator_hub_id === local)
+    let announced = false
+    for (const row of rows) {
+      // A project that is not an enabled shared project of this hub is never declared to the others.
+      if (!await sharedProjectUsable(db, String(row.project_id), [local])) continue
+      if (transport ? await transport.announceProject(String(row.id)) : await network.announceProject(String(row.id))) announced = true
+    }
+    return announced
   }
   // Repairs channels saved without project by earlier versions. Reads that must see the result await `backfilled`;
   // a failure is logged without channel data and never blocks the service.

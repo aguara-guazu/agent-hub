@@ -33,9 +33,10 @@ const iso = z.string().datetime()
 const membershipSchema = z.object({ action: z.enum(["joined", "removed"]), hub_id: hubId, leader_id: z.string().max(200), leader_label: z.string().max(200),
   peer_public_key: z.string().max(200), peer_identity: publicIdentitySchema }).strict()
 const codeSchema = z.object({ action: z.enum(["revoked", "regenerated"]), generation: z.number().int().nonnegative() }).strict()
+const projectSchema = z.object({ project_id: uuid }).strict()
 const envelopeSchema = z.object({
   version: z.literal(1), id: uuid, channel_id: uuid, origin_hub_id: hubId, origin_peer_public_key: z.string().min(1).max(200),
-  origin_agent_id: z.string().max(200).nullable(), kind: z.enum(["membership", "message", "thread", "presence", "escalation", "code"]),
+  origin_agent_id: z.string().max(200).nullable(), kind: z.enum(["membership", "message", "thread", "presence", "escalation", "code", "project"]),
   occurred_at: iso, payload: z.unknown(), signature: z.string().min(1).max(200),
 }).strict()
 export const rosterSchema = z.object({
@@ -54,6 +55,7 @@ export type VerifiedEnvelope =
   | { kind: "chat"; envelope: InterHubEnvelope<InterhubChatPayload>; originName: string }
   | { kind: "membership"; envelope: InterHubEnvelope<z.infer<typeof membershipSchema>> }
   | { kind: "code"; envelope: InterHubEnvelope<z.infer<typeof codeSchema>> }
+  | { kind: "project"; envelope: InterHubEnvelope<z.infer<typeof projectSchema>> }
 
 /** P2P-owned durable state of inter-hub channels: codes, membership, the signed event log and its verification. */
 export class InterhubNetwork {
@@ -303,6 +305,11 @@ export class InterhubNetwork {
       const payload = parse(codeSchema, event.payload)
       return { kind: "code", envelope: { ...event, payload } as InterHubEnvelope<typeof payload> }
     }
+    if (event.kind === "project") {
+      check(fromCreator, "Sólo el hub creador declara el proyecto del canal", 403)
+      const payload = parse(projectSchema, event.payload)
+      return { kind: "project", envelope: { ...event, payload } as InterHubEnvelope<typeof payload> }
+    }
     const payload = parse(interhubChatPayloadSchema, event.payload) as InterhubChatPayload
     check(chatKind(payload) === event.kind, "Tipo de evento inter-hub inválido", 403)
     if (payload.type === "escalation") {
@@ -313,13 +320,36 @@ export class InterhubNetwork {
     return { kind: "chat", envelope: { ...event, payload } as InterHubEnvelope<InterhubChatPayload>, originName: identityOf(origin.peer_identity).name }
   }
 
-  /** Applies membership and code events; chat events are materialized by InterhubChat. */
+  /**
+   * Creator side: declares the shared project of the channel in the signed log when it differs from the last value
+   * announced. The value is recorded on the creator's own row so a restart or a later reconciliation does not repeat it.
+   */
+  async announceProject(channelId: string): Promise<boolean> {
+    const local = (await this.localIdentity()).id
+    const row = (await this.store.db.query(`SELECT c.project_id,i.shared_project_hint FROM chat_channels c JOIN interhub_channels i ON i.channel_id=c.id
+      WHERE c.id=$1 AND c.kind='inter-hub' AND c.deleted_at IS NULL AND i.creator_hub_id=$2`, [channelId, local]))[0]
+    if (!row?.project_id || row.project_id === row.shared_project_hint) return false
+    const envelope = await this.append(channelId, "project", { project_id: String(row.project_id) })
+    await this.store.db.query("UPDATE interhub_channels SET shared_project_hint=$2,shared_project_hint_at=$3,shared_project_hint_event=$4 WHERE channel_id=$1", [channelId, String(row.project_id), envelope.occurred_at, envelope.id])
+    return true
+  }
+
+  /** Applies membership, code and project events; chat events are materialized by InterhubChat. */
   async applyControl(verified: Exclude<VerifiedEnvelope, { kind: "chat" }>) {
     const local = (await this.localIdentity()).id, event = verified.envelope
     if (verified.kind === "code") {
       // The creator keeps its own row authoritative; members only mirror the generation for display.
       await this.store.db.query(`UPDATE interhub_channels SET code_generation=MAX(code_generation,$2),code_revoked_at=$3,updated_at=now()
         WHERE channel_id=$1 AND creator_hub_id<>$4`, [event.channel_id, verified.envelope.payload.generation, verified.envelope.payload.action === "revoked" ? event.occurred_at : null, local])
+      return
+    }
+    if (verified.kind === "project") {
+      // The hint is only recorded here; the local reconciliation decides whether it can become the channel project.
+      // The latest declaration of the creator wins; a replay from seq 0 may deliver several in any order.
+      const updated = await this.store.db.query(`UPDATE interhub_channels SET shared_project_hint=$2,shared_project_hint_at=$3,shared_project_hint_event=$4,updated_at=now()
+        WHERE channel_id=$1 AND creator_hub_id<>$5 AND (shared_project_hint_at IS NULL OR shared_project_hint_at<$3 OR shared_project_hint_at=$3 AND shared_project_hint_event<$4) RETURNING channel_id`,
+      [event.channel_id, verified.envelope.payload.project_id, event.occurred_at, event.id, local])
+      if (updated.length) await this.afterMembership?.(event.channel_id)
       return
     }
     const payload = verified.envelope.payload

@@ -280,6 +280,13 @@ export class InterhubTransport implements NetworkExtension {
     for (const peer of this.shared.peers()) await this.announce(peer, channelId).catch(() => {})
   }
   /** Also re-announced later: an event appended inside a caller's transaction is only visible to readers after it commits. */
+  /** Creator side: appends the project declaration of the channel when it changed and announces it to connected members. */
+  async announceProject(channelId: string) {
+    const declared = await this.network.announceProject(channelId)
+    if (declared) this.announceSoon(channelId)
+    return declared
+  }
+
   private announceSoon(channelId: string) {
     for (const delay of [50, 1_000]) setTimeout(() => { void this.announceAll(channelId).catch(() => {}) }, delay).unref()
   }

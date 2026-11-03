@@ -76,13 +76,14 @@ export async function candidateProjects(db: Sql, hubs: { id: string; is_local: b
 }
 
 /**
- * True when the project is a usable shared project of this hub (enabled, no administration conflict, backed by a project
- * entity) and every hub in `hubIds` is an active member of its current policy.
+ * True when the project is a shared project of this hub (no administration conflict, backed by a project entity) and every
+ * hub in `hubIds` is an active member of its current policy. A new association also requires the project to be enabled;
+ * an association already stored does not, because a pause only switches synchronization off in this hub.
  */
-export async function sharedProjectUsable(db: Sql, projectId: string, hubIds: string[]): Promise<boolean> {
+export async function sharedProjectUsable(db: Sql, projectId: string, hubIds: string[], options: { enabled?: boolean } = {}): Promise<boolean> {
   const row = (await db.query(`SELECT v.document AS policy FROM shared_projects p
     JOIN shared_policies v ON v.hash=p.policy_hash JOIN entities e ON e.id=p.id AND e.kind='project'
-    WHERE p.id=$1 AND p.enabled=1 AND p.conflict IS NULL`, [projectId]))[0]
+    WHERE p.id=$1 AND p.conflict IS NULL${options.enabled === false ? "" : " AND p.enabled=1"}`, [projectId]))[0]
   const policy = row ? policyOf(row.policy) : null
   if (!policy?.members) return false
   const now = Date.now()
@@ -99,7 +100,7 @@ export async function settleChannelProject(db: Sql, channelId: string, localHubI
   const row = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1 AND kind=$2", [channelId, INTERHUB_CHANNEL_KIND]))[0]
   if (!row) return null
   const current = row.project_id ? String(row.project_id) : null
-  const settled = current && await sharedProjectUsable(db, current, [localHubId]) ? current
+  const settled = current && await sharedProjectUsable(db, current, [localHubId], { enabled: false }) ? current
     : requested && await sharedProjectUsable(db, requested, [localHubId, creatorHubId]) ? requested : null
   if (settled !== current) {
     await db.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1", [channelId, settled])
@@ -114,12 +115,17 @@ export async function isLocalHubLeader(sql: Sql, channelId: string, localHubId: 
     WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL AND m.leader_session_id=$3 AND s.closed_at IS NULL AND s.removed_at IS NULL`, [channelId, localHubId, sessionId]))[0])
 }
 
-/** Hubs and candidates of one channel, or null when it is not an inter-hub channel outside the trash. */
+/**
+ * Hubs and candidates of one channel, or null when it is not an inter-hub channel outside the trash. `hint` is the project
+ * the creator hub declared through a signed project event; while it exists no candidate is inferred.
+ */
 async function evidence(db: Sql, channelId: string, localHubId: string) {
-  const channel = (await db.query("SELECT id,project_id FROM chat_channels WHERE id=$1 AND kind=$2 AND deleted_at IS NULL", [channelId, INTERHUB_CHANNEL_KIND]))[0]
+  const channel = (await db.query(`SELECT c.id,c.project_id,i.creator_hub_id,i.shared_project_hint FROM chat_channels c
+    JOIN interhub_channels i ON i.channel_id=c.id WHERE c.id=$1 AND c.kind=$2 AND c.deleted_at IS NULL`, [channelId, INTERHUB_CHANNEL_KIND]))[0]
   if (!channel) return null
   const hubs = await channelHubs(db, channelId, localHubId)
-  return { projectId: channel.project_id ? String(channel.project_id) : null, hubs, candidates: await candidateProjects(db, hubs) }
+  return { projectId: channel.project_id ? String(channel.project_id) : null, creatorHubId: String(channel.creator_hub_id),
+    hint: channel.shared_project_hint && channel.creator_hub_id !== localHubId ? String(channel.shared_project_hint) : null, hubs, candidates: await candidateProjects(db, hubs) }
 }
 
 /** Inter-hub channels without project anywhere in this hub, archived and closed ones included, trash excluded. */
@@ -156,6 +162,14 @@ export async function backfillProjects(db: TransactionalDatabase, localHubId: ()
     await db.transaction(async sql => {
       const found = await evidence(sql, channelId, local)
       if (!found || found.projectId) return
+      // A declared project is applied once this hub and the creator are active members of an enabled policy; until then it
+      // stays pending and the channel is not assigned by inference.
+      if (found.hint) {
+        if (!await sharedProjectUsable(sql, found.hint, [local, found.creatorHubId])) { result.unresolved.push({ channel_id: channelId, candidates: [found.hint] }); return }
+        const applied = await sql.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1 AND project_id IS NULL AND deleted_at IS NULL RETURNING id", [channelId, found.hint])
+        if (applied.length) result.resolved.push({ channel_id: channelId, project_id: found.hint })
+        return
+      }
       if (found.candidates.length !== 1) { result.unresolved.push({ channel_id: channelId, candidates: found.candidates.map(c => c.project_id) }); return }
       const projectId = found.candidates[0]!.project_id
       const updated = await sql.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1 AND project_id IS NULL AND deleted_at IS NULL RETURNING id", [channelId, projectId])
@@ -166,8 +180,8 @@ export async function backfillProjects(db: TransactionalDatabase, localHubId: ()
 }
 
 /**
- * Explicit assignment by the current local leader of the channel. The project must be one of the evidence candidates;
- * a channel that already has a project is never reassigned.
+ * Explicit assignment by the current local leader of the channel. The project must be an enabled shared project in which
+ * this hub and the creator hub are active members; a channel that already has a project is never reassigned.
  */
 export async function assignProject(db: TransactionalDatabase, localHubId: string, callerId: string, channelId: string, projectId: string) {
   // Leadership, membership policies and the write are decided inside one transaction.
@@ -177,7 +191,7 @@ export async function assignProject(db: TransactionalDatabase, localHubId: strin
     check(!channel.project_id, "El canal ya pertenece a un proyecto.", 409)
     check(channel.leader_id === callerId && await isLocalHubLeader(sql, channelId, localHubId, callerId), "Sólo el líder de tu hub en el canal puede asignarle un proyecto.", 403)
     const found = await evidence(sql, channelId, localHubId)
-    check(found?.candidates.some(candidate => candidate.project_id === projectId), "El proyecto no es compartido con todos los hubs activos del canal.", 422)
+    check(found && await sharedProjectUsable(sql, projectId, [localHubId, found.creatorHubId]), "El proyecto no es un proyecto compartido activo de tu hub y del hub creador del canal.", 422)
     const updated = await sql.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1 AND project_id IS NULL AND deleted_at IS NULL RETURNING id", [channelId, projectId])
     check(updated.length, "El canal ya pertenece a un proyecto.", 409)
     return { channel_id: channelId, project_id: projectId }
