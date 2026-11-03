@@ -2,7 +2,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from "react"
 import type { CSSProperties, KeyboardEvent } from "react"
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import {
-  Avatar, Button, Chip, ConfirmDialog, Dl, ErrorState, Input, Menu, MoreMenu, SkeletonRows, TabPanel, Tabs, useToast,
+  Avatar, Banner, Button, Chip, ConfirmDialog, Dl, ErrorState, Input, Menu, MoreMenu, SkeletonRows, TabPanel, Tabs, useToast,
   type MenuItem, type TabItem,
 } from "../../components/ui"
 import { useFormat, useT } from "../../i18n"
@@ -13,6 +13,7 @@ import { AttachDialog, NoteDialog } from "./dialogs"
 import { AutomationPanel, CollectionPanel, DetailsPanel, HistoryPanel, LinkPanel, type EntityLink, type ProjectDetail } from "./panels"
 import { StageChip, useErrorText, useMemoryAction, useNarrow } from "./shared"
 import { SharePanel } from "./collaboration/SharePanel"
+import { useSharingStatus } from "./collaboration/sharing"
 import { PanelSlotContext } from "./work"
 
 const Resumen = lazy(() => import("./tabs/Resumen"))
@@ -80,6 +81,8 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
   const [deleting, setDeleting] = useState(false)
   const [panelSlot, setPanelSlot] = useState<HTMLElement | null>(null)
   const remove = useMemoryAction("delete_entity")
+  const sharing = useSharingStatus()
+  const folderlessShared = sharing.data?.projects.some(item => item.id === project.id && item.folderless) ?? false
 
   const setParam = (key: string, value: string | null) => setParams(current => {
     const next = new URLSearchParams(current)
@@ -163,6 +166,12 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
             </div>
           </div>
         </div>
+
+        {folderlessShared && (
+          <Banner tone="warn" action={<Button small onClick={() => openPanel("details")}>{t("header.folderless.action")}</Button>}>
+            {t("header.folderless.message")}
+          </Banner>
+        )}
 
         <Tabs<Tab> tabs={tabs} value={tab} onChange={value => setParam("tab", value === "resumen" ? null : value)} label={t("header.tabs.label")} idPrefix="project-tab" max={TABS.length} />
 

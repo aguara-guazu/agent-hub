@@ -121,7 +121,7 @@ export class MemoryStore {
         [randomUUID(), input.kind, input.title, JSON.stringify(data)]))[0]!
       await attachProjects(sql, row.id, input.project_ids)
       if (input.kind === 'project' && data.company_id) await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'company')", [randomUUID(), row.id, data.company_id])
-      await audit(sql, row.id, 'created', actor, null, row)
+      await audit(sql, row.id, "created", actor, null, input.assigned_project_override ? { ...row, assigned_project_override: input.assigned_project_override } : row)
       return row
     }
     return transaction ? run(transaction) : this.db.transaction(run)

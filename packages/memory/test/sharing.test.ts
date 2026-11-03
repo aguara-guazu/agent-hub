@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -48,6 +48,41 @@ afterEach(async () => {
 })
 
 describe('proyectos compartidos cifrados', () => {
+  it("exige carpeta local al aceptar y evita que agentes dupliquen el proyecto asignado", async () => {
+    const a = await hub("Ana"), b = await hub("Bruno")
+    const project = await a.store.create({ kind: "project", title: "Compartido" })
+    await a.sharing.create(project.id)
+    const invitation = await a.sharing.changeMember(project.id, publicIdentity(await b.sharing.identity()), "maintainer", false)
+    const caller = agent("shared-join")
+
+    await expect(b.ops.call("shared_join", { invitation }, "mcp", caller)).rejects.toMatchObject({ statusCode: 422 })
+    expect(await b.db.query("SELECT id FROM entities WHERE id=$1", [project.id])).toHaveLength(0)
+
+    const folder = join(b.store.directory, "work")
+    await mkdir(folder)
+    expect(await b.ops.call("shared_join", { invitation, folder }, "mcp", caller)).toMatchObject({ project_id: project.id })
+    expect((await b.store.detail(project.id)).entity.data.folders).toEqual([folder])
+
+    const working = { ...caller, cwd: join(folder, "src") }
+    const context = await b.ops.call("context", {}, "mcp", working)
+    expect(context.project).toMatchObject({ id: project.id, folder, source: "folder", shared: true })
+    await expect(b.ops.call("create_entity", { kind: "project", title: "Accidental" }, "mcp", working)).rejects.toMatchObject({ statusCode: 409 })
+    await expect(b.ops.call("create_entity", { kind: "project", title: "Compartido", allow_duplicate: true }, "mcp", working)).rejects.toMatchObject({ statusCode: 409 })
+    expect(await b.ops.call("create_entity", {
+      kind: "project", title: "Compartido", allow_duplicate: true,
+      assigned_project_override: "La persona pidió un proyecto distinto",
+    }, "mcp", working)).toMatchObject({ kind: "project", title: "Compartido" })
+
+    const c = await hub("Carla")
+    const legacyInvitation = await a.sharing.changeMember(project.id, publicIdentity(await c.sharing.identity()), "maintainer", false)
+    await c.sharing.importInvitation(legacyInvitation)
+    const unassigned = agent("folderless")
+    const missing = await c.ops.call("context", {}, "mcp", unassigned)
+    expect(missing.shared_without_folder).toEqual([{ id: project.id, title: "Compartido" }])
+    expect(missing.guidance).toContain("no crees un proyecto")
+    await expect(c.ops.call("create_entity", { kind: "project", title: "Otro" }, "mcp", unassigned)).rejects.toThrow("Compartido")
+  })
+
   it('comparte fuentes existentes y futuras automáticamente sin publicar las de otros proyectos', async () => {
     const a = await hub('Ana'), b = await hub('Bruno')
     const project = await a.store.create({ kind: 'project', title: 'Automático' }), other = await a.store.create({ kind: 'project', title: 'Otro' })

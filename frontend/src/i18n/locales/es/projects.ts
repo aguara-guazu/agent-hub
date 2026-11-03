@@ -79,6 +79,10 @@ const projects = {
     submit: "Crear proyecto",
     done: "Proyecto creado",
   },
+  sharedFolder: {
+    label: "Carpeta de trabajo",
+    hint: "Ingresa una ruta absoluta que ya exista en este equipo.",
+  },
   join: {
     title: "Unirme con una invitación",
     invitation: "Invitación",

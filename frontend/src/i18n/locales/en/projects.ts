@@ -82,6 +82,10 @@ const projects = {
     submit: "Create project",
     done: "Project created",
   },
+  sharedFolder: {
+    label: "Working folder",
+    hint: "Enter an absolute path that already exists on this computer.",
+  },
   join: {
     title: "Join with an invitation",
     invitation: "Invitation",

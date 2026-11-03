@@ -18,6 +18,7 @@ export function SharedProjectDialog({ mode, onClose }: { mode: SharedMode | null
   const input = useRef<HTMLInputElement>(null)
   const [invitation, setInvitation] = useState("")
   const [phrase, setPhrase] = useState("")
+  const [folder, setFolder] = useState("")
   const [archive, setArchive] = useState<{ name: string; value: unknown } | null>(null)
   const [error, setError] = useState("")
   const call = useMutation({
@@ -32,9 +33,9 @@ export function SharedProjectDialog({ mode, onClose }: { mode: SharedMode | null
     onError: failure => setError(errorText(failure)),
   })
   const busy = call.isPending
-  const ready = mode === "join" ? invitation.trim().length > 0 : archive !== null
+  const ready = (mode === "join" ? invitation.trim().length > 0 : archive !== null) && folder.trim().length > 0
 
-  function reset() { setInvitation(""); setPhrase(""); setArchive(null); setError("") }
+  function reset() { setInvitation(""); setPhrase(""); setFolder(""); setArchive(null); setError("") }
   function close() { if (!busy) { reset(); onClose() } }
 
   function submit() {
@@ -43,9 +44,9 @@ export function SharedProjectDialog({ mode, onClose }: { mode: SharedMode | null
     if (mode === "join") {
       let parsed: unknown
       try { parsed = JSON.parse(invitation) } catch { setError(t("join.invalid")); return }
-      call.mutate({ operation: "join", invitation: parsed, ...secret })
+      call.mutate({ operation: "join", invitation: parsed, folder: folder.trim(), ...secret })
     } else {
-      call.mutate({ operation: "restore", archive: archive!.value, ...secret })
+      call.mutate({ operation: "restore", archive: archive!.value, folder: folder.trim(), ...secret })
     }
   }
 
@@ -83,6 +84,9 @@ export function SharedProjectDialog({ mode, onClose }: { mode: SharedMode | null
           </div>
         </Field>
       )}
+      <Field label={t("sharedFolder.label")} hint={t("sharedFolder.hint")}>
+        <Input mono value={folder} onChange={event => { setFolder(event.target.value); setError("") }} />
+      </Field>
       <Field label={t(mode === "restore" ? "restore.phrase" : "join.phrase")} hint={t(mode === "restore" ? "restore.phraseHint" : "join.phraseHint")}>
         <Input type="password" autoComplete="off" value={phrase} onChange={event => setPhrase(event.target.value)} />
       </Field>
