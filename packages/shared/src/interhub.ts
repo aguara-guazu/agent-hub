@@ -1,6 +1,6 @@
 /**
  * Read-only inter-hub channel fields the UI gets from `/api/memory/interhub/*` and `chat_read`.
- * The join code is a secret: it only travels in `InterhubChannelCode`, never in the roster.
+ * The UI does not request the secret join code; it is never included in the roster.
  */
 
 /** Value of `chat_channels.kind` for a channel shared between several hubs. */
@@ -40,9 +40,4 @@ export interface InterhubMessageOrigin {
   id: string
   name: string
   is_local: boolean
-}
-
-/** Only for the authenticated person of the creator hub, and in the `create`/`regenerate` tool results. */
-export interface InterhubChannelCode {
-  code: string
 }
