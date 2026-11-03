@@ -23,6 +23,10 @@ const project = {
     deleteMessage: "The project, its sources and everything derived from them are deleted. Earlier backups are kept.",
     errorTitle: "Couldn't open the project",
     backToProjects: "Back to Projects",
+    folderless: {
+      message: "This shared project needs a local working folder.",
+      action: "Edit details",
+    },
     toast: {
       renamed: "Name updated",
       stage: "Stage: {{stage}}",

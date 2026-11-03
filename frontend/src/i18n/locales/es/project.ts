@@ -20,6 +20,10 @@ const project = {
     deleteMessage: "Se eliminan el proyecto, sus fuentes y lo que se derivó de ellas. Los respaldos anteriores se conservan.",
     errorTitle: "No se pudo abrir el proyecto",
     backToProjects: "Volver a Proyectos",
+    folderless: {
+      message: "Este proyecto compartido necesita una carpeta de trabajo local.",
+      action: "Editar detalles",
+    },
     toast: {
       renamed: "Nombre actualizado",
       stage: "Etapa: {{stage}}",

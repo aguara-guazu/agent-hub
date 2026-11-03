@@ -1,5 +1,6 @@
 import { mediaSettings } from './media-processing.js'
 import { maintenanceStatus } from './memory-maintenance.js'
+import { sessionProjectId } from "./chat-access.js"
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { check, id, parse } from './contracts.js'
@@ -27,11 +28,25 @@ export function agentLabel(agent: AgentContext): string {
   return `${CLI_NAMES[agent.cli_kind] ?? (agent.client || agent.cli_kind || 'Agente')} · ${agent.session_id.replace(/^native:/, '').slice(0, 6)}`
 }
 
-const samePath = (a: string, b: string) => process.platform === 'linux' ? a === b : a.toLowerCase() === b.toLowerCase()
-function normalizePath(path: string) { return path.replace(/\\/g, '/').replace(/\/+$/, '') || '/' }
+export const samePath = (a: string, b: string) => process.platform === "linux" ? a === b : a.toLowerCase() === b.toLowerCase()
+export function normalizePath(path: string) { return path.replace(/\\/g, "/").replace(/\/+$/, "") || "/" }
+
+export interface AgentProject {
+  id: string
+  title: string
+  folder: string | null
+  source: "folder" | "channel"
+  shared: boolean
+}
+
+export interface PathProject {
+  id: string
+  title: string
+  folder: string
+}
 
 /** The project whose declared work folder is the longest prefix of `path`. */
-export async function projectForPath(sql: Sql, path: string | null | undefined) {
+export async function projectForPath(sql: Sql, path: string | null | undefined): Promise<PathProject | null> {
   if (!path) return null
   const target = normalizePath(path)
   const projects = await sql.query("SELECT id,title,data FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND json_type(data,'$.folders')='array' AND json_array_length(data,'$.folders')>0")
@@ -44,10 +59,32 @@ export async function projectForPath(sql: Sql, path: string | null | undefined) 
   return best ? { id: best.project.id as string, title: best.project.title as string, folder: best.folder } : null
 }
 
+async function sharedProject(sql: Sql, projectId: string) {
+  return (await sql.query("SELECT 1 FROM shared_projects WHERE id=$1", [projectId])).length > 0
+}
+
+/** Prefer the current folder assignment, then the explicit project of the session's channel or joined team. */
+export async function projectForAgent(sql: Sql, agent: AgentContext): Promise<AgentProject | null> {
+  const folder = await projectForPath(sql, agent.cwd)
+  if (folder) return { ...folder, source: "folder", shared: await sharedProject(sql, folder.id) }
+  const projectId = await sessionProjectId(sql, agent.session_id)
+  if (!projectId) return null
+  const project = (await sql.query(`SELECT id,title,
+    EXISTS(SELECT 1 FROM shared_projects shared WHERE shared.id=entities.id) AS "shared:bool"
+    FROM entities WHERE id=$1 AND kind='project' AND data->>'merged_into' IS NULL`, [projectId]))[0]
+  return project ? { id: String(project.id), title: String(project.title), folder: null, source: "channel", shared: Boolean(project.shared) } : null
+}
+
+export async function sharedProjectsWithoutFolder(sql: Sql): Promise<Array<{ id: string; title: string }>> {
+  return sql.query(`SELECT e.id,e.title FROM shared_projects shared JOIN entities e ON e.id=shared.id
+    WHERE e.data->>'merged_into' IS NULL AND COALESCE(json_array_length(e.data,'$.folders'),0)=0
+    ORDER BY e.updated_at DESC,e.id`)
+}
+
 /** Records the call's session. The project is resolved from the session's working folder when the session starts or moves. */
 export async function touchSession(store: MemoryStore, agent: AgentContext) {
   // Folder assignments can change while a gateway session remains alive.
-  const project = (await projectForPath(store.db, agent.cwd))?.id ?? null
+  const project = (await projectForAgent(store.db, agent))?.id ?? null
   await store.db.query(`INSERT INTO agent_sessions(id,agent_id,agent_label,cli_kind,cwd,project_id) VALUES($1,$2,$3,$4,$5,$6)
     ON CONFLICT(id) DO UPDATE SET last_seen_at=now(),ended_at=NULL,cwd=excluded.cwd,project_id=excluded.project_id,agent_label=excluded.agent_label`,
   [agent.session_id, agent.agent_id, agentLabel(agent), agent.cli_kind, agent.cwd, project])
@@ -140,16 +177,20 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
   const input = parse(contextInput, raw)
   if (agent) await touchSession(store, agent)
   const path = input.path ?? agent?.cwd ?? null
-  const match = await projectForPath(store.db, path)
+  const byPath = input.path ? await projectForPath(store.db, input.path) : null
+  const match: AgentProject | null = input.path ? (byPath ? { ...byPath, source: "folder", shared: await sharedProject(store.db, byPath.id) } : null) : agent ? await projectForAgent(store.db, agent) : null
   await sweepNotes(store.db)
   const project = match ? await requireEntity(store.db, match.id, 'project') : null
   const scope = [match?.id ?? null]
-  const [tasks, working, recent, candidates] = await Promise.all([
+  const [tasks, working, recent, candidates, sharedWithoutFolder] = await Promise.all([
     store.db.query(`SELECT id,kind,title,status,external_key,external_status,assignee,updated_at FROM tasks WHERE project_id=$1 AND status IN ('todo','in_progress','blocked')
       ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END,updated_at DESC LIMIT 15`, scope),
     store.db.query(`SELECT id,agent_label,cli_kind,text,task_id,updated_at,session_id FROM agent_notes WHERE state='working' AND project_id IS $1 ORDER BY updated_at DESC LIMIT 20`, scope),
     store.db.query(`SELECT id,agent_label,text,state,finish_reason,updated_at FROM agent_notes WHERE state<>'working' AND project_id IS $1 ORDER BY updated_at DESC LIMIT 10`, scope),
-    match ? Promise.resolve([]) : store.db.query("SELECT id,title,data->'folders' AS \"folders:json\",data->>'jira_project_key' AS jira_project_key FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL ORDER BY updated_at DESC LIMIT 30"),
+    match ? Promise.resolve([]) : store.db.query(`SELECT e.id,e.title,e.data->'folders' AS "folders:json",e.data->>'jira_project_key' AS jira_project_key,
+      EXISTS(SELECT 1 FROM shared_projects shared WHERE shared.id=e.id) AS "shared:bool"
+      FROM entities e WHERE e.kind='project' AND e.data->>'merged_into' IS NULL ORDER BY e.updated_at DESC LIMIT 30`),
+    match ? Promise.resolve([]) : sharedProjectsWithoutFolder(store.db),
   ])
   const memories = await store.db.query(`SELECT id,title,substr(data->>'text',1,1200) AS text,data->>'memory_category' AS category,
     data->>'memory_confidence' AS confidence,data->>'memory_expires_at' AS expires_at,
@@ -167,12 +208,16 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
       formats: ['text','images','screenshots','audio','video','PDF','other files'], max_file_mb: 25, binary_search: 'title, description and annotations', local_media: { process: 'memory_process_files', settings: await mediaSettings(store), pdf: { max_pages: 200, text: true, requires_module_download: false, page_preview: 'memory_get_file con page', visual: 'encoder visual opcional' }, max_duration_minutes: 30, video_frame_interval_seconds: 5, requires_module_download: true, generated_content_requires_review: true },
       binary_search_with_enabled_modules: 'OCR, timestamped transcription and native visual/audio embeddings (EmbeddingGemma 2)'  },
     agent: agent ? { ...agent, label: agentLabel(agent) } : null, path,
-    project: project ? { id: project.id, title: project.title, folder: match!.folder, status: project.data.status ?? null, description: project.data.description ?? null,
+    project: project ? { id: project.id, title: project.title, folder: match!.folder, source: match!.source, shared: match!.shared,
+      status: project.data.status ?? null, description: project.data.description ?? null,
       jira_project_key: project.data.jira_project_key ?? null, jira_site_url: project.data.jira_site_url ?? null } : null,
     open_tasks: tasks, working_notes: working.filter(n => n.session_id !== agent?.session_id), own_working_notes: working.filter(n => agent && n.session_id === agent.session_id),
     recent_notes: recent, projects: candidates,
+    ...(sharedWithoutFolder.length ? { shared_without_folder: sharedWithoutFolder } : {}),
     guidance: project
-      ? `Folder belongs to «${project.title}». Search with project_id=${project.id} first; widen to all memory only if needed. Before working read working_notes and leave your note via memory_write_note; close it with memory_finish_notes when done.`
-      : 'Folder not linked to any project. If it matches one in projects, ask the person to add it there (or do it via memory_update_entity data.folders), then search with its project_id.',
+      ? `La sesión trabaja en el proyecto ${match!.shared ? "compartido " : ""}«${project.title}» (${project.id}) por ${match!.source === "folder" ? "su carpeta local" : "su canal o equipo"}. Usá ese project_id y no crees otro proyecto para este trabajo.`
+      : sharedWithoutFolder.length
+        ? `Hay proyectos compartidos sin carpeta local: ${sharedWithoutFolder.map(item => `«${item.title}» (${item.id})`).join(", ")}. Asociá esta carpeta a uno de ellos; no crees un proyecto nuevo para reemplazarlo.`
+        : 'Folder not linked to any project. If it matches one in projects, ask the person to add it there (or do it via memory_update_entity data.folders), then search with its project_id.',
   }
 }

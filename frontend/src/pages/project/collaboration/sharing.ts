@@ -9,7 +9,7 @@ export interface PeerProgress { project_id: string; member_id: string; total: nu
 export interface SharingStatus {
   identity: Identity
   network: { settings: { enabled: boolean; bootstrap: string[]; bind_host?: string }; connected_peers: number; peers?: PeerProgress[]; error: string | null }
-  projects: { id: string; title: string; enabled: boolean; conflict: string | null }[]
+  projects: { id: string; title: string; enabled: boolean; conflict: string | null; folderless: boolean }[]
 }
 export interface SharedDetail { members: Member[]; conflict: string | null }
 

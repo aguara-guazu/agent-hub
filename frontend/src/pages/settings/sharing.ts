@@ -5,7 +5,7 @@ import { api } from "../../lib/api"
 export type SharingRole = "owner" | "maintainer" | "reader"
 export interface SharingIdentity { id: string; name: string; signing: string; encryption: string }
 export interface SharingMember { identity: SharingIdentity; role: SharingRole; invite: boolean; revoked: boolean; expires_at: string | null }
-export interface SharedProject { id: string; title: string; enabled: boolean; conflict: string | null }
+export interface SharedProject { id: string; title: string; enabled: boolean; conflict: string | null; folderless: boolean }
 export interface NetworkSettings { enabled: boolean; bootstrap: string[]; bind_host?: string }
 export interface SharingStatus {
   identity: SharingIdentity

@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
+import { stat } from "node:fs/promises"
 import { z } from 'zod'
 import { check, parse } from '../contracts.js'
 import { Vault } from '../config.js'
-import { requireWritableEntity, type MemoryStore } from "../store.js"
+import { requireWritableEntity, workFolder, type MemoryStore } from "../store.js"
+import { normalizePath, samePath } from "../agents.js"
 import { digest, identity, publicIdentity, recovery, signature, validSignature, seal, unseal, randomKey, type Identity, type PublicIdentity } from './crypto.js'
 import { backfillProjects, projectReconcilers } from '../interhub/project-association.js'
 import { active, genesisSchema, invitationSchema, withoutSignature, type Genesis, type Member, type Policy } from './schema.js'
@@ -186,6 +188,37 @@ export class SharedProjects {
     if (reconcile) await reconcile()
     else await backfillProjects(this.store.db, async () => (await this.identity()).id).catch(error => { console.error("interhub: project backfill after import failed:", error instanceof Error ? error.message : "unknown error") })
     return { project_id: genesis.id, role: latest.members.find(m => m.identity.id === me.id)?.role ?? null }
+  }
+  async needsLocalFolder(projectId: string) {
+    const entity = (await this.store.db.query("SELECT data FROM entities WHERE id=$1 AND kind='project' AND data->>'merged_into' IS NULL", [projectId]))[0]
+    return !entity || !Array.isArray(entity.data.folders) || entity.data.folders.length === 0
+  }
+  async prepareLocalFolder(projectId: string, rawFolder?: string) {
+    check(rawFolder || !(await this.needsLocalFolder(projectId)), "Elegí la carpeta local del proyecto compartido", 422)
+    if (!rawFolder) return null
+    const folder = normalizePath(parse(workFolder, rawFolder))
+    const details = await stat(folder).catch(() => null)
+    check(details?.isDirectory(), "La carpeta local no existe o no es un directorio", 422)
+    const projects = await this.store.db.query("SELECT id,title,data FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND json_type(data,'$.folders')='array'")
+    for (const project of projects) {
+      if (project.id === projectId) continue
+      const occupied = (project.data.folders as unknown[]).some(value => typeof value === "string" && samePath(normalizePath(value), folder))
+      check(!occupied, `La carpeta local ya pertenece al proyecto «${project.title}» (${project.id})`, 409)
+    }
+    return folder
+  }
+  async associateLocalFolder(projectId: string, folder: string, actor = "user") {
+    const entity = await requireWritableEntity(this.store.db, projectId, "project")
+    const current = Array.isArray(entity.data.folders) ? entity.data.folders.filter((value): value is string => typeof value === "string") : []
+    if (current.some(value => samePath(normalizePath(value), folder))) return entity
+    return this.store.update(projectId, { data: { folders: [...current, folder] } }, actor)
+  }
+  async acceptInvitation(raw: unknown, folder?: string, phrase?: string, actor = "user") {
+    const packet = parse(invitationSchema, raw)
+    const prepared = await this.prepareLocalFolder(packet.genesis.id, folder)
+    const result = await this.join(packet, phrase)
+    if (prepared) await this.associateLocalFolder(result.project_id, prepared, actor)
+    return result
   }
   async changeMember(projectId: string, target: PublicIdentity, role: Member['role'], invite: boolean, revoke = false) {
     const { project, who, member } = await this.member(projectId)
