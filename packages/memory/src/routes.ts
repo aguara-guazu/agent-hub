@@ -355,7 +355,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const data = streamBackup((await service.get()).store, backupId)
     return reply.header('Content-Type', 'application/json').header('Content-Disposition', `attachment; filename="agenthub-memory-${backupId}.json"`).send(data)
   })
-  app.post('/api/memory/restore', { preHandler: auth, bodyLimit: 128_000_000 }, async request => restoreMemory((await service.get()).store, request.body))
+  app.post('/api/memory/restore', { preHandler: auth, bodyLimit: 128_000_000 }, async request => service.admission.track("backup", async () => restoreMemory((await service.get()).store, request.body)))
   app.get('/api/memory/files/:version/pages/:page', { preHandler: auth }, async (request, reply) => {
     const input = parse(z.object({ version: id, page: z.coerce.number().int().min(1).max(200) }), request.params)
     const file = await readFileAttachment((await service.get()).store, input.version)

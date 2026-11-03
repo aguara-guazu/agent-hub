@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { inspectNativeProcess } from '@agenthub/gateway'
 import { isAbsolute } from 'node:path'
 import { FleetActivityBuffer, unavailableActivity, type FleetActivity } from './fleet-activity.js'
+import type { AdmissionGate } from "./admission-gate.js"
 
 export type FleetState = 'starting' | 'busy' | 'idle' | 'stopped' | 'failed' | 'unknown' | 'waiting_input'
 export interface FleetStart {
@@ -58,6 +59,8 @@ export interface FleetProcessOptions {
   onEvent?: (event: FleetEvent) => void | Promise<void>
   requestTimeoutMs?: number
   shutdownTimeoutMs?: number
+  /** Closed during a silent update: launches and resumes are refused at the outer edge (HubTeamRuntime). */
+  admission?: AdmissionGate
 }
 const FORK_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type Packet = Record<string, any>
@@ -100,9 +103,12 @@ export class FleetProcessManager {
   constructor(readonly directory: string, private options: FleetProcessOptions = {}) {}
 
   /** Children this manager launched that are still running, plus launches in progress. */
-  liveCount(): number {
-    return this.starting.size + [...this.sessions.values()].filter(s => this.live(s)).length
+  liveIds(): Set<string> {
+    const ids = new Set(this.starting)
+    for (const [id, session] of this.sessions) if (this.live(session)) ids.add(id)
+    return ids
   }
+  liveCount(): number { return this.liveIds().size }
   status(id: string): FleetStatus | undefined {
     const value = this.sessions.get(id)?.status
     return value ? this.snapshot(value) : undefined

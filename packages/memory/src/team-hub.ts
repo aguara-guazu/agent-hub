@@ -96,7 +96,8 @@ export class HubTeamRuntime implements TeamOrca {
       }),
     })
   }
-  liveCount(): number { return this.manager.liveCount() }
+  /** Children alive plus launches still preparing (worktree, preflight): both would be lost by a stop. */
+  liveCount(): number { return new Set([...this.manager.liveIds(), ...this.launching]).size }
   private cleanEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     const env = { ...source }
     for (const key of Object.keys(env)) if (/^(AGENTHUB_|ORCA_|GIT_|ELECTRON_RUN_AS_NODE$)/i.test(key)) delete env[key]
@@ -287,6 +288,8 @@ export class HubTeamRuntime implements TeamOrca {
   }
   async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean; continuation?: HubContinuation; authorize?: () => Promise<void> }): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
+    // Same synchronous segment as `launching.add`: a launch past this point is always visible to liveCount().
+    this.options.admission?.require()
     const id = member.member_id ?? randomUUID()
     check(safeId(id) && id.length <= 200, 'Identificador de miembro inválido.', 400)
     check(!this.launching.has(id), 'El miembro ya tiene un lanzamiento en curso.', 409)
@@ -372,6 +375,7 @@ export class HubTeamRuntime implements TeamOrca {
    */
   async resumeMember(handle: string, request: HubResumeRequest): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
+    this.options.admission?.require()
     check(safeId(handle) && handle.length <= 200, 'Identificador de miembro inválido.', 400)
     check(request.prompt.length > 0 && request.prompt.length <= 24_000 && !request.prompt.includes('\0'), 'Instrucción de reanudación inválida.', 400)
     check(!this.launching.has(handle), 'El miembro ya tiene un lanzamiento en curso.', 409)
