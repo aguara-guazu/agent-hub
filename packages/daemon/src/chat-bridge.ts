@@ -1,6 +1,11 @@
 import { createInterface } from 'node:readline'
-import { NativeChatClient } from './local-chat-client.js'
+import { ChatConnectionError, NativeChatClient } from './local-chat-client.js'
 import { DaemonState } from './state.js'
+
+/** Estados del broker que un reintento no repara: sin autorización, sesión inexistente, cerrada o ubicación no disponible. */
+const FATAL_STATUSES = [401, 403, 404, 409, 410]
+const RETRY_MS = 5000
+const fatal = (error: unknown): boolean => error instanceof ChatConnectionError && FATAL_STATUSES.includes(error.status)
 
 /** Child of the OpenCode plugin. Its pipe lifetime is the session's listener lifetime. */
 export async function runChatBridge(stateDir:string,agentId:string) {
@@ -11,6 +16,17 @@ export async function runChatBridge(stateDir:string,agentId:string) {
   let chain=Promise.resolve()
   const output=(value:unknown)=>process.stdout.write(JSON.stringify(value)+'\n')
   const stop=()=>controller.abort()
+  const pause=()=>new Promise<void>(resolve=>{
+    const done=()=>{clearTimeout(timer);controller.signal.removeEventListener('abort',done);resolve()}
+    const timer=setTimeout(done,RETRY_MS);controller.signal.addEventListener('abort',done,{once:true})
+  })
+  // El core se reinicia al actualizar la app: un fallo de red o un 5xx se reintenta; sólo un rechazo real corta el bridge.
+  const register=async(target:NativeChatClient)=>{
+    for(;;){
+      try{return await target.start()}
+      catch(error){if(fatal(error)||controller.signal.aborted)throw error;await pause()}
+    }
+  }
   process.once('SIGTERM',stop);process.once('SIGINT',stop);process.stdout.on('error',stop)
   lines.on('close',stop)
   lines.on('line',line=>{
@@ -21,11 +37,12 @@ export async function runChatBridge(stateDir:string,agentId:string) {
       if(!client) {
         if(typeof input.session_id!=='string' || !input.session_id || typeof input.cwd!=='string')throw new Error('Sesión inválida')
         client=new NativeChatClient(state,agentId,input.session_id,input.cwd,'opencode_prompt')
-        const registration=await client.start()
+        const registration=await register(client)
         output({context:client.context(),session:registration.session})
         listener=client.listen(async text=>{output({text})},controller.signal).catch(()=>{output({error:'Se perdió la conexión de colaboración.'});stop()})
       } else if(['HubPromptSubmit','UserPromptSubmit','Stop','StopFailure','SessionEnd'].includes(input.event)) {
-        await client.send(input.event)
+        // Un evento perdido durante el reinicio del core no tumba la sesión: el siguiente actualiza el estado.
+        await client.send(input.event).catch(error=>{if(fatal(error))throw error})
         if(input.event==='SessionEnd')stop()
       }
     }).catch(()=>{output({error:'No se pudo registrar o actualizar la sesión de colaboración.'});stop()})

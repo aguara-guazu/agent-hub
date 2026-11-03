@@ -23,6 +23,9 @@ const defaultRun: RunFn = (command, args) => new Promise((resolve, reject) => {
   execFile(command, [...args], { maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve({ stdout: String(stdout) }))
 })
 
+/** Versión del contenido del lanzador; cambia cuando cambia el guion. Se reescribe de forma atómica si difiere. */
+export const LAUNCHER_VERSION_LINE = "# agenthub-node v1"
+const GC_LSOF_TIMEOUT_MS = 20_000
 const BUNDLE_MARKER = "/Contents/MacOS/"
 const SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/
 
@@ -73,6 +76,17 @@ export function runtimeBinary(stateDir: string, version: string, execPath: strin
   return join(runtimePaths(stateDir).versions, version, basename(bundle), "Contents", "MacOS", basename(execPath))
 }
 
+/** Bundle de una versión dentro del runtime: lo que el vigía y el intercambio atómico usan sin depender de /Applications. */
+export function runtimeBundlePath(stateDir: string, version: string, appName: string): string | null {
+  return SAFE_VERSION.test(version) ? join(runtimePaths(stateDir).versions, version, appName) : null
+}
+
+/** Helper de intercambio atómico empaquetado en cada versión (`Contents/Resources/bin/agenthub-swap`). */
+export function swapHelperPath(stateDir: string, version: string, appName: string): string | null {
+  const bundle = runtimeBundlePath(stateDir, version, appName)
+  return bundle ? join(bundle, "Contents", "Resources", "bin", "agenthub-swap") : null
+}
+
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
@@ -81,7 +95,8 @@ function shellQuote(value: string): string {
 export function launcherScript(appName: string, executable: string): string {
   return [
     "#!/bin/sh",
-    "# Lanzador estable de Agent Hub: resuelve la versión vigente en cada ejecución.",
+    LAUNCHER_VERSION_LINE,
+    "# Lanzador estable de Agent Hub: resuelve la versión vigente una sola vez por proceso y ejecuta con rutas concretas.",
     `app_name=${shellQuote(appName)}`,
     `executable=${shellQuote(executable)}`,
     "root=\"$(cd \"$(dirname \"$0\")/..\" && pwd -P)\"",
@@ -187,14 +202,20 @@ export async function ensureGatewayRuntime(options: EnsureOptions): Promise<Ensu
   return { launcher: paths.launcher, versionDir: inRuntime ? dirname(bundle) : versionDir, appPath: inRuntime ? bundle : appPath, cloned }
 }
 
-/** Binarios de `.../versions/*` con algún proceso vivo (`lsof -t`). Ante cualquier error se considera en uso. */
-async function inUse(run: RunFn, binary: string): Promise<boolean> {
+/**
+ * Hay algún proceso con archivos abiertos bajo `dir` (`lsof +D`). Con timeout, error de lsof o salida
+ * dudosa se considera en uso: el GC nunca borra ante una duda.
+ */
+async function inUse(run: RunFn, dir: string): Promise<boolean> {
   try {
-    const { stdout } = await run("/usr/sbin/lsof", ["-t", "--", binary])
+    const { stdout } = await Promise.race([
+      run("/usr/sbin/lsof", ["-F", "p", "+D", dir]),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), GC_LSOF_TIMEOUT_MS).unref?.()),
+    ])
     return stdout.trim().length > 0
   } catch (error) {
-    // lsof sale con 1 cuando no hay coincidencias y stdout vacío.
-    const failure = error as { code?: number; stdout?: string }
+    // lsof sale con 1 y sin salida cuando no encuentra procesos.
+    const failure = error as { code?: number; stdout?: string; message?: string }
     return !(failure.code === 1 && !String(failure.stdout ?? "").trim())
   }
 }
@@ -224,8 +245,7 @@ export async function collectRuntimes(options: CollectOptions): Promise<string[]
   }
   for (const entry of entries) {
     if (keep.has(entry) || entry.includes(".tmp-") || !SAFE_VERSION.test(entry)) continue
-    const binary = join(paths.versions, entry, options.appName, "Contents", "MacOS", options.executable)
-    if (await inUse(run, binary)) continue
+    if (await inUse(run, join(paths.versions, entry))) continue
     try {
       await rm(join(paths.versions, entry), { recursive: true, force: true })
       removed.push(entry)
