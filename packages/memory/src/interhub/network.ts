@@ -345,10 +345,11 @@ export class InterhubNetwork {
     }
     if (verified.kind === "project") {
       // The hint is only recorded here; the local reconciliation decides whether it can become the channel project.
-      // The latest declaration of the creator wins; a replay from seq 0 may deliver several in any order.
+      // The latest declaration of the creator wins; a replay from seq 0 may deliver several in any order. The timestamp is
+      // normalized to toISOString so the text comparison in SQL matches chronological order.
       const updated = await this.store.db.query(`UPDATE interhub_channels SET shared_project_hint=$2,shared_project_hint_at=$3,shared_project_hint_event=$4,updated_at=now()
         WHERE channel_id=$1 AND creator_hub_id<>$5 AND (shared_project_hint_at IS NULL OR shared_project_hint_at<$3 OR shared_project_hint_at=$3 AND shared_project_hint_event<$4) RETURNING channel_id`,
-      [event.channel_id, verified.envelope.payload.project_id, event.occurred_at, event.id, local])
+      [event.channel_id, verified.envelope.payload.project_id, new Date(event.occurred_at).toISOString(), event.id, local])
       if (updated.length) await this.afterMembership?.(event.channel_id)
       return
     }

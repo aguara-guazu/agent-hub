@@ -110,8 +110,11 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
     reconcileProjects,
     async createChannel(caller, input) {
       const requested = await channelProject(caller, input.projectId)
-      // Only a shared project this hub belongs to can ever be seen by the other hubs; any other starts without project.
-      const projectId = requested && await sharedProjectUsable(db, requested, [await localHubId()]) ? requested : null
+      const usable = requested ? await sharedProjectUsable(db, requested, [await localHubId()]) : false
+      // An explicit project that other hubs could never see is refused before the channel and its code exist; a project
+      // inferred from the caller's context only starts the channel without project.
+      check(!input.projectId || usable, "El proyecto indicado no es un proyecto compartido activo de este hub. Compártelo y reintenta, o crea el canal sin proyecto.", 422)
+      const projectId = usable ? requested : null
       const created = await network.createChannel(caller, { name: input.name, projectId })
       transport?.topicsChanged()
       return { ...created, project_id: projectId, ...(requested && !projectId ? { project_notice: "El proyecto indicado no es un proyecto compartido activo de este hub; el canal quedó sin proyecto hasta que se asigne uno compartido." } : {}) }

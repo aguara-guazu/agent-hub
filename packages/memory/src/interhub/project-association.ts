@@ -104,7 +104,7 @@ export async function settleChannelProject(db: Sql, channelId: string, localHubI
     : requested && await sharedProjectUsable(db, requested, [localHubId, creatorHubId]) ? requested : null
   if (settled !== current) {
     await db.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1", [channelId, settled])
-    console.error(`interhub: stored project of channel ${channelId} is no longer a usable shared project of this hub; ${settled ? "replaced by the requested one" : "cleared"}`)
+    if (current) console.error(`interhub: stored project of channel ${channelId} is no longer a usable shared project of this hub; ${settled ? "replaced by the requested one" : "cleared"}`)
   }
   return settled
 }
@@ -130,16 +130,20 @@ async function evidence(db: Sql, channelId: string, localHubId: string) {
 
 /** Inter-hub channels without project anywhere in this hub, archived and closed ones included, trash excluded. */
 export async function listOrphans(db: Sql, localHubId: () => Promise<string>): Promise<InterhubOrphanChannel[]> {
-  const rows = await db.query("SELECT id,name,created_at,archived_at,closed_at FROM chat_channels WHERE kind=$1 AND project_id IS NULL AND deleted_at IS NULL ORDER BY updated_at DESC,id", [INTERHUB_CHANNEL_KIND])
+  const rows = await db.query(`SELECT c.id,c.name,c.created_at,c.archived_at,c.closed_at,i.shared_project_hint AS hint FROM chat_channels c
+    LEFT JOIN interhub_channels i ON i.channel_id=c.id WHERE c.kind=$1 AND c.project_id IS NULL AND c.deleted_at IS NULL ORDER BY c.updated_at DESC,c.id`, [INTERHUB_CHANNEL_KIND])
   const result: InterhubOrphanChannel[] = []
   // The hub identity is created on first use; an installation without orphan channels must not trigger that.
   if (!rows.length) return result
   const local = await localHubId()
   for (const row of rows) {
     const hubs = await channelHubs(db, String(row.id), local)
+    // A project declared by the creator replaces the inferred candidates: the rule no longer applies while it exists.
+    const declared = row.hint ? (await db.query("SELECT id,title FROM entities WHERE id=$1 AND kind='project'", [String(row.hint)]))[0] : null
+    const candidates = row.hint ? declared ? [{ project_id: String(declared.id), title: String(declared.title) }] : [] : await candidateProjects(db, hubs)
     result.push({ channel_id: String(row.id), name: String(row.name), created_at: String(row.created_at),
       archived_at: row.archived_at ? String(row.archived_at) : null, closed_at: row.closed_at ? String(row.closed_at) : null,
-      hubs, candidates: await candidateProjects(db, hubs) })
+      hubs, candidates })
   }
   return result
 }
