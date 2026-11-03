@@ -13,8 +13,7 @@
 
 import { execFile } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { existsSync } from "node:fs"
-import { chmod, mkdir, open, readFile, readdir, rename, rm, symlink } from "node:fs/promises"
+import { mkdir, open, readFile, readdir, rename, rm, stat, symlink } from "node:fs/promises"
 import { basename, dirname, join, sep } from "node:path"
 
 export type RunFn = (command: string, args: readonly string[]) => Promise<{ stdout: string }>
@@ -130,6 +129,53 @@ async function fsyncPath(path: string): Promise<void> {
   }
 }
 
+const FSYNC_CONCURRENCY = 32
+const CORRUPT_EVIDENCE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+const INVALID_COPY_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+/** fsync de todos los archivos y directorios del árbol (los enlaces simbólicos no se siguen). Un corte después no deja un bundle a medias. */
+async function fsyncTree(root: string): Promise<void> {
+  let running = 0
+  const waiting: Array<() => void> = []
+  const slot = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (running >= FSYNC_CONCURRENCY) await new Promise<void>(resolve => waiting.push(resolve))
+    running += 1
+    try {
+      return await work()
+    } finally {
+      running -= 1
+      waiting.shift()?.()
+    }
+  }
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true })
+    await Promise.all(entries.map(entry => {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) return walk(path)
+      if (entry.isFile()) return slot(() => fsyncPath(path))
+      return Promise.resolve()
+    }))
+    await slot(() => fsyncPath(dir))
+  }
+  await walk(root)
+}
+
+/** `true` si la copia es un bundle completo de la versión esperada: ejecutable, entry.js, versión del Info.plist y firma estricta. */
+async function runtimeCopyValid(appPath: string, executable: string, version: string, run: RunFn, verifySignature: boolean): Promise<boolean> {
+  try {
+    const plist = join(appPath, "Contents", "Info.plist")
+    for (const required of [join(appPath, "Contents", "MacOS", executable), plist, join(appPath, "Contents", "Resources", "app", "desktop", "dist", "entry.js")]) {
+      if (!(await stat(required)).isFile()) return false
+    }
+    const { stdout } = await run("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleShortVersionString", plist])
+    if (stdout.trim() !== version) return false
+    if (verifySignature) await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", appPath])
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function writeAtomic(path: string, content: string, mode: number): Promise<void> {
   const temp = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`
   const handle = await open(temp, "w", mode)
@@ -149,12 +195,49 @@ async function writeAtomic(path: string, content: string, mode: number): Promise
   await fsyncPath(dirname(path))
 }
 
+/** El estado del runtime existe pero no se puede leer con certeza: nada se borra mientras dure. */
+export class RuntimeStateError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = "RuntimeStateError"
+  }
+}
+
+/** Sin archivo (instalación nueva) devuelve vacío; un archivo ilegible o con forma inválida lanza `RuntimeStateError`. */
 export async function readRuntimeState(stateDir: string): Promise<RuntimeState> {
+  let raw: string
   try {
-    const parsed = JSON.parse(await readFile(runtimePaths(stateDir).state, "utf8")) as Partial<RuntimeState>
-    const valid = (value: unknown): string | null => typeof value === "string" && SAFE_VERSION.test(value) ? value : null
-    return { current: valid(parsed.current), previous: valid(parsed.previous) }
-  } catch {
+    raw = await readFile(runtimePaths(stateDir).state, "utf8")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { current: null, previous: null }
+    throw new RuntimeStateError("No se pudo leer el estado del runtime", { cause: error })
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new RuntimeStateError("El estado del runtime está corrupto", { cause: error })
+  }
+  const record = parsed as Record<string, unknown> | null
+  const field = (value: unknown): string | null => {
+    if (value === null) return null
+    if (typeof value === "string" && SAFE_VERSION.test(value)) return value
+    throw new RuntimeStateError("El estado del runtime tiene una versión inválida")
+  }
+  if (!record || typeof record !== "object" || Array.isArray(record) || !("current" in record) || !("previous" in record)) {
+    throw new RuntimeStateError("El estado del runtime tiene una forma inválida")
+  }
+  return { current: field(record.current), previous: field(record.previous) }
+}
+
+/** Un estado ilegible se aparta como evidencia (`state.json.corrupt-<ts>`) y bloquea el GC; el runtime sigue funcionando sin `previous`. */
+async function readRuntimeStateOrQuarantine(paths: RuntimePaths): Promise<RuntimeState> {
+  try {
+    return await readRuntimeState(dirname(paths.root))
+  } catch (error) {
+    if (!(error instanceof RuntimeStateError)) throw error
+    await rename(paths.state, `${paths.state}.corrupt-${Date.now()}`)
+    await fsyncPath(paths.root)
     return { current: null, previous: null }
   }
 }
@@ -189,9 +272,16 @@ export async function ensureGatewayRuntime(options: EnsureOptions): Promise<Ensu
   await mkdir(paths.bin, { recursive: true, mode: 0o700 })
 
   let cloned = false
+  const verifySignature = options.verifySignature ?? true
   // Si la app ya corre desde una copia del runtime (relanzada por el vigía), esa copia es la versión.
   const inRuntime = bundle.startsWith(paths.versions + sep)
-  if (!inRuntime && !existsSync(join(appPath, "Contents", "MacOS", executable))) {
+  let usable = inRuntime
+  if (!inRuntime && await stat(versionDir).then(() => true, () => false)) {
+    usable = await runtimeCopyValid(appPath, executable, options.version, run, verifySignature)
+    // Una copia existente que no pasa la verificación no se promueve ni se borra: se aparta como evidencia y se vuelve a clonar.
+    if (!usable) await rename(versionDir, `${versionDir}.invalid-${Date.now()}`)
+  }
+  if (!usable) {
     const staging = `${versionDir}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`
     await rm(staging, { recursive: true, force: true })
     await mkdir(staging, { recursive: true, mode: 0o700 })
@@ -203,12 +293,9 @@ export async function ensureGatewayRuntime(options: EnsureOptions): Promise<Ensu
       })
       const stagedApp = join(staging, appName)
       // Una copia que no pasa la verificación estricta nunca se publica como versión del runtime.
-      if (options.verifySignature ?? true) await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", stagedApp])
-      for (const key of [join(stagedApp, "Contents", "MacOS", executable), join(stagedApp, "Contents", "Info.plist"), join(stagedApp, "Contents", "Resources", "app", "desktop", "dist", "entry.js")]) {
-        await fsyncPath(key)
-      }
-      await fsyncPath(staging)
-      await rm(versionDir, { recursive: true, force: true })
+      if (!(await runtimeCopyValid(stagedApp, executable, options.version, run, verifySignature))) throw new Error("La copia del runtime no es un bundle válido de esta versión")
+      // Todo el árbol queda durable antes de publicarlo: un corte después del rename no deja una versión a medias.
+      await fsyncTree(staging)
       await rename(staging, versionDir)
       await fsyncPath(paths.versions)
       cloned = true
@@ -222,7 +309,7 @@ export async function ensureGatewayRuntime(options: EnsureOptions): Promise<Ensu
   const existing = await readFile(paths.launcher, "utf8").catch(() => "")
   if (existing !== script) await writeAtomic(paths.launcher, script, 0o755)
 
-  const state = await readRuntimeState(options.stateDir)
+  const state = await readRuntimeStateOrQuarantine(paths)
   const current = inRuntime ? basename(dirname(bundle)) : options.version
   await pointCurrent(paths, current)
   const next: RuntimeState = state.current === current ? state : { current, previous: state.current }
@@ -258,13 +345,48 @@ export interface CollectOptions {
   run?: RunFn
 }
 
-/** Borra las copias que no son vigente, previa ni pedidas y que ningún proceso usa. Devuelve las borradas. */
+const TMP_PID = /\.tmp-(\d+)-[0-9a-f]+$/
+
+/** `false` solo con certeza de que el proceso no existe; EPERM u otro error cuenta como vivo. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH"
+  }
+}
+
+/** Una entrada `.tmp-<pid>-<rand>` abandonada: su proceso ya no vive. Sin pid legible o con dudas se conserva. */
+function abandonedTemp(name: string): boolean {
+  const match = TMP_PID.exec(name)
+  return match !== null && !pidAlive(Number(match[1]))
+}
+
+/**
+ * Borra las copias que no son vigente, previa ni pedidas y que ningún proceso usa. Devuelve las borradas.
+ * Lanza `RuntimeStateError` (y no borra nada) si el estado es ilegible o hay evidencia de corrupción reciente.
+ * Los `.tmp-*` abandonados se recuperan solo si su proceso ya no vive y lsof no ve procesos dentro.
+ */
 export async function collectRuntimes(options: CollectOptions): Promise<string[]> {
   const run = options.run ?? defaultRun
   const paths = runtimePaths(options.stateDir)
   const state = await readRuntimeState(options.stateDir)
+  const rootEntries = await readdir(paths.root).catch(() => [] as string[])
+  const evidence = rootEntries.filter(name => name.startsWith("state.json.corrupt-"))
+  for (const name of evidence) {
+    const age = Date.now() - (await stat(join(paths.root, name)).then(info => info.mtimeMs, () => Date.now()))
+    if (age < CORRUPT_EVIDENCE_MAX_AGE_MS) throw new RuntimeStateError("Hay evidencia reciente de un estado del runtime corrupto; el GC queda bloqueado")
+  }
+  for (const name of evidence) await rm(join(paths.root, name), { force: true })
   const keep = new Set([state.current, state.previous, ...(options.keep ?? [])].filter((value): value is string => Boolean(value)))
   const removed: string[] = []
+  // Temporales de escritura atómica (lanzador, estado, symlink) de procesos que ya no existen.
+  for (const dir of [paths.root, paths.bin]) {
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      if (name.includes(".tmp-") && abandonedTemp(name)) await rm(join(dir, name), { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
   let entries: string[]
   try {
     entries = await readdir(paths.versions)
@@ -272,10 +394,17 @@ export async function collectRuntimes(options: CollectOptions): Promise<string[]
     return removed
   }
   for (const entry of entries) {
-    if (keep.has(entry) || entry.includes(".tmp-") || !SAFE_VERSION.test(entry)) continue
-    if (await inUse(run, join(paths.versions, entry))) continue
+    if (keep.has(entry)) continue
+    const path = join(paths.versions, entry)
+    if (entry.includes(".tmp-")) {
+      if (!abandonedTemp(entry) || await inUse(run, path)) continue
+    } else if (entry.includes(".invalid-")) {
+      // Evidencia de una copia que no pasó la verificación: se conserva un día y solo si nadie la usa.
+      const age = Date.now() - (await stat(path).then(info => info.mtimeMs, () => Date.now()))
+      if (age < INVALID_COPY_MAX_AGE_MS || await inUse(run, path)) continue
+    } else if (!SAFE_VERSION.test(entry) || await inUse(run, path)) continue
     try {
-      await rm(join(paths.versions, entry), { recursive: true, force: true })
+      await rm(path, { recursive: true, force: true })
       removed.push(entry)
     } catch {
       // Se conserva ante cualquier error: la próxima recolección lo reintenta.
