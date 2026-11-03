@@ -69,6 +69,12 @@ export async function candidateProjects(db: Sql, hubs: { id: string; is_local: b
   return result
 }
 
+/** The session is the current, open leader of the local hub in the channel. */
+export async function isLocalHubLeader(sql: Sql, channelId: string, localHubId: string, sessionId: string): Promise<boolean> {
+  return Boolean((await sql.query(`SELECT 1 FROM interhub_members m JOIN chat_sessions s ON s.id=m.leader_session_id
+    WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL AND m.leader_session_id=$3 AND s.closed_at IS NULL AND s.removed_at IS NULL`, [channelId, localHubId, sessionId]))[0])
+}
+
 /** Hubs and candidates of one channel, or null when it is not an inter-hub channel outside the trash. */
 async function evidence(db: Sql, channelId: string, localHubId: string) {
   const channel = (await db.query("SELECT id,project_id FROM chat_channels WHERE id=$1 AND kind=$2 AND deleted_at IS NULL", [channelId, INTERHUB_CHANNEL_KIND]))[0]
@@ -124,9 +130,7 @@ export async function assignProject(db: TransactionalDatabase, localHubId: strin
     const channel = (await sql.query("SELECT id,project_id,leader_id FROM chat_channels WHERE id=$1 AND kind=$2 AND deleted_at IS NULL", [channelId, INTERHUB_CHANNEL_KIND]))[0]
     check(channel, "Canal entre hubs inexistente.", 404)
     check(!channel.project_id, "El canal ya pertenece a un proyecto.", 409)
-    const leads = (await sql.query(`SELECT 1 FROM interhub_members m JOIN chat_sessions s ON s.id=m.leader_session_id
-      WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL AND m.leader_session_id=$3 AND s.closed_at IS NULL AND s.removed_at IS NULL`, [channelId, localHubId, callerId]))[0]
-    check(channel.leader_id === callerId && leads, "Sólo el líder de tu hub en el canal puede asignarle un proyecto.", 403)
+    check(channel.leader_id === callerId && await isLocalHubLeader(sql, channelId, localHubId, callerId), "Sólo el líder de tu hub en el canal puede asignarle un proyecto.", 403)
     const found = await evidence(sql, channelId, localHubId)
     check(found?.candidates.some(candidate => candidate.project_id === projectId), "El proyecto no es compartido con todos los hubs activos del canal.", 422)
     const updated = await sql.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1 AND project_id IS NULL AND deleted_at IS NULL RETURNING id", [channelId, projectId])

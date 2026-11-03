@@ -59,6 +59,12 @@ export class InterhubNetwork {
   private readonly vault: Vault
   constructor(readonly store: MemoryStore) { this.vault = new Vault(store.directory) }
 
+  /**
+   * Invoked after a hub becomes (or is reactivated as) an active member of a channel, once the change is committed.
+   * Failures are reported by the callback owner; they never fail the membership change itself.
+   */
+  afterMembership: ((channelId: string) => Promise<void>) | undefined
+
   private secretKey(channelId: string) { return `interhub-channel-code-${channelId}` }
   async localIdentity(): Promise<Identity> { return new SharedProjects(this.store).identity() }
   private async assertCreator(channelId: string, sessionId: string) {
@@ -187,7 +193,8 @@ export class InterhubNetwork {
     const match = (await this.activeCodes()).find(candidate => proves(codeKey(candidate.code)))
     if (!match) return null
     const key = codeKey(match.code)
-    return this.store.db.transaction(async sql => {
+    let added = false
+    const admitted = await this.store.db.transaction(async sql => {
       // Re-read inside the transaction: a revoke or regenerate committed meanwhile wins.
       const current = (await sql.query("SELECT code_hash,code_revoked_at FROM interhub_channels WHERE channel_id=$1", [match.channel_id]))[0]
       if (!current || current.code_revoked_at || current.code_hash !== codeHash(match.channel_id, match.code)) return null
@@ -201,8 +208,11 @@ export class InterhubNetwork {
       else await sql.query("UPDATE interhub_members SET peer_identity=$3,last_seen_at=now() WHERE channel_id=$1 AND hub_id=$2", [match.channel_id, joiner.id, JSON.stringify(publicIdentity(joiner))])
       if (!keep) await this.append(match.channel_id, "membership", { action: "joined", hub_id: joiner.id, leader_id: leaderId, leader_label: leaderLabel,
         peer_public_key: joiner.signing, peer_identity: publicIdentity(joiner) })
+      added = !keep
       return { channel_id: match.channel_id, key, roster: await this.signedRoster(match.channel_id) }
     })
+    if (admitted && added) await this.afterMembership?.(admitted.channel_id)
+    return admitted
   }
 
   /**
@@ -326,5 +336,6 @@ export class InterhubNetwork {
     await this.store.db.query(`INSERT INTO interhub_members(channel_id,hub_id,peer_identity,leader_session_id,leader_label) VALUES($1,$2,$3,$4,$5)
       ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL`,
     [event.channel_id, payload.hub_id, JSON.stringify(payload.peer_identity), payload.leader_id || null, label(payload.leader_label)])
+    await this.afterMembership?.(event.channel_id)
   }
 }

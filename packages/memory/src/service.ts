@@ -134,6 +134,8 @@ export class MemoryService {
     const network = new SharedNetwork(operations.sharing)
     // Inter-hub channels ride the same P2P network; the tools reach it through these services.
     operations.interhub = createInterhubServices(store, { network, events: operations.chat.events })
+    // The service is published only after the project backfill settled, so the first read already sees repaired channels.
+    await operations.interhub.ready
     this.current = { db, store, ai, operations, runner, network }
     if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
     return this.current

@@ -10,7 +10,7 @@ import { SharedProjects } from "../sharing/projects.js"
 import { INTERHUB_REMOTE_CLI_KIND, InterhubChat, localChannelAgents } from "./chat.js"
 import { InterhubNetwork, chatKind } from "./network.js"
 import { InterhubTransport } from "./transport.js"
-import { assignProject, backfillProjects, listOrphans } from "./project-association.js"
+import { assignProject, backfillProjects, isLocalHubLeader, listOrphans } from "./project-association.js"
 import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
 
 const peerName = (value: unknown) => {
@@ -76,12 +76,13 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   // a failure is logged without channel data and never blocks the service.
   const backfilled = backfill().then(() => undefined, error => { console.error("interhub: project backfill failed:", error instanceof Error ? error.message : "unknown error") })
   /** The caller is the current, open leader of the hub it represents in the channel. */
-  const isHubLeader = async (channelId: string, caller: InterhubCaller) => Boolean((await db.query(
-    `SELECT 1 FROM interhub_members m JOIN chat_sessions s ON s.id=m.leader_session_id
-     WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL AND m.leader_session_id=$3 AND s.closed_at IS NULL AND s.removed_at IS NULL`,
-    [channelId, await localHubId(), caller.id]))[0])
+  // A hub that becomes a member after the channel exists (creator side) can complete the evidence for its project.
+  network.afterMembership = channelId => backfill(channelId).then(() => undefined, error => { console.error("interhub: project backfill after membership failed:", error instanceof Error ? error.message : "unknown error") })
+  const isHubLeader = async (channelId: string, caller: InterhubCaller) => isLocalHubLeader(db, channelId, await localHubId(), caller.id)
 
   return {
+    /** Settles once the startup backfill has run; it never rejects. */
+    ready: backfilled,
     async createChannel(caller, input) {
       const projectId = await channelProject(caller, input.projectId)
       const created = await network.createChannel(caller, { name: input.name, projectId })
@@ -98,8 +99,10 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       const explicit = projectId ? await channelProject(caller, projectId) : null
       const joined = await transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code, null)
       if (explicit) {
-        // An explicit project must be shared with every active hub of the channel; otherwise the channel stays without project.
-        try { await assignProject(db, await localHubId(), caller.id, joined.channel_id, explicit) } catch { return joined }
+        // An explicit project must be shared with every active hub of the channel.
+        try { await assignProject(db, await localHubId(), caller.id, joined.channel_id, explicit) } catch (error) {
+          check(false, `Tu hub se unió al canal ${joined.channel_id}, pero no se pudo asociar al proyecto indicado: ${error instanceof Error ? error.message : "error desconocido"} Asígnalo después con chat_interhub_assign_project.`, 422)
+        }
         events?.emit("change")
         return { ...joined, project_id: explicit }
       }
