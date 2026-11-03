@@ -27,6 +27,8 @@ import { INTERHUB_JOIN_OPERATION, INTERHUB_JOIN_TIMEOUT_MS, argsDigest, canonica
 import { SecretResolver, defaultResolver } from './secrets.js'
 import { AUTH_NONE, AUTH_OAUTH, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore, isAuthorizationRequired } from './oauth.js'
 import { childEnv, killTree } from './platform.js'
+import { isMemorySpec } from './memory-bridge.js'
+import { createResilientLoopbackFetch, RESILIENT_FETCH_MAX_WAIT_MS } from './resilient-fetch.js'
 
 export const TRANSPORT_STDIO = 'stdio'
 export const TRANSPORT_HTTP = 'http'
@@ -371,12 +373,15 @@ export class RemoteHttpRuntime implements Runtime {
       if (!this.oauthStore.hasTokens(serverId)) throw new UpstreamConnectError(spec.slug, OAUTH_AUTH_REQUIRED_MESSAGE)
       authProvider = new FileOAuthProvider({ store: this.oauthStore, serverId, serverUrl: spec.url, redirectUrl: this.redirectUrl, interactive: false })
     }
+    // El upstream de memoria es el core local: tolera su reinicio (actualización) reintentando sólo lo no entregado.
+    const resilient = isMemorySpec(spec)
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers },
+      ...(resilient ? { fetch: createResilientLoopbackFetch() } : {}),
       ...(authProvider ? { authProvider } : {}),
     })
     try {
-      return await connectClient(spec.slug, transport as Transport, this.connectTimeoutMs)
+      return await connectClient(spec.slug, transport as Transport, resilient ? Math.max(this.connectTimeoutMs, RESILIENT_FETCH_MAX_WAIT_MS + 10_000) : this.connectTimeoutMs)
     } catch (err) {
       if (authProvider && isAuthorizationRequired(err)) throw new UpstreamConnectError(spec.slug, OAUTH_AUTH_REQUIRED_MESSAGE)
       throw err
@@ -582,7 +587,8 @@ export class ConnectionPool {
         connection = await runtime.connect(spec)
       } catch (err) {
         const message = err instanceof UpstreamError ? err.reason : `no se pudo conectar: ${describe(err)}`
-        this.failures.set(key, { message, at: this.clock(), fingerprint })
+        // El core local ya reintentó dentro del connect: un cooldown extra sólo alargaría la caída.
+        if (!isMemorySpec(spec)) this.failures.set(key, { message, at: this.clock(), fingerprint })
         if (err instanceof UpstreamError) throw err
         throw new UpstreamConnectError(spec.slug, message)
       }
