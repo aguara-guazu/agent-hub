@@ -14,7 +14,7 @@
 import { execFile } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
-import { chmod, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, open, readFile, readdir, rename, rm, symlink } from "node:fs/promises"
 import { basename, dirname, join, sep } from "node:path"
 
 export type RunFn = (command: string, args: readonly string[]) => Promise<{ stdout: string }>
@@ -50,6 +50,8 @@ export interface EnsureOptions {
   version: string
   platform?: NodeJS.Platform
   run?: RunFn
+  /** Verifica la firma de la copia con `codesign --verify --deep --strict` antes de publicarla. Por defecto sí. */
+  verifySignature?: boolean
 }
 
 export interface EnsureResult {
@@ -118,16 +120,33 @@ export function launcherScript(appName: string, executable: string): string {
   ].join("\n")
 }
 
+/** fsync de un archivo o directorio: lo escrito sobrevive a un corte antes de que otro paso dependa de ello. */
+async function fsyncPath(path: string): Promise<void> {
+  const handle = await open(path, "r")
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+}
+
 async function writeAtomic(path: string, content: string, mode: number): Promise<void> {
   const temp = `${path}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`
-  await writeFile(temp, content, { mode })
-  await chmod(temp, mode)
+  const handle = await open(temp, "w", mode)
+  try {
+    await handle.writeFile(content)
+    await handle.chmod(mode)
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
   try {
     await rename(temp, path)
   } catch (error) {
     await rm(temp, { force: true })
     throw error
   }
+  await fsyncPath(dirname(path))
 }
 
 export async function readRuntimeState(stateDir: string): Promise<RuntimeState> {
@@ -149,6 +168,7 @@ async function pointCurrent(paths: RuntimePaths, version: string): Promise<void>
     await rm(temp, { force: true })
     throw error
   }
+  await fsyncPath(paths.root)
 }
 
 /**
@@ -181,8 +201,16 @@ export async function ensureGatewayRuntime(options: EnsureOptions): Promise<Ensu
         await rm(join(staging, appName), { recursive: true, force: true })
         await run("/usr/bin/ditto", [bundle, join(staging, appName)])
       })
+      const stagedApp = join(staging, appName)
+      // Una copia que no pasa la verificación estricta nunca se publica como versión del runtime.
+      if (options.verifySignature ?? true) await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", stagedApp])
+      for (const key of [join(stagedApp, "Contents", "MacOS", executable), join(stagedApp, "Contents", "Info.plist"), join(stagedApp, "Contents", "Resources", "app", "desktop", "dist", "entry.js")]) {
+        await fsyncPath(key)
+      }
+      await fsyncPath(staging)
       await rm(versionDir, { recursive: true, force: true })
       await rename(staging, versionDir)
+      await fsyncPath(paths.versions)
       cloned = true
     } catch (error) {
       await rm(staging, { recursive: true, force: true }).catch(() => undefined)
