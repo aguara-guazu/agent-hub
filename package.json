@@ -46,11 +46,11 @@
     "benchmark:memory": "npm run build --workspace @agenthub/memory && node scripts/benchmark-memory.mjs"
   },
   "dependencies": {
-    "@agenthub/core": "0.14.2",
-    "@agenthub/daemon": "0.14.2",
-    "@agenthub/gateway": "0.14.2",
-    "@agenthub/memory": "0.14.2",
-    "@agenthub/shared": "0.14.2",
+    "@agenthub/core": "0.14.3",
+    "@agenthub/daemon": "0.14.3",
+    "@agenthub/gateway": "0.14.3",
+    "@agenthub/memory": "0.14.3",
+    "@agenthub/shared": "0.14.3",
     "@fastify/cors": "11.1.0",
     "@fastify/static": "10.1.3",
     "@iarna/toml": "2.2.5",

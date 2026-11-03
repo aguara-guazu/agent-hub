@@ -12,9 +12,9 @@
     "dev": "electron dist/entry.js"
   },
   "dependencies": {
-    "@agenthub/core": "0.14.2",
-    "@agenthub/daemon": "0.14.2",
-    "@agenthub/gateway": "0.14.2",
-    "@agenthub/memory": "0.14.2"
+    "@agenthub/core": "0.14.3",
+    "@agenthub/daemon": "0.14.3",
+    "@agenthub/gateway": "0.14.3",
+    "@agenthub/memory": "0.14.3"
   }
 }

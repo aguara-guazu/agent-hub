@@ -18,10 +18,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agenthub/shared": "0.14.2",
+    "@agenthub/shared": "0.14.3",
     "@modelcontextprotocol/sdk": "1.30.0"
   },
   "devDependencies": {
-    "@agenthub/testdata": "0.14.2"
+    "@agenthub/testdata": "0.14.3"
   }
 }
