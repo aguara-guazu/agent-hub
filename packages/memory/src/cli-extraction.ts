@@ -9,6 +9,7 @@ import { inspectNativeProcess } from '@agenthub/gateway'
 import { Ajv2020 } from 'ajv/dist/2020.js'
 import { check, MemoryError } from './contracts.js'
 import { effortLevels, kiroEfforts } from './reasoning.js'
+import { KIRO_V3_ACP_ARGS, kiroV3Models } from './kiro-v3.js'
 
 export const extractionClis = ['claude_code', 'codex_cli', 'kiro'] as const
 export type ExtractionCli = typeof extractionClis[number]
@@ -217,6 +218,9 @@ export class CliExtractionRuntime {
         if (combined.aborted) abort()
         else if (input !== undefined) child.stdin!.write(JSON.stringify({ stdin: input, end: true }) + '\n')
         else if (provider === 'claude_code') send({ type: 'control_request', request_id: 'models', request: { subtype: 'initialize' } })
+        // Kiro's ACP rejects an initialize without protocolVersion.
+        else if (provider === 'kiro') send({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: 1,
+          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'agenthub_memory', version: '1.0.0' } } })
         else send({ id: 0, method: 'initialize', params: { clientInfo: { name: 'agenthub_memory', version: '1.0.0' } } })
       })
     } finally { this.active.delete(lifetime) }
@@ -277,6 +281,37 @@ export class CliExtractionRuntime {
       return { installed: true, models, ...metadata(), detail: 'La lista proviene de la CLI. Probá el modelo para verificar el acceso de tu cuenta en segundo plano.' }
     } catch (error) {
       return { installed: true, models: [], ...metadata(), detail: error instanceof MemoryError ? error.message : `No se pudieron consultar los modelos de ${cliLabels[provider]}. Actualizá la CLI y revisá su sesión.` }
+    }
+  }
+
+  /**
+   * Models a Hub fleet member can launch with. Fleet members of Kiro run on its v3 engine, whose catalog differs from
+   * `chat --list-models` (the engine used for extraction): it is read from the configOptions of a new ACP session.
+   */
+  async fleetStatus(provider: ExtractionCli): Promise<CliStatus> {
+    if (provider !== 'kiro') return this.status(provider)
+    const metadata = () => ({ checked_at: new Date().toISOString(), source: 'native' as const })
+    if (!(this.options.executable ?? findExtractionCli)(provider)) return { installed: false, models: [], ...metadata(), detail: `Instalá ${cliLabels[provider]} e iniciá sesión desde su terminal.` }
+    try {
+      const models = await this.workspace(async cwd => {
+        const models: CliModel[] = []
+        await this.run(provider, [...KIRO_V3_ACP_ARGS], cwd, undefined, undefined, (event, send, done) => {
+          if (event.id === 0 && !event.method) {
+            check(!event.error, 'Kiro CLI no inició su motor v3. Actualizá la CLI y revisá su sesión.', 409)
+            send({ jsonrpc: '2.0', id: 1, method: 'session/new', params: { cwd, mcpServers: [] } })
+            return
+          }
+          if (event.id !== 1 || event.method) return
+          check(!event.error, 'Kiro CLI no abrió una sesión de su motor v3. Revisá su sesión.', 409)
+          models.push(...kiroV3Models(event.result?.configOptions))
+          check(models.length > 0, 'Kiro CLI no informó los modelos de su motor v3. Actualizá la CLI.', 409)
+          done()
+        }, this.options.discoveryMs ?? 30_000)
+        return [...new Map(models.filter(m => validCliModel(m.id)).map(m => [m.id, m])).values()]
+      })
+      return { installed: true, models, ...metadata(), detail: 'La lista proviene del motor v3 de Kiro CLI, el que usan los agentes del Hub. Probá el modelo para verificar el acceso de tu cuenta.' }
+    } catch (error) {
+      return { installed: true, models: [], ...metadata(), detail: error instanceof MemoryError ? error.message : 'No se pudieron consultar los modelos del motor v3 de Kiro CLI. Actualizá la CLI y revisá su sesión.' }
     }
   }
 

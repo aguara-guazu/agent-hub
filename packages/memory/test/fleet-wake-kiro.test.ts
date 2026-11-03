@@ -24,11 +24,13 @@ it('serves a Kiro worker over ACP without hooks: output before the join, wake of
   const base=(await git('rev-parse','HEAD')).stdout.trim()
   // Scripted ACP agent: every prompt streams one chunk and then stays in flight until the client cancels it.
   const script=join(directory,'fake-kiro.cjs')
-  await writeFile(script,`const {createInterface}=require('node:readline');let pending;const sid='kiro-'+process.pid;
+  await writeFile(script,`const {createInterface}=require('node:readline');let pending;const sid='sess_kiro-'+process.pid;
   const out=p=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...p})+'\\n');
   createInterface({input:process.stdin}).on('line',line=>{const p=JSON.parse(line);
   if(p.method==='initialize')out({id:p.id,result:{protocolVersion:1,agentCapabilities:{loadSession:false}}});
-  if(p.method==='session/new')out({id:p.id,result:{sessionId:sid}});
+  const config={model:'auto',autopilot:'on'};const configOptions=()=>[{id:'model',currentValue:config.model,options:[{value:'auto'},{value:'fixture'}]},{id:'autopilot',currentValue:config.autopilot,options:[{value:'on'},{value:'off'}]}];
+  if(p.method==='session/new')out({id:p.id,result:{sessionId:sid,configOptions:configOptions()}});
+  if(p.method==='session/set_config_option'){config[p.params.configId]=p.params.value;out({id:p.id,result:{configOptions:configOptions()}})}
   if(p.method==='session/prompt'){pending=p.id;setTimeout(()=>out({method:'session/update',params:{sessionId:sid,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'trabajando'}}}}),20)}
   if(p.method==='session/cancel'&&pending!==undefined){out({id:pending,result:{stopReason:'cancelled'}});pending=undefined}
   });`)
@@ -36,7 +38,7 @@ it('serves a Kiro worker over ACP without hooks: output before the join, wake of
   const chat=new LocalChat(new MemoryStore(db,directory));const enabled=true
   const launcher=vi.fn((_command,args,options)=>spawn(process.execPath,[script,...args],{...options,stdio:'pipe'}))
   backend=new HubTeamRuntime(chat,directory,()=>enabled,{launcher,requestTimeoutMs:1000,shutdownTimeoutMs:50,
-    run:async(command,args,options)=>command==='git'?exec(command,args,options):{stdout:'acp --model --trust-all-tools'}})
+    run:async(command,args,options)=>command==='git'?exec(command,args,options):{stdout:'acp --model --trust-all-tools --agent-engine'}})
   const launch=vi.spyOn(backend,'launch')
   const catalog:TeamCatalog={catalog:async()=>({models:[],clis:[]}),validate:async(cli,model,effort)=>({cli,model,effort})}
   const teams=new TeamOrchestration(chat,catalog,backend,undefined,()=>enabled)

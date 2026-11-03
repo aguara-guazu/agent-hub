@@ -105,15 +105,29 @@ mediante `terminal send`. `input-accepted` confirma aceptación de entrada, no
 inferencia ni incorporación. Una falla posterior a crear la terminal conserva
 su handle para inspección.
 
-En la flota del Hub (`HubTeamRuntime`), Kiro corre en segundo plano con
-`kiro-cli acp --model <m> [--effort <e>] --trust-all-tools`, sin terminal.
+En la flota del Hub (`HubTeamRuntime`), Kiro corre en segundo plano con su
+motor v3, `kiro-cli acp --agent-engine=v3`, sin terminal. El catálogo de
+modelos para equipos sale de ese mismo motor: `configOptions` de una
+`session/new`, con los esfuerzos que Kiro informa por modelo; incluye modelos
+que `chat --list-models` no lista, como `claude-opus-5.5`. El motor v3 no
+acepta `--model`, `--effort` ni `--trust-all-tools`: después de abrir la sesión
+el Hub fija modelo y esfuerzo con `session/set_config_option`, sólo con valores
+que la sesión ofrece, y confirma `currentValue` (Kiro acepta un valor
+desconocido sin error y recién falla en el primer prompt). Si existe, también
+activa `autopilot`. Un miembro que empezó en el motor legacy (ID de sesión sin
+el prefijo `sess_`) se reanuda con
+`kiro-cli acp --model <m> [--effort <e>] --trust-all-tools`.
 El cliente ACP anuncia `fs` y `terminal` deshabilitados, abre `session/new`
 sin servidores MCP adicionales (rige la configuración propia de Kiro, que
 incluye el Hub) y envía la tarea con `session/prompt`. Esa RPC queda abierta
 durante todo el turno: sólo su `stopReason` marca al trabajador idle
-(`refusal` lo marca fallido). La interrupción usa `session/cancel`. Un
+(`refusal` lo marca fallido). La interrupción usa `session/cancel`. En el
+motor v3, `session/request_permission` llega aunque el cliente propio de Kiro
+se haya lanzado con `--trust-all-tools`; el Hub responde como ese cliente: elige
+`allow_once` sólo para la sesión del propio miembro, nunca `allow_always`, para
+no escribir reglas permanentes en Kiro. En el motor legacy un
 `session/request_permission` residual se responde `cancelled` (nunca se
-concede); otra solicitud del agente que no sea una extensión `_*` falla el
+concede). Otra solicitud del agente que no sea una extensión `_*` falla el
 proceso. La actividad visible sólo toma texto del agente, título y entrada de
 cada herramienta y bloques de texto de sus resultados. Kiro no admite agregar
 entrada a un turno en curso.

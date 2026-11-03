@@ -135,7 +135,7 @@ export class HubTeamRuntime implements TeamOrca {
       }
       const required = member.cli === 'claude_code'
         ? ['--print', '--input-format', '--output-format', '--verbose', '--dangerously-skip-permissions', '--model', '--session-id', '--resume', ...(member.effort ? ['--effort'] : [])]
-        : member.cli === 'kiro' ? ['--model', '--trust-all-tools', ...(member.effort ? ['--effort'] : [])]
+        : member.cli === 'kiro' ? ['--agent-engine', '--model', '--trust-all-tools', ...(member.effort ? ['--effort'] : [])]
         : ['--listen', 'stdio']
       check(required.every(flag => help.includes(flag)), 'La CLI instalada no confirma el protocolo nativo requerido por la flota del Hub. Actualizá la CLI antes de lanzar.', 409)
       this.requireEnabled()

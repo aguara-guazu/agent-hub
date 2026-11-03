@@ -12,7 +12,7 @@ import { resumeSurface } from './resume-capabilities.js'
 const exec = promisify(execFile)
 let directory: string
 const backends: HubTeamRuntime[] = []
-const help = '--print --input-format --output-format --verbose --dangerously-skip-permissions --model --session-id --resume --effort --listen stdio --trust-all-tools'
+const help = '--print --input-format --output-format --verbose --dangerously-skip-permissions --model --session-id --resume --effort --listen stdio --trust-all-tools --agent-engine'
 const fixture = String.raw`
 const {createInterface}=require('node:readline');
 const [kind,mode,serialized]=process.argv.slice(2),args=JSON.parse(serialized);

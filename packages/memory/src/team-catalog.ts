@@ -131,7 +131,7 @@ function catalogModel(cli: ExtractionCli, status: CatalogStatus, model: CliModel
 }
 
 async function discover(runtime: CliExtractionRuntime, cli: ExtractionCli): Promise<CatalogStatus> {
-  try { return await runtime.status(cli) }
+  try { return await runtime.fleetStatus(cli) }
   catch {
     return {
       installed: null,

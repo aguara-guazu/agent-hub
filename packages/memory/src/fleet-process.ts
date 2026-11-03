@@ -4,6 +4,7 @@ import { inspectNativeProcess } from '@agenthub/gateway'
 import { isAbsolute } from 'node:path'
 import { FleetActivityBuffer, unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import type { AdmissionGate } from "./admission-gate.js"
+import { isKiroV3Session, KIRO_V3_ACP_ARGS, KIRO_V3_AUTOPILOT_OPTION, KIRO_V3_EFFORT_OPTION, KIRO_V3_MODEL_OPTION, kiroConfigOption } from './kiro-v3.js'
 
 export type FleetState = 'starting' | 'busy' | 'idle' | 'stopped' | 'failed' | 'unknown' | 'waiting_input'
 export interface FleetStart {
@@ -93,6 +94,8 @@ type Session = {
   completedTurns: Set<string>
   eventQueue: Promise<void>
   cleanup: Promise<void> | undefined
+  /** v3 Kiro sessions leave tool trust to the client: the fleet answers its own session's prompts as --trust-all-tools would. */
+  kiroTrustAll?: boolean
 }
 
 /** Owns only children launched by this manager. Nothing is written to directory or to a log. */
@@ -272,9 +275,13 @@ export class FleetProcessManager {
       return
     }
     if (packet.id !== undefined && packet.method) {
-      // Members start with --trust-all-tools; a remaining permission prompt is outside the plan and is never granted.
+      // Legacy members start with --trust-all-tools, so a remaining prompt is outside the plan and is never granted.
+      // The v3 engine has no such flag: Kiro's own client grants each prompt of a --trust-all-tools session, and so does
+      // the fleet, once and only for its own session, so no permanent rule is written into the user's Kiro settings.
       if (packet.method === 'session/request_permission') {
-        this.write(s, { jsonrpc: '2.0', id: packet.id, result: { outcome: { outcome: 'cancelled' } } })
+        const allow = s.kiroTrustAll && s.status.native_id && packet.params?.sessionId === s.status.native_id && Array.isArray(packet.params?.options)
+          ? packet.params.options.find((option: Packet) => option?.kind === 'allow_once' && typeof option.optionId === 'string') : undefined
+        this.write(s, { jsonrpc: '2.0', id: packet.id, result: { outcome: allow ? { outcome: 'selected', optionId: allow.optionId } : { outcome: 'cancelled' } } })
         return
       }
       this.write(s, { jsonrpc: '2.0', id: packet.id, error: { code: -32601, message: 'Unsupported fleet client request' } })
@@ -475,9 +482,13 @@ export class FleetProcessManager {
     if (input.fork && (!input.resume_id || input.cli === 'kiro')) throw new Error('fleet_fork_unsupported')
     // --session-id is not documented together with --fork-session, so a fork never chooses its ID.
     const expectedNative = input.cli === 'claude_code' ? (input.fork ? undefined : input.resume_id ?? randomUUID()) : input.resume_id
+    // Kiro starts new members on its v3 engine, which serves every model of the fleet catalog; a member that started
+    // on the legacy engine (bare UUID session) resumes there so its conversation is not lost.
+    const kiroV3 = input.cli === 'kiro' && (!input.resume_id || isKiroV3Session(input.resume_id))
     const args = input.cli === 'claude_code'
       ? ['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--include-partial-messages', '--verbose', '--dangerously-skip-permissions', '--permission-prompt-tool=stdio', '--model', input.model,
         ...(input.effort ? ['--effort', input.effort] : []), ...(input.resume_id ? ['--resume', input.resume_id, ...(input.fork ? ['--fork-session'] : [])] : ['--session-id', expectedNative!])]
+      : kiroV3 ? [...KIRO_V3_ACP_ARGS]
       : input.cli === 'kiro' ? ['acp', '--model', input.model, ...(input.effort ? ['--effort', input.effort] : []), '--trust-all-tools']
       : ['app-server', '--listen', 'stdio://']
     const env = { ...process.env }
@@ -489,7 +500,7 @@ export class FleetProcessManager {
       ...(typeof child.pid === 'number' ? { pid: child.pid } : {}) }
     let closed!: () => void
     const s: Session = { status, activity: new FleetActivityBuffer(input.prompt), acpSegment: 0, child, closed: new Promise(resolve => { closed = resolve }), exited: false, stopping: false, seq: 0,
-      pending: new Map(), questions: new Map(), expectedNative, forkOf: input.fork ? input.resume_id : undefined, ready: undefined, submitting: false, completedTurns: new Set(), eventQueue: Promise.resolve(), cleanup: undefined }
+      pending: new Map(), questions: new Map(), expectedNative, forkOf: input.fork ? input.resume_id : undefined, ready: undefined, submitting: false, completedTurns: new Set(), eventQueue: Promise.resolve(), cleanup: undefined, kiroTrustAll: kiroV3 }
     this.sessions.set(input.id, s)
     this.publish(s, 'starting')
     // Read after the first event so no listener is missed; the next published state carries it.
@@ -546,6 +557,7 @@ export class FleetProcessManager {
         const session = input.resume_id ?? result.sessionId
         if (typeof session !== 'string' || !session) throw new Error('fleet_session_mismatch')
         s.status.native_id = session
+        if (kiroV3) await this.configureKiroV3(s, result.configOptions, input.model, input.effort)
         this.submitAcp(s, input.prompt)
       } else {
         let timer: ReturnType<typeof setTimeout> | undefined
@@ -586,6 +598,25 @@ export class FleetProcessManager {
         else if (['completed', 'interrupted'].includes(response.turn.status)) this.receive(s, { method: 'turn/completed', params: { threadId: s.status.native_id, turn: response.turn } })
       }
     } finally { s.submitting = false }
+  }
+  /**
+   * The v3 engine takes model and effort as session settings. Each value must be one the session offers (Kiro accepts
+   * an unknown value silently and only fails at the first prompt) and must be confirmed as current. Autopilot (keep
+   * working without stopping for the user) is turned on when offered; tool trust is answered in receiveAcp.
+   */
+  private async configureKiroV3(s: Session, initial: unknown, model: string, effort?: string) {
+    let options = initial
+    const set = async (id: string, value: string, missing: string) => {
+      const option = kiroConfigOption(options, id)
+      if (!option?.options.some(item => item.value === value)) throw new Error(missing)
+      if (option.currentValue === value) return
+      const result = await this.request(s, 'session/set_config_option', { sessionId: s.status.native_id, configId: id, value })
+      options = result.configOptions
+      if (kiroConfigOption(options, id)?.currentValue !== value) throw new Error('fleet_config_rejected')
+    }
+    await set(KIRO_V3_MODEL_OPTION, model, 'fleet_model_unavailable')
+    if (effort) await set(KIRO_V3_EFFORT_OPTION, effort, 'fleet_effort_unavailable')
+    if (kiroConfigOption(options, KIRO_V3_AUTOPILOT_OPTION)?.options.some(item => item.value === 'on')) await set(KIRO_V3_AUTOPILOT_OPTION, 'on', 'fleet_config_rejected')
   }
   /** The prompt RPC stays open for the whole turn; only its reply can mark the worker idle. */
   private submitAcp(s: Session, text: string) {

@@ -104,39 +104,57 @@ createInterface({input:process.stdin}).on('line',line=>{
    setTimeout(()=>out({method:'turn/completed',params:{threadId:'thread-native',turn:{id:active,status:'interrupted'}}}),20);
   }
  } else if(kind==='kiro-cli') {
-  const update=(u,sessionId='kiro-native')=>out({jsonrpc:'2.0',method:'session/update',params:{sessionId,update:u}});
+  // v3 engine: no launch flags; model, effort and autopilot are session settings.
+  const v3=args.includes('--agent-engine=v3');
+  const sid=v3?'sess_kiro-native':'kiro-native';
+  if(v3&&(args.includes('--model')||args.includes('--trust-all-tools')||args.includes('--effort')))process.exit(19);
+  global.config??={model:'auto',effortLevel:'low',autopilot:mode==='autopilotOff'?'off':'on'};
+  const config=global.config;
+  const configOptions=()=>[
+   {id:'model',type:'select',currentValue:config.model,options:['auto','test-model','other-model'].map(value=>({value,name:value}))},
+   {id:'effortLevel',type:'select',currentValue:config.effortLevel,options:['low','high'].map(value=>({value}))},
+   ...(mode==='noAutopilot'?[]:[{id:'autopilot',type:'select',currentValue:config.autopilot,options:[{value:'on'},{value:'off'}]}])];
+  const update=(u,sessionId=sid)=>out({jsonrpc:'2.0',method:'session/update',params:{sessionId,update:u}});
   if(p.method==='initialize') {
    if(process.env.ORCA_WORKTREE_ID||process.env.AGENTHUB_CHAT_SESSION_KEY||process.env.AGENTHUB_TUI_AGENT_ID||process.env.ELECTRON_RUN_AS_NODE||process.env.CLAUDECODE||process.env.CODEX_THREAD_ID) process.exit(8);
    if(p.params.clientCapabilities.terminal!==false||p.params.clientCapabilities.fs.writeTextFile!==false)process.exit(9);
    rpc(p.id,{protocolVersion:1,agentCapabilities:{loadSession:true}});
   }
   if(p.method==='session/new'||p.method==='session/load') {
-   if(!args.includes('--trust-all-tools')||args[0]!=='acp'||p.params.mcpServers.length)process.exit(9);
-   rpc(p.id,p.method==='session/new'?{sessionId:'kiro-native'}:{});
+   if((!v3&&!args.includes('--trust-all-tools'))||args[0]!=='acp'||p.params.mcpServers.length)process.exit(9);
+   rpc(p.id,{...(p.method==='session/new'?{sessionId:sid}:{}),...(v3?{configOptions:configOptions()}:{})});
+  }
+  if(p.method==='session/set_config_option') {
+   if(!v3||p.params.sessionId!==sid)process.exit(18);
+   process.stderr.write('CONFIG '+p.params.configId+'='+p.params.value+'\n');
+   if(mode!=='rejectConfig')config[p.params.configId]=p.params.value;
+   rpc(p.id,{configOptions:configOptions()});
   }
   if(p.method==='session/prompt') {
-   if(p.params.sessionId!=='kiro-native'||p.params.prompt[0].type!=='text')process.exit(11);
+   if(p.params.sessionId!==sid||p.params.prompt[0].type!=='text')process.exit(11);
+   if(v3&&(config.model!=='test-model'||config.effortLevel!=='high'||config.autopilot!=='on'))process.exit(12);
    active=p.id;
    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'FOREIGN OUTPUT'}},'unrelated');
-   out({jsonrpc:'2.0',method:'_kiro.dev/metadata',params:{sessionId:'kiro-native',auth:'PRIVATE META'}});
+   out({jsonrpc:'2.0',method:'_kiro.dev/metadata',params:{sessionId:sid,auth:'PRIVATE META'}});
    process.stderr.write('SECRET STDERR\n');
    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Hello '}});
    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'human'}});
    update({sessionUpdate:'tool_call',toolCallId:'call-1',title:'shell',rawInput:{command:'echo synthetic'},_meta:{auth:'PRIVATE META'}});
    update({sessionUpdate:'tool_call_update',toolCallId:'call-1',status:'completed',content:[{type:'content',content:{type:'text',text:'synthetic output'}},{type:'content',content:{type:'image',data:'PRIVATE BINARY'}}]});
-   if(mode==='permission'){out({jsonrpc:'2.0',id:77,method:'session/request_permission',params:{sessionId:'kiro-native',options:[{optionId:'allow',kind:'allow_once',name:'Allow'}]}});return;}
+   if(mode==='permission'||mode==='foreignPermission'){out({jsonrpc:'2.0',id:77,method:'session/request_permission',params:{sessionId:mode==='foreignPermission'?'unrelated':sid,options:[{optionId:'always',kind:'allow_always',name:'Always'},{optionId:'allow',kind:'allow_once',name:'Allow'},{optionId:'deny',kind:'reject_once',name:'Deny'}]}});return;}
    if(mode==='extension')out({jsonrpc:'2.0',id:78,method:'_kiro.dev/optional',params:{}});
-   if(mode==='clientRequest'){out({jsonrpc:'2.0',id:79,method:'fs/read_text_file',params:{sessionId:'kiro-native',path:'/etc/hosts'}});return;}
+   if(mode==='clientRequest'){out({jsonrpc:'2.0',id:79,method:'fs/read_text_file',params:{sessionId:sid,path:'/etc/hosts'}});return;}
    if(mode==='hold')return;
    setTimeout(()=>rpc(active,{stopReason:mode==='failed'?'refusal':'end_turn'}),20);
   }
   if(p.id===77&&!p.method) {
-   if(p.result?.outcome?.outcome!=='cancelled')process.exit(15);
+   const granted=p.result?.outcome?.outcome==='selected'&&p.result.outcome.optionId==='allow';
+   if(v3&&mode==='permission'?!granted:p.result?.outcome?.outcome!=='cancelled')process.exit(15);
    rpc(active,{stopReason:'end_turn'});
   }
   if(p.id===78&&!p.method&&p.error?.code!==-32601)process.exit(16);
   if(p.method==='session/cancel') {
-   if(p.params.sessionId!=='kiro-native')process.exit(17);
+   if(p.params.sessionId!==sid)process.exit(17);
    setTimeout(()=>rpc(active,{stopReason:'cancelled'}),20);
   }
  } else {
@@ -234,8 +252,8 @@ describe('FleetProcessManager', () => {
     expect((await manager.start(kiro)).state).toBe('busy')
     await until(() => manager.status('one')?.state === 'idle')
     expect(launches[0]!.command).toBe('kiro-cli')
-    expect(launches[0]!.args).toEqual(['acp', '--model', 'test-model', '--effort', 'high', '--trust-all-tools'])
-    expect(manager.status('one')?.native_id).toBe('kiro-native')
+    expect(launches[0]!.args).toEqual(['acp', '--agent-engine=v3'])
+    expect(manager.status('one')?.native_id).toBe('sess_kiro-native')
     const activity = manager.activity('one')
     expect(activity.items.filter(item => item.kind === 'assistant').map(item => item.text).join('')).toBe('Hello human')
     const tools = activity.items.filter(item => item.kind === 'tool').map(item => item.text).join('\n')
@@ -248,6 +266,52 @@ describe('FleetProcessManager', () => {
     await until(() => manager.status('one')?.state === 'idle')
     expect((await manager.stop('one')).state).toBe('stopped')
   })
+  it('resumes a Kiro member of the legacy engine with its launch flags', async () => {
+    const { manager, input, launches } = await setup()
+    await manager.start({ ...input, cli: 'kiro', resume_id: 'kiro-native' })
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(launches[0]!.args).toEqual(['acp', '--model', 'test-model', '--effort', 'high', '--trust-all-tools'])
+    expect(manager.status('one')?.native_id).toBe('kiro-native')
+  })
+  it('resumes a Kiro v3 member on the v3 engine and reapplies its settings', async () => {
+    const { manager, input, launches } = await setup()
+    await manager.start({ ...input, cli: 'kiro', resume_id: 'sess_kiro-native' })
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(launches[0]!.args).toEqual(['acp', '--agent-engine=v3'])
+  })
+  it.each([
+    ['normal', { model: 'unlisted-model' }, 'fleet_model_unavailable'],
+    ['normal', { effort: 'max' }, 'fleet_effort_unavailable'],
+    ['rejectConfig', {}, 'fleet_config_rejected'],
+  ] as const)('refuses a Kiro v3 session whose settings cannot be confirmed (%s %o)', async (mode, patch, error) => {
+    const { manager, input } = await setup(mode)
+    await manager.start({ ...input, cli: 'kiro', ...patch })
+    await until(() => manager.status('one')?.state === 'failed')
+    expect(manager.status('one')?.error_code).toBe(error)
+    expect(manager.status('one')?.turn_id).toBeUndefined()
+  })
+  it('starts a Kiro v3 session that offers no autopilot setting', async () => {
+    const { manager, input } = await setup('noAutopilot')
+    await manager.start({ ...input, cli: 'kiro' })
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(manager.status('one')?.error_code).toBeUndefined()
+  })
+  it.each([
+    ['permission', undefined, 'grants a tool prompt once in its own v3 session'],
+    ['foreignPermission', undefined, 'cancels a v3 tool prompt of another session'],
+    ['permission', 'kiro-native', 'cancels a tool prompt of a legacy member'],
+  ] as const)('Kiro %s: %s', async (mode, resume, _title) => {
+    const { manager, input } = await setup(mode)
+    await manager.start({ ...input, cli: 'kiro', ...(resume ? { resume_id: resume } : {}) })
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(manager.status('one')?.error_code).toBeUndefined()
+  })
+  it('turns autopilot on when a Kiro v3 session starts without it', async () => {
+    const { manager, input } = await setup('autopilotOff')
+    await manager.start({ ...input, cli: 'kiro' })
+    await until(() => manager.status('one')?.state === 'idle')
+    expect(manager.status('one')?.error_code).toBeUndefined()
+  })
   it('interrupts a Kiro turn with session/cancel and waits for the prompt reply', async () => {
     const { manager, input } = await setup('hold')
     await manager.start({ ...input, cli: 'kiro' })
@@ -257,7 +321,6 @@ describe('FleetProcessManager', () => {
     expect(manager.status('one')?.turn_id).toBeUndefined()
   })
   it.each([
-    ['permission', 'idle', undefined],
     ['extension', 'idle', undefined],
     ['clientRequest', 'failed', 'fleet_unexpected_server_request'],
     ['failed', 'failed', 'fleet_turn_failed'],

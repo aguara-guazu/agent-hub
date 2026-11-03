@@ -11,12 +11,23 @@ if (args.includes('--list-models')) { log({ models: [
   { model_id: 'fixture', model_name: 'Fixture', description: 'Native fixture description', context_window_tokens: 200000, rate_multiplier: 1.5, supported_effort_levels: ['low', 'high'] },
   { model_id: 'gpt-5.6-sol', model_name: 'GPT Fixture' },
 ] }); process.exit(0) }
-if (args.includes('app-server') || args.includes('--input-format')) {
+if (args.includes('app-server') || args.includes('--input-format') || args.includes('--agent-engine=v3')) {
   const lines = createInterface({ input: process.stdin })
   lines.on('line', line => {
     const event = JSON.parse(line)
     record({ event })
     if (provider === 'claude_code') log({ type: 'control_response', response: { request_id: 'models', subtype: 'success', response: { models: [{ value: 'sonnet', resolvedModel: 'fixture', displayName: 'Fixture', description: 'Native fixture description', supportsEffort: true, supportedEffortLevels: ['low', 'high'] }] } } })
+    else if (provider === 'kiro' && event.method === 'initialize') log(event.params?.protocolVersion === 1 && process.env.FIXTURE_KIRO_V3 !== 'broken'
+      ? { jsonrpc: '2.0', id: event.id, result: { protocolVersion: 1 } } : { jsonrpc: '2.0', id: event.id, error: { code: -32602, message: 'Invalid params SECRET' } })
+    else if (provider === 'kiro' && event.method === 'session/new') log({ jsonrpc: '2.0', id: event.id, result: { sessionId: 'sess_fixture', configOptions: [
+      { id: 'mode', currentValue: 'vibe', options: [{ value: 'vibe' }] },
+      { id: 'model', currentValue: 'auto', options: [
+        { value: 'auto', name: 'Auto', description: 'Native auto', _meta: { kiro: { rateMultiplier: 1, hasEffort: false } } },
+        { value: 'claude-opus-5.5', name: 'Claude Opus 5.5', description: 'Native v3 description', _meta: { kiro: { rateMultiplier: 2, hasEffort: true, effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] } } },
+        { value: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
+        { value: '--unsafe', name: 'Unsafe' },
+      ] },
+    ] } })
     else if (event.method === 'initialize') log({ id: event.id, result: {} })
     else if (event.method === 'model/list') log({ id: event.id, result: { data: [{ model: event.params.cursor ? 'second' : 'fixture', displayName: 'Fixture', description: 'Native fixture description', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }], nextCursor: event.params.cursor ? null : 'next' } })
   })

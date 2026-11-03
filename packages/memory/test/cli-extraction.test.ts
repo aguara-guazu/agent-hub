@@ -47,6 +47,34 @@ it.each(extractionClis)('descubre modelos de %s usando su protocolo y limpia los
   expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true)
   expect(await readdir(join(directory, 'cli-extraction'))).toEqual([])
 })
+it('descubre los modelos del motor v3 de Kiro para la flota sin cambiar el catálogo de extracción', async () => {
+  setup()
+  const fleet = await runtime.fleetStatus('kiro')
+  expect(fleet).toMatchObject({ installed: true, source: 'native' })
+  expect(fleet.models).toEqual([
+    { id: 'auto', name: 'Auto', description: 'Native auto', rate_multiplier: 1, default: true, reasoning_efforts: [], reasoning_efforts_source: 'native' },
+    { id: 'claude-opus-5.5', name: 'Claude Opus 5.5', description: 'Native v3 description', rate_multiplier: 2, reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'], reasoning_efforts_source: 'native' },
+    { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', reasoning_efforts: kiroEfforts('claude-sonnet-5'), reasoning_efforts_source: 'fallback' },
+  ])
+  const v3 = (await requests()).filter(call => call.args?.includes('--agent-engine=v3'))
+  expect(v3).toHaveLength(1)
+  expect(v3[0].args).toEqual(['acp', '--agent-engine=v3'])
+  expect((await runtime.status('kiro')).models.map(model => model.id)).toEqual(['fixture', 'gpt-5.6-sol'])
+  expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true)
+  expect(await readdir(join(directory, 'cli-extraction'))).toEqual([])
+})
+it('usa el mismo catálogo para la flota de Claude Code y Codex', async () => {
+  setup()
+  for (const provider of ['claude_code', 'codex_cli'] as const)
+    expect((await runtime.fleetStatus(provider)).models).toEqual((await runtime.status(provider)).models)
+})
+it('informa sin texto crudo cuando el motor v3 de Kiro no responde', async () => {
+  setup(); vi.stubEnv('FIXTURE_KIRO_V3', 'broken')
+  const fleet = await runtime.fleetStatus('kiro')
+  expect(fleet).toMatchObject({ installed: true, models: [] })
+  expect(fleet.detail).toContain('motor v3')
+  expect(fleet.detail).not.toContain('SECRET')
+})
 it.each(extractionClis)('aplica el esfuerzo de %s tanto en la prueba como en los trabajos', async provider => {
   setup()
   await runtime.test(provider, 'fixture', undefined, 'high')

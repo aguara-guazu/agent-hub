@@ -10,7 +10,8 @@ const statuses: Record<ExtractionCli, CliStatus> = {
 }
 
 function runtime(overrides: Partial<Record<ExtractionCli, CliStatus>> = {}) {
-  return { status: vi.fn(async (cli: ExtractionCli) => overrides[cli] ?? statuses[cli]) } as unknown as CliExtractionRuntime
+  const status = vi.fn(async (cli: ExtractionCli) => overrides[cli] ?? statuses[cli])
+  return { status, fleetStatus: status } as unknown as CliExtractionRuntime
 }
 
 describe('TeamCatalog', () => {
@@ -60,10 +61,11 @@ describe('TeamCatalog', () => {
   })
 
   it('conserva un catálogo parcial cuando falla el discovery de una CLI', async () => {
-    const failing = { status: vi.fn(async (cli: ExtractionCli) => {
+    const status = vi.fn(async (cli: ExtractionCli) => {
       if (cli === 'codex_cli') throw new Error('raw provider secret')
       return statuses[cli]
-    }) } as unknown as CliExtractionRuntime
+    })
+    const failing = { status, fleetStatus: status } as unknown as CliExtractionRuntime
     const result = await new TeamCatalog(failing).catalog()
 
     expect(result.models.some(model => model.cli === 'claude_code')).toBe(true)

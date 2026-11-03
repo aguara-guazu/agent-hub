@@ -19,7 +19,7 @@ import type { AgentContext } from '../src/agents.js'
 import { existingChannel } from './helpers/chat-channel.js'
 
 const exec = promisify(execFile)
-const help = '--print --input-format --output-format --verbose --dangerously-skip-permissions --model --session-id --resume --effort --listen stdio --trust-all-tools'
+const help = '--print --input-format --output-format --verbose --dangerously-skip-permissions --model --session-id --resume --effort --listen stdio --trust-all-tools --agent-engine'
 const schema = '{"methods":["thread/fork","thread/resume"]}'
 const fixture = String.raw`
 const {createInterface}=require('node:readline');
