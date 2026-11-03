@@ -43,11 +43,12 @@ export class AdmissionGate {
   }
 
   /** A token that is not the current one changes nothing and is logged: a stale holder never reopens somebody else's closure. */
-  reopen(token: symbol): void {
-    if (this.token !== token) { console.error("[admission] reopen ignorado: el token no es el vigente"); return }
+  reopen(token: symbol): boolean {
+    if (this.token !== token) { console.error("[admission] reopen ignorado: el token no es el vigente"); return false }
     clearTimeout(this.expiry)
     this.token = null
     this.publish(null)
+    return true
   }
 
   isClosed(): boolean { return this.token !== null }
@@ -87,7 +88,8 @@ export class AdmissionGate {
    * caller must not report the update system as reopened.
    */
   async reopenConfirmed(token: symbol): Promise<boolean> {
-    this.reopen(token)
+    // A foreign or stale token never confirms anything: it must not inherit the result of somebody else's publication.
+    if (!this.reopen(token)) return false
     try { await this.flush(); return !this.failure } catch { return false }
   }
 

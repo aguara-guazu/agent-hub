@@ -14,7 +14,7 @@
 import { execFile } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { mkdir, open, readFile, readdir, rename, rm, stat, symlink } from "node:fs/promises"
-import { basename, dirname, join, sep } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path"
 
 export type RunFn = (command: string, args: readonly string[]) => Promise<{ stdout: string }>
 
@@ -285,6 +285,9 @@ export async function ensureGatewayRuntime(options: EnsureOptions): Promise<Ensu
   const inRuntime = bundle.startsWith(paths.versions + sep)
   let usable = false
   if (inRuntime) {
+    // Layout exacto <versions>/<versión>/<App>.app: un solo segmento de versión, igual a la que arranca.
+    const segments = relative(paths.versions, bundle).split(sep)
+    if (isAbsolute(relative(paths.versions, bundle)) || segments.length !== 2 || segments[0] !== options.version || segments[1] !== appName) throw new RuntimeCopyInvalidError(bundle)
     // La app corre desde esta copia: nunca se mueve ni se borra. Si no pasa la verificación no se promueve y se aborta sin tocar `current`.
     if (!(await runtimeCopyValid(bundle, executable, options.version, run, verifySignature))) throw new RuntimeCopyInvalidError(bundle)
     usable = true
