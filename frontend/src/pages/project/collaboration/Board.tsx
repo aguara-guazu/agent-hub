@@ -307,7 +307,7 @@ function ChannelColumns({ projectId, channel, unassigned, state, threadId, onSta
           />
         </div>
       </div>
-      {shared && <InterhubAgents channelId={channel.id} roster={roster} />}
+      {shared && <InterhubAgents channelId={channel.id} roster={roster} showCode={!unassigned} />}
       {threads.isPending ? <SkeletonRows count={2} avatar={false} label={t("collaboration.board.loadingThreads")} />
         : threads.error ? <ErrorState error={threads.error} title={t("collaboration.board.threadsError")} onRetry={() => void threads.refetch()} />
         : list.length === 0

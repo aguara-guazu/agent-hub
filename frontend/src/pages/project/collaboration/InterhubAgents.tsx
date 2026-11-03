@@ -7,7 +7,7 @@ const BLOCK = { borderBottom: "1px solid var(--border)" } as const
 const AGENT_ROW = { minHeight: "var(--sp-6)", paddingTop: "var(--sp-1)", paddingBottom: "var(--sp-1)" } as const
 
 /** Agentes del canal compartido, un desplegable por hub, y el código del canal si este hub lo creó. Solo lectura. */
-export function InterhubAgents({ channelId, roster }: { channelId: string; roster: ReturnType<typeof useInterhubRoster> }) {
+export function InterhubAgents({ channelId, roster, showCode = true }: { channelId: string; roster: ReturnType<typeof useInterhubRoster>; showCode?: boolean }) {
   const { t, plural } = useT("project")
   const data = roster.data
 
@@ -28,7 +28,7 @@ export function InterhubAgents({ channelId, roster }: { channelId: string; roste
         : roster.error ? <ErrorState error={roster.error} title={t("collaboration.interhub.agentsError")} onRetry={() => void roster.refetch()} />
         : data && data.hubs.length === 0 ? <p className="xs t3" style={{ padding: "0 var(--sp-4) var(--sp-3)" }}>{t("collaboration.interhub.noAgentsChannel")}</p>
         : data?.hubs.map((hub, index) => <HubGroup key={hub.id} hub={hub} defaultOpen={index === 0} />)}
-      <ChannelCode channelId={channelId} />
+      {showCode && <ChannelCode channelId={channelId} />}
     </div>
   )
 }
