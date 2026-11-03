@@ -315,9 +315,9 @@ export class MemoryOperations {
       case 'create_entity': {
         if (input.kind === "project" && agent && !input.assigned_project_override) {
           const assigned = await projectForAgent(db, agent)
-          if (assigned) check(false, `Esta sesión ya trabaja en ${assigned.shared ? "el proyecto compartido" : "el proyecto"} «${assigned.title}» (${assigned.id}). Usá ese project_id; si la persona pidió crear otro proyecto, repetí la llamada con assigned_project_override y su motivo.`, 409)
+          if (assigned) check(false, `Esta sesión ya trabaja en ${assigned.shared ? "el proyecto compartido" : "el proyecto"} «${assigned.title}» (${assigned.id}). Usa ese project_id; si la persona pidió crear otro proyecto, repite la llamada con assigned_project_override y su motivo.`, 409)
           const folderless = await sharedProjectsWithoutFolder(db)
-          check(!folderless.length, `Hay proyectos compartidos sin carpeta local: ${folderless.map(project => `«${project.title}» (${project.id})`).join(", ")}. Asociá la carpeta antes de crear otro proyecto; si la persona pidió uno distinto, usá assigned_project_override y su motivo.`, 409)
+          check(!folderless.length, `Hay proyectos compartidos sin carpeta local: ${folderless.map(project => `«${project.title}» (${project.id})`).join(", ")}. Asocia la carpeta antes de crear otro proyecto; si la persona pidió uno distinto, usa assigned_project_override y su motivo.`, 409)
         }
         if (['note', 'document', 'meeting', 'message', 'issue'].includes(input.kind)) {
           const imported = await store.ingest({ kind: input.kind, title: input.title, text: input.data.text ?? input.title,

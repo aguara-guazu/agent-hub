@@ -81,7 +81,7 @@ const projects = {
   },
   sharedFolder: {
     label: "Carpeta de trabajo",
-    hint: "Ingresá una ruta absoluta que ya exista en este equipo.",
+    hint: "Ingresa una ruta absoluta que ya exista en este equipo.",
   },
   join: {
     title: "Unirme con una invitación",

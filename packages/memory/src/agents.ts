@@ -67,7 +67,11 @@ async function sharedProject(sql: Sql, projectId: string) {
 export async function projectForAgent(sql: Sql, agent: AgentContext): Promise<AgentProject | null> {
   const folder = await projectForPath(sql, agent.cwd)
   if (folder) return { ...folder, source: "folder", shared: await sharedProject(sql, folder.id) }
-  const projectId = await sessionProjectId(sql, agent.session_id)
+  const session = (await sql.query(`SELECT id FROM chat_sessions
+    WHERE agent_id=$1 AND gateway_session_id=$2 AND removed_at IS NULL AND closed_at IS NULL
+    ORDER BY event_at DESC LIMIT 1`, [agent.agent_id, agent.session_id]))[0]
+  if (!session) return null
+  const projectId = await sessionProjectId(sql, String(session.id))
   if (!projectId) return null
   const project = (await sql.query(`SELECT id,title,
     EXISTS(SELECT 1 FROM shared_projects shared WHERE shared.id=entities.id) AS "shared:bool"
@@ -215,9 +219,9 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
     recent_notes: recent, projects: candidates,
     ...(sharedWithoutFolder.length ? { shared_without_folder: sharedWithoutFolder } : {}),
     guidance: project
-      ? `La sesión trabaja en el proyecto ${match!.shared ? "compartido " : ""}«${project.title}» (${project.id}) por ${match!.source === "folder" ? "su carpeta local" : "su canal o equipo"}. Usá ese project_id y no crees otro proyecto para este trabajo.`
+      ? `La sesión trabaja en el proyecto ${match!.shared ? "compartido " : ""}«${project.title}» (${project.id}) por ${match!.source === "folder" ? "su carpeta local" : "su canal o equipo"}. Usa ese project_id y no crees otro proyecto para este trabajo.`
       : sharedWithoutFolder.length
-        ? `Hay proyectos compartidos sin carpeta local: ${sharedWithoutFolder.map(item => `«${item.title}» (${item.id})`).join(", ")}. Asociá esta carpeta a uno de ellos; no crees un proyecto nuevo para reemplazarlo.`
+        ? `Hay proyectos compartidos sin carpeta local: ${sharedWithoutFolder.map(item => `«${item.title}» (${item.id})`).join(", ")}. Asocia esta carpeta a uno de ellos; no crees un proyecto nuevo para reemplazarlo.`
         : 'Folder not linked to any project. If it matches one in projects, ask the person to add it there (or do it via memory_update_entity data.folders), then search with its project_id.',
   }
 }

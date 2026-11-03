@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { stat } from "node:fs/promises"
+import { resolve } from "node:path"
 import { z } from 'zod'
 import { check, parse } from '../contracts.js'
 import { Vault } from '../config.js'
@@ -194,9 +195,9 @@ export class SharedProjects {
     return !entity || !Array.isArray(entity.data.folders) || entity.data.folders.length === 0
   }
   async prepareLocalFolder(projectId: string, rawFolder?: string) {
-    check(rawFolder || !(await this.needsLocalFolder(projectId)), "Elegí la carpeta local del proyecto compartido", 422)
+    check(rawFolder || !(await this.needsLocalFolder(projectId)), "Elige la carpeta local del proyecto compartido", 422)
     if (!rawFolder) return null
-    const folder = normalizePath(parse(workFolder, rawFolder))
+    const folder = normalizePath(resolve(parse(workFolder, rawFolder)))
     const details = await stat(folder).catch(() => null)
     check(details?.isDirectory(), "La carpeta local no existe o no es un directorio", 422)
     const projects = await this.store.db.query("SELECT id,title,data FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND json_type(data,'$.folders')='array'")
