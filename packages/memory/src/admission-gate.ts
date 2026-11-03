@@ -2,54 +2,59 @@ import { randomUUID } from "node:crypto"
 import { MemoryError } from "./contracts.js"
 
 /** Subsystems that start work which would be lost or repeated if core stopped in the middle of it. */
-export type AdmissionKind = "fleet" | "schedule" | "job" | "backup"
+export type AdmissionKind = "fleet" | "schedule" | "job" | "sync" | "backup"
 
 /** A closed gate that nobody reopens frees itself, so a vanished desktop cannot leave core refusing work. */
 export const ADMISSION_MAX_CLOSED_MS = 11 * 60_000
-
 /** `settings` row that publishes a closed gate to the worker process: `{ token, until }` with `until` in epoch milliseconds. */
 export const ADMISSION_SETTING = "update_admission"
 
 const REFUSAL = "Agent Hub se está actualizando; reintente en unos segundos"
 
+/** Publishes the closed state outside this process (the worker reads it from `settings`); `null` means reopened. */
+export type AdmissionPublisher = (state: { token: string; until: number } | null) => Promise<void>
+
 /**
  * Process-wide switch for new non-MCP admissions during a silent update. `close()` is synchronous: nothing admitted
  * after it returns can start, and everything admitted before it is already visible in the counters read afterwards.
- * Holders of long-lived work register it in their own counters; short operations go through `track`.
+ * The publication to the worker is asynchronous; `flush()` resolves once it is durable, and the blocker counters
+ * wait for it, so a count is never read while a worker claim could still slip in.
  */
 export class AdmissionGate {
-  private token: string | null = null
+  private token: symbol | null = null
   private expiry: ReturnType<typeof setTimeout> | undefined
+  private published: Promise<void> = Promise.resolve()
   private readonly tracked = new Map<AdmissionKind, number>()
 
-  get closed(): boolean { return this.token !== null }
+  constructor(private readonly publisher?: AdmissionPublisher) {}
 
-  /** Returns the reopen token, or `null` when the gate is already closed (the caller reports `already_draining`). */
-  close(): string | null {
-    if (this.token) return null
-    const token = randomUUID()
+  /** Throws when already closed: closures never nest. */
+  close(): symbol {
+    if (this.token) throw new MemoryError(409, "La compuerta de admisión ya está cerrada", false, "already_draining")
+    const token = Symbol(randomUUID())
     this.token = token
     this.expiry = setTimeout(() => this.reopen(token), ADMISSION_MAX_CLOSED_MS)
     this.expiry.unref()
+    this.publish({ token: token.description!, until: Date.now() + ADMISSION_MAX_CLOSED_MS })
     return token
   }
 
-  /** `false` when the token is not the current one: a stale holder never reopens somebody else's closure. */
-  reopen(token: string): boolean {
-    if (this.token !== token) return false
+  /** A token that is not the current one changes nothing and is logged: a stale holder never reopens somebody else's closure. */
+  reopen(token: symbol): void {
+    if (this.token !== token) { console.error("[admission] reopen ignorado: el token no es el vigente"); return }
     clearTimeout(this.expiry)
     this.token = null
-    return true
+    this.publish(null)
   }
 
-  isClosed(): boolean { return this.closed }
+  isClosed(): boolean { return this.token !== null }
 
-  /** Non-throwing check for callers that postpone instead of failing (the work stays queued). */
-  admit(): boolean { return !this.closed }
+  /** `false` while closed: the caller postpones (the work stays queued) and does not throw. */
+  admit(_kind?: AdmissionKind): boolean { return this.token === null }
 
   /** Throwing check for callers that answer a request; `503` is retried by every client of core. */
   require(): void {
-    if (this.closed) throw new MemoryError(503, REFUSAL, true, "draining")
+    if (this.token) throw new MemoryError(503, REFUSAL, true, "draining")
   }
 
   /** Runs a short operation that must not be cut by a stop; refused outright while the gate is closed. */
@@ -68,5 +73,17 @@ export class AdmissionGate {
     let total = 0
     for (const count of this.tracked.values()) total += count
     return total
+  }
+
+  /** Resolves when the last publication finished; rejects when it failed (the caller must treat the blockers as unknown). */
+  flush(): Promise<void> { return this.published }
+
+  private publish(state: { token: string; until: number } | null): void {
+    if (!this.publisher) return
+    const publisher = this.publisher
+    // Publications are chained so a reopen can never be overtaken by the close that preceded it.
+    this.published = this.published.catch(() => undefined).then(() => publisher(state))
+    // A failed publication is surfaced by flush(); this keeps it from being an unhandled rejection meanwhile.
+    this.published.catch(() => undefined)
   }
 }

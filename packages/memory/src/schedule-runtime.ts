@@ -148,7 +148,7 @@ export class ScheduleRuntime {
   /** Runs a periodic task now, once: nothing happens while the automations are off, the runtime is stopped or the task is already running. */
   kickPeriodic(name: string) {
     const entry = this.periodic.get(name)
-    if (!entry || this.stopped || entry.running || !this.o.automation.enabled() || this.o.admission?.closed) return
+    if (!entry || this.stopped || entry.running || !this.o.automation.enabled() || this.o.admission?.isClosed()) return
     entry.last = this.now()
     entry.running = entry.task().then(() => undefined, () => undefined).finally(() => { entry.running = undefined })
   }
@@ -179,7 +179,7 @@ export class ScheduleRuntime {
     for (const schedule of await this.store.dueSchedules(isoAt(now))) await this.fire(schedule, now)
     // Periodic tasks may wait on the network: they run in the background, never overlap themselves and never delay launching a due run.
     for (const entry of this.periodic.values()) {
-      if (entry.running || now - entry.last < entry.everyMs || this.o.admission?.closed) continue
+      if (entry.running || now - entry.last < entry.everyMs || this.o.admission?.isClosed()) continue
       entry.last = now
       entry.running = entry.task().then(() => undefined, () => undefined).finally(() => { entry.running = undefined })
     }
@@ -260,7 +260,7 @@ export class ScheduleRuntime {
 
   // --- execution ---------------------------------------------------------------------------------------------------------------------------------
   private launch(run: RunRow, resumeRunning = false) {
-    if (this.stopped || this.inFlight.has(run.id) || !this.o.automation.enabled() || this.o.admission?.closed) return
+    if (this.stopped || this.inFlight.has(run.id) || !this.o.automation.enabled() || this.o.admission?.isClosed()) return
     const controller = new AbortController()
     const done = (async () => {
       const claimed = resumeRunning ? await this.store.reclaimRunning(run.id, run.generation) : await this.store.claimRun(run.id, run.generation)

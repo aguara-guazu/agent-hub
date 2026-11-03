@@ -17,7 +17,7 @@ import { CliExtractionRuntime, extractionClis, isExtractionCli, validCliModel } 
 import { TeamCatalog } from './team-catalog.js'
 import { HubTeamRuntime } from './team-hub.js'
 import { JobRunner } from './jobs.js'
-import { AdmissionGate, ADMISSION_MAX_CLOSED_MS, ADMISSION_SETTING } from "./admission-gate.js"
+import { AdmissionGate, ADMISSION_SETTING } from "./admission-gate.js"
 import { check, MemoryError, parse } from './contracts.js'
 import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
 import { reasoningEffortSchema } from './reasoning.js'
@@ -96,8 +96,9 @@ export class MemoryService {
   readonly nativeEmbeddings: NativeEmbeddingPool
   readonly vault: Vault
   readonly google: GoogleAuth
-  /** Closed by the silent update for the duration of its drain lease; see `closeAdmissions`. */
-  readonly admission = new AdmissionGate()
+  /** Closed by the silent update for the duration of its drain lease (`admission.close()`); `nonMcpBlockers()` waits for the worker publication. */
+  readonly admission = new AdmissionGate(state => this.publishAdmission(state))
+  get admissionGate(): AdmissionGate { return this.admission }
   readonly openCode: OpenCodeRuntime
   readonly cliExtraction: CliExtractionRuntime
   private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: () => AttentionReaders } } | null = null
@@ -250,36 +251,11 @@ export class MemoryService {
     const fleet=(await this.get()).operations.fleet
     return fleet instanceof HubTeamRuntime ? fleet.liveCount() : 0
   }
-  /**
-   * Closes every non-MCP admission: Hub worker launches, schedule runs and periodic dispatch, job claims by the worker process
-   * and backup or restore. The in-memory gate closes before the first await; the worker is told through `settings`, and its
-   * claim re-reads that row inside the statement that takes a job. Returns the token for `reopenAdmissions`, or `null` when
-   * already closed. The caller reads `nonMcpBlockers()` afterwards and reopens if anything is running.
-   */
-  async closeAdmissions(): Promise<string | null> {
-    const token = this.admission.close()
-    if (!token) return null
-    try {
-      const { db } = await this.get()
-      await db.query("INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [ADMISSION_SETTING, JSON.stringify({ token, until: Date.now() + ADMISSION_MAX_CLOSED_MS })])
-    } catch (error) {
-      this.admission.reopen(token)
-      throw error
-    }
-    return token
-  }
-  /** Reopens only the closure that `token` opened. The published row is removed with one retry; it also expires by itself. */
-  async reopenAdmissions(token: string): Promise<boolean> {
-    if (!this.admission.reopen(token)) return false
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const { db } = await this.get()
-        await db.query("DELETE FROM settings WHERE key=$1 AND value->>'token'=$2", [ADMISSION_SETTING, token])
-        break
-      } catch { /* the row expires on its own */ }
-    }
-    return true
+  /** Mirrors the gate into `settings` so the worker process refuses claims inside the statement that would take a job. */
+  private async publishAdmission(state: { token: string; until: number } | null): Promise<void> {
+    const { db } = await this.get()
+    if (state) await db.query("INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [ADMISSION_SETTING, JSON.stringify(state)])
+    else await db.query("DELETE FROM settings WHERE key=$1", [ADMISSION_SETTING])
   }
   /**
    * Work a stop would lose or repeat, outside the MCP path. Conservative on purpose: every `running` job counts (a lease can
@@ -287,6 +263,8 @@ export class MemoryService {
    * preparation, and schedule runs and periodic dispatch count while claimed or in progress.
    */
   async nonMcpBlockers(): Promise<{ fleet_live: number; jobs_nonresumable: number }> {
+    // The worker must already refuse claims before any counter is read; a failed publication rejects (blockers_unknown).
+    await this.admission.flush()
     const { db, schedules } = await this.get()
     const count = async (sql: string) => Number((await db.query<{ n: number | string }>(sql))[0]?.n ?? 0)
     const jobs = await count("SELECT COUNT(*) AS n FROM jobs WHERE state='running'")
