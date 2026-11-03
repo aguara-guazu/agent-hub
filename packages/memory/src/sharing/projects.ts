@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { check, parse } from '../contracts.js'
 import { Vault } from '../config.js'
-import { requireEntity, type MemoryStore } from '../store.js'
+import { requireWritableEntity, type MemoryStore } from "../store.js"
 import { digest, identity, publicIdentity, recovery, signature, validSignature, seal, unseal, randomKey, type Identity, type PublicIdentity } from './crypto.js'
 import { backfillProjects, projectReconcilers } from '../interhub/project-association.js'
 import { active, genesisSchema, invitationSchema, withoutSignature, type Genesis, type Member, type Policy } from './schema.js'
@@ -57,7 +57,7 @@ export class SharedProjects {
     return { recovery_phrase: phrase }
   }
   async create(projectId: string) {
-    const entity = await requireEntity(this.store.db, projectId, 'project')
+    const entity = await requireWritableEntity(this.store.db, projectId, "project")
     check(!(await this.store.db.query('SELECT id FROM shared_projects WHERE id=$1', [projectId])).length, 'El proyecto ya está compartido', 409)
     const me = await this.identity(), root = await recovery(), now = new Date().toISOString()
     const unsigned = { id: projectId, title: entity.title, description: String(entity.data.description ?? '').slice(0, 8000), recovery: publicIdentity(root.identity), owner: publicIdentity(me), created_at: now }

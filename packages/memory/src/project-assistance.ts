@@ -3,7 +3,7 @@ import type { MemoryAI } from './ai.js'
 import { defaultAI, usesRemoteExtraction } from './config.js'
 import { check, id, instant, parse } from './contracts.js'
 import { queryVector } from './database.js'
-import { requireEntity, type MemoryStore } from './store.js'
+import { requireEntity, requireWritableEntity, type MemoryStore } from "./store.js"
 
 export const suggestProjectsInput = z.object({ entity_id: id, query: z.string().trim().max(500).default('') }).strict()
 const normalized = (text: string) => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
@@ -110,7 +110,7 @@ export const saveProjectCompanyInput = z.object({ project_id: id, expected_updat
 export async function saveProjectCompany(store: MemoryStore, raw: unknown, actor: string) {
   const input = parse(saveProjectCompanyInput,raw)
   return store.db.transaction(async sql => {
-    const project = await requireEntity(sql,input.project_id,'project')
+    const project = await requireWritableEntity(sql, input.project_id, "project")
     check(project.updated_at === input.expected_updated_at,'El proyecto cambió; recarga antes de asociar la empresa',409)
     const company = input.company_id ? await requireEntity(sql,input.company_id,'company')
       : await store.create({ kind: 'company', title: input.company!.title, data: { description: input.company!.description } },actor,sql)

@@ -4,7 +4,7 @@ import type { Sql } from './database.js'
 import type { Vault } from './config.js'
 import { check, id, MemoryError, parse } from './contracts.js'
 import { ProviderHttp, richText } from './connectors/http.js'
-import { requireEntity, validateEvidence, type MemoryStore } from './store.js'
+import { requireEntity, requireWritableEntity, validateEvidence, type MemoryStore } from "./store.js"
 import { effectiveJiraSite, getJiraSettings } from './jira-settings.js'
 
 export const TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done', 'dropped'] as const
@@ -78,7 +78,7 @@ async function projectsByJiraKey(sql: Sql) {
 export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], actor: string, projectId?: string) {
   return store.db.transaction(async sql => {
     const byKey = await projectsByJiraKey(sql)
-    const explicit = projectId ? await requireEntity(sql, projectId, 'project') : null
+    const explicit = projectId ? await requireWritableEntity(sql, projectId, "project") : null
     const explicitSite = explicit ? await effectiveJiraSite(sql,explicit.data.jira_site_url) : null
     const summary = { received: issues.length, created: 0, updated: 0, status_changed: 0, unchanged: 0, unmatched: [] as string[], tasks: [] as Record<string, unknown>[] }
     for (const issue of [...issues].sort((a, b) => a.key.localeCompare(b.key))) {
@@ -152,7 +152,7 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
     const result = await upsertJiraIssues(store, valid, input.source === 'mcp_mirror' ? `${actor}:jira-mirror` : actor, input.project_id)
     return { ...result, invalid: normalized.length - valid.length, mode: 'issues' }
   }
-  const projects = input.project_id ? [await requireEntity(store.db, input.project_id, 'project')]
+  const projects = input.project_id ? [await requireWritableEntity(store.db, input.project_id, "project")]
     : (await store.db.query("SELECT * FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND COALESCE(data->>'jira_project_key','')<>'' ORDER BY title"))
   check(projects.length, 'Ningún proyecto tiene configurada su clave de Jira', 409)
   const totals = { received: 0, created: 0, updated: 0, status_changed: 0, unchanged: 0, unmatched: [] as string[], projects: [] as Record<string, unknown>[], mode: 'server' }
@@ -225,11 +225,12 @@ async function pushToJira(store: MemoryStore, vault: Vault, task: Record<string,
 
 export async function saveTask(store: MemoryStore, vault: Vault, raw: unknown, actor: string, fetcher: typeof fetch = fetch) {
   const input = parse(saveTaskInput, raw)
-  if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
-  if (input.source_entity_id) await requireEntity(store.db, input.source_entity_id)
+  if (input.project_id) await requireWritableEntity(store.db, input.project_id, "project")
+  if (input.source_entity_id) await requireWritableEntity(store.db, input.source_entity_id)
   if (input.id) {
     const task = (await store.db.query('SELECT * FROM tasks WHERE id=$1', [input.id]))[0]
     check(task, 'Tarea inexistente', 404)
+    if (task.project_id) await requireWritableEntity(store.db, task.project_id, "project")
     if (task.kind === 'jira') {
       const local = ['title', 'description', 'status', 'origin'] as const
       check(local.every(field => input[field] === undefined), `El título y el estado de ${task.external_key} vienen de Jira: cámbialos en Jira (jira.transition) y la tarea se actualiza sola`, 409)
@@ -237,6 +238,11 @@ export async function saveTask(store: MemoryStore, vault: Vault, raw: unknown, a
     } else check(!input.jira, 'Los pendientes internos no existen en Jira')
   }
   return store.db.transaction(async sql => {
+    if (input.project_id) await requireWritableEntity(sql, input.project_id, "project")
+    if (input.id) {
+      const existing = (await sql.query("SELECT project_id FROM tasks WHERE id=$1", [input.id]))[0]
+      if (existing?.project_id) await requireWritableEntity(sql, existing.project_id, "project")
+    }
     let task: Record<string, any>
     if (!input.id) {
       check(input.title, 'Indica el título del pendiente')

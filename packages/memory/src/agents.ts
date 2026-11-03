@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { check, id, parse } from './contracts.js'
 import type { Sql } from './database.js'
-import { requireEntity, type MemoryStore } from './store.js'
+import { requireEntity, requireWritableEntity, type MemoryStore } from "./store.js"
 import { ScheduleStore } from './schedule-store.js'
 
 /** Identity the gateway attaches to every memory call (MCP `_meta`). Absent for the hub UI and for older gateways. */
@@ -83,7 +83,7 @@ export async function writeNote(store: MemoryStore, raw: unknown, actor: string,
   const input = parse(writeNoteInput, raw)
   const sessionProject = agent ? await touchSession(store, agent) : null
   const projectId = input.project_id === undefined ? sessionProject : input.project_id
-  if (projectId) await requireEntity(store.db, projectId, 'project')
+  if (projectId) await requireWritableEntity(store.db, projectId, "project")
   if (input.task_id) check((await store.db.query('SELECT 1 FROM tasks WHERE id=$1', [input.task_id])).length, 'Tarea inexistente', 404)
   const who = author(agent, actor)
   return store.db.transaction(async sql => {
