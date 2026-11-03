@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { randomBytes } from "node:crypto"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import { z } from "zod"
 import { check, parse } from "../contracts.js"
@@ -18,16 +18,24 @@ const SETTING = "update_hint"
 export const HINT_PER_AUTHOR_MS = 10 * 60_000
 export const HINT_GLOBAL_MS = 60_000
 const MAX_WAIT_MS = 25_000
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+const SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+/** Canonical MAJOR.MINOR.PATCH whose components are safe integers, as the updater accepts. */
+function isSemver(value: string) { return SEMVER_PATTERN.test(value) && value.split(".").every(part => Number.isSafeInteger(Number(part))) }
+const semver = z.string().refine(isSemver)
 
 const stateSchema = z.object({
   generation: z.number().int().nonnegative(),
   received_at: z.string().nullable(),
   global_at: z.number().int().nonnegative(),
   authors: z.record(z.string(), z.number().int().nonnegative()),
-  announced: z.record(z.string(), z.string().regex(SEMVER)),
+  announced: z.record(z.string(), semver),
   /** Highest version this hub ever announced; a lower one is never announced again. */
-  last_version: z.string().regex(SEMVER).nullable(),
+  last_version: semver.nullable(),
+  /**
+   * Outbox of hints being published: the random nonce is persisted before appending, so after a crash the same
+   * receipt is looked up instead of publishing a second one. The nonce carries nothing derived from the version.
+   */
+  outbox: z.record(z.string(), z.object({ version: semver, nonce: z.string().regex(/^[0-9a-f]{32}$/) }).strict()).default({}),
   /** shared_events.seq up to which hint receipts were evaluated; receipts above it are replayed after a crash. */
   seen_seq: z.number().int().nonnegative(),
 }).strict()
@@ -63,7 +71,7 @@ export class UpdateHints {
   private async read(): Promise<HintState> {
     const row = (await this.db.query<{ value: unknown }>("SELECT value FROM settings WHERE key=$1", [SETTING]))[0]
     // First run replays stored hints from the start: at worst one extra check of the official feed, never a lost hint.
-    if (!row) return { generation: 0, received_at: null, global_at: 0, authors: {}, announced: {}, last_version: null, seen_seq: 0 }
+    if (!row) return { generation: 0, received_at: null, global_at: 0, authors: {}, announced: {}, last_version: null, outbox: {}, seen_seq: 0 }
     // A corrupt row must not reopen the limits; it fails closed and keeps the evidence until an operator clears it.
     return parse(stateSchema, row.value)
   }
@@ -80,10 +88,13 @@ export class UpdateHints {
   sweep(): Promise<void> {
     return this.locked(async () => {
       const state = await this.read()
-      const rows = await this.db.query<{ seq: number; message: string; author: string }>(`SELECT seq, payload->>'message' AS message, document->>'author' AS author
-        FROM shared_events WHERE seq>$1 AND payload->>'kind'='receipt' AND payload->>'message' LIKE 'agenthub:update-hint:%' ORDER BY seq`, [state.seen_seq])
+      // High-water first: a receipt stored after this read gets a larger seq and is left for the next sweep, so
+      // seen_seq never advances over a row this sweep did not evaluate.
       const head = await this.maxSeq()
-      if (!rows.length) { if (head !== state.seen_seq) await this.write({ ...state, seen_seq: head }); return }
+      if (head <= state.seen_seq) return
+      const rows = await this.db.query<{ seq: number; message: string; author: string }>(`SELECT seq, payload->>'message' AS message, document->>'author' AS author
+        FROM shared_events WHERE seq>$1 AND seq<=$2 AND payload->>'kind'='receipt' AND payload->>'message' LIKE 'agenthub:update-hint:%' ORDER BY seq`, [state.seen_seq, head])
+      if (!rows.length) { await this.write({ ...state, seen_seq: head }); return }
       const own = (await this.sharing.identity()).id, now = this.now()
       let next = state, accepted = 0
       for (const row of rows) {
@@ -97,7 +108,7 @@ export class UpdateHints {
         accepted++
         this.log(`[updater] pista P2P recibida de ${row.author.slice(0, 12)}; se consultan los releases oficiales`)
       }
-      await this.write({ ...next, seen_seq: Math.max(head, rows.at(-1)!.seq) })
+      await this.write({ ...next, seen_seq: head })
       if (accepted) this.wakeAll()
     })
   }
@@ -136,36 +147,40 @@ export class UpdateHints {
   async generation() { return (await this.read()).generation }
 
   /**
-   * Publishes one hint per shared project for `version`. The nonce is derived from (hub identity, project, version), so a
-   * crash between appending and persisting is detected by looking the receipt up instead of publishing a second one.
-   * A version lower than the highest one ever announced is refused. Projects without access are skipped. The network is
-   * then ticked so connected peers are offered the new head now instead of at the next interval.
+   * Publishes one hint per shared project for `version`, with a random 128-bit nonce persisted in the outbox before
+   * the append. After a crash the outbox entry is reused and the receipt looked up, so a project never gets two hints
+   * for one version, and a recovered receipt still triggers the network offer. A version lower than the highest one
+   * ever announced is refused. Projects without access are skipped and retried on the next announce.
    */
   async announce(version: string): Promise<{ announced: number; skipped: number }> {
-    check(SEMVER.test(version), "Versión inválida")
+    check(isSemver(version), "Versión inválida")
     const result = await this.locked(async () => {
       let state = await this.read()
       check(!state.last_version || compareSemver(version, state.last_version) >= 0, "No se anuncia una versión menor que la ya anunciada", 409)
       state = { ...state, last_version: version }
+      await this.write(state)
       const own = (await this.sharing.identity()).id
       const projects = await this.db.query<{ id: string }>("SELECT id FROM shared_projects WHERE enabled=1")
-      let count = 0, skipped = 0
+      let published = 0, skipped = 0
       for (const { id } of projects) {
         if (state.announced[id] === version) continue
-        const nonce = createHash("sha256").update(`${own}\n${id}\n${version}`).digest("hex").slice(0, 32)
-        const message = `${UPDATE_HINT_PREFIX}${nonce}`
+        const pending = state.outbox[id]?.version === version ? state.outbox[id]! : { version, nonce: randomBytes(16).toString("hex") }
+        if (pending !== state.outbox[id]) { state = { ...state, outbox: { ...state.outbox, [id]: pending } }; await this.write(state) }
+        const message = `${UPDATE_HINT_PREFIX}${pending.nonce}`
         try {
           const existing = await this.db.query("SELECT id FROM shared_events WHERE project_id=$1 AND payload->>'kind'='receipt' AND payload->>'message'=$2 AND document->>'author'=$3 LIMIT 1", [id, message, own])
-          if (!existing.length) { await this.sharing.append(id, { kind: "receipt", message, state: "read", agent: null }); count++ }
-          state = { ...state, announced: { ...state.announced, [id]: version } }
+          if (!existing.length) await this.sharing.append(id, { kind: "receipt", message, state: "read", agent: null })
+          // Counted either way: a receipt recovered after a crash was never offered.
+          published++
+          const { [id]: _done, ...outbox } = state.outbox
+          state = { ...state, announced: { ...state.announced, [id]: version }, outbox }
           await this.write(state)
         } catch (error) {
           skipped++
           this.log(`[updater] pista P2P no publicada en ${id}: ${error instanceof Error ? error.message : "error"}`)
         }
       }
-      await this.write(state)
-      return { announced: count, skipped }
+      return { announced: published, skipped }
     })
     if (result.announced) {
       this.log(`[updater] pista P2P publicada en ${result.announced} proyecto(s) para ${version}`)
@@ -196,7 +211,7 @@ export function registerUpdateHintRoutes(app: FastifyInstance, hints: () => Prom
   })
   app.post("/api/internal/update-hint/announce", { bodyLimit: 1024 }, async request => {
     await authorize(request)
-    const body = parse(z.object({ version: z.string().regex(SEMVER) }).strict(), request.body)
+    const body = parse(z.object({ version: semver }).strict(), request.body)
     return (await hints()).announce(body.version)
   })
 }
