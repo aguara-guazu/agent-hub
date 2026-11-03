@@ -184,7 +184,7 @@ export class SharedProjects {
     // A channel joined before this membership arrived stays without project until the policies can vouch for one.
     const reconcile = projectReconcilers.get(this.store)
     if (reconcile) await reconcile()
-    else await backfillProjects(this.store.db, async () => (await this.identity()).id).catch(error => { console.error('interhub: project backfill after import failed:', error instanceof Error ? error.message : 'unknown error') })
+    else await backfillProjects(this.store.db, async () => (await this.identity()).id).catch(error => { console.error("interhub: project backfill after import failed:", error instanceof Error ? error.message : "unknown error") })
     return { project_id: genesis.id, role: latest.members.find(m => m.identity.id === me.id)?.role ?? null }
   }
   async changeMember(projectId: string, target: PublicIdentity, role: Member['role'], invite: boolean, revoke = false) {

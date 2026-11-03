@@ -91,16 +91,20 @@ export async function sharedProjectUsable(db: Sql, projectId: string, hubIds: st
 
 /**
  * Local decision on the project of a channel after a membership change. A stored project survives only while this hub
- * is still an active member of that shared project; otherwise it is replaced by `requested` when that one is usable
- * here, or cleared. Remote data never invalidates a local association and nothing is chosen by heuristic.
+ * is still an active member of that shared project. `requested` (the local leader's choice) replaces it when this hub and
+ * the creator hub are both active members; otherwise the project is cleared. Remote data never invalidates a local
+ * association and nothing is chosen by heuristic.
  */
-export async function settleChannelProject(db: Sql, channelId: string, localHubId: string, requested: string | null = null): Promise<string | null> {
+export async function settleChannelProject(db: Sql, channelId: string, localHubId: string, creatorHubId: string, requested: string | null = null): Promise<string | null> {
   const row = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1 AND kind=$2", [channelId, INTERHUB_CHANNEL_KIND]))[0]
   if (!row) return null
   const current = row.project_id ? String(row.project_id) : null
   const settled = current && await sharedProjectUsable(db, current, [localHubId]) ? current
-    : requested && await sharedProjectUsable(db, requested, [localHubId]) ? requested : null
-  if (settled !== current) await db.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1", [channelId, settled])
+    : requested && await sharedProjectUsable(db, requested, [localHubId, creatorHubId]) ? requested : null
+  if (settled !== current) {
+    await db.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1", [channelId, settled])
+    console.error(`interhub: stored project of channel ${channelId} is no longer a usable shared project of this hub; ${settled ? "replaced by the requested one" : "cleared"}`)
+  }
   return settled
 }
 

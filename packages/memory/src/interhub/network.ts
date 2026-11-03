@@ -213,7 +213,7 @@ export class InterhubNetwork {
   /**
    * Joiner side: verifies the creator-signed roster and creates the local copy of the channel with the caller as this
    * hub's leader. After the roster is applied the project is settled locally: a stored project is kept while this
-   * hub is still an active member of that shared project, otherwise `projectId` replaces it when usable here, or it is cleared.
+   * hub is still an active member of that shared project, otherwise `projectId` replaces it when this hub and the creator hub are active members, or it is cleared.
    */
   async completeJoin(caller: { id: string; label: string }, creator: PublicIdentity, raw: unknown, projectId: string | null = null) {
     const roster = parse(rosterSchema, raw), local = await this.localIdentity()
@@ -249,7 +249,7 @@ export class InterhubNetwork {
           ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL`,
         [channelId, member.hub_id, JSON.stringify(own ? publicIdentity(local) : member.peer_identity), own ? caller.id : member.leader_session_id, own ? label(caller.label) : member.leader_label, member.joined_at])
       }
-      project = await settleChannelProject(sql, channelId, local.id, projectId)
+      project = await settleChannelProject(sql, channelId, local.id, creator.id, projectId)
     })
     const recorded = roster.members.find(m => m.hub_id === local.id)!
     return { channel_id: channelId, hub_id: local.id, project_id: project, leader_changed: recorded.leader_session_id !== caller.id }
