@@ -134,6 +134,13 @@ export class MemoryService {
     const network = new SharedNetwork(operations.sharing)
     // Inter-hub channels ride the same P2P network; the tools reach it through these services.
     operations.interhub = createInterhubServices(store, { network, events: operations.chat.events })
+    operations.setSharedPaused = async (projectId, paused) => {
+      await operations.sharing.get(projectId)
+      await db.query("UPDATE shared_projects SET enabled=$2 WHERE id=$1", [projectId, !paused])
+      await network.tick()
+      if (!paused) await operations.interhub.reconcileProjects()
+      return { paused }
+    }
     // The service is published only after the project backfill settled, so the first read already sees repaired channels.
     await operations.interhub.ready
     this.current = { db, store, ai, operations, runner, network }

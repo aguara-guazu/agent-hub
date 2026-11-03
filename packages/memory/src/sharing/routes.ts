@@ -40,8 +40,8 @@ export function sharingRoutes(app: FastifyInstance, service: MemoryService, auth
       case 'export': return exportProject(sharing, input.project_id)
       case 'restore': { const result = await restoreProject(sharing, input.archive, input.phrase); await network.tick(); return result }
       case 'pause': {
-        check(await sharing.get(input.project_id), 'Proyecto inexistente')
-        await db.query('UPDATE shared_projects SET enabled=$2 WHERE id=$1', [input.project_id, !input.paused]); await network.tick(); return { paused: input.paused }
+        check(operations.setSharedPaused, "La sincronización compartida no está disponible en este servicio", 503)
+        return operations.setSharedPaused(input.project_id, input.paused)
       }
     }
   })

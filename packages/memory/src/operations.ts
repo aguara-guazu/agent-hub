@@ -47,6 +47,7 @@ const definitions = {
   ...scheduleDefinitions,
   ...projectAutomationDefinitions,
   shared_status: ['Shared project members, permissions, identity, versions. Work on it per skill hub-collaboration.', z.object({ project_id: id }).strict()],
+  shared_pause: ["Pause or resume synchronization of a shared project on this hub, only when the person asks. Resuming reconsiders unassigned inter-hub channels.", z.object({ project_id: id, paused: z.boolean() }).strict()],
   shared_version: ['Full shared version with author, agent and origin peer; read before resolving a conflict. No attachment bytes.', z.object({ project_id: id, event_id: z.string().length(64) }).strict()],
   publish_source: ['Publish a source early (normally automatic) or share a task/collection. Keeps provenance, dedupes; shares only project fragments.', z.object({ project_id: id, entity_id: id, key: z.string().max(1000).optional() }).strict()],
   resolve_shared: ['Resolve concurrent shared-source versions: pick an event after checking its evidence. All past versions kept.', z.object({ project_id: id, key: z.string().max(1000), event_id: z.string().length(64) }).strict()],
@@ -141,6 +142,7 @@ export class MemoryOperations {
   readonly fleet: TeamOrca | undefined
   /** Set by the service once the schedule runtime exists; absent in worker processes, where schedule tools are unavailable. */
   schedules: ScheduleAdmin | undefined
+  setSharedPaused: ((projectId: string, paused: boolean) => Promise<{ paused: boolean }>) | undefined
   readonly projectAutomation: ProjectAutomationService
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
@@ -234,6 +236,10 @@ export class MemoryOperations {
         const project = await this.sharing.get(input.project_id), who = await this.sharing.identity()
         return { project_id: input.project_id, identity: { id: who.id, name: who.name }, members: project.policy.members, conflict: project.conflict,
           enabled: project.enabled, publications: await this.sharing.publications(input.project_id), pending_sources: await this.sharing.sourceSyncStatus(input.project_id), skill: 'hub-collaboration' }
+      }
+      case "shared_pause": {
+        check(this.setSharedPaused, "La sincronización compartida no está disponible en este servicio", 503)
+        return this.setSharedPaused(input.project_id, input.paused)
       }
       case 'shared_version': return this.sharing.version(input.project_id, input.event_id)
       case 'publish_source': return this.sharing.publish(input.project_id, input.entity_id, input.key, agent)
