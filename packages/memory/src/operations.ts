@@ -27,6 +27,7 @@ import { MemoryStore, canonical, requireEntity, validateProjects } from './store
 import { searchMemory, citation } from './search.js'
 import type { MemoryAI } from './ai.js'
 import { exportMemory, deleteEntity } from './backup.js'
+import type { AdmissionGate } from "./admission-gate.js"
 import { reviewIdentity } from './identity-inference.js'
 import { mergePeople, resolveCanonical } from './people.js'
 import { GMAIL_SCOPE, GMAIL_SEND_SCOPE, googleScopes, type GoogleAuth } from './google-auth.js'
@@ -145,6 +146,8 @@ export class MemoryOperations {
   /** Set by the service once the schedule runtime exists; absent in worker processes, where schedule tools are unavailable. */
   schedules: ScheduleAdmin | undefined
   setSharedPaused: ((projectId: string, paused: boolean) => Promise<{ paused: boolean }>) | undefined
+  /** Set by the service: backups run inside it so a stop never cuts one. */
+  admission: AdmissionGate | undefined
   readonly projectAutomation: ProjectAutomationService
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
@@ -506,7 +509,7 @@ export class MemoryOperations {
         OR (e.kind='person' AND e.data->>'merged_into' IS NULL AND (COALESCE(e.data->>'identity_status','unresolved')='unresolved' OR NULLIF(e.data->>'email','') IS NULL))
         OR (e.kind IN ('meeting','document','message','issue','note') AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project'))
         ORDER BY e.updated_at DESC LIMIT $1 OFFSET $2`, [input.limit, input.offset]) }
-      case 'export_backup': return exportMemory(store)
+      case 'export_backup': return this.admission ? this.admission.track("backup", () => exportMemory(store)) : exportMemory(store)
       case 'delete_entity': {
         if (this.schedules) await this.schedules.beforeProjectDelete(input.id)
         await deleteEntity(store, input.id)

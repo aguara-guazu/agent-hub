@@ -7,6 +7,7 @@ import type { UsageQuotaAvailability, UsageQuotaState } from '@agenthub/shared'
 import { isRestored } from './usage-quotas.js'
 import type { MemoryDatabase } from './database.js'
 import type { MemoryStore } from './store.js'
+import type { AdmissionGate } from "./admission-gate.js"
 import type { ArtifactDraft, CollectDeps, DeliveryReceipt, PublicItem, RunContext, RunEvents, RunPackage, ScheduleAutomation, ScheduleTemplateDefinition } from './schedule-contract.js'
 import { snapshotOf, TERMINAL_RUN_STATES, type RunRow, type ScheduleRow, type ScheduleStore } from './schedule-store.js'
 import { scheduleTemplate } from './schedule-templates.js'
@@ -92,6 +93,8 @@ export interface ScheduleRuntimeOptions {
   closeWaitMs?: number
   /** Derived plans run agents outside any schedule: switching the automations off closes them, and the close is retried while the switch stays off. */
   derivedPlans?: { closeAll(reason: string): Promise<{ closed: string[]; failed: string[] }> }
+  /** Closed during a silent update: no run, resumed run or periodic task starts; what is due stays due and starts after reopening. */
+  admission?: AdmissionGate
 }
 
 /** Stable refusals of the decision module; matched by code or class name so the memory package does not import the core's error classes. */
@@ -145,12 +148,16 @@ export class ScheduleRuntime {
   /** Runs a periodic task now, once: nothing happens while the automations are off, the runtime is stopped or the task is already running. */
   kickPeriodic(name: string) {
     const entry = this.periodic.get(name)
-    if (!entry || this.stopped || entry.running || !this.o.automation.enabled()) return
+    if (!entry || this.stopped || entry.running || !this.o.automation.enabled() || this.o.admission?.isClosed()) return
     entry.last = this.now()
     entry.running = entry.task().then(() => undefined, () => undefined).finally(() => { entry.running = undefined })
   }
   kick = () => { if (!this.stopped && !this.ticking) this.ticking = this.tick().catch(() => undefined).finally(() => { this.ticking = undefined }) }
   activeRuns() { return this.store.activeRuns() }
+  /** Work that a stop would cut: runs claimed or being claimed, and periodic tasks (reply and action dispatch) in progress. */
+  busy(): { runs: number; periodic: number } {
+    return { runs: this.inFlight.size, periodic: [...this.periodic.values()].filter(entry => entry.running).length }
+  }
   /** Aborts the in-flight run of a schedule; the run ends as cancelled. */
   async stopRun(scheduleId: string) {
     const stopping: Array<Promise<void>> = []
@@ -172,7 +179,7 @@ export class ScheduleRuntime {
     for (const schedule of await this.store.dueSchedules(isoAt(now))) await this.fire(schedule, now)
     // Periodic tasks may wait on the network: they run in the background, never overlap themselves and never delay launching a due run.
     for (const entry of this.periodic.values()) {
-      if (entry.running || now - entry.last < entry.everyMs) continue
+      if (entry.running || now - entry.last < entry.everyMs || this.o.admission?.isClosed()) continue
       entry.last = now
       entry.running = entry.task().then(() => undefined, () => undefined).finally(() => { entry.running = undefined })
     }
@@ -253,7 +260,7 @@ export class ScheduleRuntime {
 
   // --- execution ---------------------------------------------------------------------------------------------------------------------------------
   private launch(run: RunRow, resumeRunning = false) {
-    if (this.stopped || this.inFlight.has(run.id) || !this.o.automation.enabled()) return
+    if (this.stopped || this.inFlight.has(run.id) || !this.o.automation.enabled() || this.o.admission?.isClosed()) return
     const controller = new AbortController()
     const done = (async () => {
       const claimed = resumeRunning ? await this.store.reclaimRunning(run.id, run.generation) : await this.store.claimRun(run.id, run.generation)

@@ -22,6 +22,7 @@ import { GMAIL_SCOPE } from './google-auth.js'
 import { syncNotion } from './connectors/notion.js'
 import { syncSlack } from './connectors/slack.js'
 import { syncJira } from './connectors/jira.js'
+import { ADMISSION_SETTING } from "./admission-gate.js"
 
 /** Whole-memory passes that rewrite people, identities or vectors: they start alone and nothing starts next to them.
  *  Once one is the oldest pending job, newer jobs wait so it is not postponed indefinitely. */
@@ -82,8 +83,11 @@ export class JobRunner {
    *  no cursor, so the mailbox keeps being polled while it runs. Source syncs go first: they are short network jobs, and
    *  behind an extraction backlog a new mail would otherwise wait for every older source to be processed. */
   async claim(): Promise<Record<string, any> | undefined> {
+    // The worker is a separate process: core publishes the closed admission gate of a silent update in `settings`, and a claim
+    // is refused in the same statement that would take the job. Queued jobs wait; running ones are counted by core as blockers.
     return (await this.store.db.query(`UPDATE jobs SET state='running',lease_owner=$1,lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','+3 minutes'),attempts=attempts+1,updated_at=now()
-      WHERE id=(SELECT j.id FROM jobs j WHERE j.state IN ('queued','waiting') AND j.available_at<=now()
+      WHERE NOT EXISTS(SELECT 1 FROM settings g WHERE g.key='${ADMISSION_SETTING}' AND CAST(g.value->>'until' AS INTEGER)>CAST(strftime('%s','now') AS INTEGER)*1000)
+        AND id=(SELECT j.id FROM jobs j WHERE j.state IN ('queued','waiting') AND j.available_at<=now()
         AND NOT EXISTS(SELECT 1 FROM jobs r WHERE r.state='running' AND (
           ((r.kind IN (SELECT value FROM json_each($2)) OR j.kind IN (SELECT value FROM json_each($2)))
             AND NOT ((j.kind IN (SELECT value FROM json_each($5)) AND r.kind IN (SELECT value FROM json_each($6)))
