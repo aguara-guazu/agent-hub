@@ -39,6 +39,7 @@ import { requestMigrationRetry } from './legacy-postgres.js'
 import { registerScheduleRoutes } from './schedule-routes.js'
 import { registerDecisionRoutes } from './decision-routes.js'
 import { registerProjectAutomationRoutes } from './project-automation-routes.js'
+import { registerUpdateHintRoutes } from './sharing/update-hint.js'
 
 const VERSION = String((createRequire(import.meta.url)('../package.json') as { version: string }).version)
 
@@ -55,6 +56,8 @@ export interface MemoryRouteOptions {
   /** Switch of the scheduler and the effects the core injects (deliveries, approved actions, decisions); absent means enabled and no external adapters. */
   automationsEnabled?(): boolean
   scheduleEffects?: import('./schedule-contract.js').ScheduleEffects
+  /** Desktop update credential; without it the internal update routes are not registered. */
+  authorizeUpdate?(request: FastifyRequest): Promise<void>
 }
 export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions) {
   const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true, options.collaborationEnabled,
@@ -64,6 +67,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
   registerUsageRoutes(app,service,options)
   registerUpdateDrain(app, service, options.authorize)
+  if (options.authorizeUpdate) registerUpdateHintRoutes(app, async () => (await service.get()).hints, options.authorizeUpdate)
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }

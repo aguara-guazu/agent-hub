@@ -7,6 +7,8 @@ import { active, eventSchema, payloadSchema, type Policy, type Payload, type Sha
 import { SharedProjects } from './projects.js'
 
 export class SharedEvents extends SharedProjects {
+  /** Observer of stored receipts; the update hint module uses it to recognize peer update hints. */
+  receiptObserver: ((message: unknown, author: string) => void) | undefined
   async append(projectId: string, payload: Payload) {
     const { project, who, member } = await this.member(projectId, payload.kind !== 'receipt')
     check(member.role !== 'reader' || payload.kind === 'receipt', 'Reader no puede publicar', 403)
@@ -76,6 +78,7 @@ export class SharedEvents extends SharedProjects {
     if (payload.kind === 'claim') check(Date.parse(payload.expires_at) <= Date.parse(event.created_at) + 600_000, 'Reserva demasiado larga')
     await this.store.db.query('INSERT INTO shared_events(id,project_id,document,payload,received_from) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING',
       [event.id, event.project, JSON.stringify(event), JSON.stringify(payload), via])
+    if (payload.kind === 'receipt') this.receiptObserver?.(payload.message, event.author)
     return { duplicate: false }
   }
   async events(projectId: string, after = 0, limit = 50) {

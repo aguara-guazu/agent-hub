@@ -1,5 +1,6 @@
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { SharedNetwork } from './sharing/network.js'
+import { UpdateHints } from './sharing/update-hint.js'
 import { createInterhubServices } from './interhub/services.js'
 import { MemoryDefaults, DEFAULTS_KEY } from './defaults.js'
 import { MediaRuntime } from './media-runtime.js'
@@ -101,7 +102,7 @@ export class MemoryService {
   get admissionGate(): AdmissionGate { return this.admission }
   readonly openCode: OpenCodeRuntime
   readonly cliExtraction: CliExtractionRuntime
-  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: () => AttentionReaders } } | null = null
+  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; hints: UpdateHints; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: () => AttentionReaders } } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true,
@@ -141,7 +142,10 @@ export class MemoryService {
     const network = new SharedNetwork(operations.sharing)
     // Inter-hub channels ride the same P2P network; the tools reach it through these services.
     operations.interhub = createInterhubServices(store, { network, events: operations.chat.events })
-    this.current = { db, store, ai, operations, runner, network }
+    // Peer update hints are observed where the network runs; they only wake the desktop's own check of the official feed.
+    const hints = new UpdateHints(db, operations.sharing, async () => { await network.refresh() }, line => { process.stderr.write(`${line}\n`) })
+    operations.sharing.receiptObserver = (message, author) => hints.observe(message, author)
+    this.current = { db, store, ai, operations, runner, network, hints }
     if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
     return this.current
   }
