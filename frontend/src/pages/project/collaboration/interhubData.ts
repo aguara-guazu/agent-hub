@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
-import { ApiError, api } from "../../../lib/api"
+import { api } from "../../../lib/api"
 import { MEMORY_REFRESH_MS } from "../../../lib/memory"
-import type { InterhubAgentRole, InterhubChannelCode, InterhubMessageOrigin, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
+import type { InterhubAgentRole, InterhubMessageOrigin, InterhubOrphanChannel, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import type { Channel } from "./chatTypes"
 
 /**
@@ -15,7 +15,26 @@ export function isInterhub(channel: Pick<Channel, "kind"> | undefined): boolean 
   return channel?.kind === INTERHUB_CHANNEL_KIND
 }
 
-export type { InterhubAgentRole, InterhubMessageOrigin, InterhubRoster, InterhubRosterAgent, InterhubRosterHub }
+export type { InterhubAgentRole, InterhubMessageOrigin, InterhubOrphanChannel, InterhubRoster, InterhubRosterAgent, InterhubRosterHub }
+
+export function useInterhubOrphans() {
+  return useQuery({
+    queryKey: ["interhub-orphans"],
+    queryFn: async ({ signal }) => {
+      const items: InterhubOrphanChannel[] = []
+      let total = 0
+      do {
+        const page = await api.get<{ items: InterhubOrphanChannel[]; total: number }>(`/memory/interhub/orphans?limit=100&offset=${items.length}`, signal)
+        items.push(...page.items)
+        total = page.total
+        if (page.items.length === 0) break
+      } while (items.length < total)
+      return { items }
+    },
+    refetchInterval: MEMORY_REFRESH_MS,
+    refetchIntervalInBackground: false,
+  })
+}
 
 /** Hubs y agentes del canal, con el hub propio primero y el líder de cada hub al comienzo de su lista. */
 export function useInterhubRoster(channelId: string, enabled = true) {
@@ -25,29 +44,5 @@ export function useInterhubRoster(channelId: string, enabled = true) {
     enabled,
     refetchInterval: MEMORY_REFRESH_MS,
     refetchIntervalInBackground: false,
-  })
-}
-
-/**
- * Código de unión del canal. Es un secreto: solo el hub creador lo recibe, no se guarda en caché más allá
- * de la vista montada y no se vuelve a pedir en segundo plano. 403/404 significa «no corresponde mostrarlo».
- */
-export function useInterhubCode(channelId: string) {
-  return useQuery({
-    queryKey: ["interhub-code", channelId],
-    queryFn: async () => {
-      try {
-        const body = await api.get<Partial<InterhubChannelCode>>(`/memory/interhub/channels/${encodeURIComponent(channelId)}/code`)
-        return typeof body.code === "string" && body.code ? body.code : null
-      } catch (failure) {
-        if (failure instanceof ApiError && (failure.status === 403 || failure.status === 404)) return null
-        throw failure
-      }
-    },
-    gcTime: 0,
-    staleTime: 0,
-    retry: false,
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
   })
 }

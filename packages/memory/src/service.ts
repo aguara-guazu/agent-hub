@@ -134,6 +134,15 @@ export class MemoryService {
     const network = new SharedNetwork(operations.sharing)
     // Inter-hub channels ride the same P2P network; the tools reach it through these services.
     operations.interhub = createInterhubServices(store, { network, events: operations.chat.events })
+    operations.setSharedPaused = async (projectId, paused) => {
+      await operations.sharing.get(projectId)
+      await db.query("UPDATE shared_projects SET enabled=$2 WHERE id=$1", [projectId, !paused])
+      await network.tick()
+      if (!paused) await operations.interhub.reconcileProjects()
+      return { paused }
+    }
+    // The service is published only after the project backfill settled, so the first read already sees repaired channels.
+    await operations.interhub.ready
     this.current = { db, store, ai, operations, runner, network }
     if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
     return this.current
@@ -255,5 +264,5 @@ export class MemoryService {
     const status=member ? await operations.fleet?.status?.(String(member.id)) : undefined
     return !!status && ['starting','busy','idle','waiting_input'].includes(status.state ?? '')
   }
-  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.current?.schedules?.runtime.close(); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.operations.fleet?.close?.(); await current.network.stop(); await current.db.close() } }
+  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.current?.schedules?.runtime.close(); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.operations.fleet?.close?.(); current.operations.closeInterhub(); await current.network.stop(); await current.db.close() } }
 }
