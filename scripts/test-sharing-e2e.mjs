@@ -119,7 +119,7 @@ async function screenshot(hub, name) {
 async function entities(hub, kind) { return hub.memory('list_entities', { project_id: projectId, kind, limit: 200 }) }
 async function publish(hub, entityId) { return hub.memory('publish_source', { project_id: projectId, entity_id: entityId }) }
 async function invite(owner, guest, role = 'maintainer') {
-  const invitation = await owner.admin('member', { project_id: projectId, identity: guest.identity, role, invite: false })
+  const { invitation } = await owner.admin('member', { project_id: projectId, identity: guest.identity, role, invite: false })
   await guest.admin('join', { invitation })
 }
 try {
@@ -153,7 +153,7 @@ try {
     await a.page.getByText('Invitar o cambiar permisos', { exact: true }).click()
     await a.page.getByLabel('Identidad pública del invitado').fill(JSON.stringify(b.identity))
     await a.page.getByRole('button', { name: 'Crear invitación' }).click()
-    const code = a.page.getByLabel('Invitación para compartir'); await code.waitFor(); const invitation = await code.inputValue(); originalInvitation = JSON.parse(invitation)
+    const code = a.page.getByLabel('Invitación para compartir'); await code.waitFor(); const invitation = await code.inputValue(); originalInvitation = invitation
     await b.page.setViewportSize({ width: 900, height: 700 })
     await b.page.goto(`${b.base}/#/projects`)
     await visibleAction(b, 'Unirme a un proyecto')
