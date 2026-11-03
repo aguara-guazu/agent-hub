@@ -118,6 +118,21 @@ async function unlinkChannel(db: Sql, channelId: string, projectId: string, reas
   return true
 }
 
+/**
+ * Called inside the transaction that deletes a project entity, before the row goes: the foreign key would set the channel
+ * project to NULL without a trace. The channel keeps no project id to restore because the project no longer exists.
+ * Returns the number of channels released.
+ */
+export async function releaseDeletedProject(db: Sql, projectId: string): Promise<number> {
+  const rows = await db.query("SELECT id FROM chat_channels WHERE kind=$1 AND project_id=$2", [INTERHUB_CHANNEL_KIND, projectId])
+  for (const row of rows) {
+    await db.query("UPDATE chat_channels SET project_id=NULL,updated_at=now() WHERE id=$1", [row.id])
+    await db.query("UPDATE interhub_channels SET project_unlink_reason='project_unavailable',project_unlinked_id=NULL,project_unlinked_at=$2 WHERE channel_id=$1", [row.id, new Date().toISOString()])
+    console.error(`interhub: project of channel ${row.id} unlinked (project deleted)`)
+  }
+  return rows.length
+}
+
 /** Forgets the unlink record once the channel has a project again. */
 const clearUnlink = (db: Sql, channelId: string) =>
   db.query("UPDATE interhub_channels SET project_unlink_reason=NULL,project_unlinked_id=NULL,project_unlinked_at=NULL WHERE channel_id=$1", [channelId])
