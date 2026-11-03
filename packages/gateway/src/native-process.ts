@@ -33,6 +33,7 @@ export async function inspectNativeProcess(pid:number, signal?:AbortSignal):Prom
       const value=JSON.parse(result.stdout)
       return typeof value.started==='string'&&typeof value.command==='string'?{parent:Number(value.parent),started:value.started,command:value.command}:undefined
     }
+    const before=process.platform==='linux'?await linuxStart(pid,signal):undefined
     const row=(await exec('ps',['-p',String(pid),'-o','ppid=','-o','lstart=','-o','command='],{timeout:1000,maxBuffer:32768,signal,env:{...process.env,LC_ALL:'C'}})).stdout.trim()
     if(!row)return null
     const match=/^(\d+)\s+(\w+\s+\w+\s+\d+\s+[\d:]+\s+\d+)\s+(.+)$/.exec(row)
@@ -41,7 +42,8 @@ export async function inspectNativeProcess(pid:number, signal?:AbortSignal):Prom
       const stable=await linuxStart(pid,signal)
       if(signal?.aborted)return undefined
       // Without /proc the identity would change format between calls; report inspection as unavailable instead.
-      return stable?{parent:Number(match[1]),started:stable,command:match[3]!}:undefined
+      // ps and /proc are separate reads: a PID reused between them would pair one process's command with another's identity.
+      return stable&&stable===before?{parent:Number(match[1]),started:stable,command:match[3]!}:undefined
     }
     return {parent:Number(match[1]),started:match[2]!.trim(),command:match[3]!}
   } catch(error) { return !signal?.aborted&&process.platform!=='win32'&&String((error as NodeJS.ErrnoException).code)==='1'?null:undefined }
