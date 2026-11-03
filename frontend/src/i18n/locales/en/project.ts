@@ -393,6 +393,10 @@ const project = {
   collaboration: {
     interhub: {
       group: "Shared between hubs",
+      orphans: "Global channels between hubs without a project",
+      orphanGlobal: "No project · Global",
+      orphanArchived: "No project · Archived",
+      orphanClosed: "No project · Closed",
       shared: "Channel shared between hubs",
       sharedBetween_one: "Channel shared between {{count, number}} hub",
       sharedBetween_other: "Channel shared between {{count, number}} hubs",

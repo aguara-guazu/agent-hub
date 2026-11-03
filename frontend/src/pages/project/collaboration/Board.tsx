@@ -13,7 +13,7 @@ import { ArchivedChannels } from "./ArchivedChannels"
 import { TrashPanel } from "./BoardPanels"
 import { ThreadView } from "./ThreadView"
 import { InterhubAgents } from "./InterhubAgents"
-import { isInterhub, useInterhubRoster } from "./interhubData"
+import { isInterhub, useInterhubOrphans, useInterhubRoster } from "./interhubData"
 
 const CHANNEL_LIMIT = 100
 const THREAD_PAGE = 30
@@ -36,12 +36,15 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
   const setArchiveOpen = (open: boolean) => patch({ archived: open ? "1" : null })
 
   const channels = useMemory<Page<BoardChannel>>("chat_channels", { project_id: project.id, limit: CHANNEL_LIMIT, offset: 0 })
+  const orphans = useInterhubOrphans()
+  const unassigned: BoardChannel[] = (orphans.data?.items ?? []).map(item => ({ id: item.channel_id, name: item.name, path: "", branch: null, threads: 0, kind: "inter-hub", archived_at: item.archived_at, closed_at: item.closed_at }))
   const all = channels.data?.items ?? []
   // Locales primero y compartidos entre hubs después, como se ven en la columna.
   const local = all.filter(item => !isInterhub(item))
   const shared = all.filter(isInterhub)
   const items = [...local, ...shared]
-  const listed = items.find(item => item.id === params.channel)
+  const orphanSelected = unassigned.find(item => item.id === params.channel)
+  const listed = items.find(item => item.id === params.channel) ?? orphanSelected
   // Un canal que no está en la lista activa (archivado o fuera de la primera página) se busca por id: esa consulta ignora el filtro de archivo.
   const lookingUp = Boolean(params.channel) && Boolean(channels.data) && !listed
   const lookup = useMemory<Page<BoardChannel>>("chat_channels", { project_id: project.id, channel_id: params.channel, limit: 1, offset: 0 }, lookingUp)
@@ -52,7 +55,7 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
 
   // Un enlace a un canal archivado sin `?archived=1` despliega la sección una vez por canal, para que se vea cuál está
   // abierto; después la persona puede plegarla sin que vuelva a abrirse.
-  const archivedSelected = channel?.archived_at ? channel.id : null
+  const archivedSelected = channel?.archived_at && !orphanSelected ? channel.id : null
   const autoOpened = useRef<string | null>(null)
   useEffect(() => {
     if (!archivedSelected || autoOpened.current === archivedSelected) return
@@ -116,6 +119,7 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
             activeId={channel?.id}
             href={id => params.href({ channel: id, thread: null, tstate: null })}
           />
+          <OrphanChannels orphans={orphans} items={unassigned} activeId={orphanSelected?.id} href={id => params.href({ channel: id, thread: null, tstate: null })} />
         </nav>
 
         {channels.data && !channel && !resolving && !(items.length === 0 && archivedCount.isPending)
@@ -141,6 +145,7 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
                 key={channel.id}
                 projectId={project.id}
                 channel={channel}
+                unassigned={Boolean(orphanSelected)}
                 state={params.state}
                 threadId={params.thread}
                 onState={state => params.patch({ tstate: state === "open" ? null : state, thread: null })}
@@ -162,6 +167,24 @@ export function CollaborationBoard({ project }: { project: MemoryEntity }) {
   )
 }
 
+function OrphanChannels({ orphans, items, activeId, href }: { orphans: ReturnType<typeof useInterhubOrphans>; items: BoardChannel[]; activeId: string | undefined; href: (id: string) => string }) {
+  const { t } = useT("project")
+  if (orphans.data?.items.length === 0) return null
+
+  return <section aria-label={t("collaboration.interhub.orphans")}>
+    <div className="nav-group">{t("collaboration.interhub.orphans")}</div>
+    {orphans.isPending ? <SkeletonRows count={1} avatar={false} label={t("collaboration.board.loadingChannels")} />
+      : orphans.error ? <ErrorState error={orphans.error} title={t("collaboration.board.channelsError")} onRetry={() => void orphans.refetch()} />
+      : items.map(item => <Link replace key={item.id} className={cx("nav-item", "nav-item-2", activeId === item.id && "is-active")} aria-current={activeId === item.id ? "page" : undefined} to={href(item.id)}>
+          <Icon name="interhub" small />
+          <span className="nav-item-text">
+            <span className="trunc" title={item.name}>{item.name}</span>
+            <span className="xs t3 trunc">{t(item.closed_at ? "collaboration.interhub.orphanClosed" : item.archived_at ? "collaboration.interhub.orphanArchived" : "collaboration.interhub.orphanGlobal")}</span>
+          </span>
+        </Link>)}
+  </section>
+}
+
 function ChannelLink({ item, active, href }: { item: BoardChannel; active: boolean; href: string }) {
   return (
     <Link replace className={cx("nav-item", active && "is-active")} aria-current={active ? "page" : undefined} to={href}>
@@ -180,6 +203,7 @@ function AgentPanelLoader({ projectId, agentId, onClose }: { projectId: string; 
 interface ChannelColumnsProps {
   projectId: string
   channel: BoardChannel
+  unassigned: boolean
   state: ThreadState
   threadId: string
   onState: (state: ThreadState) => void
@@ -191,13 +215,13 @@ interface ChannelColumnsProps {
   onDeleted: (uncertain: boolean) => void
 }
 
-function ChannelColumns({ projectId, channel, state, threadId, onState, onThread, onCloseThread, onAgents, onPlan, onTrash, onDeleted }: ChannelColumnsProps) {
+function ChannelColumns({ projectId, channel, unassigned, state, threadId, onState, onThread, onCloseThread, onAgents, onPlan, onTrash, onDeleted }: ChannelColumnsProps) {
   const { t, plural } = useT("project")
   const common = useT("common").t
   const format = useFormat()
   const [limit, setLimit] = useState(THREAD_PAGE)
   const [deleting, setDeleting] = useState(false)
-  const scope = { project_id: projectId, channel_id: channel.id }
+  const scope = { ...(unassigned ? {} : { project_id: projectId }), channel_id: channel.id }
   const threads = useMemory<Page<BoardThread>>("chat_threads", { ...scope, query: "", state, limit, offset: 0 })
   const other = useMemory<Page<BoardThread>>("chat_threads", { ...scope, query: "", state: state === "open" ? "resolved" : "open", limit: 1, offset: 0 })
   const shared = isInterhub(channel)
@@ -245,7 +269,7 @@ function ChannelColumns({ projectId, channel, state, threadId, onState, onThread
               {shared ? <Icon name="interhub" /> : <span className="chan-hash" aria-hidden="true">#</span>} {channel.name}
             </h2>
             {shared
-              ? <span className="row-sub">{hubCount !== undefined ? plural("collaboration.interhub.sharedBetween", hubCount) : t("collaboration.interhub.shared")}</span>
+              ? <span className="row-sub">{unassigned ? t("collaboration.interhub.orphanGlobal") : hubCount !== undefined ? plural("collaboration.interhub.sharedBetween", hubCount) : t("collaboration.interhub.shared")}</span>
               : channel.description && <span className="row-sub" title={channel.description}>{channel.description}</span>}
           </div>
           {archived && (

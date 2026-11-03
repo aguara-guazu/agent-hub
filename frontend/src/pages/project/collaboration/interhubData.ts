@@ -17,6 +17,33 @@ export function isInterhub(channel: Pick<Channel, "kind"> | undefined): boolean 
 
 export type { InterhubAgentRole, InterhubMessageOrigin, InterhubRoster, InterhubRosterAgent, InterhubRosterHub }
 
+export interface InterhubOrphanChannel {
+  channel_id: string
+  name: string
+  created_at: string
+  archived_at: string | null
+  closed_at: string | null
+}
+
+export function useInterhubOrphans() {
+  return useQuery({
+    queryKey: ["interhub-orphans"],
+    queryFn: async ({ signal }) => {
+      const items: InterhubOrphanChannel[] = []
+      let total = 0
+      do {
+        const page = await api.get<{ items: InterhubOrphanChannel[]; total: number }>(`/memory/interhub/orphans?limit=100&offset=${items.length}`, signal)
+        items.push(...page.items)
+        total = page.total
+        if (page.items.length === 0) break
+      } while (items.length < total)
+      return { items }
+    },
+    refetchInterval: MEMORY_REFRESH_MS,
+    refetchIntervalInBackground: false,
+  })
+}
+
 /** Hubs y agentes del canal, con el hub propio primero y el líder de cada hub al comienzo de su lista. */
 export function useInterhubRoster(channelId: string, enabled = true) {
   return useQuery({
