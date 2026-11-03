@@ -20,7 +20,7 @@ export function interhubRoutes(app: FastifyInstance, service: MemoryService, aut
     reply.header("Cache-Control", "no-store")
     const { limit, offset } = parse(page, request.query)
     const channels = await (await services()).listOrphans()
-    const items = channels.slice(offset, offset + limit).map(({ channel_id, name, created_at, archived_at, closed_at }) => ({ channel_id, name, created_at, archived_at, closed_at }))
+    const items = channels.slice(offset, offset + limit).map(({ channel_id, name, created_at, archived_at, closed_at, project_unlink_reason }) => ({ channel_id, name, created_at, archived_at, closed_at, project_unlink_reason }))
     return { items, total: channels.length, limit, offset }
   })
   app.get("/api/memory/interhub/channels/:id/roster", { preHandler: async request => { await authorize(request) } }, async (request, reply) => {
