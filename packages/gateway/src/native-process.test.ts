@@ -12,6 +12,7 @@ it('cancela la consulta del sistema sin interpretar la cancelación como salida 
     options.signal.addEventListener('abort',()=>reject(Object.assign(new Error('aborted'),{code:1})),{once:true})
   }))
   const pending=inspectNativeProcess(123,controller.signal)
+  await vi.waitFor(()=>expect(exec).toHaveBeenCalled())
   expect(exec.mock.calls[0]![2].signal).toBe(controller.signal)
   controller.abort()
   expect(await pending).toBeUndefined()
