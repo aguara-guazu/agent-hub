@@ -21,6 +21,19 @@ Versión de correcciones sobre 0.14.2.
 - La interfaz ya no pide ni muestra el código de unión de los canales inter-hub;
   el código sigue disponible por MCP para el líder creador.
 
+## Proyectos duplicados
+
+- Crear o renombrar un proyecto con un título equivalente a uno existente
+  (sin distinguir mayúsculas, espacios ni variantes Unicode) responde 409 con el
+  proyecto existente; `allow_duplicate: true` permite crearlo a propósito.
+- La herramienta MCP `memory_merge_projects` unifica un proyecto local dentro de
+  otro: archiva el origen, mueve tareas, registros y referencias, y completa en
+  el destino los campos vacíos. Si el destino es compartido, las fuentes,
+  recuerdos, conectores y reglas del origen quedan en el proyecto archivado y se
+  listan para publicarlas una por una; nada se publica automáticamente.
+- Un proyecto unificado no acepta trabajo nuevo, pero sigue recibiendo lo que
+  importan sus conectores de forma privada y se puede borrar.
+
 ## Continuidad de los agentes
 
 - El gateway reintenta la conexión con la memoria del Hub cuando el core no
