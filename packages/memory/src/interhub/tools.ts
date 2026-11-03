@@ -23,6 +23,8 @@ export interface InterhubServices {
   readonly ready: Promise<void>
   /** Assigns the channels whose current shared-project policies leave a single candidate and notifies listeners. Never rejects. */
   reconcileProjects(): Promise<void>
+  /** Cancels the expiry timer; the service stays usable but schedules no further wake-ups. */
+  dispose(): void
   listOrphans(): Promise<InterhubOrphanChannel[]>
   assignProject(caller: InterhubCaller, channelId: string, projectId: string): Promise<{ channel_id: string; project_id: string }>
   /**

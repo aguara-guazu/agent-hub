@@ -137,6 +137,8 @@ export class MemoryOperations {
   private interhubServices: InterhubServices | undefined
   get interhub(): InterhubServices { return this.interhubServices ??= createInterhubServices(this.store, { events: this.chat.events }) }
   set interhub(value: InterhubServices | undefined) { this.interhubServices = value }
+  /** Stops the timers of the inter-hub service without creating it when it was never used. */
+  closeInterhub() { this.interhubServices?.dispose() }
   readonly interhubTools: InterhubTools
   readonly teams: TeamOrchestration | undefined
   readonly fleet: TeamOrca | undefined

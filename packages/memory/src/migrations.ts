@@ -907,4 +907,12 @@ ALTER TABLE chat_sessions ADD COLUMN output_at TIMESTAMP;
 ALTER TABLE interhub_channels ADD COLUMN shared_project_hint TEXT;
 ALTER TABLE interhub_channels ADD COLUMN shared_project_hint_at TEXT;
 ALTER TABLE interhub_channels ADD COLUMN shared_project_hint_event TEXT;
+`, String.raw`
+-- Why a channel lost its project (membership_expired | membership_revoked | project_unavailable), decided from the local
+-- policy only, and the project it had, kept so the same one is restored once it is valid again. Cleared on any assignment.
+-- Rollback: ALTER TABLE interhub_channels DROP COLUMN for project_unlinked_at, project_unlinked_id, project_unlink_reason;
+-- then delete this version from schema_versions.
+ALTER TABLE interhub_channels ADD COLUMN project_unlink_reason TEXT;
+ALTER TABLE interhub_channels ADD COLUMN project_unlinked_id TEXT;
+ALTER TABLE interhub_channels ADD COLUMN project_unlinked_at TEXT;
 `]

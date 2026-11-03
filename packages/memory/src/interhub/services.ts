@@ -10,7 +10,7 @@ import { SharedProjects } from "../sharing/projects.js"
 import { INTERHUB_REMOTE_CLI_KIND, InterhubChat, localChannelAgents } from "./chat.js"
 import { InterhubNetwork, chatKind } from "./network.js"
 import { InterhubTransport } from "./transport.js"
-import { assignProject, backfillProjects, isLocalHubLeader, listOrphans, projectReconcilers, sharedProjectUsable } from "./project-association.js"
+import { assignProject, backfillProjects, isLocalHubLeader, listOrphans, nextLocalExpiry, projectReconcilers, sharedProjectUsable, unlinkInvalidProjects } from "./project-association.js"
 import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
 
 const peerName = (value: unknown) => {
@@ -68,11 +68,29 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   }
   /** Assigns the channels whose current shared-project policies leave exactly one candidate; notifies listeners on any change. */
   const backfill = async (channelId?: string) => {
+    // Existing associations are checked first so a project this hub no longer belongs to is released before the channel is evaluated.
+    const unlinked = await unlinkInvalidProjects(db, localHubId, channelId ? { channelId } : {})
     const result = await backfillProjects(db, localHubId, channelId ? { channelId } : {})
     const announced = await announceProjects(channelId)
-    if (result.resolved.length || announced) events?.emit("change")
+    if (unlinked.length || result.resolved.length || announced) events?.emit("change")
+    await scheduleExpiry()
     return result
   }
+  /**
+   * One timer per service for the next expiry of this hub's own membership in a project that has channels assigned.
+   * It wakes at most once per hour so a Mac that slept recomputes the deadline, and it is replaced after every pass.
+   */
+  const MAX_EXPIRY_DELAY_MS = 3_600_000
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined
+  const scheduleExpiry = async () => {
+    clearTimeout(expiryTimer)
+    expiryTimer = undefined
+    const expires = await nextLocalExpiry(db, localHubId).catch(() => null)
+    if (expires === null || disposed) return
+    expiryTimer = setTimeout(() => { void reconcileProjects() }, Math.min(Math.max(expires - Date.now(), 1_000), MAX_EXPIRY_DELAY_MS))
+    expiryTimer.unref()
+  }
+  let disposed = false
   /** Creator side: declares in the signed log the project of every channel of this hub whose last announced value differs; true when something was announced. */
   const announceProjects = async (channelId?: string) => {
     const pending = await db.query(`SELECT c.id,c.project_id,i.creator_hub_id FROM chat_channels c JOIN interhub_channels i ON i.channel_id=c.id
@@ -108,6 +126,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
     /** Settles once the startup backfill has run; it never rejects. */
     ready: backfilled,
     reconcileProjects,
+    dispose() { disposed = true; clearTimeout(expiryTimer); expiryTimer = undefined },
     async createChannel(caller, input) {
       const requested = await channelProject(caller, input.projectId)
       const usable = requested ? await sharedProjectUsable(db, requested, [await localHubId()]) : false
