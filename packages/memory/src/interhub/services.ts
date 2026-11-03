@@ -69,12 +69,16 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   /** Assigns the channels whose current shared-project policies leave exactly one candidate; notifies listeners on any change. */
   const backfill = async (channelId?: string) => {
     // Existing associations are checked first so a project this hub no longer belongs to is released before the channel is evaluated.
-    const unlinked = await unlinkInvalidProjects(db, localHubId, channelId ? { channelId } : {})
-    const result = await backfillProjects(db, localHubId, channelId ? { channelId } : {})
-    const announced = await announceProjects(channelId)
-    if (unlinked.length || result.resolved.length || announced) events?.emit("change")
-    await scheduleExpiry()
-    return result
+    try {
+      const unlinked = await unlinkInvalidProjects(db, localHubId, channelId ? { channelId } : {})
+      const result = await backfillProjects(db, localHubId, channelId ? { channelId } : {})
+      const announced = await announceProjects(channelId)
+      if (unlinked.length || result.resolved.length || announced) events?.emit("change")
+      return result
+    } finally {
+      // Rearmed even when a step failed: the previous timer was cancelled by the last pass and the expiry must stay watched.
+      await scheduleExpiry().catch(() => {})
+    }
   }
   /**
    * One timer per service for the next expiry of this hub's own membership in a project that has channels assigned.
