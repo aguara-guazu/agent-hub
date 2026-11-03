@@ -1,5 +1,5 @@
 import { UsageNotices, usageWakeText } from './usage-notices.js'
-import { inspectNativeProcess } from '@agenthub/gateway'
+import { inspectNativeProcess, isStableProcessStart } from '@agenthub/gateway'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { findExtractionCli } from './cli-extraction.js'
@@ -66,6 +66,8 @@ export class LocalChatRuntime {
       const live=await this.inspectProcess(s.process_id)
       if(live===undefined)continue
       if(live && !s.process_started)continue // No birth identity: a live PID cannot prove replacement.
+      // A birth identity stored by an older version (ps lstart) cannot be compared with the stable Linux one; it proves nothing.
+      if(live && isStableProcessStart(live.started)!==isStableProcessStart(s.process_started))continue
       if(live && live.started===s.process_started) {
         await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[s.id,new Date(Date.now()+90000).toISOString()])
       } else {
