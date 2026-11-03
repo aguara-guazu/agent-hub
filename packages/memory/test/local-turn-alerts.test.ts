@@ -108,6 +108,8 @@ it.each([
   {name:'reutilizado',birth:'birth',observed:{parent:1,started:'another-birth',command:'other'},closed:true},
   {name:'sin inspección',birth:'birth',observed:undefined,closed:false},
   {name:'sin identidad de nacimiento',birth:null,observed:{parent:1,started:'birth',command:'test'},closed:false},
+  {name:'identidad heredada de ps frente a identidad estable de Linux',birth:'Tue Nov  3 00:11:27 2026',observed:{parent:1,started:'linux:boot:1234',command:'test'},closed:false},
+  {name:'identidad estable de Linux distinta',birth:'linux:boot:1234',observed:{parent:1,started:'linux:boot:9999',command:'other'},closed:true},
 ])('evidencia del proceso sin leer terminales: $name',async({birth,observed,closed})=>{
   await register('leader');const member=await register('member'),t=Date.now()+1000
   vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(t)
