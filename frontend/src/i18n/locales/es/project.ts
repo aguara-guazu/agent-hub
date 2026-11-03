@@ -493,6 +493,9 @@ const project = {
       },
     },
     sharing: {
+      paused: "Sincronización pausada",
+      resume: "Reanudar sincronización",
+      resumed: "Sincronización reanudada",
       title: "Personas con acceso",
       invite: "Invitar",
       loading: "Cargando personas con acceso",

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
-import { ApiError, api } from "../../../lib/api"
+import { api } from "../../../lib/api"
 import { MEMORY_REFRESH_MS } from "../../../lib/memory"
-import type { InterhubAgentRole, InterhubChannelCode, InterhubMessageOrigin, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
+import type { InterhubAgentRole, InterhubMessageOrigin, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import type { Channel } from "./chatTypes"
 
 /**
@@ -52,29 +52,5 @@ export function useInterhubRoster(channelId: string, enabled = true) {
     enabled,
     refetchInterval: MEMORY_REFRESH_MS,
     refetchIntervalInBackground: false,
-  })
-}
-
-/**
- * Código de unión del canal. Es un secreto: solo el hub creador lo recibe, no se guarda en caché más allá
- * de la vista montada y no se vuelve a pedir en segundo plano. 403/404 significa «no corresponde mostrarlo».
- */
-export function useInterhubCode(channelId: string) {
-  return useQuery({
-    queryKey: ["interhub-code", channelId],
-    queryFn: async () => {
-      try {
-        const body = await api.get<Partial<InterhubChannelCode>>(`/memory/interhub/channels/${encodeURIComponent(channelId)}/code`)
-        return typeof body.code === "string" && body.code ? body.code : null
-      } catch (failure) {
-        if (failure instanceof ApiError && (failure.status === 403 || failure.status === 404)) return null
-        throw failure
-      }
-    },
-    gcTime: 0,
-    staleTime: 0,
-    retry: false,
-    refetchInterval: false,
-    refetchOnWindowFocus: false,
   })
 }

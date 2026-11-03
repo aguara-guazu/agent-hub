@@ -496,6 +496,9 @@ const project = {
       },
     },
     sharing: {
+      paused: "Sync paused",
+      resume: "Resume sync",
+      resumed: "Sync resumed",
       title: "People with access",
       invite: "Invite",
       loading: "Loading people with access",

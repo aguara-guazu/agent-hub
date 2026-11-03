@@ -179,7 +179,7 @@ function OrphanChannels({ orphans, items, activeId, href }: { orphans: ReturnTyp
           <Icon name="interhub" small />
           <span className="nav-item-text">
             <span className="trunc" title={item.name}>{item.name}</span>
-            <span className="xs t3 trunc">{t(item.closed_at ? "collaboration.interhub.orphanClosed" : item.archived_at ? "collaboration.interhub.orphanArchived" : "collaboration.interhub.orphanGlobal")}</span>
+            {(item.closed_at || item.archived_at) && <span className="xs t3 trunc">{t(item.closed_at ? "collaboration.interhub.orphanClosed" : "collaboration.interhub.orphanArchived")}</span>}
           </span>
         </Link>)}
   </section>
@@ -307,7 +307,7 @@ function ChannelColumns({ projectId, channel, unassigned, state, threadId, onSta
           />
         </div>
       </div>
-      {shared && <InterhubAgents channelId={channel.id} roster={roster} showCode={!unassigned} />}
+      {shared && <InterhubAgents roster={roster} />}
       {threads.isPending ? <SkeletonRows count={2} avatar={false} label={t("collaboration.board.loadingThreads")} />
         : threads.error ? <ErrorState error={threads.error} title={t("collaboration.board.threadsError")} onRetry={() => void threads.refetch()} />
         : list.length === 0

@@ -1,6 +1,6 @@
 import { useState } from "react"
 import {
-  Avatar, Banner, Button, ConfirmDialog, Empty, ErrorState, Field, List, MoreMenu, Panel, PanelBody, PanelHeader, Row, Select, SkeletonRows, Textarea, useToast,
+  Avatar, Banner, Button, Chip, ConfirmDialog, Empty, ErrorState, Field, List, MoreMenu, Panel, PanelBody, PanelHeader, Row, Select, SkeletonRows, Textarea, useToast,
   type MenuItem,
 } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
@@ -22,6 +22,7 @@ export function SharePanel({ project, onClose }: { project: MemoryEntity; onClos
   const shared = status.data?.projects.find(item => item.id === project.id)
   const detail = useMemory<SharedDetail>("shared_status", { project_id: project.id }, Boolean(shared))
   const create = useSharingAction<{ recovery_phrase?: string }>()
+  const resume = useSharingAction()
   const [view, setView] = useState<View>({ kind: "members" })
   const me = detail.data?.members.find(member => member.identity.id === status.data?.identity.id)
   const owner = me?.role === "owner" && !me.revoked
@@ -39,6 +40,19 @@ export function SharePanel({ project, onClose }: { project: MemoryEntity; onClos
     })
   }
 
+  function resumeSharing() {
+    resume.mutate({ operation: "pause", project_id: project.id, paused: false }, {
+      onSuccess: () => toast.show({
+        kind: "success",
+        message: t("collaboration.sharing.resumed"),
+        undo: () => resume.mutate({ operation: "pause", project_id: project.id, paused: true }, {
+          onError: failure => toast.error(errorText(failure)),
+        }),
+      }),
+      onError: failure => toast.error(errorText(failure)),
+    })
+  }
+
   if (view.kind === "invite" && shared && canInvite) return <InvitePanel project={project} owner={owner} onClose={members} />
   if (view.kind === "recovery") return <RecoveryPanel phrase={view.phrase} onClose={members} />
 
@@ -46,8 +60,8 @@ export function SharePanel({ project, onClose }: { project: MemoryEntity; onClos
     <Panel label={t("collaboration.sharing.title")} onClose={onClose}>
       <PanelHeader
         title={t("collaboration.sharing.title")}
-        status={<span className="xs t3 trunc" title={project.title}>{project.title}</span>}
-        actions={shared && canInvite ? <Button small onClick={() => setView({ kind: "invite" })}>{t("collaboration.sharing.invite")}</Button> : undefined}
+        status={shared && !shared.enabled ? <Chip tone="off">{t("collaboration.sharing.paused")}</Chip> : <span className="xs t3 trunc" title={project.title}>{project.title}</span>}
+        actions={shared && !shared.enabled ? <Button small disabled={resume.isPending} onClick={resumeSharing}>{t("collaboration.sharing.resume")}</Button> : shared && canInvite ? <Button small onClick={() => setView({ kind: "invite" })}>{t("collaboration.sharing.invite")}</Button> : undefined}
       />
       <PanelBody>
         {conflict && <Banner tone="danger">{conflict}</Banner>}
