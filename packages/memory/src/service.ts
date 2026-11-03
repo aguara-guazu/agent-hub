@@ -1,6 +1,7 @@
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { SharedNetwork } from './sharing/network.js'
 import { UpdateHints } from './sharing/update-hint.js'
+import { observeReceipts } from './sharing/events.js'
 import { createInterhubServices } from './interhub/services.js'
 import { MemoryDefaults, DEFAULTS_KEY } from './defaults.js'
 import { MediaRuntime } from './media-runtime.js'
@@ -144,7 +145,8 @@ export class MemoryService {
     operations.interhub = createInterhubServices(store, { network, events: operations.chat.events })
     // Peer update hints are observed where the network runs; they only wake the desktop's own check of the official feed.
     const hints = new UpdateHints(db, operations.sharing, async () => { await network.refresh() }, line => { process.stderr.write(`${line}\n`) })
-    operations.sharing.receiptObserver = (message, author) => hints.observe(message, author)
+    // Only the orchestration owner (core) evaluates hints: it serves the long-poll, and a second evaluator in the worker would race on the same limits.
+    if (this.orchestrationOwner) { observeReceipts(store, message => hints.observe(message)); void hints.sweep().catch(() => undefined) }
     this.current = { db, store, ai, operations, runner, network, hints }
     if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
     return this.current
