@@ -27,6 +27,29 @@ const BACKOFF_FACTOR = 1.6
 const NOT_DELIVERED = new Set(["ECONNREFUSED", "ENOENT", "EADDRNOTAVAIL", "EHOSTUNREACH", "ENETUNREACH"])
 const EMPTY_BODY_STATUS = new Set([101, 204, 205, 304])
 
+/**
+ * El core local no atendió dentro del presupuesto porque la petición NUNCA se entregó:
+ * el connect no se estableció o respondió el 503 de drenaje. Es la única causa que
+ * justifica omitir el cooldown de fallos del pool; se identifica por tipo, no por texto.
+ */
+export class CoreUnavailableError extends Error {
+  readonly suppressCooldown = true
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = "CoreUnavailableError"
+  }
+}
+
+/** `true` si el error, o alguna de sus causas, es un `CoreUnavailableError`. */
+export function isCoreUnavailable(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current instanceof CoreUnavailableError) return true
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
+}
+
 export interface ResilientFetchOptions {
   maxWaitMs?: number
   callMaxWaitMs?: number
@@ -131,7 +154,8 @@ export function createResilientLoopbackFetch(options: ResilientFetchOptions = {}
       }
       const remaining = deadline - clock()
       if (remaining <= 0) {
-        throw new Error(`el core local no respondió en ${Math.round(budget / 1000)} s`)
+        // Solo se llega acá si el último intento fue pre-conexión o drenaje: nada se entregó.
+        throw new CoreUnavailableError(`el core local no respondió en ${Math.round(budget / 1000)} s`, attempt.error ? { cause: attempt.error } : undefined)
       }
       try {
         await wait(Math.min(backoff, remaining), signal)

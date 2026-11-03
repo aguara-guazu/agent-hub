@@ -28,7 +28,7 @@ import { SecretResolver, defaultResolver } from './secrets.js'
 import { AUTH_NONE, AUTH_OAUTH, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore, isAuthorizationRequired } from './oauth.js'
 import { childEnv, killTree } from './platform.js'
 import { isMemorySpec } from './memory-bridge.js'
-import { createResilientLoopbackFetch, RESILIENT_FETCH_MAX_WAIT_MS } from './resilient-fetch.js'
+import { createResilientLoopbackFetch, isCoreUnavailable, RESILIENT_FETCH_MAX_WAIT_MS } from './resilient-fetch.js'
 
 export const TRANSPORT_STDIO = 'stdio'
 export const TRANSPORT_HTTP = 'http'
@@ -54,9 +54,12 @@ export class UpstreamError extends Error {
 }
 
 export class UpstreamConnectError extends UpstreamError {
-  constructor(slug: string, reason: string) {
+  /** `true` sólo cuando el core local nunca recibió la petición (reinicio o drenaje): el pool no abre cooldown. */
+  readonly suppressCooldown: boolean
+  constructor(slug: string, reason: string, options: { suppressCooldown?: boolean } = {}) {
     super(slug, reason)
     this.name = 'UpstreamConnectError'
+    this.suppressCooldown = options.suppressCooldown ?? false
   }
 }
 
@@ -295,7 +298,7 @@ async function connectClient(slug: string, transport: Transport, timeoutMs: numb
     await Promise.race([client.connect(transport), timer])
   } catch (err) {
     await closeClient(client, transport)
-    throw new UpstreamConnectError(slug, `no se pudo conectar: ${describe(err)}`)
+    throw new UpstreamConnectError(slug, `no se pudo conectar: ${describe(err)}`, { suppressCooldown: isCoreUnavailable(err) })
   }
   return new ClientConnection(slug, client, DEFAULT_REQUEST_TIMEOUT_MS, transport)
 }
@@ -587,8 +590,8 @@ export class ConnectionPool {
         connection = await runtime.connect(spec)
       } catch (err) {
         const message = err instanceof UpstreamError ? err.reason : `no se pudo conectar: ${describe(err)}`
-        // El core local ya reintentó dentro del connect: un cooldown extra sólo alargaría la caída.
-        if (!isMemorySpec(spec)) this.failures.set(key, { message, at: this.clock(), fingerprint })
+        // Sólo si el core local nunca recibió la petición (reinicio o drenaje) se omite el cooldown; auth, secretos, HTTP y handshake lo conservan.
+        if (!(err instanceof UpstreamConnectError && err.suppressCooldown)) this.failures.set(key, { message, at: this.clock(), fingerprint })
         if (err instanceof UpstreamError) throw err
         throw new UpstreamConnectError(spec.slug, message)
       }
