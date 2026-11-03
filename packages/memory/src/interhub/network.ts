@@ -212,8 +212,8 @@ export class InterhubNetwork {
 
   /**
    * Joiner side: verifies the creator-signed roster and creates the local copy of the channel with the caller as this
-   * hub's leader. After the roster is applied the project is settled against the shared-project policies: a valid
-   * stored project is kept, an invalid one is replaced by `projectId` when that one is valid, or cleared.
+   * hub's leader. After the roster is applied the project is settled locally: a stored project is kept while this
+   * hub is still an active member of that shared project, otherwise `projectId` replaces it when usable here, or it is cleared.
    */
   async completeJoin(caller: { id: string; label: string }, creator: PublicIdentity, raw: unknown, projectId: string | null = null) {
     const roster = parse(rosterSchema, raw), local = await this.localIdentity()

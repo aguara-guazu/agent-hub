@@ -76,16 +76,30 @@ export async function candidateProjects(db: Sql, hubs: { id: string; is_local: b
 }
 
 /**
- * Settles the project of a channel whose membership just changed. A stored project survives only while it is still a
- * candidate for every active hub; otherwise it is replaced by `requested` when that one is a candidate, or cleared.
- * Nothing is chosen by heuristic: an invalid value never selects an alternative project.
+ * True when the project is a usable shared project of this hub (enabled, no administration conflict, backed by a project
+ * entity) and every hub in `hubIds` is an active member of its current policy.
+ */
+export async function sharedProjectUsable(db: Sql, projectId: string, hubIds: string[]): Promise<boolean> {
+  const row = (await db.query(`SELECT v.document AS policy FROM shared_projects p
+    JOIN shared_policies v ON v.hash=p.policy_hash JOIN entities e ON e.id=p.id AND e.kind='project'
+    WHERE p.id=$1 AND p.enabled=1 AND p.conflict IS NULL`, [projectId]))[0]
+  const policy = row ? policyOf(row.policy) : null
+  if (!policy?.members) return false
+  const now = Date.now()
+  return hubIds.every(hubId => active(policy.members.find(member => member.identity.id === hubId), now))
+}
+
+/**
+ * Local decision on the project of a channel after a membership change. A stored project survives only while this hub
+ * is still an active member of that shared project; otherwise it is replaced by `requested` when that one is usable
+ * here, or cleared. Remote data never invalidates a local association and nothing is chosen by heuristic.
  */
 export async function settleChannelProject(db: Sql, channelId: string, localHubId: string, requested: string | null = null): Promise<string | null> {
   const row = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1 AND kind=$2", [channelId, INTERHUB_CHANNEL_KIND]))[0]
   if (!row) return null
-  const candidates = new Set((await candidateProjects(db, await channelHubs(db, channelId, localHubId))).map(candidate => candidate.project_id))
   const current = row.project_id ? String(row.project_id) : null
-  const settled = current && candidates.has(current) ? current : requested && candidates.has(requested) ? requested : null
+  const settled = current && await sharedProjectUsable(db, current, [localHubId]) ? current
+    : requested && await sharedProjectUsable(db, requested, [localHubId]) ? requested : null
   if (settled !== current) await db.query("UPDATE chat_channels SET project_id=$2,updated_at=now() WHERE id=$1", [channelId, settled])
   return settled
 }
