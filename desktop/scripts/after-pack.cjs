@@ -1,20 +1,42 @@
 const { execFileSync } = require('node:child_process')
 const { dirname, join } = require('node:path')
 const { copyFileSync, readdirSync, readFileSync, rmSync, existsSync, mkdirSync, writeFileSync } = require('node:fs')
+const { Buffer } = require('node:buffer')
+const { createPublicKey } = require('node:crypto')
 const { Arch } = require('builder-util')
 const { prepareArgon2, prepareSharp, preparePty } = require('./prepare-sharp.cjs')
 
 const CRT = /^(?:msvcp140|vcruntime140)[\w]*\.dll$/i
 
+const KEY_ID = /^[A-Za-z0-9._-]{1,64}$/
+
+/**
+ * Trust store embedded from CI (`AGENTHUB_UPDATE_TRUST` JSON or the file named by `AGENTHUB_UPDATE_TRUST_FILE`).
+ * Same rules the updater applies when loading it (update-trust.ts parseTrustSet): only {id, ed25519_spki_b64}
+ * entries, unique ids, keys that decode as DER SPKI Ed25519, revocations as unique ids, and at least one key that
+ * is not revoked. Any violation fails the build: a store the updater would reject must never ship.
+ */
 function canonicalTrustStore() {
   const inline = process.env.AGENTHUB_UPDATE_TRUST
   const source = inline ?? (process.env.AGENTHUB_UPDATE_TRUST_FILE ? readFileSync(process.env.AGENTHUB_UPDATE_TRUST_FILE, 'utf8') : null)
   if (!source) return null
+  const fail = (reason) => { throw new Error(`AGENTHUB_UPDATE_TRUST inválido: ${reason}`) }
   const trust = JSON.parse(source)
-  if (trust?.schema !== 1 || !Array.isArray(trust.keys) || !Array.isArray(trust.revoked)) throw new Error('AGENTHUB_UPDATE_TRUST debe contener schema=1, keys y revoked')
-  for (const key of trust.keys) if (!/^[A-Za-z0-9._-]+$/.test(key?.id ?? '') || !/^[A-Za-z0-9+/=]+$/.test(key?.ed25519_spki_b64 ?? '')) throw new Error('AGENTHUB_UPDATE_TRUST contiene una clave inválida')
-  if (!trust.revoked.every(id => typeof id === 'string')) throw new Error('AGENTHUB_UPDATE_TRUST contiene una revocación inválida')
-  return JSON.stringify({ schema: 1, keys: [...trust.keys].sort((a, b) => a.id.localeCompare(b.id)), revoked: [...trust.revoked].sort() })
+  if (!trust || typeof trust !== 'object' || trust.schema !== 1 || !Array.isArray(trust.keys) || !Array.isArray(trust.revoked)) fail('se espera {schema:1, keys:[], revoked:[]}')
+  if (Object.keys(trust).some(name => !['schema', 'keys', 'revoked'].includes(name))) fail('campos desconocidos')
+  const ids = new Set()
+  const keys = trust.keys.map(entry => {
+    if (!entry || typeof entry !== 'object' || Object.keys(entry).some(name => name !== 'id' && name !== 'ed25519_spki_b64')) fail('cada clave es {id, ed25519_spki_b64}')
+    if (typeof entry.id !== 'string' || !KEY_ID.test(entry.id) || ids.has(entry.id)) fail(`id de clave inválido o repetido: ${entry.id}`)
+    let key
+    try { key = createPublicKey({ key: Buffer.from(entry.ed25519_spki_b64, 'base64'), format: 'der', type: 'spki' }) } catch { key = null }
+    if (typeof entry.ed25519_spki_b64 !== 'string' || key?.asymmetricKeyType !== 'ed25519') fail(`la clave ${entry.id} no es Ed25519 DER SPKI`)
+    ids.add(entry.id)
+    return { id: entry.id, ed25519_spki_b64: entry.ed25519_spki_b64 }
+  })
+  if (!trust.revoked.every(id => typeof id === 'string' && KEY_ID.test(id)) || new Set(trust.revoked).size !== trust.revoked.length) fail('revocaciones inválidas o repetidas')
+  if (!keys.some(key => !trust.revoked.includes(key.id))) fail('se necesita al menos una clave no revocada')
+  return JSON.stringify({ schema: 1, keys: keys.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)), revoked: [...trust.revoked].sort() })
 }
 
 function embedTrustStore(appDir) {
