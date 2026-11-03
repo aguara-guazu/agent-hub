@@ -1,10 +1,35 @@
 const { execFileSync } = require('node:child_process')
 const { dirname, join } = require('node:path')
-const { copyFileSync, readdirSync, readFileSync, rmSync, existsSync } = require('node:fs')
+const { copyFileSync, readdirSync, readFileSync, rmSync, existsSync, mkdirSync, writeFileSync } = require('node:fs')
 const { Arch } = require('builder-util')
 const { prepareArgon2, prepareSharp, preparePty } = require('./prepare-sharp.cjs')
 
 const CRT = /^(?:msvcp140|vcruntime140)[\w]*\.dll$/i
+
+function canonicalTrustStore() {
+  const inline = process.env.AGENTHUB_UPDATE_TRUST
+  const source = inline ?? (process.env.AGENTHUB_UPDATE_TRUST_FILE ? readFileSync(process.env.AGENTHUB_UPDATE_TRUST_FILE, 'utf8') : null)
+  if (!source) return null
+  const trust = JSON.parse(source)
+  if (trust?.schema !== 1 || !Array.isArray(trust.keys) || !Array.isArray(trust.revoked)) throw new Error('AGENTHUB_UPDATE_TRUST debe contener schema=1, keys y revoked')
+  for (const key of trust.keys) if (!/^[A-Za-z0-9._-]+$/.test(key?.id ?? '') || !/^[A-Za-z0-9+/=]+$/.test(key?.ed25519_spki_b64 ?? '')) throw new Error('AGENTHUB_UPDATE_TRUST contiene una clave inválida')
+  if (!trust.revoked.every(id => typeof id === 'string')) throw new Error('AGENTHUB_UPDATE_TRUST contiene una revocación inválida')
+  return JSON.stringify({ schema: 1, keys: [...trust.keys].sort((a, b) => a.id.localeCompare(b.id)), revoked: [...trust.revoked].sort() })
+}
+
+function embedTrustStore(appDir) {
+  const trust = canonicalTrustStore()
+  if (!trust) return
+  const output = join(appDir, 'desktop', 'dist', 'update-trust.json')
+  mkdirSync(dirname(output), { recursive: true })
+  writeFileSync(output, trust, { encoding: 'utf8', mode: 0o644 })
+}
+
+function compileSwapHelper(projectDir, resources) {
+  const outputDir = join(resources, 'bin'), output = join(outputDir, 'agenthub-swap')
+  mkdirSync(outputDir, { recursive: true })
+  execFileSync('clang', ['-arch', 'arm64', '-O2', '-Wall', '-Werror', '-o', output, join(projectDir, 'desktop', 'scripts', 'agenthub-swap.c')], { stdio: 'inherit' })
+}
 
 /** Folder with the Visual C++ runtime DLLs for `arch` from the newest MSVC redist installed on this Windows builder. */
 function vcRuntimeFolder(arch) {
@@ -62,6 +87,7 @@ exports.default = async (context) => {
   await preparePty(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   await prepareSharp(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   await prepareArgon2(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
+  embedTrustStore(join(resources, 'app'))
   const binaries = join(resources, 'app', 'node_modules', 'onnxruntime-node', 'bin', 'napi-v6')
   // The npm package includes bindings for five targets. Ship only the current platform/architecture.
   if (existsSync(binaries)) for (const platform of readdirSync(binaries)) {
@@ -76,5 +102,6 @@ exports.default = async (context) => {
   }
   if (context.electronPlatformName !== 'darwin') return
   const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
+  if (Arch[context.arch] === 'arm64') compileSwapHelper(context.packager.projectDir, resources)
   execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' })
 }
