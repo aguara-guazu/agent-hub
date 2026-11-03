@@ -4,6 +4,7 @@ import { check, id, parse } from "../contracts.js"
 import type { AgentContext } from "../agents.js"
 import type { LocalChat } from "../local-chat.js"
 import { markSessionActivity } from "../chat-wrap-up.js"
+import type { InterhubOrphanChannel } from "./project-association.js"
 
 const session = { session_key: z.string().min(32).max(200).optional() }
 // Length bounds only: the shape of a code is never described to a caller, so a wrong code fails like a revoked one.
@@ -19,6 +20,8 @@ export type InterhubCodeAction = "regenerate" | "revoke"
  * Every method re-checks authority with Hub data; the tool layer only validates input and resolves the caller.
  */
 export interface InterhubServices {
+  listOrphans(): Promise<InterhubOrphanChannel[]>
+  assignProject(caller: InterhubCaller, channelId: string, projectId: string): Promise<{ channel_id: string; project_id: string }>
   /**
    * The caller becomes the leader of its hub in the new channel. An explicit project must exist in this hub; without one
    * the channel takes the single project of the caller's local workspace channels, or none.
@@ -64,6 +67,8 @@ export interface InterhubPendingEscalation {
 }
 
 export const interhubDefinitions = {
+  chat_interhub_assign_project: ["Assign an unassigned inter-hub channel to a compatible local shared project. Only the current leader of this hub in that channel can assign it; existing assignments are never overwritten.",
+    z.object({ ...session, channel_id: id, project_id: id }).strict()],
   chat_interhub_create: ["Create an inter-hub channel: one channel shared by agents of several Agent Hubs, each hub with its own leader. Only after the person asks for it. You become your hub's leader in it. project_id places it in that project of this hub (the person sees it in that project's Collaboration tab); omitted, the Hub uses the single project of your local channels, or none (then no project tab shows it). Returns channel_id, project_id and the join code ONCE: give the code to the person only in your terminal, never in a channel, thread, file or ticket. The code never expires and has no use limit; whoever holds it gets full trust, so regenerate or revoke it with memory_chat_interhub_code if it leaks.",
     z.object({ ...session, name: z.string().trim().min(1).max(200), project_id: id.optional() }).strict()],
   chat_interhub_join: ["Join an inter-hub channel with its code, only when the person gives you the code in your terminal and asks you to join. You must lead your own channel; you become your hub's leader in the inter-hub channel and receive orders from any person of any connected hub. project_id places the channel in that project of this hub; omitted, the Hub uses the single project of your local channels, or none (then no project tab shows it). The creator hub must be open: the Hub finds it over P2P, redials by itself when a connection does not answer and proves the code without sending it, so the call can take up to 90 seconds. A wrong, revoked or unknown code and a creator hub that did not answer in time fail with the same error.",
@@ -84,7 +89,7 @@ export const interhubDefinitions = {
 
 export const interhubOperations = Object.keys(interhubDefinitions)
 export const interhubReadOperations = ["chat_interhub_hubs"]
-const writes = new Set(["chat_interhub_create", "chat_interhub_join", "chat_interhub_code", "chat_interhub_add_local_agent", "chat_interhub_remove_local_agent", "chat_interhub_escalate", "chat_interhub_resolve_escalation"])
+const writes = new Set(["chat_interhub_create", "chat_interhub_join", "chat_interhub_assign_project", "chat_interhub_code", "chat_interhub_add_local_agent", "chat_interhub_remove_local_agent", "chat_interhub_escalate", "chat_interhub_resolve_escalation"])
 // Own keys only: inherited names such as "constructor" must never reach the dispatcher.
 export const isInterhubOperation = (operation: string) => Object.hasOwn(interhubDefinitions, operation)
 
@@ -111,6 +116,7 @@ export class InterhubTools {
   }
   private async run(services: InterhubServices, operation: string, input: any, caller: InterhubCaller) {
     switch (operation) {
+      case "chat_interhub_assign_project": return services.assignProject(caller, input.channel_id, input.project_id)
       case "chat_interhub_create": return services.createChannel(caller, { name: input.name, projectId: input.project_id ?? null })
       case "chat_interhub_join": return services.joinChannel(caller, input.code, input.project_id ?? null)
       case "chat_interhub_code": return services.rotateCode(caller, input.channel_id, input.action)
