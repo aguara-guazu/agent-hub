@@ -32,7 +32,7 @@ async function projectContext(store: MemoryStore, remote: boolean) {
     (SELECT json_group_array(u.title ORDER BY u.n DESC,u.title) FROM (SELECT person.title,count(*) AS n FROM links l JOIN links part ON part.from_id=l.from_id AND part.type='participant'
       JOIN entities person ON person.id=part.to_id WHERE l.to_id=p.id AND l.type='project' GROUP BY person.id,person.title ORDER BY n DESC,person.title LIMIT 15) u) AS "usual_people:json"
     FROM entities p LEFT JOIN entities c ON c.id=p.data->>'company_id'
-    WHERE p.kind='project' AND COALESCE(p.data->>'status','') NOT IN ('completed') AND (NOT $1 OR COALESCE(p.data->>'remote_processing',1) NOT IN (0,'false'))
+    WHERE p.kind='project' AND p.data->>'merged_into' IS NULL AND COALESCE(p.data->>'status','') NOT IN ('completed') AND (NOT $1 OR COALESCE(p.data->>'remote_processing',1) NOT IN (0,'false'))
     ORDER BY p.updated_at DESC LIMIT 150`, [remote])
   return projects
 }

@@ -17,6 +17,7 @@ export type CollectionField = z.infer<typeof fieldsSchema>[number]
 
 export const entityInput = z.object({
   kind: kindSchema,
+  allow_duplicate: z.boolean().default(false),
   title: z.string().trim().min(1).max(500),
   data: jsonObject.default({}),
   project_ids: z.array(id).max(100).default([]),

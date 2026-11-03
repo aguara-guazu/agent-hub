@@ -85,6 +85,12 @@ export class MemoryStore {
       validateData(data)
       if (input.kind === 'collection') { data.fields = parse(fieldsSchema, data.fields ?? []); data.schema_version = 1 }
       if (input.kind === 'project' && data.company_id) await requireEntity(sql, String(data.company_id), 'company')
+      if (input.kind === "project" && !input.allow_duplicate) {
+        const normalized = (title: string) => title.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim()
+        const projects = await sql.query<Entity>("SELECT * FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL")
+        const matches = projects.filter(project => normalized(project.title) === normalized(input.title))
+        check(!matches.length, `Ya existe un proyecto con título equivalente: ${matches.map(project => `${project.title} (${project.id})`).join(", ")}. Reutiliza su id; para asociar la carpeta usa memory_update_entity con data.folders (rutas absolutas, conservando las existentes). Si es otro proyecto, crea con allow_duplicate:true.`, 409)
+      }
       if (input.kind === 'project') await uniqueJiraKey(sql, null, data.jira_project_key, data.jira_site_url)
       const row = (await sql.query<Entity>('INSERT INTO entities(id,kind,title,data) VALUES($1,$2,$3,$4) RETURNING *',
         [randomUUID(), input.kind, input.title, JSON.stringify(data)]))[0]!

@@ -70,7 +70,7 @@ async function recordEvent(sql: Sql, taskId: string, action: string, actor: stri
 
 async function projectsByJiraKey(sql: Sql) {
   const { default_site_url } = await getJiraSettings(sql)
-  const rows = await sql.query("SELECT id,title,data->>'jira_project_key' AS key,COALESCE(NULLIF(data->>'jira_site_url',''),$1) AS site FROM entities WHERE kind='project' AND COALESCE(data->>'jira_project_key','')<>''",[default_site_url])
+  const rows = await sql.query("SELECT id,title,data->>'jira_project_key' AS key,COALESCE(NULLIF(data->>'jira_site_url',''),$1) AS site FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND COALESCE(data->>'jira_project_key','')<>''",[default_site_url])
   return rows
 }
 
@@ -153,7 +153,7 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
     return { ...result, invalid: normalized.length - valid.length, mode: 'issues' }
   }
   const projects = input.project_id ? [await requireEntity(store.db, input.project_id, 'project')]
-    : (await store.db.query("SELECT * FROM entities WHERE kind='project' AND COALESCE(data->>'jira_project_key','')<>'' ORDER BY title"))
+    : (await store.db.query("SELECT * FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND COALESCE(data->>'jira_project_key','')<>'' ORDER BY title"))
   check(projects.length, 'Ningún proyecto tiene configurada su clave de Jira', 409)
   const totals = { received: 0, created: 0, updated: 0, status_changed: 0, unchanged: 0, unmatched: [] as string[], projects: [] as Record<string, unknown>[], mode: 'server' }
   for (const project of projects) {
