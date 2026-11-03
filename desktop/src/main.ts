@@ -149,14 +149,26 @@ const daemonSupervisor = new CoreSupervisor({
  * compara path y args al leerla: `openAtLogin` sólo es true con los mismos valores.
  */
 const loginItemOptions = process.platform === 'win32' ? { path: process.execPath, args: ['--hidden'] } : {}
+/**
+ * Una instancia con estado propio (`AGENTHUB_DESKTOP_STATE_DIR`: pruebas aisladas) no es la instalación de la persona:
+ * no registra ni reescribe ítems de inicio de sesión, ni ofrece hacerlo. Se anota una sola vez en core.log.
+ */
+const isolatedInstance = Boolean(process.env.AGENTHUB_DESKTOP_STATE_DIR)
+let loginItemsSkippedLogged = false
+function skipLoginItems(): boolean {
+  if (!isolatedInstance) return false
+  if (!loginItemsSkippedLogged) { loginItemsSkippedLogged = true; coreLog.write('[autostart] instancia aislada (AGENTHUB_DESKTOP_STATE_DIR): no se registran ítems de inicio de sesión') }
+  return true
+}
 const linuxFs: LinuxAutostartFs = {
   configHome: process.env.XDG_CONFIG_HOME ?? join(app.getPath('home'), '.config'),
   exists: existsSync,
   write: (path, contents) => {
+    if (skipLoginItems()) return
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, contents, { mode: 0o644 })
   },
-  remove: (path) => rmSync(path, { force: true }),
+  remove: (path) => { if (!skipLoginItems()) rmSync(path, { force: true }) },
 }
 const autostart = new AutostartManager({
   platform: process.platform,
@@ -166,7 +178,7 @@ const autostart = new AutostartManager({
   appName: APP_NAME,
   loginItem: {
     get: () => ({ openAtLogin: app.getLoginItemSettings(loginItemOptions).openAtLogin }),
-    set: (settings) => app.setLoginItemSettings({ ...settings, ...loginItemOptions }),
+    set: (settings) => { if (!skipLoginItems()) app.setLoginItemSettings({ ...settings, ...loginItemOptions }) },
   },
   linuxFs,
 })
@@ -333,7 +345,7 @@ const scheduleFeed = new FeedPoller({
     return await response.json() as FeedResponse
   },
   onEvents: events => {
-    void autostartOffer.consider(events).catch(error => console.error('[autostart offer]', error))
+    if (!isolatedInstance) void autostartOffer.consider(events).catch(error => console.error('[autostart offer]', error))
     if (automationPrefs.notify_schedule_created) scheduleNotices.add(events)
     if (automationPrefs.notify_delivery) for (const event of events) { const notice = deliveryNotice(event); if (notice) notifyOpening(notice) }
   },
@@ -814,7 +826,7 @@ function syncDaemonUrl(): void {
  * iniciar sesión) y con el nombre de valor previo al AppUserModelId, que dejaría dos entradas.
  */
 function migrateWindowsLoginItem(): void {
-  if (process.platform !== 'win32') return
+  if (process.platform !== 'win32' || skipLoginItems()) return
   const items = app.getLoginItemSettings(loginItemOptions).launchItems ?? []
   const legacy = items.filter((item) => item.path.toLowerCase() === process.execPath.toLowerCase() && !item.args.includes('--hidden'))
   for (const item of legacy) app.setLoginItemSettings({ openAtLogin: false, path: item.path, args: item.args, name: item.name })
