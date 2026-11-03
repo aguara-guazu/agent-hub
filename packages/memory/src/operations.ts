@@ -510,7 +510,7 @@ export class MemoryOperations {
       case 'delete_entity': {
         if (this.schedules) await this.schedules.beforeProjectDelete(input.id)
         await deleteEntity(store, input.id)
-        this.chat.events.emit('change')
+        this.chat.events.emit("change")
         return { deleted: true, backups_preserved: true }
       }
       default: throw new Error('Operación no implementada')
