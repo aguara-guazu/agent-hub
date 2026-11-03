@@ -122,12 +122,6 @@ export class InterhubNetwork {
     return Number((await this.store.db.query("SELECT code_generation FROM interhub_channels WHERE channel_id=$1", [channelId]))[0]?.code_generation ?? 0)
   }
 
-  async creatorCode(channelId: string) {
-    const row = (await this.store.db.query("SELECT code_revoked_at FROM interhub_channels WHERE channel_id=$1", [channelId]))[0]
-    if (!row || row.code_revoked_at) return null
-    return this.vault.read<{ code: string }>(this.secretKey(channelId))?.code ?? null
-  }
-
   async listHubs(channelId: string) {
     const local = (await this.localIdentity()).id, since = new Date(Date.now() - 30_000).toISOString()
     return this.store.db.query(`SELECT hub_id AS id,leader_label AS name,hub_id=$2 AS is_local,

@@ -45,11 +45,6 @@ export interface InterhubServices {
   roster(channelId: string): Promise<InterhubRoster | null>
   /** Escalations addressed to this hub that no leader has resolved yet. */
   pendingEscalations(channelId: string): Promise<InterhubPendingEscalation[]>
-  /**
-   * Plain code. The service must prove the local hub is the creator hub and the code is not revoked
-   * (an absent vault entry is not the barrier); null otherwise.
-   */
-  creatorCode(channelId: string): Promise<string | null>
   /** Authority: the caller must be the current leader of its hub in the channel. */
   escalate(caller: InterhubCaller, channelId: string, threadId: string, messageId: string): Promise<{ delegated_to_hub_id: string; escalation_id?: string } | { no_other_hub: true }>
   /** Authority: only the leader of a member hub. Marks the escalation answered for every hub. */

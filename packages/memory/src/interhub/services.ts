@@ -184,12 +184,6 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       const rows = await db.query("SELECT id,thread_id,question_message_id,escalated_at FROM interhub_escalations WHERE channel_id=$1 AND next_hub_id=$2 AND answered_at IS NULL ORDER BY escalated_at", [channelId, await localHubId()])
       return rows.map(row => ({ id: String(row.id), thread_id: String(row.thread_id), question_message_id: String(row.question_message_id), escalated_at: String(row.escalated_at) }))
     },
-    async creatorCode(channelId) {
-      const row = (await db.query("SELECT creator_hub_id FROM interhub_channels WHERE channel_id=$1 AND code_revoked_at IS NULL", [channelId]))[0]
-      // The local hub must be the creator: a joined hub never shows the code, whatever its vault holds.
-      if (!row || row.creator_hub_id !== await localHubId()) return null
-      return network.creatorCode(channelId)
-    },
     async escalate(caller, channelId, threadId, messageId) {
       check(await interhubChannel(channelId), "Canal entre hubs inexistente.", 404)
       check(await isHubLeader(channelId, caller), "Sólo el líder de tu hub en el canal puede escalar.", 403)

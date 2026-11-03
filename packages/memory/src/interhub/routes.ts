@@ -7,9 +7,7 @@ const params = z.object({ id }).strict()
 const page = z.object({ limit: z.coerce.number().int().min(1).max(100).default(100), offset: z.coerce.number().int().min(0).default(0) }).strict()
 
 /**
- * Read-only routes for the person's UI. The person never acts on inter-hub channels: they can only see the roster
- * and, at the hub that created the channel, the code to read or hand to their agent. Nothing here logs request or
- * response bodies, and every response is `no-store`.
+ * Read-only routes for the person's UI. Nothing here logs request or response bodies, and every response is `no-store`.
  */
 export function interhubRoutes(app: FastifyInstance, service: MemoryService, authorize: (request: FastifyRequest) => Promise<unknown>, requireCollaboration: () => void) {
   const services = async () => {
@@ -32,14 +30,5 @@ export function interhubRoutes(app: FastifyInstance, service: MemoryService, aut
     const roster = await (await services()).roster(channelId)
     check(roster, "Canal entre hubs inexistente", 404)
     return roster
-  })
-  app.get("/api/memory/interhub/channels/:id/code", { preHandler: async request => { await authorize(request) } }, async (request, reply) => {
-    requireCollaboration()
-    reply.header("Cache-Control", "no-store")
-    const { id: channelId } = parse(params, request.params)
-    const code = await (await services()).creatorCode(channelId)
-    // Same answer for "not the creator hub", "revoked" and "unknown channel": the route is no oracle.
-    check(code, "Sin código disponible", 404)
-    return { code }
   })
 }
