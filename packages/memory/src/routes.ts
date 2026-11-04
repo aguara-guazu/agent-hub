@@ -2,7 +2,7 @@ import { hubLog } from "./report.js"
 import { isCollaborationTool } from './collaboration.js'
 import { orcaWorkspaceSchema } from './agents.js'
 import { registerUsageRoutes } from './usage-routes.js'
-import { registerUpdateDrain } from './update-drain.js'
+import { registerUpdateDrain, updateSecretAuthorizer, type LegacyGatewayScan } from './update-drain.js'
 import { chatKickInput, chatCoordinatorInput, chatDeleteChannelInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
 import { listAuthorityEvents } from './chat-access.js'
@@ -47,6 +47,12 @@ const VERSION = String((createRequire(import.meta.url)('../package.json') as { v
 export interface MemoryRouteOptions {
   directory: string; baseUrl: string;
   authorize(request: FastifyRequest): Promise<{ id: string }>
+  /** Authorization exclusive to the desktop's update drain; absent refuses every request. */
+  authorizeUpdate?(request: FastifyRequest): Promise<void>
+  /** Transaction of the update that launched this core: it starts closed until the desktop admits it. */
+  updateTransaction?: string
+  /** Scan of gateways started from a bundle older than the versioned runtime; absent means unknown. */
+  legacyGateways?(): Promise<LegacyGatewayScan>
   collaborationEnabled?(): boolean
   chatAgentEnabled?(agentId: string): boolean
   usageAgentEnabled?(agentId: string): boolean
@@ -57,17 +63,45 @@ export interface MemoryRouteOptions {
   /** Switch of the scheduler and the effects the core injects (deliveries, approved actions, decisions); absent means enabled and no external adapters. */
   automationsEnabled?(): boolean
   scheduleEffects?: import('./schedule-contract.js').ScheduleEffects
-  /** Desktop update credential; without it the internal update routes are not registered. */
-  authorizeUpdate?(request: FastifyRequest): Promise<void>
 }
 export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions) {
   const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true, options.collaborationEnabled,
-    { enabled: options.automationsEnabled ?? (() => true), ...(options.scheduleEffects ? { effects: options.scheduleEffects } : {}) })
+    { enabled: options.automationsEnabled ?? (() => true), ...(options.scheduleEffects ? { effects: options.scheduleEffects } : {}) }, options.updateTransaction)
   const collaborationEnabled = options.collaborationEnabled ?? (() => true)
   const requireCollaboration = () => check(collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
   registerUsageRoutes(app,service,options)
-  registerUpdateDrain(app, service, options.authorize)
+  const updateDrain = registerUpdateDrain(app, service, { authorize: options.authorizeUpdate ?? updateSecretAuthorizer(undefined),
+    beforeStartupAdmit: transactionId => service.get().then(({ stop }) => stop.assertStartupTransaction(transactionId)),
+    startupAdmitted: async transactionId => { await (await service.get()).stop.resumeApplied(transactionId) },
+    ...(options.updateTransaction ? { startupTransaction: options.updateTransaction } : {}), ...(options.legacyGateways ? { legacyGateways: () => options.legacyGateways!() } : {}) })
+  const stopGuard = { preHandler: async (request: FastifyRequest) => { await (options.authorizeUpdate ?? updateSecretAuthorizer(undefined))(request) } }
+  const stopIdBody = z.object({ stop_id: id }).strict()
+  app.post("/api/internal/hub-stop", stopGuard, async request => {
+    const input = parse(z.object({ source_id: id, reason: z.enum(["update", "quit"]), target_version: z.string().min(1).max(100).optional() }).strict(), request.body)
+    return (await service.get()).stop.request({ source_id: input.source_id, reason: input.reason, ...(input.target_version ? { target_version: input.target_version } : {}) })
+  })
+  app.get("/api/internal/hub-stop/status", stopGuard, async request => {
+    const input = parse(z.object({ stop_id: id.optional() }).strict(), request.query)
+    return (await service.get()).stop.status(input.stop_id)
+  })
+  app.post("/api/internal/hub-stop/retry", stopGuard, async request => {
+    const input = parse(stopIdBody, request.body)
+    return (await service.get()).stop.retry(input.stop_id)
+  })
+  app.post("/api/internal/hub-stop/cancel", stopGuard, async request => {
+    const input = parse(stopIdBody.extend({ reason: z.string().trim().min(1).max(500).default("cancelled_by_user") }), request.body)
+    return (await service.get()).stop.cancel(input.stop_id, input.reason)
+  })
+  app.post("/api/internal/hub-stop/drain", stopGuard, async (request, reply) => {
+    const input = parse(stopIdBody, request.body)
+    const result = await (await service.get()).stop.acquireDrain(input.stop_id, updateDrain)
+    return result.ok ? result : reply.code(409).send(result)
+  })
+  app.post("/api/internal/hub-stop/commit", stopGuard, async request => {
+    const input = parse(stopIdBody.extend({ transaction_id: z.string().min(1).max(100).optional() }), request.body)
+    return (await service.get()).stop.commit(input.stop_id, updateDrain, input.transaction_id)
+  })
   if (options.authorizeUpdate) registerUpdateHintRoutes(app, async () => (await service.get()).hints, options.authorizeUpdate)
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)

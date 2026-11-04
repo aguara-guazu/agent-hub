@@ -740,6 +740,17 @@ export class FleetProcessManager {
       await Promise.race([s.closed, new Promise<void>(resolve => { timer = setTimeout(resolve, this.options.shutdownTimeoutMs ?? 1_000) })])
     } finally { clearTimeout(timer) }
   }
+  /** Repeats the bounded TERM/KILL sequence only for a child whose previous stop remained unconfirmed. */
+  async retryStop(id: string): Promise<FleetStatus> {
+    const s = this.sessions.get(id)
+    if (!s) throw new Error("fleet_unknown_id")
+    if (!s.exited && s.status.state === "unknown" && s.cleanup) {
+      s.cleanup = undefined
+      s.stopping = false
+    }
+    return this.stop(id)
+  }
+
   /** Resolves with the ids whose exit is still unconfirmed (empty when all stopped); calling it again waits again without signaling. */
   async close(): Promise<string[]> {
     this.closing = true

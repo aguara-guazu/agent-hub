@@ -33,9 +33,33 @@ export interface HubTeamOptions extends FleetProcessOptions {
   resolveOriginAccount?: (session: Record<string, unknown>) => Promise<string | null | undefined>
 }
 export interface HubTeamStatus extends FleetStatus {
-  provider: 'hub'
+  provider: "hub"
   generation: string
   updated_at: string
+}
+export interface CoordinatedFleetMember {
+  member_id: string
+  plan_id: string
+  session_id: string | null
+  ordinal: number
+  generation: string
+  pid?: number
+  state: string
+  owned: boolean
+  live: boolean
+  proof_complete: boolean
+}
+export interface CoordinatedFleetSnapshot {
+  fleet_live: number
+  proof_complete: boolean
+  members: CoordinatedFleetMember[]
+}
+export interface CoordinatedFleetReceipt {
+  member_id: string
+  generation: string
+  before_state: string
+  outcome: "stopped" | "already_terminal" | "uncertain"
+  detail?: Record<string, unknown>
 }
 /**
  * Request to continue a creator conversation. The runtime resolves the origin from its own records and decides the
@@ -74,6 +98,7 @@ export class HubTeamRuntime implements TeamOrca {
   private readonly nextGenerations = new Map<string, string>()
   private readonly queues = new Map<string, Promise<void>>()
   private readonly launching = new Set<string>()
+  private coordinatedStopId: string | null = null
   private readonly env: NodeJS.ProcessEnv
   constructor(private readonly chat: LocalChat, readonly directory: string,
     private readonly enabled: () => boolean = () => true, private readonly options: HubTeamOptions = {}) {
@@ -107,7 +132,10 @@ export class HubTeamRuntime implements TeamOrca {
       .filter(Boolean).join(delimiter)
     return env
   }
-  private requireEnabled() { check(this.enabled(), 'La flota de agentes del Hub está desactivada.', 409) }
+  private requireEnabled() { check(this.enabled(), "La flota de agentes del Hub está desactivada.", 409) }
+  private requireNotStopping(): void {
+    if (this.coordinatedStopId) throw new MemoryError(503, "La flota se está deteniendo para una parada coordinada del Hub.", true, "hub_stopping")
+  }
   private enqueue(id: string, work: () => Promise<void>): Promise<void> {
     const result = (this.queues.get(id) ?? Promise.resolve()).then(work)
     // Keep the queue usable after an operation fails, but return the failure to its caller.
@@ -290,6 +318,7 @@ export class HubTeamRuntime implements TeamOrca {
   }
   async launch(workspace: TeamWorkspace, member: TeamLaunchMember & { member_id?: string; resume_worktree?: boolean; continuation?: HubContinuation; authorize?: () => Promise<void> }): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
+    this.requireNotStopping()
     // Same synchronous segment as `launching.add`: a launch past this point is always visible to liveCount().
     this.options.admission?.require()
     const id = member.member_id ?? randomUUID()
@@ -377,6 +406,7 @@ export class HubTeamRuntime implements TeamOrca {
    */
   async resumeMember(handle: string, request: HubResumeRequest): Promise<HubTeamLaunchReceipt> {
     this.requireEnabled()
+    this.requireNotStopping()
     // Invariante: del chequeo exterior a `launching.add` no hay ningún await, así que un lanzamiento admitido siempre es visible en liveCount().
     this.options.admission?.require()
     check(safeId(handle) && handle.length <= 200, 'Identificador de miembro inválido.', 400)
@@ -540,6 +570,7 @@ export class HubTeamRuntime implements TeamOrca {
   }
   /** False permits another wake provider; an owned but unavailable worker must be retried. */
   async wake(sessionId: string, text: string): Promise<boolean> {
+    this.requireNotStopping()
     const members = await this.chat.db.query('SELECT id,session_id,runtime FROM chat_team_members WHERE session_id=$1', [sessionId])
     for (const member of members) {
       const handle = String(member.id)
@@ -564,15 +595,95 @@ export class HubTeamRuntime implements TeamOrca {
   }
   async send(handle: string, text: string): Promise<FleetStatus> {
     this.requireEnabled()
+    this.requireNotStopping()
     check(text.length > 0 && text.length <= 24_000 && !text.includes('\0'), 'Instrucción inválida.', 400)
     if (this.manager.status(handle)?.state === 'busy' && this.manager.supportsMidTurn(handle)) return this.manager.enqueue(handle, text)
     return this.manager.send(handle, text)
   }
   async answer(handle: string, questionId: string, answers: FleetQuestionAnswers): Promise<FleetStatus> {
     this.requireEnabled()
+    this.requireNotStopping()
     return this.manager.answer(handle, questionId, answers)
   }
-  async interrupt(handle: string): Promise<FleetStatus> { this.requireEnabled(); return this.manager.interrupt(handle) }
+  async interrupt(handle: string): Promise<FleetStatus> { this.requireEnabled(); this.requireNotStopping(); return this.manager.interrupt(handle) }
+
+  /** Owned-process evidence for a coordinated stop. Persisted runtime alone never proves a process is gone. */
+  async coordinatedSnapshot(planIds?: string[]): Promise<CoordinatedFleetSnapshot> {
+    const filter = planIds?.length ? ` AND p.id IN (${planIds.map((_, index) => `$${index + 1}`).join(",")})` : ""
+    const rows = await this.chat.db.query(`SELECT m.id,m.team_id AS plan_id,m.session_id,m.ordinal,m.runtime
+      FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+      WHERE 1=1${filter}
+      ORDER BY p.id,m.ordinal,m.id`, planIds ?? [])
+    const liveIds = this.manager.liveIds()
+    const members: CoordinatedFleetMember[] = []
+    for (const row of rows) {
+      const memberId = String(row.id)
+      const runtime = this.runtime(row.runtime)
+      const owned = this.manager.status(memberId)
+      const generation = runtime?.generation ?? this.generations.get(memberId) ?? ""
+      const generationOwned = Boolean(owned && generation && this.generations.get(memberId) === generation)
+      const incident = generation && !generationOwned ? (await this.chat.db.query(`SELECT action FROM process_incidents
+        WHERE subject_kind='fleet_member' AND subject_id=$1 AND generation=$2 AND action IN ('terminated','already_exited') LIMIT 1`, [memberId, generation]))[0] : undefined
+      const launching = this.launching.has(memberId)
+      const state = launching ? "starting" : generationOwned ? String(owned!.state) : runtime?.state ?? "unowned"
+      const terminal = ["failed", "stopped"].includes(state)
+      const proofComplete = generationOwned ? state !== "unknown" || this.manager.exitConfirmed(memberId)
+        : launching || terminal || Boolean(incident)
+      members.push({ member_id: memberId, plan_id: String(row.plan_id), session_id: row.session_id ? String(row.session_id) : null,
+        ordinal: Number(row.ordinal), generation, ...(typeof owned?.pid === "number" ? { pid: owned.pid } : typeof runtime?.pid === "number" ? { pid: runtime.pid } : {}),
+        state, owned: generationOwned || launching, live: liveIds.has(memberId) || launching,
+        proof_complete: proofComplete })
+    }
+    return { fleet_live: new Set([...liveIds, ...this.launching]).size, proof_complete: members.every(member => member.proof_complete), members }
+  }
+
+  beginCoordinatedStop(stopId: string): void {
+    check(!this.coordinatedStopId || this.coordinatedStopId === stopId, "Otra parada coordinada ya controla la flota.", 409)
+    this.coordinatedStopId = stopId
+  }
+
+  endCoordinatedStop(stopId: string): void {
+    if (this.coordinatedStopId === stopId) this.coordinatedStopId = null
+  }
+
+  /** Stops owned members in stable order and reports one durable-ready receipt per member. */
+  async stopOrdered(stopId: string, members: CoordinatedFleetMember[], force = false): Promise<CoordinatedFleetReceipt[]> {
+    this.beginCoordinatedStop(stopId)
+    const receipts: CoordinatedFleetReceipt[] = []
+    for (const member of [...members].sort((a, b) => a.plan_id.localeCompare(b.plan_id) || a.ordinal - b.ordinal || a.member_id.localeCompare(b.member_id))) {
+      if (force && member.owned && !member.proof_complete) {
+        try {
+          const stopped = await this.manager.retryStop(member.member_id)
+          receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state,
+            outcome: stopped.state === "stopped" ? "stopped" : "uncertain", ...(stopped.state === "stopped" ? {} : { detail: { state: stopped.state, error_code: stopped.error_code ?? null } }) })
+        } catch (error) {
+          receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state, outcome: "uncertain",
+            detail: { reason: error instanceof Error ? error.message : "stop_retry_failed" } })
+        }
+        continue
+      }
+      if (!member.live) {
+        receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state,
+          outcome: member.proof_complete ? "already_terminal" : "uncertain" })
+        continue
+      }
+      if (!member.owned || (!force && ["starting", "busy", "waiting_input"].includes(member.state))) {
+        receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state, outcome: "uncertain",
+          detail: { reason: member.owned ? "turn_active" : "process_not_owned" } })
+        continue
+      }
+      try {
+        const stopped = await this.manager.stop(member.member_id)
+        receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state,
+          outcome: stopped.state === "stopped" ? "stopped" : "uncertain", ...(stopped.state === "stopped" ? {} : { detail: { state: stopped.state, error_code: stopped.error_code ?? null } }) })
+      } catch (error) {
+        receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state, outcome: "uncertain",
+          detail: { reason: error instanceof Error ? error.message : "stop_failed" } })
+      }
+    }
+    return receipts
+  }
+
   async stop(handle: string): Promise<FleetStatus> { return this.manager.stop(handle) }
   async suspend(): Promise<void> { await Promise.all(this.manager.list().map(member => this.manager.stop(member.id))) }
   async close(): Promise<string[]> { return this.manager.close() }
