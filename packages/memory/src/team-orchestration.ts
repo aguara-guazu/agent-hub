@@ -852,18 +852,18 @@ export class TeamOrchestration {
         // A relaunched member keeps the channel of its first conversation; the provisional channel of the new conversation is retired.
         const provisionalId=String(who.channel_id)
         let channelId=provisionalId
-        const priorId=(await sql.query('SELECT channel_id FROM chat_team_members WHERE id=$1',[member.id]))[0]?.channel_id ?? null
+        const priorId=(await sql.query("SELECT channel_id FROM chat_team_members WHERE id=$1",[member.id]))[0]?.channel_id ?? null
         if(priorId && priorId!==provisionalId) {
-          const stable=(await sql.query('SELECT * FROM chat_channels WHERE id=$1',[priorId]))[0]
-          if(stable && stable.kind==='virtual' && !stable.closed_at && !stable.deleted_at
-            && (this.orca.provider==='hub'?stable.path===member.workspace_path:stable.orca_workspace_id===member.workspace_id)) {
-            channelId=String(priorId)
-            await sql.query('UPDATE chat_sessions SET channel_id=$2 WHERE id=$1',[who.id,channelId])
-            await sql.query('UPDATE chat_turns SET channel_id=$3 WHERE session_id=$1 AND channel_id=$2',[who.id,provisionalId,channelId])
-            await sql.query('UPDATE chat_status_notices SET channel_id=$2 WHERE channel_id=$1',[provisionalId,channelId])
-            await sql.query('UPDATE usage_quota_notices SET channel_id=$2 WHERE channel_id=$1',[provisionalId,channelId])
-            await sql.query("UPDATE chat_channels SET closed_at=COALESCE(closed_at,now()),leader_id=NULL,updated_at=now() WHERE id=$1 AND kind='virtual' AND activated_at IS NULL",[provisionalId])
-          }
+          const stable=(await sql.query("SELECT * FROM chat_channels WHERE id=$1",[priorId]))[0]
+          check(stable && stable.kind==="virtual" && !stable.closed_at && !stable.deleted_at
+            && (this.orca.provider==="hub"?stable.path===member.workspace_path:stable.orca_workspace_id===member.workspace_id),
+          "El canal estable de este miembro ya no está disponible o no coincide con su worktree. Consultá team_status y avisale al coordinador; la invitación no se consume.",409)
+          channelId=String(priorId)
+          await sql.query("UPDATE chat_sessions SET channel_id=$2 WHERE id=$1",[who.id,channelId])
+          await sql.query("UPDATE chat_turns SET channel_id=$3 WHERE session_id=$1 AND channel_id=$2",[who.id,provisionalId,channelId])
+          await sql.query("UPDATE chat_status_notices SET channel_id=$2 WHERE channel_id=$1",[provisionalId,channelId])
+          await sql.query("UPDATE usage_quota_notices SET channel_id=$2 WHERE channel_id=$1",[provisionalId,channelId])
+          await sql.query("UPDATE chat_channels SET closed_at=COALESCE(closed_at,now()),leader_id=NULL,updated_at=now() WHERE id=$1 AND kind='virtual' AND activated_at IS NULL",[provisionalId])
         }
         const used=await sql.query(`UPDATE chat_team_members SET state='joined',invitation_used_at=now(),invitation_hash=NULL,session_id=$2,channel_id=$3,updated_at=now()
           WHERE id=$1 AND invitation_used_at IS NULL AND invitation_hash=$4 RETURNING *`,[member.id,who.id,channelId,digest])
