@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { UsageNotices, usageWakeText } from './usage-notices.js'
 import { inspectNativeProcess, isStableProcessStart } from '@agenthub/gateway'
 import { execFile } from 'node:child_process'
@@ -18,15 +19,23 @@ export const TICK_PROBE_TIMEOUT_MS = 5_000
 export const TICK_STUCK_MS = 60_000
 const TICK_SLOW_MS = 10_000
 const TIMED_OUT = Symbol("timed_out")
-export type TickEvent = { event: "probe_timeout" | "tick_slow" | "tick_stuck"; step: string; duration_ms: number; session_id?: string }
+const FAILED = Symbol("failed")
+export type TickEvent = { event: "probe_timeout" | "probe_failed" | "tick_slow" | "tick_stuck" | "dispatch_in_flight"; step: string; duration_ms: number; session_id?: string }
+/** Diagnostic state of one tick; overlapping ticks never share it. */
+type TickRun = { started: number; step: string; phaseStarted: number; slowest: { step: string; ms: number } }
+const newRun = (): TickRun => ({ started: Date.now(), step: "read_access", phaseStarted: Date.now(), slowest: { step: "idle", ms: 0 } })
 
 /** Only the local Hub owns the dispatcher. No inference process is created to listen. */
 export class LocalChatRuntime {
   /** Diagnostics only: ids, steps and durations, never message content. Replaced by the Hub's history log when wired. */
   observer: (event: TickEvent) => void = event => { process.stderr.write(`[chat-runtime] ${JSON.stringify(event)}\n`) }
-  private tickStarted = 0
-  private step = "idle"
-  private slowest = { step: "idle", ms: 0 }
+  private readonly runContext = new AsyncLocalStorage<TickRun>()
+  private current: { run: TickRun; done: Promise<void> } | undefined
+  private readonly runs = new Set<Promise<void>>()
+  /** Sessions with a claim or wake in progress, possibly from a detached tick: no other tick claims or wakes them meanwhile. */
+  private readonly inFlight = new Map<string, { since: number; reported: boolean }>()
+  /** A probe still pending is reused by later ticks instead of stacking a new call on the same process or peer. */
+  private readonly probes = new Map<string, Promise<unknown>>()
   private timer?: ReturnType<typeof setInterval>
   private running: Promise<void> | undefined
   private stopped = false
@@ -56,53 +65,78 @@ export class LocalChatRuntime {
   }
   private kick = () => {
     if (this.stopped) return
-    if (this.running) {
-      const elapsed = Date.now() - this.tickStarted
+    if (this.current) {
+      const elapsed = Date.now() - this.current.run.started
       if (elapsed < TICK_STUCK_MS) return
-      // A hung await must not stop deliveries, leases and notices for every session; claims stay transactional across ticks.
-      this.report({ event: "tick_stuck", step: this.step, duration_ms: elapsed })
+      // A hung await must not stop deliveries, leases and notices for every session; inFlight keeps the hung sessions out of the next tick.
+      this.report({ event: "tick_stuck", step: this.current.run.step, duration_ms: elapsed })
     }
-    this.tickStarted = Date.now()
-    const run: Promise<void> = this.tick().catch(() => {}).finally(() => {
-      if (this.running !== run) return
-      this.running = undefined
-      const elapsed = Date.now() - this.tickStarted
-      if (elapsed >= TICK_SLOW_MS) this.report({ event: "tick_slow", step: this.slowest.step, duration_ms: elapsed })
+    const run = newRun()
+    const done: Promise<void> = this.runContext.run(run, () => this.tick()).catch(() => {}).finally(() => {
+      this.runs.delete(done)
+      const elapsed = Date.now() - run.started
+      if (elapsed >= TICK_SLOW_MS) this.report({ event: "tick_slow", step: run.slowest.step, duration_ms: elapsed })
+      if (this.current?.done === done) this.current = undefined
     })
-    this.running = run
+    this.runs.add(done)
+    this.current = { run, done }
   }
   async close() {
     this.stopped = true; clearInterval(this.timer); this.chat.events.off('change',this.kick)
     for (const c of this.controllers) c.abort()
-    // Shutdown has a few seconds before the supervisor kills the core; a hung tick must not consume them.
-    await Promise.race([this.running, new Promise(resolve => setTimeout(resolve, 2_000).unref())])
+    // Shutdown has a few seconds before the supervisor kills the core; detached or hung ticks must not consume them.
+    await Promise.race([Promise.allSettled([...this.runs]), new Promise(resolve => setTimeout(resolve, 2_000).unref())])
   }
   private report(event: TickEvent) { try { this.observer(event) } catch { /* Diagnostics never break delivery. */ } }
   private phase(step: string) {
-    const now = Date.now(), ms = now - this.phaseStarted
-    if (ms > this.slowest.ms) this.slowest = { step: this.step, ms }
-    this.step = step; this.phaseStarted = now
+    const run = this.runContext.getStore()
+    if (!run) return
+    const now = Date.now(), ms = now - run.phaseStarted
+    if (ms > run.slowest.ms) run.slowest = { step: run.step, ms }
+    run.step = step; run.phaseStarted = now
   }
-  private phaseStarted = 0
-  /** Resolves TIMED_OUT when a probe outlives TICK_PROBE_TIMEOUT_MS; the probe itself keeps running and its late result is ignored. */
-  private async bounded<T>(step: string, probe: () => Promise<T>, sessionId?: string): Promise<T | typeof TIMED_OUT> {
+  /**
+   * One probe of a process or peer the tick does not own. TIMED_OUT past TICK_PROBE_TIMEOUT_MS, FAILED on rejection: the caller
+   * skips that unit only. A pending probe with the same key is reused, so a probe that never settles is never duplicated.
+   */
+  private async bounded<T>(key: string, step: string, probe: () => Promise<T>, sessionId?: string): Promise<T | typeof TIMED_OUT | typeof FAILED> {
+    let pending = this.probes.get(key) as Promise<T> | undefined
+    if (!pending) {
+      pending = probe()
+      this.probes.set(key, pending)
+      const forget = () => { if (this.probes.get(key) === pending) this.probes.delete(key) }
+      pending.then(forget, forget)
+    }
     let timer: ReturnType<typeof setTimeout> | undefined
-    const started = Date.now()
-    const result = await Promise.race([probe(), new Promise<typeof TIMED_OUT>(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), TICK_PROBE_TIMEOUT_MS); timer.unref() })])
-      .finally(() => clearTimeout(timer))
-    if (result === TIMED_OUT) this.report({ event: "probe_timeout", step, duration_ms: Date.now() - started, ...(sessionId ? { session_id: sessionId } : {}) })
-    return result
+    const started = Date.now(), detail = sessionId ? { session_id: sessionId } : {}
+    try {
+      const result = await Promise.race([pending, new Promise<typeof TIMED_OUT>(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), TICK_PROBE_TIMEOUT_MS); timer.unref() })])
+      if (result === TIMED_OUT) this.report({ event: "probe_timeout", step, duration_ms: Date.now() - started, ...detail })
+      return result
+    } catch {
+      this.report({ event: "probe_failed", step, duration_ms: Date.now() - started, ...detail })
+      return FAILED
+    } finally { clearTimeout(timer) }
+  }
+  /** True when the session is held by another (possibly detached) tick; reports once when that hold outlives TICK_STUCK_MS. */
+  private held(sid: string, step: string) {
+    const hold = this.inFlight.get(sid)
+    if (!hold) return false
+    if (!hold.reported && Date.now() - hold.since >= TICK_STUCK_MS) {
+      hold.reported = true
+      this.report({ event: "dispatch_in_flight", step, duration_ms: Date.now() - hold.since, session_id: sid })
+    }
+    return true
   }
   async tick() {
     if (!this.collaborationEnabled()) return
-    this.slowest = { step: "idle", ms: 0 }; this.phaseStarted = Date.now(); this.step = "read_access"
     // Grants are re-checked on every read, but a session that closes or goes silent and then reconnects before a sweep would
     // regain one; a failure in any later step of the tick must not postpone revocation.
     await this.chat.sweepReadAccess().catch(() => undefined)
     this.phase("fleet_lease")
     if(this.fleet)for(const session of await this.chat.db.query("SELECT id FROM chat_sessions WHERE capability='hub_fleet' AND closed_at IS NULL")) {
       const fleet=this.fleet
-      if(await this.bounded("fleet_connected",()=>fleet.connected(String(session.id)),String(session.id))===true) {
+      if(await this.bounded(`connected:${session.id}`,"fleet_connected",()=>fleet.connected(String(session.id)),String(session.id))===true) {
         await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[session.id,new Date(Date.now()+90000).toISOString()])
         await this.recordFleetActivity(String(session.id))
       }
@@ -111,8 +145,8 @@ export class LocalChatRuntime {
     // PID birth time prevents a recycled PID from keeping a dead session online.
     const processes = await this.chat.db.query('SELECT s.id,s.process_id,s.process_started FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.closed_at IS NULL AND c.closed_at IS NULL AND s.process_id IS NOT NULL')
     for (const s of processes) {
-      const live=await this.bounded("inspect_process",()=>this.inspectProcess(s.process_id),String(s.id))
-      if(live===undefined || live===TIMED_OUT)continue
+      const live=await this.bounded(`process:${s.id}:${s.process_id}`,"inspect_process",()=>this.inspectProcess(s.process_id),String(s.id))
+      if(live===undefined || live===TIMED_OUT || live===FAILED)continue
       if(live && !s.process_started)continue // No birth identity: a live PID cannot prove replacement.
       // A birth identity stored by an older version (ps lstart) cannot be compared with the stable Linux one; it proves nothing.
       if(live && isStableProcessStart(live.started)!==isStableProcessStart(s.process_started))continue
@@ -136,7 +170,7 @@ export class LocalChatRuntime {
       for(const candidate of await this.chat.fleetLivenessCandidates()) try {
         const runtime=typeof candidate.runtime==="string"?JSON.parse(candidate.runtime):candidate.runtime
         const fleet=this.fleet
-        if(await this.bounded("fleet_readiness",()=>fleet.readiness!(String(candidate.session_id)),String(candidate.session_id))==="unowned" && now-Date.parse(runtime.updated_at)>60_000)
+        if(await this.bounded(`readiness:${candidate.session_id}`,"fleet_readiness",()=>fleet.readiness!(String(candidate.session_id)),String(candidate.session_id))==="unowned" && now-Date.parse(runtime.updated_at)>60_000)
           await this.chat.raiseLiveness(now,candidate,candidate.hub_restart?"hub_restart":["failed","stopped"].includes(runtime.state)?"exited":"unowned")
       } catch {
         // A malformed or unavailable runtime is retried on the next tick.
@@ -144,7 +178,7 @@ export class LocalChatRuntime {
     }
     this.phase("interhub")
     const interhub=this.chat.interhubSweep?.bind(this.chat)
-    if(interhub)await this.bounded("interhub_sweep",()=>interhub().catch(() => undefined))
+    if(interhub)await this.bounded("interhub","interhub_sweep",()=>interhub())
     this.phase("read_access")
     await this.chat.sweepReadAccess()
     this.phase("deliveries")
@@ -160,10 +194,12 @@ export class LocalChatRuntime {
       ORDER BY EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.cause='delivery_stalled' AND n.handled_at IS NULL AND n.cancelled_at IS NULL)`)
     for (const s of sessions) {
       if (this.stopped) return
-      if (!this.enabled(s.agent_id)) continue
+      if (!this.enabled(s.agent_id) || this.held(String(s.id),"deliveries")) continue
+      this.inFlight.set(String(s.id),{since:Date.now(),reported:false})
+      try {
       // The persisted row of a Hub worker can lag its process; the manager decides whether input is accepted now.
-      const probed=s.capability==='hub_fleet' ? await this.bounded("fleet_readiness",()=>this.fleetReadiness(s),String(s.id)) : undefined
-      if (probed===TIMED_OUT || probed==='busy') continue
+      const probed=s.capability==='hub_fleet' ? await this.bounded(`readiness:${s.id}`,"fleet_readiness",()=>this.fleetReadiness(s),String(s.id)) : undefined
+      if (probed===TIMED_OUT || probed===FAILED || probed==='busy' || this.stopped) continue
       const readiness=probed
       const deliveries = await this.claim(s.id,true,readiness!==undefined)
       const quota=new UsageNotices(this.chat),notices=await quota.claim(s.id)
@@ -183,16 +219,21 @@ export class LocalChatRuntime {
           await this.chat.db.query(`UPDATE ${table} SET error=$3${uncertain?',attempts=5':''} WHERE recipient_id=$1 AND ${column}=$2 AND cancelled_at IS NULL`,[s.id,d.message_id,uncertain?'Entrega incierta; no se reenvía automáticamente. El mensaje sigue en inbox.':'No se pudo notificar a la CLI'])
         }
       }
+      } finally { this.inFlight.delete(String(s.id)) }
     }
     this.phase("bootstrap")
     const newcomers=await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE c.leader_id IS NOT NULL AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND s.team_seen=0 AND s.bootstrap_attempts<5 AND (s.bootstrap_sent_at IS NULL OR s.bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) AND s.closed_at IS NULL AND s.state='idle' AND s.capability IN ('codex_queue','hub_fleet') AND s.native_id IS NOT NULL
       AND NOT EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL)
       AND NOT EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.cancelled_at IS NULL)`)
     for(const s of newcomers) {
-      if(!this.enabled(s.agent_id))continue
-      if(!await this.claimBootstrap(s.id))continue
-      if (!this.collaborationEnabled() || !this.enabled(s.agent_id)) continue
-      try {await this.dispatch(s,s.nickname?teamBootstrap:'Agent Hub: register a nickname via memory_chat_set_nick.')}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
+      if(this.stopped)return
+      if(!this.enabled(s.agent_id) || this.held(String(s.id),"bootstrap"))continue
+      this.inFlight.set(String(s.id),{since:Date.now(),reported:false})
+      try {
+        if(!await this.claimBootstrap(s.id))continue
+        if (!this.collaborationEnabled() || !this.enabled(s.agent_id) || this.stopped) continue
+        try {await this.dispatch(s,s.nickname?teamBootstrap:'Agent Hub: register a nickname via memory_chat_set_nick.')}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
+      } finally { this.inFlight.delete(String(s.id)) }
     }
     // After dispatch, so a delivery this tick could still make never raises a notice that is cancelled moments later.
     this.phase("stalled_deliveries")
@@ -206,8 +247,8 @@ export class LocalChatRuntime {
   private async recordFleetActivity(sid:string) {
     const fleet=this.fleet
     if(!fleet?.activityAt)return
-    const evidence=await this.bounded("fleet_activity",()=>fleet.activityAt!(sid),sid)
-    if(!evidence || evidence===TIMED_OUT)return
+    const evidence=await this.bounded(`activity:${sid}`,"fleet_activity",()=>fleet.activityAt!(sid),sid)
+    if(!evidence || evidence===TIMED_OUT || evidence===FAILED)return
     const last=this.activityWritten.get(sid)
     if(last?.at===evidence.at || (last && Date.now()-last.written<30_000))return
     // Only an open turn with the same id may extend the busy interval; a late chunk of an earlier turn finds no match.

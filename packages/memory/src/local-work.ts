@@ -46,6 +46,13 @@ export async function updateWork(sql:Sql,sessionId:string,input:z.infer<typeof w
       check(thread && await canReadChannel(sql,plan.created_by,thread.channel_id),
         "El coordinador del plan no puede leer este hilo; reportá el cierre en tu work_thread_id.",409)
       await sql.query('INSERT OR IGNORE INTO chat_deliveries(message_id,recipient_id) VALUES($1,$2)',[input.report_message_id,plan.created_by])
+      // A delivery cancelled earlier (a revoked and restored association, a replaced session) must be live again; unread ones are re-sent.
+      await sql.query(`UPDATE chat_deliveries SET cancelled_at=NULL,error=NULL,
+        notified_at=CASE WHEN read_at IS NULL THEN NULL ELSE notified_at END,attempts=CASE WHEN read_at IS NULL THEN 0 ELSE attempts END,
+        next_attempt_at=CASE WHEN read_at IS NULL THEN now() ELSE next_attempt_at END
+        WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NOT NULL AND handled_at IS NULL`,[input.report_message_id,plan.created_by])
+      check((await sql.query("SELECT 1 FROM chat_deliveries WHERE message_id=$1 AND recipient_id=$2 AND (cancelled_at IS NULL OR handled_at IS NOT NULL)",
+        [input.report_message_id,plan.created_by])).length,"No se pudo dejar activa la entrega del reporte al coordinador; volvé a intentarlo.",409)
       const turn=(await sql.query(`SELECT turn_id FROM chat_turns WHERE session_id=$1 AND terminal_at IS NULL ORDER BY opened_at DESC LIMIT 1`,[sessionId]))[0]
       if(turn) {
         await sql.query('UPDATE chat_turns SET chat_sent_at=COALESCE(chat_sent_at,now()),report_recipient_id=$3 WHERE session_id=$1 AND turn_id=$2',[sessionId,turn.turn_id,plan.created_by])

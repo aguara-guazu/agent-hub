@@ -9,6 +9,7 @@ import { hash } from './store.js'
 import { deriveStandingPlan, DERIVED_APPROVAL_SOURCE, type ApprovedItem, type StoredDelegation } from './project-automation.js'
 import type { Sql } from './database.js'
 import { markSessionActivity } from './chat-wrap-up.js'
+import { channelMembership } from "./chat-access.js"
 import type { ExtractionCli } from './cli-extraction.js'
 import type { UsageQuotas } from './usage-quotas.js'
 
@@ -899,7 +900,7 @@ export class TeamOrchestration {
           master_session_id:member.created_by,session:{id:who.id,channel_id:channelId},state:'joined',
           task:member.task,role:member.role,prompt:member.prompt,peers,
           authorization:{...this.authorization(plan),assignment:plan.plan.members.find((entry:{id:string})=>entry.id===member.id)},source_workspace:plan.parent,
-          guidance:"Master (TL) coordinates from root_thread_id and decides technical matters within approved scope. The attached authorization shows provenance; it grants nothing beyond the plan and lifts no CLI restriction. Never ask the person directly, not even to re-approve an authorized action; ask the master via the Hub, mentioning master_session_id. On missing scope or a real blocker, tell the master the action, exact rule or error, and what is missing. Peers may request in-role subtasks in the team thread: answer them; escalate only conflicts or out-of-scope decisions to the TL. Each task's closing report goes to your work_thread_id mentioning the plan coordinator (master_session_id), also when a peer assigned it; mention that peer too. root_thread_id is general coordination. Peers may post in your thread and you in theirs. On join, record work and report; if blocked by a PR or other result, record waiting with it. Idle is not done. Write in the language of your task."+(resume?RESUME_GUIDANCE:""),
+          guidance:"Master (TL) coordinates from root_thread_id and decides technical matters within approved scope. The attached authorization shows provenance; it grants nothing beyond the plan and lifts no CLI restriction. Never ask the person directly, not even to re-approve an authorized action; ask the master via the Hub, mentioning master_session_id. On missing scope or a real blocker, tell the master the action, exact rule or error, and what is missing. Peers may request in-role subtasks in the team thread: answer them; escalate only conflicts or out-of-scope decisions to the TL. Each task's closing report goes to your work_thread_id (or to the work's own thread when it is in an inter-hub channel the coordinator can read) mentioning the plan coordinator (master_session_id), also when a peer assigned it; mention that peer too. root_thread_id is general coordination. Peers may post in your thread and you in theirs. On join, record work and report; if blocked by a PR or other result, record waiting with it. Idle is not done. Write in the language of your task."+(resume?RESUME_GUIDANCE:""),
           ...(resume?{resume}:{})}
       })
       check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
@@ -921,27 +922,34 @@ export class TeamOrchestration {
       AND actor_session_id IS NOT NULL AND actor_session_id<>$3`,[member.team_id,member.id,sessionId])).map(row=>String(row.id))
     if(!previous.length)return null
     const ids=JSON.stringify(previous)
-    const moved=await sql.query(`SELECT d.message_id,d.recipient_id,d.response_required FROM chat_deliveries d
-      JOIN chat_messages m ON m.id=d.message_id JOIN chat_threads t ON t.id=m.thread_id JOIN chat_channels c ON c.id=t.channel_id
-      WHERE d.recipient_id IN (SELECT value FROM json_each($1)) AND d.error=$2 AND d.handled_at IS NULL AND d.response_message_id IS NULL
-      AND m.author_id<>$3 AND m.created_at>$4 AND t.state='open' AND c.closed_at IS NULL AND c.deleted_at IS NULL
-      ORDER BY m.created_at DESC LIMIT $5`,[ids,REPLACED_DELIVERY,sessionId,new Date(Date.now()-CARRY_OVER_MS).toISOString(),CARRY_OVER_LIMIT])
-    for(const row of moved) {
-      await sql.query("INSERT OR IGNORE INTO chat_deliveries(message_id,recipient_id,response_required) VALUES($1,$2,$3)",[row.message_id,sessionId,row.response_required])
-      await sql.query("UPDATE chat_deliveries SET error=$3 WHERE message_id=$1 AND recipient_id=$2",[row.message_id,row.recipient_id,"Transferida a la nueva conversación del worker"])
-    }
     await sql.query(`INSERT OR IGNORE INTO interhub_local_agents(channel_id,session_id,added_by)
       SELECT a.channel_id,$2,a.added_by FROM interhub_local_agents a JOIN chat_channels c ON c.id=a.channel_id
       WHERE a.session_id IN (SELECT value FROM json_each($1)) AND a.removed_at IS NULL AND c.kind='inter-hub' AND c.closed_at IS NULL AND c.deleted_at IS NULL
       AND c.leader_id=a.added_by`,[ids,sessionId])
+    const candidates=await sql.query(`SELECT d.message_id,d.recipient_id,d.response_required,t.channel_id FROM chat_deliveries d
+      JOIN chat_messages m ON m.id=d.message_id JOIN chat_threads t ON t.id=m.thread_id JOIN chat_channels c ON c.id=t.channel_id
+      WHERE d.recipient_id IN (SELECT value FROM json_each($1)) AND d.error=$2 AND d.handled_at IS NULL AND d.response_message_id IS NULL
+      AND m.author_id<>$3 AND m.created_at>$4 AND t.state='open' AND c.closed_at IS NULL AND c.deleted_at IS NULL
+      ORDER BY m.created_at DESC LIMIT $5`,[ids,REPLACED_DELIVERY,sessionId,new Date(Date.now()-CARRY_OVER_MS).toISOString(),CARRY_OVER_LIMIT])
+    // Only what the new session may read: its team channels and the inter-hub channels whose association followed it.
+    const access=new Map<string,boolean>(),moved=[]
+    for(const row of candidates) {
+      const channel=String(row.channel_id)
+      if(!access.has(channel))access.set(channel,await channelMembership(sql,sessionId,channel)!==null)
+      if(access.get(channel))moved.push(row)
+    }
+    for(const row of moved) {
+      await sql.query("INSERT OR IGNORE INTO chat_deliveries(message_id,recipient_id,response_required) VALUES($1,$2,$3)",[row.message_id,sessionId,row.response_required])
+      await sql.query("UPDATE chat_deliveries SET error=$3 WHERE message_id=$1 AND recipient_id=$2",[row.message_id,row.recipient_id,"Transferida a la nueva conversación del worker"])
+    }
     const work=await sql.query(`SELECT work_id,thread_id,status,waiting_for,summary,report_message_id,updated_at FROM chat_work_state
       WHERE session_id IN (SELECT value FROM json_each($1)) ORDER BY updated_at DESC LIMIT 3`,[ids])
     const pending=await sql.query(`SELECT m.id AS message_id,m.thread_id,COALESCE(s.nickname,s.label) AS author,m.created_at,d.response_required,
       substr(replace(m.text,char(10),' '),1,200) AS excerpt FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id
       LEFT JOIN chat_sessions s ON s.id=m.author_id WHERE d.recipient_id=$1 AND d.handled_at IS NULL AND d.cancelled_at IS NULL
       ORDER BY m.created_at LIMIT $2`,[sessionId,CARRY_OVER_LIMIT])
-    const last=(await sql.query(`SELECT id AS message_id,created_at,substr(replace(text,char(10),' '),1,200) AS excerpt FROM chat_messages
-      WHERE thread_id=$1 AND author_id IN (SELECT value FROM json_each($2)) ORDER BY created_at DESC LIMIT 1`,[member.work_thread_id,ids]))[0] ?? null
+    const last=(await sql.query(`SELECT m.id AS message_id,m.created_at,COALESCE(s.nickname,s.label) AS author,substr(replace(m.text,char(10),' '),1,200) AS excerpt
+      FROM chat_messages m LEFT JOIN chat_sessions s ON s.id=m.author_id WHERE m.thread_id=$1 ORDER BY m.seq DESC LIMIT 1`,[member.work_thread_id]))[0] ?? null
     return {previous_work:work,last_message_in_work_thread:last,pending_messages:pending.map(row=>({...row,response_required:Boolean(row.response_required)}))}
   }
   private authorization(plan:Record<string,any>) {
@@ -1103,10 +1111,13 @@ export class TeamOrchestration {
           try {await this.orca.send(item.launch_handle,input.text!)} catch(error) {
             // Protocol codes reach the MCP caller as a generic failure; the coordinator needs a reason it can act on.
             if(!(error instanceof Error) || !["fleet_not_idle","fleet_process_unavailable"].includes(error.message))throw error
-            const state=(await this.orca.status?.(item.launch_handle).catch(()=>undefined))?.state
-            check(!state || !["busy","waiting_input","starting"].includes(state),
-              "El worker está en un turno y esta CLI no acepta instrucciones a mitad de turno. Mencionalo en su work_thread_id: el Hub se lo entrega al terminar el turno. Si hay que cortarlo, usá interrupt.",409)
-            throw new MemoryError(409,`El Hub no controla un proceso vivo de este worker (estado ${state ?? "desconocido"}). Consultá team_status y, si corresponde, relanzalo con team_control start.`)
+            const observed=await this.orca.status?.(item.launch_handle).catch(()=>undefined),state=observed?.state
+            check(state && !["busy","waiting_input","starting"].includes(state),!state
+              ?"No se pudo confirmar el estado del worker. Consultá team_status antes de reintentar."
+              :"El worker está en un turno y esta CLI no acepta instrucciones a mitad de turno. Mencionalo en su work_thread_id: el Hub se lo entrega al terminar el turno. Si hay que cortarlo, usá interrupt.",409)
+            // A live idle worker can refuse while another instruction is being submitted: transient, not a lost process.
+            check(state!=="idle","El worker está recibiendo otra instrucción en este momento. Reintentá en unos segundos o mencionalo en su work_thread_id.",409)
+            throw new MemoryError(409,`El Hub no controla un proceso vivo de este worker (estado ${state}). Consultá team_status y, si corresponde, relanzalo con team_control start.`)
           }
         } else if(input.action==='interrupt') {
           check(this.orca.interrupt,'El backend no permite interrumpir',409)
