@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs"
 import { homedir, release } from "node:os"
 import { join } from "node:path"
 import { z } from "zod"
@@ -9,6 +10,10 @@ import { buildReport, redactReport, tailLog } from "./report.js"
 
 const WINDOW_MAX_MS = 24 * 60 * 60_000
 const LOG_LINES = 200
+/** Unpublished drafts are removed by the next report after this age, so an abandoned publication leaves nothing behind for long. */
+const DRAFT_TTL_MS = 60 * 60_000
+/** A path the agent can paste inside single quotes in POSIX shells and PowerShell alike. */
+const QUOTABLE_PATH = /^[^'\0\r\n`$"]+$/
 /** Only these hub.log fields reach a public issue; free-form logs (core, daemon, worker) stay local. */
 const PUBLIC_FIELDS = ["ts", "component", "event", "step", "duration_ms", "cause", "action", "state", "from", "error_code", "cli", "count", "uncertain",
   "session_id", "recipient_id", "member_id", "generation", "notice_id"] as const
@@ -51,6 +56,27 @@ function hubEvents(path: string, from: string, to: string): string[] {
   return events.slice(-LOG_LINES)
 }
 /**
+ * Writes the body to a private, Hub-owned draft file (0600 in a 0700 folder) and prunes drafts older than DRAFT_TTL_MS.
+ * Returns undefined when the folder cannot be written or its real path is not safe to quote; the caller then offers the url.
+ */
+function writeDraft(memoryDirectory: string, body: string): string | undefined {
+  try {
+    const folder = join(memoryDirectory, "issue-drafts")
+    mkdirSync(folder, { recursive: true, mode: 0o700 })
+    const real = realpathSync(folder)
+    if (!lstatSync(real).isDirectory() || !QUOTABLE_PATH.test(real)) return undefined
+    chmodSync(real, 0o700)
+    const cutoff = Date.now() - DRAFT_TTL_MS
+    for (const name of readdirSync(real)) {
+      if (!/^[0-9a-f-]{36}\.md$/.test(name)) continue
+      try { const entry = lstatSync(join(real, name)); if (entry.isFile() && entry.mtimeMs < cutoff) unlinkSync(join(real, name)) } catch { /* Removed meanwhile. */ }
+    }
+    const file = join(real, `${randomUUID()}.md`)
+    writeFileSync(file, body, { mode: 0o600, flag: "wx" })
+    return file
+  } catch { return undefined }
+}
+/**
  * A title the agent can pass inside single quotes: redacted first, then reduced to letters, digits, spaces and `.,:;()#/_+-`.
  * Empty when nothing survives (emoji or control characters only); the caller falls back to the version, OS and summary.
  */
@@ -89,7 +115,8 @@ export async function diagnosticReport(sql: Sql, memoryDirectory: string, raw: z
     ],
     home,
   })
-  return { ...report, repository: "aguara-guazu/agent-hub", published: false,
+  const bodyFile = writeDraft(memoryDirectory, report.text)
+  return { ...report, repository: "aguara-guazu/agent-hub", published: false, ...(bodyFile ? { body_file: bodyFile } : {}),
     local_logs: "core.log, daemon.log and worker.log stay in the Hub logs folder; attach them only if the person reviews and chooses to.",
-    guidance: "Show the person the exact title and body (text) with times in their local zone. If they edit anything, call this tool again with the edited fields and show the new result. Publish only the last returned title and text, after their explicit approval; never add content after it." }
+    guidance: "Show the person the exact title and body (text) with times in their local zone. If they edit anything, call this tool again with the edited fields and show the new result. Publish only the last returned title and body_file, after their explicit approval; never add content after it. body_file is private and the Hub deletes it within an hour if it is not published." }
 }
