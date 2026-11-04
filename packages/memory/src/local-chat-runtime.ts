@@ -84,7 +84,7 @@ export class LocalChatRuntime {
       for(const candidate of await this.chat.fleetLivenessCandidates()) try {
         const runtime=typeof candidate.runtime==='string'?JSON.parse(candidate.runtime):candidate.runtime
         if(await this.fleet.readiness(String(candidate.session_id))==='unowned' && now-Date.parse(runtime.updated_at)>60_000)
-          await this.chat.raiseLiveness(now,candidate,candidate.hub_restart || runtime.error_code==='fleet_process_not_owned'?'hub_restart':'exited')
+          await this.chat.raiseLiveness(now,candidate,candidate.hub_restart?'hub_restart':['failed','stopped'].includes(runtime.state)?'exited':'unowned')
       } catch {}
     }
     await this.chat.interhubSweep?.().catch(() => undefined)

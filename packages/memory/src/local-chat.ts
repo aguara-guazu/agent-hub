@@ -855,7 +855,7 @@ export class LocalChat {
         AND s.removed_at IS NULL AND s.capability='hub_fleet' AND p.state IN ('launching','launched','partial','uncertain','active')
         AND master.closed_at IS NULL AND master.leader_id=p.created_by AND leader.channel_id=master.id AND leader.removed_at IS NULL`)
   }
-  async raiseLiveness(now:number,c:Record<string,any>,reason:'hub_restart'|'exited') {
+  async raiseLiveness(now:number,c:Record<string,any>,reason:'hub_restart'|'exited'|'unowned') {
     const runtime=typeof c.runtime==='string'?JSON.parse(c.runtime):c.runtime
     const generation=runtime?.generation
     if(typeof generation!=='string')return
@@ -864,7 +864,7 @@ export class LocalChat {
       if(!route)return
       if((await sql.query("SELECT 1 FROM chat_status_notices WHERE session_id=$1 AND turn_id=$2 LIMIT 1",[c.session_id,`liveness:${generation}`])).length)return
       await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Superado por aviso de liveness' WHERE session_id=$1 AND recipient_id=$2 AND cause<>'liveness' AND handled_at IS NULL AND cancelled_at IS NULL",[c.session_id,route.recipient.id])
-      const text=`${c.label} is not reachable: ${reason==='hub_restart'?'the Hub restarted and no longer owns its process':'its process exited or failed'} (runtime ${runtime.state}, since ${runtime.updated_at}). Mentions to it will not be delivered. Relaunch it with team_control start using the current generation from team_status, then re-check pending requests in its work thread. A registered wait does not cover a lost process. Never read its terminal, output, logs or transcript. Private notice, not a thread.`
+      const text=`${c.label} is not reachable: ${reason==='hub_restart'?'the Hub restarted and no longer owns its process':reason==='unowned'?'the Hub no longer controls the current process; cause unconfirmed':'its process exited or failed'} (runtime ${runtime.state}, since ${runtime.updated_at}). Mentions to it will not be delivered. Relaunch it with team_control start using the current generation from team_status, then re-check pending requests in its work thread. A registered wait does not cover a lost process. Never read its terminal, output, logs or transcript. Private notice, not a thread.`
       await sql.query(`INSERT INTO chat_status_notices(id,session_id,turn_id,cause,channel_id,team_id,recipient_id,work_thread_id,text,created_at)
         VALUES($1,$2,$3,'liveness',$4,$5,$6,$7,$8,$9)`,[randomUUID(),c.session_id,`liveness:${generation}`,c.channel_id,c.team_id,route.recipient.id,c.work_thread_id,text,new Date(now).toISOString()])
     })
