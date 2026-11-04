@@ -1,9 +1,10 @@
-import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { createHash, randomBytes } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { release } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { execFile } from 'node:child_process'
+import { release, userInfo } from 'node:os'
+import { basename, delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, shell, Tray } from 'electron'
 import { buildReport, LogFile, tailLog } from '@agenthub/memory/report'
@@ -21,7 +22,19 @@ import { AutostartOffer } from './autostart-offer.js'
 import { ClockWake } from './clock-wake.js'
 import { holdLimitFor, KeepAwake } from './keep-awake.js'
 import { deliveryNotice, FeedPoller, ScheduleNoticeBatcher, type FeedResponse, type Notice } from './schedule-feed.js'
-import { AutoUpdater, fetchLatestRelease, type UpdateStatus } from "./updater.js"
+import { AutoUpdater, bundlePathFrom, fetchLatestRelease, fsyncPath, realBundlePath, resolveFeed, revalidateArtifact, type UpdateStatus } from "./updater.js"
+import { UpdateStateCorruptError, UpdateStore } from './update-state.js'
+import { advancePhase, readTransaction, removeTreeDurable, type UpdateTransaction } from './update-transaction.js'
+import { prepareWatchdog } from './update-watchdog.js'
+import { recoverTransaction } from './update-recovery.js'
+import { parseTrustSet } from './update-trust.js'
+import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
+import { CoreDidNotExit, DRAIN_SECRET_HEADER, DrainClient, DrainLeaseLost, type DrainLease } from './update-lease.js'
+import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
+import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
+import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
+import { UpdateHintListener } from './update-hint.js'
+import { overrideIsSafe, postponedLine, type UpdateReason, type UpdateReport } from './update-report.js'
 import { createVersionInfoReader } from "./version-info.js"
 import { SilentUpdates, hiddenUpdateLaunch, updateRelaunchArgs } from './silent-updates.js'
 import { defaultClientDeps, isClientRunning, restartClient, supportsClientRestart } from './clients.js'
@@ -55,7 +68,7 @@ let quitting = false
 let stopped = false
 let maintenance: Promise<void> | null = null
 /** Tope para el apagado ordenado; pasado este tiempo la app sale igual. */
-const QUIT_DEADLINE_MS = 20_000
+const QUIT_DEADLINE_MS = 30_000
 let relaunchAfterQuit = false
 /** Instaladores externos corren después de detener core y daemon. */
 let installOnQuit: Extract<UpdateStatus, { state: 'downloaded' }> | null = null
@@ -111,39 +124,79 @@ function persistentSecret(path: string): string {
 
 const jwtSecret = persistentSecret(join(stateDir, 'jwt.secret'))
 const desktopBootstrap = randomBytes(32).toString('base64url')
+/** Sólo el escritorio presenta este secreto para pedir el drenaje de una actualización; vive en memoria y va únicamente al entorno de core. */
+const updateDrainSecret = randomBytes(32).toString('base64url')
 const sharedEnv: NodeJS.ProcessEnv = {
   ELECTRON_RUN_AS_NODE: '1',
   AGENTHUB_DESKTOP_BOOTSTRAP_TOKEN: desktopBootstrap,
   AGENTHUB_LOG_DIR: logsDir,
 }
-const coreSupervisor = new CoreSupervisor({
-  command: paths.coreCommand,
-  args: paths.coreArgs,
-  env: {
+/** Entorno de core. Es un objeto vivo: el runtime versionado agrega sus variables antes de arrancar y el supervisor lo lee en cada arranque. */
+const coreEnv: NodeJS.ProcessEnv = {
     ...sharedEnv,
     AGENTHUB_HUB_HOST: CORE_HOST,
     AGENTHUB_HUB_PORT: String(CORE_PORT),
     AGENTHUB_LOCAL_MODE: '1',
     AGENTHUB_DATABASE_PATH: join(stateDir, 'hub.db'),
     AGENTHUB_JWT_SECRET: jwtSecret,
+    AGENTHUB_UPDATE_DRAIN_SECRET: updateDrainSecret,
     AGENTHUB_CONSOLE_DIST: dirname(paths.rendererIndex),
     // Credenciales OAuth de los MCP servers: mismo directorio que lee el gateway.
     AGENTHUB_OAUTH_DIR: join(stateDir, 'oauth'),
     AGENTHUB_OAUTH_REDIRECT_URL: `${CORE_BASE_URL}/api/oauth/callback`,
-  },
+}
+/**
+ * Un core lanzado por una actualización nace cerrado hasta que esta app lo admite. La fuente es el journal durable, no el entorno
+ * heredado del vigía: sobrevive a un reinicio del equipo y a cada reinicio de core mientras la transacción no esté admitida.
+ */
+function startupTransactionId(): string {
+  const read = readTransaction(updateStore.dir)
+  if (read.kind !== 'ok') return ''
+  const { phase, to, transaction_id: id } = read.tx
+  return (phase === 'swapped' || phase === 'launched') && to.version === app.getVersion() ? id : ''
+}
+delete process.env.AGENTHUB_UPDATE_TX
+Object.defineProperty(coreEnv, 'AGENTHUB_UPDATE_TX', { enumerable: true, configurable: true, get: startupTransactionId })
+const coreSupervisor = new CoreSupervisor({
+  command: paths.coreCommand,
+  args: paths.coreArgs,
+  // Con el lease de drenaje no hay llamadas en curso; el margen cubre el cierre ordenado de core.
+  stopGraceMs: 18_000,
+  env: coreEnv,
 })
-const daemonSupervisor = new CoreSupervisor({
-  command: paths.daemonCommand,
-  args: [...paths.daemonArgs, 'run', '--local'],
-  env: {
+/** Entorno del daemon; vivo por la misma razón que el de core. */
+const daemonEnv: NodeJS.ProcessEnv = {
     ...sharedEnv,
     AGENTHUBD_LOCAL: '1',
     AGENTHUBD_URL: CORE_BASE_URL,
     AGENTHUBD_STATE_DIR: stateDir,
     AGENTHUBD_REQUEST_TIMEOUT: '3',
     AGENTHUB_ISOLATION: 'off',
-  },
+}
+const daemonSupervisor = new CoreSupervisor({
+  command: paths.daemonCommand,
+  args: [...paths.daemonArgs, 'run', '--local'],
+  env: daemonEnv,
 })
+
+/**
+ * Deja lista la copia versionada del bundle y entrega a core y al daemon el lanzador estable y su raíz. Sin copia
+ * válida no se exporta nada: una variable que apunte a un archivo ausente rompería los comandos que se generan con ella,
+ * y sin copia tampoco se aplica ninguna actualización (el vigía y el helper salen de ahí).
+ */
+async function prepareGatewayRuntime(): Promise<void> {
+  if (!app.isPackaged || process.platform !== 'darwin') return
+  try {
+    const result = await ensureGatewayRuntime({ stateDir, execPath: process.execPath, version: app.getVersion() })
+    if (!result) return
+    coreEnv.AGENTHUB_GATEWAY_RUNTIME = result.launcher
+    coreEnv.AGENTHUB_GATEWAY_RUNTIME_ROOT = runtimePaths(stateDir).root
+    daemonEnv.AGENTHUB_GATEWAY_RUNTIME = result.launcher
+    coreLog.write(`[runtime] copia versionada lista para v${app.getVersion()}`)
+  } catch (error) {
+    coreLog.write(`[runtime] sin copia versionada (no se aplican actualizaciones): ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
 
 /**
  * En Windows la entrada de inicio lleva `--hidden` para arrancar en la bandeja. Electron
@@ -189,6 +242,39 @@ const updateSource = {
   ...(process.env.AGENTHUB_UPDATE_API ? { apiBase: process.env.AGENTHUB_UPDATE_API } : {}),
   ...(process.env.AGENTHUB_UPDATE_REPO ? { repo: process.env.AGENTHUB_UPDATE_REPO } : {}),
 }
+/** Registro técnico del actualizador: va a core.log además de stderr; nunca a notificaciones ni diálogos. */
+function updaterLog(line: string): void {
+  console.error(line)
+  coreLog.write(line)
+}
+const updateStore = new UpdateStore(stateDir)
+/** Trust store embebido en el build (`desktop/dist/update-trust.json`, lo genera el empaquetado); ausente, sólo integridad. */
+const bundledTrust: BundledTrust = loadBundledTrust(join(appDir, 'update-trust.json'))
+const trustProvider = {
+  // Un archivo de claves que existe pero no es válido bloquea la actualización: degradar a «sin claves» abriría la puerta a una release sin firma.
+  current: (): TrustSet => {
+    if (bundledTrust.kind === 'invalid') throw new Error(t('updater.trustInvalid'))
+    return effectiveTrust(bundledTrust.kind === 'ok' ? bundledTrust.trust : null, updateStore.read().trust)
+  },
+  requireSignature: (): boolean => bundledTrust.kind === 'invalid' || updateStore.read().requireSignature,
+}
+function realPathOrSelf(path: string): string {
+  try { return realpathSync(path) } catch { return path }
+}
+/** Un servidor de pruebas en loopback nunca puede operar sobre la instalación, el estado o el HOME reales de la persona. */
+const overrideSafe = ((): boolean => {
+  const feed = resolveFeed({ apiBase: process.env.AGENTHUB_UPDATE_API, repo: process.env.AGENTHUB_UPDATE_REPO })
+  if (!feed.loopback) return true
+  const realHome = userInfo().homedir
+  return overrideIsSafe({
+    install: realPathOrSelf(bundlePathFrom(process.execPath) ?? process.execPath),
+    state: realPathOrSelf(stateDir),
+    home: realPathOrSelf(app.getPath('home')),
+    realInstall: realPathOrSelf('/Applications/Agent Hub.app'),
+    realState: realPathOrSelf(join(realHome, 'Library', 'Application Support', 'Agent Hub')),
+    realHome: realPathOrSelf(realHome),
+  })
+})()
 
 const updater = new AutoUpdater({
   currentVersion: app.getVersion(),
@@ -198,9 +284,17 @@ const updater = new AutoUpdater({
   execPath: process.execPath,
   env: process.env,
   bundleId: APP_BUNDLE_ID,
-  enabled: app.isPackaged,
+  enabled: app.isPackaged && overrideSafe,
   ...updateSource,
-  log: (line) => console.error(line),
+  onProgress: (progress) => setUpdateReport(progress.state === 'downloading' ? { phase: 'downloading', version: progress.version } : { phase: 'available', version: progress.version }),
+  trust: trustProvider,
+  // El helper sale de la copia de runtime de esta versión: con RENAME_SWAP el contenido del bundle instalado cambia justo en ese instante.
+  swapHelper: () => {
+    const bundle = realBundlePath(process.execPath)
+    return (bundle && runtimeOldBundle(bundle) ? swapHelperPath(stateDir, app.getVersion(), basename(bundle)) : null) ?? ''
+  },
+  gate: updateStore,
+  log: updaterLog,
 })
 
 const readVersionInfo = createVersionInfoReader({
@@ -398,26 +492,315 @@ function pollSchedules(): Promise<void> {
   return schedulePoll
 }
 
+let updateReport: UpdateReport = { phase: 'idle' }
+function setUpdateReport(next: UpdateReport): void {
+  updateReport = { ...next, ...(next.trust ? {} : updateReport.trust && next.version === updateReport.version ? { trust: updateReport.trust } : {}) }
+}
+
 const silentUpdates = new SilentUpdates({
-  check: () => updater.check(),
+  check: async () => {
+    if (updateReport.phase !== 'downloading' && updateReport.phase !== 'postponed') setUpdateReport({ phase: 'checking' })
+    let status: UpdateStatus
+    try {
+      status = await updater.check()
+    } catch (error) {
+      if (error instanceof UpdateStateCorruptError) { setUpdateReport({ phase: 'failed', error: t('updater.stateCorrupt') }); updaterLog('[updater] state.json dañado: no se actualiza ni se sobrescribe') }
+      throw error
+    }
+    if (status.state === 'disabled') setUpdateReport({ phase: 'disabled' })
+    else if (status.state === 'up-to-date') setUpdateReport({ phase: 'idle' })
+    else if (status.state === 'available') setUpdateReport({ phase: 'available', version: status.version })
+    else if (status.state === 'failed') setUpdateReport({ phase: 'failed', version: status.version, error: status.error })
+    else {
+      setUpdateReport({ phase: 'ready', version: status.version, ...(status.trust ? { trust: status.trust } : {}) })
+    }
+    return status
+  },
   apply: applyUpdate,
-  log: message => console.error('[updater]', message),
+  log: message => updaterLog(`[updater] ${message}`),
+  enabled: () => updateStore.isEnabled(),
 })
 
+/** Última pospuesta registrada: el registro sólo cambia cuando cambia la razón. */
+let lastPostponed = ''
+function postpone(version: string, reasons: UpdateReason[]): false {
+  const line = postponedLine(reasons)
+  if (line !== lastPostponed) { lastPostponed = line; updaterLog(`[updater] pospuesta: ${line}`) }
+  setUpdateReport({ phase: 'postponed', version, reasons })
+  return false
+}
+
+const drainClient = new DrainClient({
+  call: (path, init) => coreFetch(path, init),
+  secret: updateDrainSecret,
+  log: updaterLog,
+  core: { get pid() { return coreSupervisor.pid }, get state() { return coreSupervisor.state } },
+  startTimeOf: processStartTime,
+})
+const acquireDrain = (): ReturnType<DrainClient['acquire']> => drainClient.acquire()
+const cancelDrain = (lease: { lease: string; generation: number }): Promise<void> => drainClient.cancel(lease)
+const commitCore = (lease: DrainLease): ReturnType<DrainClient['commit']> => drainClient.commit(lease)
+const leaseHeld = (lease: DrainLease): boolean => drainClient.held(lease)
+const drainHeaders = (json = false): Record<string, string> => ({ [DRAIN_SECRET_HEADER]: updateDrainSecret, ...(json ? { "Content-Type": "application/json" } : {}) })
+
 async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<boolean> {
-  if (quitting) return false
+  if (quitting || updateExiting) return false
   // NSIS closes executables in the installation folder. Wait automatically rather
   // than breaking a client's live stdio MCP connection or asking the user to act.
-  if (update.strategy === 'nsis' && await updater.bridgesAtRisk() > 0) return false
-  if (update.strategy === 'nsis' || update.strategy === 'appimage') {
-    installOnQuit = update
-  } else {
-    await updater.apply(update)
-    relaunchAfterQuit = true
+  if (update.strategy === 'nsis' && await updater.bridgesAtRisk() > 0) return postpone(update.version, [{ code: 'mcp_bridges' }])
+  if (!updateStore.isEnabled()) return false
+  let tx: UpdateTransaction | null = null
+  // macOS, todo esto fuera del drenaje (los gateways esperan sólo 45 s): runtime, helper válido, DMG revalidado, stage con fsync,
+  // journal `staged` y vigía preparado (`watchdog_ready`). El Updater nunca invoca el helper: el intercambio es del vigía.
+  if (update.strategy === 'dmg') {
+    const bundle = realBundlePath(process.execPath)
+    if (!bundle || !runtimeOldBundle(bundle)) return postpone(update.version, [{ code: 'runtime_unavailable' }])
+    const prepared = await updater.prepare(update)
+    if (prepared.state === 'postponed') return postpone(update.version, prepared.reasons)
+    if (!await recordStagedTransaction(update)) return postpone(update.version, [{ code: 'runtime_unavailable' }])
+    tx = await ensureWatchdogReady(update)
   }
-  console.error(`[updater] v${update.version}: reinicio silencioso`)
+  const gate = await acquireDrain()
+  if ("reasons" in gate) return postpone(update.version, gate.reasons)
+  // Con un lease vigente core no se reinicia solo: si muere, el lease se da por perdido y se libera la retención.
+  const releaseHold = coreSupervisor.hold()
+  const lost = async (): Promise<false> => {
+    await cancelDrain(gate.lease)
+    releaseHold()
+    updaterLog(`[updater] v${update.version}: el drenaje se perdió antes de aplicar; se reintenta`)
+    return postpone(update.version, [{ code: "drain_lease_lost" }])
+  }
+  try {
+    if (!leaseHeld(gate.lease)) return await lost()
+    lastPostponed = ''
+    if (update.strategy === 'nsis' || update.strategy === 'appimage') {
+      // El instalador se vuelve a verificar justo antes de lanzarlo: pudo cambiar mientras esperaba su turno.
+      await revalidateArtifact(update.path, update.sha256, update.size)
+      await commitCore(gate.lease)
+      installOnQuit = update
+    } else {
+      // Core sale bajo el lease (commit) y se observa su salida; recién entonces se anota la intención y esta app se va. El vigía
+      // espera a que termine, intercambia y lanza la versión nueva.
+      await commitCore(gate.lease)
+      advancePhase(updateStore.dir, tx!.transaction_id, 'swap_intent')
+    }
+  } catch (error) {
+    if (error instanceof DrainLeaseLost || error instanceof CoreDidNotExit) return await lost()
+    await cancelDrain(gate.lease)
+    releaseHold()
+    throw error
+  }
+  setUpdateReport({ phase: 'applying', version: update.version, ...(update.trust ? { trust: update.trust } : {}) })
+  updaterLog(`[updater] v${update.version}: reinicio silencioso`)
+  if (update.strategy === 'dmg') {
+    await exitForUpdate()
+    return true
+  }
   await quit()
   return true
+}
+
+/** Tope del cierre del daemon en una actualización: core ya salió, así que no hay nada en curso que proteger. */
+const UPDATE_EXIT_DEADLINE_MS = 10_000
+let updateExiting = false
+
+/**
+ * Cierre propio de una actualización de bundle: sin esperas de llamadas, sin sincronizar contra un core que ya salió y sin
+ * relanzar (la versión nueva la lanza el vigía). No hay temporizador de abandono aquí: si la app no sale, el vigía lo decide
+ * desde afuera (aborted, termina a esta app y vuelve a lanzar la misma versión una sola vez).
+ */
+async function exitForUpdate(): Promise<void> {
+  updateExiting = true
+  silentUpdates.stop()
+  updateHints.stop()
+  await Promise.race([
+    daemonSupervisor.stop().catch(() => undefined),
+    new Promise<void>((resolve) => { setTimeout(resolve, UPDATE_EXIT_DEADLINE_MS).unref() }),
+  ])
+  stopped = true
+  app.exit(0)
+}
+
+/** Borra y comprueba: rechaza si algo quedó y hace durable el borrado (fsync del padre). Quien cierra una transacción depende de ello. */
+const removeTree = (path: string): Promise<void> => new Promise<void>((resolve, reject) => execFile('/bin/rm', ['-rf', path], error => error ? reject(error) : resolve()))
+  .then(async () => {
+    if (existsSync(path)) throw new Error(`no se pudo borrar ${path}`)
+    await fsyncPath(dirname(path))
+  })
+
+/** Copia de runtime de la versión que corre (layout de `gateway-runtime`): el vigía y el helper salen de ahí, no del bundle que se reemplaza. */
+const runtimeOldBundle = (bundle: string): string | null => {
+  const path = runtimeBundlePath(stateDir, app.getVersion(), basename(bundle))
+  return path && existsSync(path) ? path : null
+}
+
+const sha256OfFile = async (path: string): Promise<string> => createHash('sha256').update(await readFile(path)).digest('hex')
+
+/** `runtime/current` resuelve a la copia de runtime de esta versión. */
+function runtimeCurrentMatches(version: string): boolean {
+  try {
+    return realpathSync(join(stateDir, 'runtime', 'current')) === realpathSync(join(stateDir, 'runtime', 'versions', version))
+  } catch {
+    return false
+  }
+}
+
+/** Hay una transacción que no es seguro pisar ni limpiar: cualquier cosa más avanzada que `staged`, o un journal ilegible. */
+function transactionInFlight(): boolean {
+  const read = readTransaction(updateStore.dir)
+  if (read.kind === 'corrupt') return true
+  return read.kind === 'ok' && read.tx.phase !== 'staged'
+}
+
+/** Registra el stage verificado en el journal (contrato v2 y el formato que aún consume el vigía) y descarta otros stages sólo si no hay una transacción en curso. */
+async function recordStagedTransaction(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<boolean> {
+  const bundle = realBundlePath(process.execPath)
+  if (!bundle || !update.stage || !update.sha256 || !update.size || !update.trust) return false
+  try {
+    const current = readTransaction(updateStore.dir)
+    // Ya registrado (reintento tras una pospuesta): no se repite ni se limpia nada.
+    if (current.kind === 'ok' && current.tx.transaction_id === update.stage.id && current.tx.phase === 'staged') return true
+    if (transactionInFlight()) { updaterLog('[updater] hay una transacción anterior sin cerrar; no se prepara otra'); return false }
+    const oldStart = await processStartTime(process.pid)
+    if (!oldStart) throw new Error('no se pudo identificar este proceso')
+    const runtime = runtimeOldBundle(bundle)
+    if (!runtime) { updaterLog('[updater] sin copia de runtime de esta versión no se prepara la actualización'); return false }
+    updateStore.stageTransaction({ schema: 1, transaction_id: update.stage.id, phase: 'staged',
+      from: { version: app.getVersion(), digest: await sha256OfFile(join(bundle, 'Contents', 'Info.plist')) },
+      to: { version: update.version, digest: update.sha256, size: update.size, auth: update.trust },
+      paths: { installed: bundle, incoming: update.stage.path, runtime_old: runtime },
+      old_app: { pid: process.pid, start: oldStart }, new_app: null, watchdog: null,
+      // Las claves que anuncia una versión firmada viajan en el journal para sobrevivir a un reinicio; sólo con firma válida.
+      ...(update.nextTrust && update.trust === 'publisher_authenticated' ? { next_trust: update.nextTrust } : {}),
+      updated_at: new Date().toISOString() })
+    const prefix = `${basename(bundle)}.incoming-`
+    for (const entry of readdirSync(dirname(bundle)).filter(name => name.startsWith(prefix) && join(dirname(bundle), name) !== update.stage!.path)) void removeTree(join(dirname(bundle), entry)).catch(() => undefined)
+    return true
+  } catch (error) {
+    updaterLog(`[updater] no se pudo registrar la transacción: ${error instanceof Error ? error.message : String(error)}`)
+    return false
+  }
+}
+
+/**
+ * Deja preparado el vigía (desde el runtime anterior) fuera del drenaje y anota `watchdog_ready`. Idempotente: si la transacción
+ * ya está en `watchdog_ready` con ese vigía vivo no repite nada.
+ */
+async function ensureWatchdogReady(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<UpdateTransaction> {
+  const read = readTransaction(updateStore.dir)
+  if (read.kind !== 'ok' || read.tx.transaction_id !== update.stage?.id) throw new Error('el journal no corresponde al stage preparado')
+  const tx = read.tx
+  if (tx.old_app.pid !== process.pid || await processStartTime(process.pid) !== tx.old_app.start) throw new Error('el journal no corresponde a este proceso')
+  if (tx.phase === 'watchdog_ready' && tx.watchdog && await processStartTime(tx.watchdog.pid) === tx.watchdog.start) return tx
+  if (tx.phase !== 'staged') throw new Error(`la transacción está en ${tx.phase}; no se prepara el vigía`)
+  const identity = await prepareWatchdog({ stateDir, updateDir: updateStore.dir, transaction: tx, timeoutMs: HEALTH_DEADLINE_MS, logFile: join(logsDir, 'core.log'), executableName: basename(process.execPath) })
+  return advancePhase(updateStore.dir, tx.transaction_id, 'watchdog_ready', { watchdog: identity })
+}
+
+/** Otro hub anunció una versión (long-poll a core): sólo adelanta la verificación contra GitHub; `trigger` limita a una por minuto. */
+function onUpdateHint(): void {
+  if (!app.isPackaged) return
+  try { if (!updateStore.isEnabled()) return } catch { return }
+  silentUpdates.trigger('peer')
+}
+const updateHints = new UpdateHintListener({
+  open: async (signal, query) => {
+    if (!sessionToken) sessionToken = await waitForSession()
+    const request = (token: string) => fetch(`${CORE_BASE_URL}/api/internal/update-hint?${query}`, { headers: { Authorization: `Bearer ${token}`, [DRAIN_SECRET_HEADER]: updateDrainSecret }, signal: AbortSignal.any([signal, AbortSignal.timeout(35_000)]) })
+    let response = await request(sessionToken)
+    if (response.status === 401) { sessionToken = await waitForSession(); response = await request(sessionToken) }
+    return response
+  },
+  onHint: onUpdateHint,
+  ready: () => coreSupervisor.state === 'running' && !quitting,
+})
+
+/** Anuncia a los hubs con proyectos compartidos la versión que corre; core deduplica, repetirlo no cuesta nada. */
+async function announceVersion(): Promise<void> {
+  try {
+    const response = await coreFetch('/api/internal/update-hint/announce', { method: 'POST', headers: drainHeaders(true), body: JSON.stringify({ version: app.getVersion() }) })
+    await response.body?.cancel().catch(() => undefined)
+    if (!response.ok) updaterLog(`[updater] el anuncio de versión no se aceptó (HTTP ${response.status})`)
+  } catch (error) {
+    updaterLog(`[updater] el anuncio de versión falló: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/** Interruptor de Ajustes. Al encenderlo verifica de inmediato. */
+function setAutoUpdate(enabled: unknown): boolean {
+  updateStore.setEnabled(Boolean(enabled))
+  updaterLog(`[updater] actualizaciones automáticas ${updateStore.isEnabled() ? 'activadas' : 'desactivadas'}`)
+  if (updateStore.isEnabled()) void silentUpdates.run()
+  else setUpdateReport({ phase: 'disabled' })
+  return updateStore.isEnabled()
+}
+
+/** Versión máxima instalada; recuperación del journal; confirmación de salud de una actualización recién aplicada; ratchet de la firma. */
+async function startUpdateBookkeeping(): Promise<void> {
+  // Un estado que no se puede leer o escribir impide declarar sana una versión recién aplicada: se conserva el respaldo y la evidencia.
+  let stateOk = true
+  try {
+    updateStore.noteInstalled(app.getVersion())
+  } catch (error) {
+    stateOk = false
+    // Un state.json ilegible no se reescribe: se conserva como evidencia y la actualización queda en pausa.
+    updaterLog(`[updater] ${error instanceof UpdateStateCorruptError ? 'state.json dañado: no se sobrescribe' : error instanceof Error ? error.message : String(error)}`)
+  }
+  // Salud = procesos arriba, sesión del escritorio y un `tools/list` real contra el MCP de memoria con la credencial de los gateways.
+  // Una versión recién aplicada también debe estar apuntada por `runtime/current`: si no, los gateways nuevos arrancarían de otra.
+  let expectRuntime = false
+  const healthy = async (): Promise<boolean> => stateOk && coreSupervisor.state === 'running' && daemonSupervisor.state === 'running' && Boolean(sessionToken)
+    && (!expectRuntime || runtimeCurrentMatches(app.getVersion()))
+    && await probeMemoryMcp({ baseUrl: CORE_BASE_URL, credentialPath: memoryCredentialPath(stateDir), timeoutMs: HEALTH_PROBE_TIMEOUT_MS })
+  // Una versión con claves que se mantiene sana fija la firma como obligatoria para siempre. Lanza si no se pudo persistir.
+  const ratchetStrict = (): void => {
+    if (bundledTrust.kind === 'ok' && bundledTrust.trust.keys.length > 0 && !updateStore.read().requireSignature) {
+      updateStore.setRequireSignature()
+      updaterLog('[updater] la firma del publicador pasa a ser obligatoria')
+    }
+  }
+  const ratchet = (): void => {
+    try { ratchetStrict() } catch (error) { updaterLog(`[updater] no se pudo fijar la firma obligatoria: ${error instanceof Error ? error.message : String(error)}`) }
+  }
+  const bundle = realBundlePath(process.execPath)
+  // Recuperación idempotente de una transacción interrumpida (módulo de Gateway). Ante un journal ilegible o restos sin journal
+  // no borra nada ni declara salud.
+  const outcome = bundle ? await recoverTransaction({ stateDir, updateDir: updateStore.dir, installed: bundle, version: app.getVersion(), removeTree, pid: process.pid, log: updaterLog })
+    .catch((error: unknown) => { updaterLog(`[updater] recuperación: ${error instanceof Error ? error.message : String(error)}`); return 'ambiguous' as const }) : 'none' as const
+  if (outcome !== 'none' && outcome !== 'cleaned' && outcome !== 'monitor') updaterLog(`[updater] la recuperación terminó en «${outcome}»`)
+  const journal = outcome === 'monitor' ? readTransaction(updateStore.dir) : null
+  const transaction = journal?.kind === 'ok' ? journal.tx : null
+  if (!transaction) {
+    whenStablyHealthy({ healthy }, ratchet)
+    // Una versión que todavía no anunció (p. ej. tras el salto desde 0.14.2) lo hace tras un arranque estable de 180 s.
+    whenStablyHealthy({ healthy, stableMs: HEALTH_DEADLINE_MS }, () => { void announceVersion() })
+    return
+  }
+  expectRuntime = true
+  const startTime = await processStartTime(process.pid) ?? ''
+  if (!startTime) { updaterLog('[updater] no se pudo identificar este proceso; no se confirma la actualización'); return }
+  confirmWhenHealthy({
+    updateDir: updateStore.dir,
+    transaction,
+    pid: process.pid,
+    startTime,
+    healthy,
+    discardBackup: () => removeTreeDurable(transaction.paths.incoming, removeTree),
+    onConfirmed: () => {
+      // Todo lo que debe persistir va primero y sin tragar errores: si falla, no se declara sana ni se borra el respaldo.
+      if (transaction.next_trust) {
+        const trust = parseTrustSet(transaction.next_trust, { requireActive: true })
+        if (!trust) throw new Error('las claves anunciadas por esta versión no son válidas')
+        updateStore.adoptTrust(trust)
+      }
+      ratchetStrict()
+      void announceVersion()
+      // Con la versión confirmada, las copias de runtime que ya no hacen falta se recogen (conservando la actual, la anterior y las de la transacción).
+      if (bundle) void collectRuntimes({ stateDir, executable: basename(process.execPath), appName: basename(bundle), keep: [transaction.from.version, transaction.to.version] })
+        .catch((error: unknown) => updaterLog(`[updater] recolección de runtimes omitida: ${error instanceof Error ? error.message : String(error)}`))
+    },
+    log: updaterLog,
+  })
 }
 
 function coreStatus(): CoreStatus {
@@ -669,7 +1052,7 @@ function createWindow(token: string, hidden: boolean): void {
     hideWindow()
   })
   // Windows no emite before-quit al cerrar sesión o apagar: sin esto no corre la última sincronización.
-  win.on('session-end', () => { void quit() })
+  win.on('session-end', () => { forceQuit = true; void quit() })
   win.on('show', refreshTray)
   win.on('hide', refreshTray)
   // Una recarga (reinicio del core) vacía el renderer: las rutas pedidas hasta que vuelva a declararse listo quedan pendientes. Solo cuenta un
@@ -744,6 +1127,9 @@ function registerIpc(): void {
   ipcMain.handle(IPC.setLanguage, (_event, preference: unknown) => saveLanguagePreference(preference))
   ipcMain.handle(IPC.getVersionInfo, readVersionInfo)
   ipcMain.handle(IPC.getAppVersion, () => app.getVersion())
+  ipcMain.handle(IPC.getUpdateStatus, () => ({ enabled: updateStore.isEnabled(), ...updateReport }))
+  ipcMain.handle(IPC.getAutoUpdate, () => updateStore.isEnabled())
+  ipcMain.handle(IPC.setAutoUpdate, (_event, enabled: unknown) => setAutoUpdate(enabled))
   ipcMain.handle(IPC.getAutostart, safeAutostart)
   ipcMain.handle(IPC.setAutostart, (_event, enabled: boolean) => {
     autostart.setEnabled(Boolean(enabled))
@@ -844,13 +1230,48 @@ function migrateWindowsLoginItem(): void {
   for (const item of legacy) app.setLoginItemSettings({ openAtLogin: false, path: item.path, args: item.args, name: item.name })
   if (legacy.length) app.setLoginItemSettings({ openAtLogin: true, ...loginItemOptions })
 }
+/** Un segundo pedido de cierre mientras se esperan llamadas en curso (o una señal del sistema) cierra sin esperar. */
+let forceQuit = false
+
+/**
+ * Cierre pedido por la persona: core deja de admitir llamadas MCP nuevas (los gateways reintentan) y se espera a
+ * que terminen las que están en curso. Core no se detiene con una llamada en curso; sólo un segundo pedido de
+ * cierre, una señal del sistema o la ausencia de core lo evitan.
+ */
+async function waitForMcpIdle(): Promise<void> {
+  const headers = { [DRAIN_SECRET_HEADER]: updateDrainSecret }
+  const read = async (path: string, method: 'GET' | 'POST'): Promise<{ inflight: number } | null> => {
+    try {
+      const response = await coreFetch(path, { method, headers })
+      const body = await response.json().catch(() => null) as { inflight?: unknown } | null
+      return response.ok && Number.isSafeInteger(body?.inflight) ? { inflight: body!.inflight as number } : null
+    } catch { return null }
+  }
+  // Core queda cerrando para MCP hasta que el proceso termine: no se reabre solo, ni por tiempo.
+  let state = await read('/api/internal/update-drain/shutdown', 'POST')
+  if (!state) return
+  let lastLogged = 0
+  while (state.inflight > 0 && !forceQuit && coreSupervisor.state === 'running') {
+    if (Date.now() - lastLogged > 30_000) { lastLogged = Date.now(); updaterLog(`[quit] esperando ${state.inflight} llamada(s) de agentes en curso; cerrar de nuevo fuerza el cierre`) }
+    await new Promise<void>(resolve => setTimeout(resolve, 1000))
+    const next = await read('/api/internal/update-drain/status', 'GET')
+    if (!next) break
+    state = next
+  }
+  // Sólo un segundo pedido de la persona o una señal del sistema fuerzan; queda constancia de cuántas llamadas se cortan.
+  if (forceQuit && state.inflight > 0) updaterLog(`[quit] cierre forzado con ${state.inflight} llamada(s) de agentes en curso`)
+}
+
 async function quit(): Promise<void> {
-  if (quitting) return
+  if (quitting) { forceQuit = true; return }
   quitting = true
   silentUpdates.stop()
+  updateHints.stop()
   keepAwake.dispose()
   clockWake.dispose()
   scheduleNotices.dispose()
+  // Un cierre de la persona espera las llamadas MCP en curso; una actualización ya tiene core drenado por su lease.
+  if (!installOnQuit && !relaunchAfterQuit && coreSupervisor.state === 'running') await waitForMcpIdle()
   // Si algo se cuelga al cerrar, la app sale igual: un proceso que no termina obliga a
   // forzar el cierre y dejaba core y daemon huérfanos bloqueando el próximo arranque.
   const deadline = setTimeout(() => {
@@ -872,7 +1293,7 @@ async function quit(): Promise<void> {
         await updater.apply(installOnQuit)
       } catch (error) {
         // The installed version stays; reopen it instead of leaving the person without the hub.
-        console.error('[updater] no se pudo iniciar el instalador:', error instanceof Error ? error.message : String(error))
+        updaterLog(`[updater] no se pudo iniciar el instalador: ${error instanceof Error ? error.message : String(error)}`)
         relaunchAfterQuit = true
       }
     }
@@ -888,8 +1309,8 @@ async function quit(): Promise<void> {
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) app.quit()
 else {
-  process.once('SIGTERM', () => { void quit() })
-  process.once('SIGINT', () => { void quit() })
+  process.once('SIGTERM', () => { forceQuit = true; void quit() })
+  process.once('SIGINT', () => { forceQuit = true; void quit() })
   app.on('second-instance', (_event, argv) => { if (!hiddenUpdateLaunch(argv)) showWindow() })
   app.whenReady().then(async () => {
     applyLanguagePreference()
@@ -909,6 +1330,7 @@ else {
     migrateWindowsLoginItem()
     await ensureCorePort()
     syncDaemonUrl()
+    await prepareGatewayRuntime()
     coreSupervisor.start()
     const token = await waitForSession()
     sessionToken = token
@@ -918,8 +1340,9 @@ else {
     createWindow(token, hidden)
     registerShowWindowShortcut()
     app.on('activate', showWindow)
-    // Finish cleanup before a new download can create a directory it might remove.
-    void updater.cleanup().catch(error => console.error('[updater cleanup]', error)).then(() => silentUpdates.start())
+    // Recover any interrupted transaction and finish cleanup before a new download can create a directory it might remove.
+    void startUpdateBookkeeping().then(() => updater.cleanup()).catch(error => updaterLog(`[updater] arranque: ${error instanceof Error ? error.message : String(error)}`)).then(() => silentUpdates.start())
+    if (app.isPackaged && overrideSafe) updateHints.start()
     setInterval(() => void pollPendingRestarts(), PENDING_RESTART_POLL_MS).unref()
     setInterval(() => void pollSchedules(), SCHEDULE_FEED_POLL_MS).unref()
     void pollSchedules()

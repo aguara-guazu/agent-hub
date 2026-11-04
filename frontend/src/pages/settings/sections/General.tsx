@@ -5,11 +5,15 @@ import { useTheme, type ThemePreference } from "../../../lib/theme"
 import { SettingRow, SettingsSection, useErrorDetail } from "../SettingRow"
 
 const AUTOSTART_KEY = ["desktop-autostart"] as const
+const AUTO_UPDATE_KEY = ["desktop-auto-update"] as const
+const UPDATE_STATUS_KEY = ["desktop-update-status"] as const
+const UPDATE_STATUS_REFRESH_MS = 5_000
+const KNOWN_REASONS = new Set(["fleet_live", "legacy_gateways", "legacy_gateways_unknown", "mcp_inflight", "jobs_nonresumable", "already_draining", "drain_lease_lost", "swap_helper_unavailable", "runtime_unavailable", "blockers_unknown", "core_unreachable", "mcp_bridges"])
 const THEMES: readonly ThemePreference[] = ["dark", "light", "system"]
 
 /** General: idioma, tema e inicio automático (este último solo con el puente de escritorio). Guardado automático. */
 export default function General() {
-  const { t } = useT("settings")
+  const { t, plural } = useT("settings")
   const theme = useTheme()
   const toast = useToast()
   const detail = useErrorDetail()
@@ -20,6 +24,40 @@ export default function General() {
     mutationFn: (enabled: boolean) => desktop!.setAutostart(enabled),
     onSuccess: enabled => cache.setQueryData(AUTOSTART_KEY, enabled),
     onError: error => toast.error(t("general.autostartFailed"), detail(error)),
+  })
+  // Versiones anteriores del escritorio no exponen el interruptor: la fila no aparece.
+  const updatable = Boolean(desktop?.getAutoUpdate && desktop.setAutoUpdate)
+  const autoUpdate = useQuery({ queryKey: AUTO_UPDATE_KEY, queryFn: () => desktop!.getAutoUpdate!(), enabled: updatable })
+  const updateStatus = useQuery({
+    queryKey: UPDATE_STATUS_KEY,
+    queryFn: () => desktop!.getUpdateStatus!(),
+    enabled: updatable && Boolean(desktop?.getUpdateStatus),
+    refetchInterval: UPDATE_STATUS_REFRESH_MS,
+  })
+  const reasonText = (reasons: readonly { code: string; count?: number }[]): string => reasons.map(reason => {
+    const code = KNOWN_REASONS.has(reason.code) ? reason.code : "unknown"
+    return code === "fleet_live" || code === "legacy_gateways"
+      ? plural(`general.updateStatus.reasons.${code}`, reason.count ?? 1)
+      : t(`general.updateStatus.reasons.${code}` as "general.updateStatus.reasons.unknown")
+  }).join("; ")
+  const statusLine = (): string => {
+    const status = updateStatus.data
+    if (!status?.enabled || !status.version) return t("general.autoUpdateHint")
+    const version = status.version
+    const trust = status.trust === "publisher_authenticated" ? t("general.updateStatus.authenticated")
+      : status.trust === "integrity_only" ? t("general.updateStatus.integrityOnly") : ""
+    const lead = status.phase === "downloading" ? t("general.updateStatus.downloading", { version })
+      : status.phase === "ready" ? t("general.updateStatus.ready", { version })
+      : status.phase === "postponed" ? t("general.updateStatus.postponed", { version, reasons: reasonText(status.reasons ?? []) })
+      : status.phase === "applying" ? t("general.updateStatus.applying", { version })
+      : status.phase === "failed" ? t("general.updateStatus.failed", { version })
+      : null
+    return lead ? (trust ? `${lead}. ${trust}` : lead) : t("general.autoUpdateHint")
+  }
+  const saveAutoUpdate = useMutation({
+    mutationFn: (enabled: boolean) => desktop!.setAutoUpdate!(enabled),
+    onSuccess: enabled => cache.setQueryData(AUTO_UPDATE_KEY, enabled),
+    onError: error => toast.error(t("general.autoUpdateFailed"), detail(error)),
   })
   return (
     <SettingsSection title={t("sections.general")}>
@@ -40,6 +78,16 @@ export default function General() {
               checked={saveAutostart.isPending ? Boolean(saveAutostart.variables) : autostart.data ?? false}
               disabled={autostart.isPending || saveAutostart.isPending}
               onChange={value => saveAutostart.mutate(value)}
+            />
+          </SettingRow>
+        )}
+        {updatable && (
+          <SettingRow label={t("general.autoUpdate")} hint={statusLine()}>
+            <Switch
+              label={t("general.autoUpdate")}
+              checked={saveAutoUpdate.isPending ? Boolean(saveAutoUpdate.variables) : autoUpdate.data ?? true}
+              disabled={autoUpdate.isPending || saveAutoUpdate.isPending}
+              onChange={value => saveAutoUpdate.mutate(value)}
             />
           </SettingRow>
         )}

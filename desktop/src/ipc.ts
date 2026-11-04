@@ -1,5 +1,6 @@
 import type { LanguagePreference } from "./i18n.js"
 import type { SupervisorState } from "./supervisor.js"
+import type { UpdateReport } from "./update-report.js"
 
 /**
  * Contrato IPC mínimo entre el proceso principal y el renderer.
@@ -37,6 +38,12 @@ export const IPC = {
   getVersionInfo: "agenthub:version-info",
   /** invoke: renderer -> main, versión de la app en ejecución. Sólo lectura y sin red. */
   getAppVersion: "agenthub:app-version",
+  /** invoke: renderer -> main, interruptor de actualizaciones automáticas (activado por defecto). */
+  /** invoke: renderer -> main, estado visible de la actualización (fase, versión, razones de espera). */
+  getUpdateStatus: "agenthub:update-status",
+  getAutoUpdate: "agenthub:auto-update-get",
+  /** invoke: renderer -> main, enciende o apaga las actualizaciones automáticas y devuelve el valor vigente. */
+  setAutoUpdate: "agenthub:auto-update-set",
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -61,6 +68,8 @@ export interface VersionInfo {
   /** Momento de la consulta, en ISO 8601. */
   checkedAt: string
 }
+/** Estado de la actualización tal como lo ve la consola. */
+export type UpdateStatusView = { enabled: boolean } & UpdateReport
 
 export interface ClientRestartResult {
   ok: boolean
@@ -90,6 +99,9 @@ export interface AgentHubBridge {
   setLanguage(preference: LanguagePreference): Promise<LanguagePreference>
   getVersionInfo(): Promise<VersionInfo>
   getAppVersion(): Promise<string>
+  getUpdateStatus(): Promise<UpdateStatusView>
+  getAutoUpdate(): Promise<boolean>
+  setAutoUpdate(enabled: boolean): Promise<boolean>
 }
 
 /** Lista blanca de canales que el preload puede usar en cada dirección. */
@@ -107,6 +119,9 @@ export const INVOKE_CHANNELS: readonly IpcChannel[] = [
   IPC.setLanguage,
   IPC.getVersionInfo,
   IPC.getAppVersion,
+  IPC.getUpdateStatus,
+  IPC.getAutoUpdate,
+  IPC.setAutoUpdate,
 ]
 
 export const RECEIVE_CHANNELS: readonly IpcChannel[] = [IPC.coreStateChanged, IPC.navigate]

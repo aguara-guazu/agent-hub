@@ -70,7 +70,9 @@ import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliK
 import { CATALOG_RESTORE_WINDOW_MS, SKILL_ZIP_MAX_BYTES, UNMANAGED_MAX_ITEMS, UNMANAGED_MAX_NAME, UNMANAGED_MAX_PATH, type LocalUnmanaged, type SkillZipImportExtras, type UnmanagedInventory } from "@agenthub/shared"
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
-import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
+import * as gatewayModule from '@agenthub/gateway'
+import { legacyGatewaysFor } from './legacy-policy.js'
+import { registerMemory, updateSecretAuthorizer, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
 import { createJiraTaskReader } from './memory-jira.js'
 import { createPoolCallAudit } from './effects/call-audit.js'
 import { createCoreScheduleEffects } from './effects/wiring.js'
@@ -237,6 +239,15 @@ export interface BuildAppOptions {
   settings?: Partial<Settings>
   /** Crea al dueño local (modo un solo usuario) al arrancar. */
   ensureOwner?: boolean
+}
+
+/** Escáner de gateways heredados de `@agenthub/gateway`; ausente en versiones del paquete que aún no lo exportan. */
+const legacyScan = (gatewayModule as unknown as { legacyGateways?: (runtimeRoot: string) => Promise<{ count: number; error?: string }> }).legacyGateways
+
+/** Escaneo de gateways heredados según la plataforma; macOS sin escáner o sin raíz queda «desconocido». */
+function legacyPolicy(runtimeRoot: string): { legacyGateways?: () => Promise<{ count: number; error?: string; not_applicable?: boolean }> } {
+  const scan = legacyGatewaysFor(process.platform, legacyScan, runtimeRoot)
+  return scan ? { legacyGateways: scan } : {}
 }
 
 export function buildApp(options: BuildAppOptions = {}): CoreApp {
@@ -436,6 +447,10 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
         if (user.id !== owner.id) throw new HttpError(403, 'La memoria pertenece al dueño local del hub')
         return user
       },
+      authorizeUpdate: updateSecretAuthorizer(settings.updateDrainSecret),
+      ...(settings.updateTransaction ? { updateTransaction: settings.updateTransaction } : {}),
+      // El escaneo recibe la raíz `<stateDir>/runtime`, nunca la ruta del lanzador. Sin raíz o sin la función, la compuerta responde legacy_gateways_unknown.
+      ...legacyPolicy(settings.gatewayRuntimeRoot),
     })
     memoryRef.service = memory.service
     fastify.get('/api/collaboration', async request => {

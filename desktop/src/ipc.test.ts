@@ -4,7 +4,7 @@ import { INVOKE_CHANNELS, IPC, RECEIVE_CHANNELS } from './ipc.js'
 describe('contrato IPC', () => {
   it('los canales invoke son sólo los declarados', () => {
     expect([...INVOKE_CHANNELS].sort()).toEqual(
-      [IPC.getCoreStatus, IPC.restartCore, IPC.getAutostart, IPC.setAutostart, IPC.getSession, IPC.syncNow, IPC.restartClient, IPC.openStoredPdf, IPC.attachNavigation, IPC.getLanguage, IPC.setLanguage, IPC.getVersionInfo, IPC.getAppVersion].sort(),
+      [IPC.getCoreStatus, IPC.restartCore, IPC.getAutostart, IPC.setAutostart, IPC.getSession, IPC.syncNow, IPC.restartClient, IPC.openStoredPdf, IPC.attachNavigation, IPC.getLanguage, IPC.setLanguage, IPC.getVersionInfo, IPC.getAppVersion, IPC.getUpdateStatus, IPC.getAutoUpdate, IPC.setAutoUpdate].sort(),
     )
   })
 

@@ -21,6 +21,12 @@ export interface Settings {
   consoleDist: string
   /** Secreto efímero heredado por Electron para obtener la sesión del dueño local. */
   desktopBootstrapToken: string
+  /** Secreto efímero que sólo el escritorio presenta para pedir el drenaje de una actualización; vacío lo rechaza todo. */
+  updateDrainSecret: string
+  /** Transacción de la actualización que lanzó este core: arranca cerrado hasta que el escritorio lo admite. Vacío si no hay ninguna. */
+  updateTransaction: string
+  /** Raíz `<stateDir>/runtime` de las copias versionadas del bundle; vacío deja sin escanear los gateways heredados. */
+  gatewayRuntimeRoot: string
   /**
    * Cada cuántos segundos se vuelve a sondear un MCP server habilitado y configurado
    * cuyo último sondeo falló. `0` desactiva el reintento automático.
@@ -80,12 +86,30 @@ export function loadSettings(overrides: Partial<Settings> = {}): Settings {
     localMode: envBool('AGENTHUB_LOCAL_MODE', false),
     consoleDist: process.env.AGENTHUB_CONSOLE_DIST?.trim() || '',
     desktopBootstrapToken: process.env.AGENTHUB_DESKTOP_BOOTSTRAP_TOKEN?.trim() || '',
+    updateDrainSecret: takeEnvSecret('AGENTHUB_UPDATE_DRAIN_SECRET'),
+    updateTransaction: updateTransactionFromEnv(process.env.AGENTHUB_UPDATE_TX),
+    gatewayRuntimeRoot: process.env.AGENTHUB_GATEWAY_RUNTIME_ROOT?.trim() || '',
     probeRetrySeconds: envInt('AGENTHUB_PROBE_RETRY_SECONDS', 30),
     oauthDir: process.env.AGENTHUB_OAUTH_DIR?.trim() || join(dirname(databasePath), 'oauth'),
     oauthRedirectUrl: process.env.AGENTHUB_OAUTH_REDIRECT_URL?.trim() || defaultRedirectUrl(),
     starterCatalog: envBool('AGENTHUB_STARTER_CATALOG', true),
     ...overrides,
   }
+}
+
+/** Lee un secreto de entorno y lo quita de `process.env`, para que los procesos hijos (trabajadores del Hub) no lo hereden. */
+/** Identificador de transacción con la misma forma que el contrato; uno malformado no abre ni cierra nada: falla el arranque. */
+function updateTransactionFromEnv(raw: string | undefined): string {
+  const value = raw?.trim() ?? ''
+  if (!value) return ''
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(value)) throw new Error('AGENTHUB_UPDATE_TX no es un identificador de transacción válido')
+  return value
+}
+
+function takeEnvSecret(name: string): string {
+  const value = process.env[name]?.trim() || ''
+  delete process.env[name]
+  return value
 }
 
 export const DEFAULT_STATE_DIR = join(homedir(), '.agenthub')

@@ -1,7 +1,7 @@
 import { isCollaborationTool } from './collaboration.js'
 import { orcaWorkspaceSchema } from './agents.js'
 import { registerUsageRoutes } from './usage-routes.js'
-import { registerUpdateDrain } from './update-drain.js'
+import { registerUpdateDrain, updateSecretAuthorizer, type LegacyGatewayScan } from './update-drain.js'
 import { chatKickInput, chatCoordinatorInput, chatDeleteChannelInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
 import { listAuthorityEvents } from './chat-access.js'
@@ -46,6 +46,12 @@ const VERSION = String((createRequire(import.meta.url)('../package.json') as { v
 export interface MemoryRouteOptions {
   directory: string; baseUrl: string;
   authorize(request: FastifyRequest): Promise<{ id: string }>
+  /** Authorization exclusive to the desktop's update drain; absent refuses every request. */
+  authorizeUpdate?(request: FastifyRequest): Promise<void>
+  /** Transaction of the update that launched this core: it starts closed until the desktop admits it. */
+  updateTransaction?: string
+  /** Scan of gateways started from a bundle older than the versioned runtime; absent means unknown. */
+  legacyGateways?(): Promise<LegacyGatewayScan>
   collaborationEnabled?(): boolean
   chatAgentEnabled?(agentId: string): boolean
   usageAgentEnabled?(agentId: string): boolean
@@ -56,8 +62,6 @@ export interface MemoryRouteOptions {
   /** Switch of the scheduler and the effects the core injects (deliveries, approved actions, decisions); absent means enabled and no external adapters. */
   automationsEnabled?(): boolean
   scheduleEffects?: import('./schedule-contract.js').ScheduleEffects
-  /** Desktop update credential; without it the internal update routes are not registered. */
-  authorizeUpdate?(request: FastifyRequest): Promise<void>
 }
 export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions) {
   const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true, options.collaborationEnabled,
@@ -66,7 +70,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const requireCollaboration = () => check(collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
   registerUsageRoutes(app,service,options)
-  registerUpdateDrain(app, service, options.authorize)
+  registerUpdateDrain(app, service, { authorize: options.authorizeUpdate ?? updateSecretAuthorizer(undefined), ...(options.updateTransaction ? { startupTransaction: options.updateTransaction } : {}), ...(options.legacyGateways ? { legacyGateways: () => options.legacyGateways!() } : {}) })
   if (options.authorizeUpdate) registerUpdateHintRoutes(app, async () => (await service.get()).hints, options.authorizeUpdate)
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)
