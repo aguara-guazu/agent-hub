@@ -1,3 +1,4 @@
+import { hubLog } from "./report.js"
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID, createHash } from 'node:crypto'
@@ -430,6 +431,8 @@ export class HubTeamRuntime implements TeamOrca {
     const turn = event.turn_id ?? (previous?.generation === generation ? previous.turn_id : undefined)
     const runtime: HubTeamStatus = { ...event, ...(turn ? { turn_id: turn } : {}), provider: 'hub', generation, updated_at: new Date().toISOString() }
     await this.chat.db.query('UPDATE chat_team_members SET runtime=$1 WHERE id=$2', [JSON.stringify(runtime), event.id])
+    if (previous?.state !== runtime.state || previous?.generation !== generation) hubLog(this.directory).event("fleet", "runtime", { member_id: event.id, generation, state: runtime.state,
+      from: previous?.generation === generation ? previous.state : null, error_code: runtime.error_code, cli: runtime.cli, native_id: runtime.native_id })
     if (runtime.questions) await (this.chat as ManagedChat).managedQuestions(event.id, runtime.questions, generation)
     if (member.session_id) await this.lifecycle(String(member.session_id), runtime)
     // Outside this member's event queue: the hook sends the onboarding prompt again, which publishes on this same queue.

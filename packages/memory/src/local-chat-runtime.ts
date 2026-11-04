@@ -20,7 +20,8 @@ export const TICK_STUCK_MS = 60_000
 const TICK_SLOW_MS = 10_000
 const TIMED_OUT = Symbol("timed_out")
 const FAILED = Symbol("failed")
-export type TickEvent = { event: "probe_timeout" | "probe_failed" | "tick_slow" | "tick_stuck" | "dispatch_in_flight"; step: string; duration_ms: number; session_id?: string }
+export type TickEvent = { event: "probe_timeout" | "probe_failed" | "tick_slow" | "tick_stuck" | "dispatch_in_flight" | "delivery_failed" | "notice" | "process_incident"; step: string; duration_ms: number
+  session_id?: string; recipient_id?: string; notice_id?: string; cause?: string; count?: number; uncertain?: boolean; action?: string; member_id?: string; generation?: string }
 /** Diagnostic state of one tick; overlapping ticks never share it. */
 type TickRun = { started: number; step: string; phaseStarted: number; slowest: { step: string; ms: number } }
 const newRun = (): TickRun => ({ started: Date.now(), step: "read_access", phaseStarted: Date.now(), slowest: { step: "idle", ms: 0 } })
@@ -86,6 +87,17 @@ export class LocalChatRuntime {
     for (const c of this.controllers) c.abort()
     // Shutdown has a few seconds before the supervisor kills the core; detached or hung ticks must not consume them.
     await Promise.race([Promise.allSettled([...this.runs]), new Promise(resolve => setTimeout(resolve, 2_000).unref())])
+  }
+  private historyAt = new Date().toISOString()
+  /** Notices and process incidents written since the last pass, by whichever code path wrote them: ids and causes only. */
+  private async recordHistory() {
+    const since = this.historyAt, until = new Date().toISOString()
+    this.historyAt = until
+    for (const row of await this.chat.db.query("SELECT id,cause,session_id,recipient_id FROM chat_status_notices WHERE created_at>$1 AND created_at<=$2 ORDER BY created_at LIMIT 200", [since, until]))
+      this.report({ event: "notice", step: "history", duration_ms: 0, notice_id: String(row.id), cause: String(row.cause), session_id: String(row.session_id), recipient_id: String(row.recipient_id) })
+    for (const row of await this.chat.db.query("SELECT cause,action,member_id,session_id,generation FROM process_incidents WHERE observed_at>$1 AND observed_at<=$2 ORDER BY observed_at LIMIT 200", [since, until]))
+      this.report({ event: "process_incident", step: "history", duration_ms: 0, cause: String(row.cause), action: String(row.action),
+        ...(row.member_id ? { member_id: String(row.member_id) } : {}), ...(row.session_id ? { session_id: String(row.session_id) } : {}), ...(row.generation ? { generation: String(row.generation) } : {}) })
   }
   private report(event: TickEvent) { try { this.observer(event) } catch { /* Diagnostics never break delivery. */ } }
   private phase(step: string) {
@@ -212,6 +224,7 @@ export class LocalChatRuntime {
       } catch (error) {
         if((error as {retryLater?:boolean}).retryLater) {await this.release(s.id,deliveries,notices);continue}
         const uncertain=(error as {retryable?:boolean}).retryable===false
+        this.report({event:"delivery_failed",step:"deliveries",duration_ms:0,session_id:String(s.id),count:deliveries.length+notices.length,uncertain})
         await this.chat.db.query('UPDATE chat_sessions SET wake_error=$2 WHERE id=$1',[s.id,uncertain?'Entrega incierta; no se reenvía automáticamente. El mensaje sigue en inbox.':'No se pudo notificar a la sesión; comprobá versión, sesión y conexión. Se reintentará hasta 5 veces.'])
         if(uncertain)for(const notice of notices)await this.chat.db.query('UPDATE usage_quota_notices SET attempts=5 WHERE id=$1 AND recipient_id=$2',[notice.id,s.id])
         for (const d of deliveries) {
@@ -238,6 +251,8 @@ export class LocalChatRuntime {
     // After dispatch, so a delivery this tick could still make never raises a notice that is cancelled moments later.
     this.phase("stalled_deliveries")
     await this.chat.processStalledDeliveries()
+    this.phase("history")
+    await this.recordHistory()
     this.phase("idle")
   }
   /**

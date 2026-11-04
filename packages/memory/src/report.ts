@@ -1,11 +1,21 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import { renameRetrySync } from "@agenthub/gateway/platform"
 import { redactSecrets } from './secrets.js'
 
 export const ISSUES_URL = 'https://github.com/aguara-guazu/agent-hub/issues/new'
 const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g
-/** Past this size a log moves to `<name>.1`, so each log keeps at most twice this on disk. */
-const MAX_LOG_BYTES = 2 * 1024 * 1024
+/** Past this size the active log moves to `<name>.1`; the previous `.1` is kept as `<name>.<epoch ms>` under the folder budget. */
+export const LOG_SEGMENT_BYTES = 2 * 1024 * 1024
+/** Every log in the folder, active and rotated, from every process; the oldest rotated segments are discarded first. */
+export const LOG_DIR_BUDGET_BYTES = 50 * 1024 * 1024
+/**
+ * Writers recount the folder after this many bytes, so concurrent writers can overshoot the last count by about this much each.
+ * Pruning aims below the budget by this margin times the writers a Hub runs (desktop: core and daemon logs; core: worker and hub logs).
+ */
+const LOG_RESCAN_BYTES = 256 * 1024
+const LOG_PRUNE_TARGET = LOG_DIR_BUDGET_BYTES - 8 * LOG_RESCAN_BYTES
+const SEGMENT = /^(.+\.log)\.(\d+)$/
 /** Very long prefilled URLs may not open; the link carries the newest log lines and the clipboard the full report. */
 const MAX_ISSUE_URL = 7000
 const LOG_STEPS = [200, 120, 60, 30, 10, 0]
@@ -32,9 +42,41 @@ export function redactReport(text: string, home?: string): string {
   return result
 }
 
+interface LogEntry { path: string; size: number; active: boolean; order: number }
+/** Logs of a folder: `*.log` are active; `<name>.log.1` is the newest rotated segment of each log and `<name>.log.<epoch ms>` the older ones. */
+function logEntries(directory: string): LogEntry[] {
+  const entries: LogEntry[] = []
+  for (const name of readdirSync(directory)) {
+    const segment = SEGMENT.exec(name)
+    if (!segment && !name.endsWith(".log")) continue
+    try { entries.push({ path: join(directory, name), size: statSync(join(directory, name)).size, active: !segment, order: !segment ? Infinity : segment[2] === "1" ? Number.MAX_SAFE_INTEGER : Number(segment[2]) }) } catch { /* removed meanwhile */ }
+  }
+  return entries
+}
+/** Discards the oldest rotated segments until the folder fits; active logs are never removed. Returns the remaining total. */
+export function pruneLogs(directory: string, target = LOG_PRUNE_TARGET): number {
+  let entries: LogEntry[]
+  try { entries = logEntries(directory) } catch { return 0 }
+  let total = entries.reduce((sum, entry) => sum + entry.size, 0)
+  for (const entry of entries.filter(item => !item.active).sort((a, b) => a.order - b.order)) {
+    if (total <= target) break
+    try { unlinkSync(entry.path); total -= entry.size } catch { /* another writer removed it */ }
+  }
+  return total
+}
+/** Rotated segments of one log, newest first. */
+function segmentsOf(path: string): string[] {
+  const base = basename(path)
+  try {
+    return readdirSync(dirname(path)).map(name => SEGMENT.exec(name)).filter((match): match is RegExpExecArray => Boolean(match && match[1] === base))
+      .sort((a, b) => (b[2] === "1" ? Infinity : Number(b[2])) - (a[2] === "1" ? Infinity : Number(a[2]))).map(match => join(dirname(path), match[0]))
+  } catch { return [] }
+}
+
 /** Appends timestamped lines to a log file with credentials already replaced; logging never throws into the caller. */
 export class LogFile {
   private size = 0
+  private sinceScan = 0
   constructor(readonly path: string) {
     try {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -45,13 +87,25 @@ export class LogFile {
     const lines = redactDiagnostics(text).slice(-64_000).split(/\r?\n/).filter(line => line.trim())
     if (!lines.length) return
     const stamp = new Date().toISOString()
-    const chunk = lines.map(line => `${stamp} ${prefix}${line}\n`).join('')
+    this.append(lines.map(line => `${stamp} ${prefix}${line}\n`).join(''))
+  }
+  /** Writes lines already redacted by the caller (structured logs), with the same rotation and folder budget. */
+  protected append(chunk: string) {
+    const bytes = Buffer.byteLength(chunk)
     try {
-      if (this.size && this.size + Buffer.byteLength(chunk) > MAX_LOG_BYTES) { renameSync(this.path, `${this.path}.1`); this.size = 0 }
+      if (this.size && this.size + bytes > LOG_SEGMENT_BYTES) {
+        // The previous `.1` moves aside first, so no rotation overwrites a segment; a failed rename loses nothing and is retried next write.
+        try { statSync(`${this.path}.1`); renameRetrySync(`${this.path}.1`, `${this.path}.${Date.now()}`) } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+        renameRetrySync(this.path, `${this.path}.1`)
+        this.size = 0
+        this.sinceScan = LOG_RESCAN_BYTES
+      }
     } catch { return /* Retry rotation on the next write; do not grow a locked log without bound. */ }
+    if (this.sinceScan + bytes >= LOG_RESCAN_BYTES) { pruneLogs(dirname(this.path)); this.sinceScan = 0 }
     try {
       appendFileSync(this.path, chunk, { mode: 0o600 })
-      this.size += Buffer.byteLength(chunk)
+      this.size += bytes
+      this.sinceScan += bytes
     } catch { /* a full or read-only disk must not take the process down */ }
   }
   /** Writes a stream line by line; a partial line waits for its newline or the end of the stream. */
@@ -71,11 +125,33 @@ export class LogFile {
   }
 }
 
-/** Last `count` lines of a log, reaching into the rotated `<name>.1` when the current file is short. */
+export type HubLogValue = string | number | boolean | null | undefined
+/** JSON lines of Hub activity: ids, states, causes and durations only. Every string value is redacted before it is serialized. */
+export class HubLog extends LogFile {
+  event(component: string, event: string, fields: Record<string, HubLogValue> = {}) {
+    const record: Record<string, HubLogValue> = { ts: new Date().toISOString(), component, event }
+    for (const [key, value] of Object.entries(fields)) if (value !== undefined) record[key] = typeof value === "string" ? redactDiagnostics(value).slice(0, 500) : value
+    this.append(`${JSON.stringify(record)}\n`)
+  }
+}
+const hubLogs = new Map<string, HubLog>()
+/** The core's history log, next to core.log when the desktop passes its folder; a standalone core keeps it next to the memory. */
+export function hubLog(memoryDirectory: string): HubLog {
+  const path = join(process.env.AGENTHUB_LOG_DIR || join(memoryDirectory, "logs"), "hub.log")
+  let log = hubLogs.get(path)
+  if (!log) hubLogs.set(path, log = new HubLog(path))
+  return log
+}
+
+/** Last `count` lines of a log, reaching into its newest rotated segments when the current file is short. */
 export function tailLog(path: string, count: number): string[] {
   const read = (file: string) => { try { return readFileSync(file, 'utf8').split('\n').filter(Boolean) } catch { return [] } }
-  const lines = read(path)
-  return (lines.length >= count ? lines : [...read(`${path}.1`), ...lines]).slice(-count)
+  let lines = read(path)
+  for (const segment of segmentsOf(path)) {
+    if (lines.length >= count) break
+    lines = [...read(segment), ...lines]
+  }
+  return lines.slice(-count)
 }
 
 export interface ReportInput {

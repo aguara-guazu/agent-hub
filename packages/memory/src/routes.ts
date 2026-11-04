@@ -1,3 +1,4 @@
+import { hubLog } from "./report.js"
 import { isCollaborationTool } from './collaboration.js'
 import { orcaWorkspaceSchema } from './agents.js'
 import { registerUsageRoutes } from './usage-routes.js'
@@ -75,7 +76,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   let watchdog: LocalWatchdog | undefined
   const runtime = async () => {
     const { operations } = await service.get()
-    if (!chatRuntime) { chatRuntime = new LocalChatRuntime(operations.chat, undefined, agentId => collaborationEnabled() && (options.chatAgentEnabled?.(agentId) ?? true), undefined, collaborationEnabled, {wake:(id,text)=>service.wakeFleet(id,text),connected:id=>service.fleetConnected(id),readiness:id=>service.fleetReadiness(id),activityAt:id=>service.fleetActivityAt(id)}); chatRuntime.start() }
+    if (!chatRuntime) { chatRuntime = new LocalChatRuntime(operations.chat, undefined, agentId => collaborationEnabled() && (options.chatAgentEnabled?.(agentId) ?? true), undefined, collaborationEnabled, {wake:(id,text)=>service.wakeFleet(id,text),connected:id=>service.fleetConnected(id),readiness:id=>service.fleetReadiness(id),activityAt:id=>service.fleetActivityAt(id)}); const history=hubLog(options.directory); chatRuntime.observer=({event,step,...fields})=>history.event("chat",event,{step,...fields}); chatRuntime.start() }
     if (!watchdog) { watchdog = new LocalWatchdog(operations.chat, agentId => collaborationEnabled() && (options.chatAgentEnabled?.(agentId) ?? true), Date.now,
       () => app.log.warn('No se pudo registrar la observación del watchdog local'), collaborationEnabled); watchdog.start() }
     return chatRuntime
