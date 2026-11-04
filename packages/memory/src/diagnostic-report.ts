@@ -5,7 +5,7 @@ import { z } from "zod"
 import { check } from "./contracts.js"
 import { findExtractionCli, type ExtractionCli } from "./cli-extraction.js"
 import type { Sql } from "./database.js"
-import { buildReport, tailLog } from "./report.js"
+import { buildReport, redactReport, tailLog } from "./report.js"
 
 const WINDOW_MAX_MS = 24 * 60 * 60_000
 const LOG_LINES = 200
@@ -50,9 +50,12 @@ function hubEvents(path: string, from: string, to: string): string[] {
   }
   return events.slice(-LOG_LINES)
 }
-/** A title the agent can pass as one argument: no quotes, backticks, `$`, backslashes or line breaks. */
-function safeTitle(title: string): string {
-  return title.replace(/[^\p{L}\p{N} .,:;()#/_+-]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 160)
+/**
+ * A title the agent can pass inside single quotes: redacted first, then reduced to letters, digits, spaces and `.,:;()#/_+-`.
+ * Empty when nothing survives (emoji or control characters only); the caller falls back to the version, OS and summary.
+ */
+function safeTitle(title: string, home: string): string {
+  return redactReport(title, home).replace(/[^\p{L}\p{N} .,:;()#/_+-]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 160)
 }
 
 /**
@@ -70,8 +73,11 @@ export async function diagnosticReport(sql: Sql, memoryDirectory: string, raw: z
   const notices = await sql.query(`SELECT created_at,cause,session_id,recipient_id,cancelled_at IS NOT NULL AS cancelled FROM chat_status_notices
     WHERE created_at>=$1 AND created_at<=$2 ORDER BY created_at LIMIT ${LOG_LINES}`, [from, to])
   const platform = ({ win32: "Windows", darwin: "macOS", linux: "Linux" } as Record<string, string>)[process.platform] ?? process.platform
+  const home = homedir()
+  const fallback = `Agent Hub ${hubVersion()} en ${platform}: ${safeTitle(raw.summary.split("\n")[0]!.slice(0, 120), home) || "problema reportado"}`
+  const title = (raw.title ? safeTitle(raw.title, home) : "") || safeTitle(fallback, home)
   const report = buildReport({
-    title: safeTitle(raw.title ?? `Agent Hub ${hubVersion()} en ${platform}: ${raw.summary.split("\n")[0]!.slice(0, 120)}`),
+    title,
     summary: raw.summary,
     error: raw.observed,
     environment: { Versión: hubVersion(), Sistema: `${process.platform} ${release()} (${process.arch})`, Node: process.version, ...clis, Ventana: `${from} a ${to} (UTC)` },
@@ -81,9 +87,9 @@ export async function diagnosticReport(sql: Sql, memoryDirectory: string, raw: z
       { name: "process_incidents", lines: incidents.map(row => `${row.observed_at} ${row.subject_kind} ${row.cause} ${row.action} member=${row.member_id ?? "-"} generation=${row.generation ?? "-"}`) },
       { name: "status_notices", lines: notices.map(row => `${row.created_at} ${row.cause} session=${row.session_id} recipient=${row.recipient_id}${row.cancelled ? " cancelled" : ""}`) },
     ],
-    home: homedir(),
+    home,
   })
   return { ...report, repository: "aguara-guazu/agent-hub", published: false,
     local_logs: "core.log, daemon.log and worker.log stay in the Hub logs folder; attach them only if the person reviews and chooses to.",
-    guidance: "Show the person the exact title and body (times in their local zone) and publish only after their explicit approval; never add content after it." }
+    guidance: "Show the person the exact title and body (text) with times in their local zone. If they edit anything, call this tool again with the edited fields and show the new result. Publish only the last returned title and text, after their explicit approval; never add content after it." }
 }
