@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -75,18 +75,21 @@ describe("transacción del updater", () => {
     expect(readTransaction(dir)).toMatchObject({ kind: "ok", tx: { phase: "admitted", new_app: { pid: 102, start: "new-start" } } })
   })
 
-  it("recupera un lock malformado solo después de quedar viejo", async () => {
+  it("libera el lock con el descriptor y nunca borra el archivo de otro dueño", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenthub-update-lock-"))
     paths.push(dir)
     const lock = join(dir, "swap-back.lock")
     await writeFile(lock, "{")
-    const old = new Date(Date.now() - 61_000)
-    await utimes(lock, old, old)
 
-    const release = acquireSwapBackLock(dir, { pid: 202, start: "owner" }, () => false)
-    expect(release).toBeTypeOf("function")
-    release?.()
-    expect(existsSync(lock)).toBe(false)
+    const first = acquireSwapBackLock(dir, { pid: 202, start: "owner-one" }, () => false)
+    expect(first).toBeTypeOf("function")
+    expect(acquireSwapBackLock(dir, { pid: 203, start: "owner-two" }, () => false)).toBeNull()
+    first?.()
+
+    const second = acquireSwapBackLock(dir, { pid: 203, start: "owner-two" }, () => false)
+    expect(second).toBeTypeOf("function")
+    second?.()
+    expect(existsSync(lock)).toBe(true)
   })
 
   it("actualiza la identidad de la app al reanudar una transacción admitida", async () => {

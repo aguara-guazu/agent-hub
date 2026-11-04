@@ -4,7 +4,7 @@
  */
 import { execFileSync } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs"
+import { closeSync, constants, existsSync, fsyncSync, ftruncateSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeSync } from "node:fs"
 import { dirname, join } from "node:path"
 import {
   HEX64, canAdvance, incomingPrefix, isStrictSemver, parseBlacklist, parseTransaction,
@@ -47,7 +47,7 @@ export function writeJsonDurable(path: string, value: unknown): void {
 
 export function removeDurable(path: string): void {
   rmSync(path, { recursive: true, force: true })
-  try { fsyncPathSync(dirname(path)) } catch { /* el directorio puede no existir ya */ }
+  fsyncPathSync(dirname(path))
 }
 
 /**
@@ -92,7 +92,7 @@ export function advancePhase(dir: string, expectedId: string, phase: Phase, patc
 
 /** Quita el journal, los marcadores, la copia del vigía y el sidecar de una transacción, con fsync del directorio. */
 export function clearTransactionFiles(dir: string, id: string): void {
-  for (const file of [journalFile(dir), startedFile(dir, id), healthyFile(dir, id), readyFile(dir, id), rollbackRequestFile(dir, id), rollbackReadyFile(dir, id), watchdogDir(dir, id), sidecarFile(dir, id)]) removeDurable(file)
+  for (const file of [startedFile(dir, id), healthyFile(dir, id), readyFile(dir, id), rollbackRequestFile(dir, id), rollbackReadyFile(dir, id), watchdogDir(dir, id), sidecarFile(dir, id), journalFile(dir)]) removeDurable(file)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -105,40 +105,29 @@ const swapBackLock = (dir: string): string => join(dir, "swap-back.lock")
  * de invocar el helper, para que dos intercambios de vuelta nunca se encadenen y vuelvan a dejar la versión nueva instalada.
  * Un candado cuyo dueño ya no existe se recupera. Devuelve la función que lo libera, o `null` si lo tiene otro proceso vivo.
  */
-export function acquireSwapBackLock(dir: string, owner: Identity, alive: (identity: Identity) => boolean): (() => void) | null {
+export function acquireSwapBackLock(dir: string, owner: Identity, _alive: (identity: Identity) => boolean): (() => void) | null {
+  const exclusive = process.platform === "darwin" ? 0x20 : null
+  if (exclusive === null) return null
   const path = swapBackLock(dir)
-  const nonce = randomBytes(16).toString("hex")
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const fd = openSync(path, "wx", 0o600)
-      try { writeSync(fd, JSON.stringify({ ...owner, nonce })); fsyncSync(fd) } finally { closeSync(fd) }
-      fsyncPathSync(dir)
-      return () => {
-        const current = readJson(path)
-        if (current.ok && isObject(current.value) && current.value.nonce === nonce) removeDurable(path)
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-      let before: ReturnType<typeof statSync>
-      try { before = statSync(path) } catch { continue }
-      const holder = readJson(path)
-      const value = holder.ok && isObject(holder.value) ? holder.value : null
-      const identity = value && Number.isInteger(value.pid) && typeof value.start === "string"
-        ? { pid: value.pid as number, start: value.start } : null
-      if (identity && alive(identity)) return null
-      if (!value || typeof value.nonce !== "string") {
-        if (Date.now() - before.mtimeMs <= 60_000) return null
-        let after: ReturnType<typeof statSync>
-        try { after = statSync(path) } catch { continue }
-        if (after.ino === before.ino && after.mtimeMs === before.mtimeMs && after.size === before.size) removeDurable(path)
-        continue
-      }
-      const current = readJson(path)
-      if (!current.ok || !isObject(current.value) || current.value.nonce !== value.nonce) continue
-      removeDurable(path)
-    }
+  let fd: number
+  try {
+    fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NONBLOCK | exclusive, 0o600)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "EAGAIN" || code === "EWOULDBLOCK") return null
+    throw error
   }
-  return null
+  try {
+    ftruncateSync(fd, 0)
+    writeSync(fd, JSON.stringify(owner))
+    fsyncSync(fd)
+    fsyncPathSync(dir)
+  } catch (error) {
+    closeSync(fd)
+    throw error
+  }
+  let released = false
+  return () => { if (!released) { released = true; closeSync(fd) } }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

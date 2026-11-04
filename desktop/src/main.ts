@@ -820,7 +820,7 @@ async function startUpdateBookkeeping(): Promise<void> {
       return false
     }
     if (!["admitting", "admitted"].includes(current.tx.phase)) {
-      if (["healthy", "done", "ambiguous", "rolled_back"].includes(current.tx.phase)) {
+      if (["ambiguous", "rolled_back"].includes(current.tx.phase)) {
         activeTransaction = null
         if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
       }
