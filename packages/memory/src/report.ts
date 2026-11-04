@@ -38,13 +38,20 @@ export function redactReport(text: string, home?: string): string {
   return result
 }
 
-interface LogEntry { path: string; size: number; active: boolean; order: number }
+interface LogEntry { path: string; size: number; active: boolean; order: number; dev: number; ino: number; mtimeMs: number }
 const LOG_LOCK_NAME = ".agenthub-log.lock"
 const STALE_LOG_LOCK_MS = 60_000
 
 /** Never follow a log, segment, or lock symlink. */
 function isRegularFile(path: string, missing = false) {
   try { return lstatSync(path).isFile() } catch (error) { return missing && (error as NodeJS.ErrnoException).code === "ENOENT" }
+}
+
+function sameFile(path: string, identity: { dev: number; ino: number; mtimeMs?: number }) {
+  try {
+    const current = lstatSync(path)
+    return current.isFile() && current.dev === identity.dev && current.ino === identity.ino && (identity.mtimeMs === undefined || current.mtimeMs === identity.mtimeMs)
+  } catch { return false }
 }
 
 /** Serializes rotation and pruning between Hub processes. A dead owner's lock is reclaimed after one minute. */
@@ -57,15 +64,14 @@ function withLogLock<T>(directory: string, work: () => T): T | undefined {
       closeSync(descriptor)
       try { return work() } finally {
         try {
-          const current = lstatSync(path)
-          if (current.isFile() && current.dev === identity.dev && current.ino === identity.ino) unlinkSync(path)
+          if (sameFile(path, identity)) unlinkSync(path)
         } catch { /* A removed or replaced lock is not ours to clean up. */ }
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined
       try {
         const lock = lstatSync(path)
-        if (!lock.isFile() || Date.now() - lock.mtimeMs <= STALE_LOG_LOCK_MS) return undefined
+        if (!lock.isFile() || Date.now() - lock.mtimeMs <= STALE_LOG_LOCK_MS || !sameFile(path, lock)) return undefined
         unlinkSync(path)
       } catch { return undefined }
     }
@@ -82,7 +88,7 @@ function logEntries(directory: string): LogEntry[] {
     const path = join(directory, name)
     try {
       const stat = lstatSync(path)
-      if (stat.isFile()) entries.push({ path, size: stat.size, active: !segment, order: !segment ? Infinity : segment[2] === "1" ? Number.MAX_SAFE_INTEGER : Number(segment[2]) })
+      if (stat.isFile()) entries.push({ path, size: stat.size, active: !segment, order: !segment ? Infinity : segment[2] === "1" ? Number.MAX_SAFE_INTEGER : Number(segment[2]), dev: stat.dev, ino: stat.ino, mtimeMs: stat.mtimeMs })
     } catch { /* Removed meanwhile or an unsafe link. */ }
   }
   return entries
@@ -94,7 +100,7 @@ function pruneLogsUnlocked(directory: string, target = LOG_PRUNE_TARGET): number
   let total = entries.reduce((sum, entry) => sum + entry.size, 0)
   for (const entry of entries.filter(item => !item.active).sort((a, b) => a.order - b.order)) {
     if (total <= target) break
-    try { if (isRegularFile(entry.path)) { unlinkSync(entry.path); total -= entry.size } } catch { /* Another writer removed it. */ }
+    try { if (sameFile(entry.path, entry)) { unlinkSync(entry.path); total -= entry.size } } catch { /* Another writer removed it. */ }
   }
   return total
 }
@@ -126,7 +132,6 @@ export class LogFile {
   private sinceScan = 0
   private directory: string
   private activePath: string
-  private descriptor: number | undefined
   constructor(readonly path: string) {
     const directory = dirname(path)
     try {
@@ -145,29 +150,20 @@ export class LogFile {
       return stat.isFile() ? stat.size : 0
     } catch { return 0 }
   }
-  private closeActive() {
-    if (this.descriptor === undefined) return
-    try { closeSync(this.descriptor) } catch { /* The next append reopens the active log. */ }
-    this.descriptor = undefined
-  }
   private appendActive(chunk: string) {
+    let descriptor: number | undefined
     try {
-      if (this.descriptor === undefined) {
-        const descriptor = openSync(this.activePath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
-        if (!fstatSync(descriptor).isFile()) { closeSync(descriptor); return false }
-        this.descriptor = descriptor
-      }
+      descriptor = openSync(this.activePath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+      if (!fstatSync(descriptor).isFile()) return false
       const buffer = Buffer.from(chunk)
       for (let offset = 0; offset < buffer.length;) {
-        const written = writeSync(this.descriptor, buffer, offset, buffer.length - offset)
+        const written = writeSync(descriptor, buffer, offset, buffer.length - offset)
         if (!written) throw new Error("Log write made no progress")
         offset += written
       }
       return true
-    } catch {
-      this.closeActive()
-      return false
-    }
+    } catch { return false }
+    finally { if (descriptor !== undefined) try { closeSync(descriptor) } catch { /* Logging must not escape. */ } }
   }
   write(text: string, prefix = '') {
     const lines = redactDiagnostics(text).slice(-64_000).split(/\r?\n/).filter(line => line.trim())
@@ -180,10 +176,8 @@ export class LogFile {
     const bytes = Buffer.byteLength(chunk)
     const maintain = this.size + bytes > LOG_SEGMENT_BYTES || this.sinceScan + bytes >= LOG_RESCAN_BYTES
     if (maintain && withLogLock(this.directory, () => {
-      this.closeActive()
       this.size = this.activeSize()
       if (this.size && this.size + bytes > LOG_SEGMENT_BYTES) try {
-        this.closeActive()
         const latest = `${this.activePath}.1`
         if (isRegularFile(latest)) renameRetrySync(latest, uniqueSegmentPath(this.activePath))
         else if (!isRegularFile(latest, true)) throw new Error("Unsafe rotated log")
@@ -220,18 +214,38 @@ export class LogFile {
 }
 
 export type HubLogValue = string | number | boolean | null | undefined
+const LOG_EVENT_NAME = /^[a-z][a-z0-9_]{0,39}$/
+const RESERVED_LOG_FIELDS = new Set(["ts", "component", "event"])
+const MAX_LOG_EVENT_BYTES = 4096
 /** JSON lines of Hub activity: ids, states, causes and durations only. Every string value is redacted before it is serialized. */
 export class HubLog extends LogFile {
-  event(component: string, event: string, fields: Record<string, HubLogValue> = {}) {
-    const record: Record<string, HubLogValue> = { ts: new Date().toISOString(), component, event }
-    for (const [key, value] of Object.entries(fields)) if (value !== undefined) record[key] = typeof value === "string" ? redactDiagnostics(value).slice(0, 500) : value
-    this.append(`${JSON.stringify(record)}\n`)
+  event(component: string, event: string, fields: Record<string, unknown> = {}) {
+    try {
+      if (!LOG_EVENT_NAME.test(component) || !LOG_EVENT_NAME.test(event)) return
+      const record: Record<string, HubLogValue> = { ts: new Date().toISOString(), component, event }
+      for (const [key, raw] of Object.entries(fields)) {
+        if (Object.keys(record).length >= 35 || RESERVED_LOG_FIELDS.has(key) || !LOG_EVENT_NAME.test(key)) continue
+        const value = typeof raw === "bigint" ? String(raw) : raw
+        if (typeof value === "string") record[key] = redactDiagnostics(value).slice(0, 500)
+        else if (typeof value === "number" && Number.isFinite(value) || typeof value === "boolean" || value === null) record[key] = value
+      }
+      let encoded = JSON.stringify(record)
+      if (Buffer.byteLength(encoded) > MAX_LOG_EVENT_BYTES) {
+        for (const key of Object.keys(record)) if (typeof record[key] === "string" && !RESERVED_LOG_FIELDS.has(key)) record[key] = record[key]!.slice(0, 64)
+        encoded = JSON.stringify(record)
+      }
+      if (Buffer.byteLength(encoded) <= MAX_LOG_EVENT_BYTES) this.append(`${encoded}\n`)
+    } catch { /* Logging must not escape. */ }
   }
 }
 const hubLogs = new Map<string, HubLog>()
+function logPath(memoryDirectory: string) {
+  const directory = process.env.AGENTHUB_LOG_DIR || join(memoryDirectory, "logs")
+  try { mkdirSync(directory, { recursive: true, mode: 0o700 }); return join(realpathSync(directory), "hub.log") } catch { return join(directory, "hub.log") }
+}
 /** The core's history log, next to core.log when the desktop passes its folder; a standalone core keeps it next to the memory. */
 export function hubLog(memoryDirectory: string): HubLog {
-  const path = join(process.env.AGENTHUB_LOG_DIR || join(memoryDirectory, "logs"), "hub.log")
+  const path = logPath(memoryDirectory)
   let log = hubLogs.get(path)
   if (!log) hubLogs.set(path, log = new HubLog(path))
   return log
