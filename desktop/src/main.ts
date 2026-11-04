@@ -30,7 +30,7 @@ import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { CoreDidNotExit, DRAIN_SECRET_HEADER, DrainClient, DrainLeaseLost, type DrainLease } from './update-lease.js'
-import { HubStopClient, HubStopRun, StopCooldown, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
+import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, StopCooldown, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
@@ -549,7 +549,7 @@ const drainHeaders = (json = false): Record<string, string> => ({ [DRAIN_SECRET_
 const hubStopClient = new HubStopClient({ call: (path, init) => coreFetch(path, init), secret: updateDrainSecret, log: updaterLog })
 /** Parada coordinada en curso (update o cierre de la persona); una sola a la vez. */
 let activeStop: HubStopRun | null = null
-/** Después de una parada pospuesta no se vuelve a pedir otra antes de 30 min: cada una avisa de nuevo a los líderes. */
+/** Después de una parada pospuesta, cancelada o fallida no se vuelve a pedir otra antes de 30 min: cada una avisa de nuevo a los líderes. */
 const stopCooldown = new StopCooldown()
 function startHubStop(reason: HubStopReason, input: { targetVersion?: string; transactionId?: string }, onView: (view: HubStopView) => void): HubStopRun {
   const run = new HubStopRun({
@@ -619,8 +619,8 @@ async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downl
     setUpdateReport({ phase: 'postponed', version: update.version, reasons: stopReasons(view), stop: stopReportOf(view), ...(update.trust ? { trust: update.trust } : {}) })
   })
   const outcome = await run.done
-  if (outcome.kind === 'postponed') stopCooldown.start()
   if (outcome.kind !== 'committed') {
+    stopCooldown.start()
     updaterLog(`[updater] v${update.version}: parada coordinada ${outcome.kind}${outcome.kind === 'failed' ? ` (${outcome.code})` : ''}`)
     return postpone(update.version, [{ code: outcome.kind === 'failed' ? outcome.code : `stop_${outcome.kind}` }])
   }
@@ -1132,6 +1132,7 @@ function refreshTray(): void {
     autostartEnabled: safeAutostart(),
     showShortcut: { label: SHOW_WINDOW_SHORTCUT_LABEL, registered: showWindowShortcutRegistered },
     clientRestart: Boolean(pendingClientRestart),
+    quitStatus: quitStatusLine(),
   })
   tray.setContextMenu(Menu.buildFromTemplate(template.map((item): Electron.MenuItemConstructorOptions => {
     if (item.type === 'separator') return { type: 'separator' }
@@ -1142,7 +1143,7 @@ function refreshTray(): void {
     if (item.id) entry.click = () => handleTrayAction(item.id!)
     return entry
   })))
-  tray.setToolTip(trayTooltip(showWindowShortcutRegistered ? SHOW_WINDOW_SHORTCUT_LABEL : null))
+  tray.setToolTip(quitStatusLine() ?? trayTooltip(showWindowShortcutRegistered ? SHOW_WINDOW_SHORTCUT_LABEL : null))
 }
 function broadcastCoreState(): void {
   mainWindow?.webContents.send(IPC.coreStateChanged, coreStatus())
@@ -1180,6 +1181,7 @@ function handleTrayAction(action: TrayAction): void {
   else if (action === 'toggle-autostart') autostart.setEnabled(!safeAutostart())
   else if (action === 'restart-core') void restartCore()
   else if (action === 'restart-client') void confirmAndRestartClient()
+  else if (action === 'cancel-quit') quitRun?.cancel()
   else if (action === 'quit') void quit()
   refreshTray()
 }
@@ -1418,54 +1420,71 @@ function migrateWindowsLoginItem(): void {
   for (const item of legacy) app.setLoginItemSettings({ openAtLogin: false, path: item.path, args: item.args, name: item.name })
   if (legacy.length) app.setLoginItemSettings({ openAtLogin: true, ...loginItemOptions })
 }
-/** Un segundo pedido de cierre mientras se esperan llamadas en curso (o una señal del sistema) cierra sin esperar. */
+/** Una señal del sistema (fin de sesión, SIGTERM, SIGINT) cierra sin esperar la parada coordinada. */
 let forceQuit = false
 
-/** Manual quit closes the same MCP and non-MCP admissions as an update, then waits for protected work to finish. */
-async function waitForProtectedWork(): Promise<void> {
-  const headers = { [DRAIN_SECRET_HEADER]: updateDrainSecret }
-  type State = { inflight: number; fleet_live: number; jobs_nonresumable: number; blockers_known: boolean }
-  const read = async (path: string, method: "GET" | "POST"): Promise<State | null> => {
-    try {
-      const response = await coreFetch(path, { method, headers })
-      const body = await response.json().catch(() => null) as Partial<State> | null
-      const valid = response.ok && Number.isSafeInteger(body?.inflight) && Number.isSafeInteger(body?.fleet_live)
-        && Number.isSafeInteger(body?.jobs_nonresumable) && typeof body?.blockers_known === "boolean"
-      return valid ? body as State : null
-    } catch { return null }
+/** Cierre de la persona en curso: su parada coordinada y la última vista, para el menú del tray. */
+let quitRun: HubStopRun | null = null
+let quitView: HubStopView | null = null
+let quitTicker: ReturnType<typeof setInterval> | undefined
+
+function quitStatusLine(): string | null {
+  if (!quitRun || !quitView) return null
+  const { phase, remainingMs } = quitPhaseOf(quitView, Date.now())
+  const time = formatCountdown(remainingMs)
+  if (phase === 'waiting') return t('tray.quitWaiting', { time })
+  if (phase === 'grace') return t('tray.quitGrace', { time })
+  return t(phase === 'forced' ? 'tray.quitForced' : 'tray.quitClosing')
+}
+
+/**
+ * Un cierre de la persona pasa por la parada coordinada: el MCP sigue abierto mientras los líderes terminan, a los 30 min empieza
+ * la gracia y a los 45 core fuerza el cierre ordenado. Se puede cancelar desde el tray hasta el commit. Una señal del sistema
+ * (`forceQuit`) no espera: cancela la parada y sigue. Devuelve 'cancelled' si la persona canceló el cierre.
+ */
+async function stopHubForQuit(): Promise<'proceed' | 'cancelled'> {
+  if (activeStop) {
+    activeStop.cancel('superseded_by_quit')
+    await activeStop.done
   }
-  let state: State | null = null
-  while (!state && !forceQuit && coreSupervisor.state === "running") {
-    state = await read("/api/internal/update-drain/shutdown", "POST")
-    if (!state) await new Promise<void>(resolve => setTimeout(resolve, 1_000))
-  }
-  if (!state) return
-  const pending = () => state!.inflight + state!.fleet_live + state!.jobs_nonresumable
-  let lastLogged = 0
-  while ((pending() > 0 || !state.blockers_known) && !forceQuit && coreSupervisor.state === "running") {
-    if (Date.now() - lastLogged > 30_000) {
-      lastLogged = Date.now()
-      updaterLog(`[quit] esperando trabajo protegido: MCP=${state.inflight}, fleet=${state.fleet_live}, jobs=${state.jobs_nonresumable}; cerrar de nuevo fuerza el cierre`)
+  const run = startHubStop('quit', {}, view => { quitView = view; refreshTray() })
+  quitRun = run
+  quitTicker = setInterval(refreshTray, 1_000)
+  let watcher: ReturnType<typeof setInterval> | undefined
+  const system = new Promise<'system'>(resolve => { watcher = setInterval(() => { if (forceQuit) resolve('system') }, 250) })
+  try {
+    const result = await Promise.race([run.done, system])
+    if (result === 'system') {
+      updaterLog('[quit] señal del sistema: se cancela la parada coordinada y se cierra sin esperar')
+      run.cancel('system_shutdown')
+      return 'proceed'
     }
-    await new Promise<void>(resolve => setTimeout(resolve, 1_000))
-    const next = await read("/api/internal/update-drain/status", "GET")
-    if (!next) continue
-    state = next
+    if (result.kind === 'cancelled') return 'cancelled'
+    if (result.kind !== 'committed') updaterLog(`[quit] la parada coordinada terminó ${result.kind}${result.kind === 'failed' ? ` (${result.code})` : ''}; se cierra igual`)
+    return 'proceed'
+  } finally {
+    clearInterval(watcher)
+    clearInterval(quitTicker)
+    quitTicker = undefined
+    quitRun = null
+    quitView = null
+    refreshTray()
   }
-  if (forceQuit && (pending() > 0 || !state.blockers_known))
-    updaterLog(`[quit] cierre forzado con trabajo protegido: MCP=${state.inflight}, fleet=${state.fleet_live}, jobs=${state.jobs_nonresumable}`)
 }
 
 async function quit(): Promise<void> {
-  if (quitting) { forceQuit = true; return }
+  // Un segundo pedido de cierre no fuerza nada: se cancela desde el tray o vence el plazo de core.
+  if (quitting) return
   quitting = true
+  // Un cierre de la persona pasa por la parada coordinada; una actualización ya tiene core detenido por su commit.
+  if (!installOnQuit && !relaunchAfterQuit && coreSupervisor.state === 'running') {
+    if (await stopHubForQuit() === 'cancelled') { quitting = false; updaterLog('[quit] cierre cancelado'); refreshTray(); return }
+  }
   silentUpdates.stop()
   updateHints.stop()
   keepAwake.dispose()
   clockWake.dispose()
   scheduleNotices.dispose()
-  // Un cierre de la persona espera las llamadas MCP en curso; una actualización ya tiene core drenado por su lease.
-  if (!installOnQuit && !relaunchAfterQuit && coreSupervisor.state === 'running') await waitForProtectedWork()
   // Si algo se cuelga al cerrar, la app sale igual: un proceso que no termina obliga a
   // forzar el cierre y dejaba core y daemon huérfanos bloqueando el próximo arranque.
   const deadline = setTimeout(() => {

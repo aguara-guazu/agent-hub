@@ -292,3 +292,24 @@ export class StopCooldown {
   start(): void { this.until = this.now() + this.durationMs }
   active(): boolean { return this.now() < this.until }
 }
+
+export type QuitPhase = { phase: "waiting" | "grace" | "forced" | "closing"; remainingMs: number | null }
+
+/** Fase visible de un cierre de la persona: espera, gracia con cuenta regresiva, cierre forzado o cierre en curso. */
+export function quitPhaseOf(view: HubStopView, now: number): QuitPhase {
+  const remaining = (iso: string | null): number | null => {
+    const at = iso ? Date.parse(iso) : NaN
+    return Number.isFinite(at) ? Math.max(0, at - now) : null
+  }
+  if (view.forced) return { phase: "forced", remainingMs: 0 }
+  if (view.state === "stopping_fleet" || view.state === "ready" || view.state === "applied") return { phase: "closing", remainingMs: null }
+  if (view.graceStartedAt) return { phase: "grace", remainingMs: remaining(view.forceAt) }
+  return { phase: "waiting", remainingMs: remaining(view.deadlineAt) }
+}
+
+/** mm:ss para la cuenta regresiva; sin dato, un guion. */
+export function formatCountdown(ms: number | null): string {
+  if (ms === null) return "--:--"
+  const total = Math.ceil(ms / 1000)
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`
+}
