@@ -94,8 +94,9 @@ export class DrainClient {
   async cancelPending(): Promise<void> {
     try {
       const response = await this.deps.call("/api/internal/update-drain/pending/cancel", { method: "POST", headers: this.headers() })
-      if (!response.ok && response.status !== 409) this.deps.log(`[updater] no se pudo cancelar el drenaje pendiente (HTTP ${response.status})`)
-      await response.body?.cancel().catch(() => undefined)
+      const body = await response.json().catch(() => null) as { reopened?: unknown } | null
+      if (response.ok && body?.reopened === false) this.deps.log("[updater] core canceló el drenaje pendiente pero no confirmó la reapertura de admisiones; el worker las recupera al vencer el cierre")
+      else if (!response.ok && response.status !== 409) this.deps.log(`[updater] no se pudo cancelar el drenaje pendiente (HTTP ${response.status})`)
     } catch (error) {
       this.deps.log(`[updater] no se pudo cancelar el drenaje pendiente: ${error instanceof Error ? error.message : String(error)}`)
     }

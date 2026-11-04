@@ -13,6 +13,8 @@ export const LEASE_TTL_MS = UPDATE_LEASE_TTL_MS
 /** Header carrying the desktop's ephemeral update secret. */
 /** Tope del cierre de core tras un commit; pasado este tiempo core sale solo (el lease garantiza que nada queda en curso). */
 export const CORE_CLOSE_CAP_MS = 5_000
+/** A granted lease must leave more time than the desktop's safety margin. */
+const MIN_LEASE_REMAINING_MS = 60_000
 
 export const UPDATE_SECRET_HEADER = "x-agenthub-update-secret"
 
@@ -81,6 +83,7 @@ export class UpdateDrain {
   private committed = false
   /** A blocker-bearing attempt keeps both admission gates closed so existing work converges to zero. */
   private pending = false
+  private pendingVersion = 0
   /** A manual quit waits for MCP calls in flight; it closes nothing but MCP and ends only when core exits or the quit is cancelled. */
   private shutdown = false
   /** Core born closed for the first start of a new version: MCP and the shared gate stay shut until the desktop admits it. */
@@ -150,9 +153,12 @@ export class UpdateDrain {
     this.draining = true
     let gate = this.pending ? this.gate : undefined
     let token = this.pending ? this.token : null
+    let version = this.pendingVersion
     const releaseAttempt = async (why: string): Promise<void> => {
+      if (!this.pending || version !== this.pendingVersion) return
       clearTimeout(this.expiry)
       this.pending = false
+      this.pendingVersion++
       this.expiresAt = 0
       this.gate = undefined
       this.token = null
@@ -162,15 +168,16 @@ export class UpdateDrain {
     try {
       if (!this.pending) {
         gate = this.deps.gate()
-        if (!gate) { await releaseAttempt("sin compuerta"); return { ok: false, reasons: [{ code: "blockers_unknown" }] } }
+        if (!gate) { this.draining = this.shutdown; return { ok: false, reasons: [{ code: "blockers_unknown" }] } }
         try {
           token = gate.close()
         } catch (error) {
           token = null
-          await releaseAttempt("cierre fallido")
+          this.draining = this.shutdown
           return { ok: false, reasons: [{ code: (error as { code?: string } | null)?.code === "already_draining" ? "already_draining" : "blockers_unknown" }] }
         }
         this.pending = true
+        version = ++this.pendingVersion
         this.gate = gate
         this.token = token
         this.expiresAt = this.now() + this.ttlMs
@@ -201,6 +208,7 @@ export class UpdateDrain {
       }
       // In-flight is read last and synchronously with the grant: with MCP refused it can only have fallen.
       if (this.inflight > 0) reasons.push({ code: "mcp_inflight", count: this.inflight })
+      if (!this.pending || version !== this.pendingVersion) return { ok: false, reasons: [{ code: "already_draining" }] }
       if (reasons.length > 0) {
         const stable = dedupe(reasons)
         const converging = stable.every(reason => ["fleet_live", "jobs_nonresumable", "mcp_inflight"].includes(reason.code))
@@ -208,7 +216,7 @@ export class UpdateDrain {
         return { ok: false, reasons: stable }
       }
       const remaining = this.expiresAt - this.now()
-      if (remaining <= 0) {
+      if (remaining <= MIN_LEASE_REMAINING_MS) {
         await releaseAttempt("vencimiento antes del lease")
         return { ok: false, reasons: [{ code: "already_draining" }] }
       }
@@ -280,7 +288,7 @@ export class UpdateDrain {
   endShutdown(): void {
     if (!this.shutdown) return
     this.shutdown = false
-    if (!this.lease && !this.acquiring) this.draining = false
+    if (!this.lease && !this.acquiring && !this.pending) this.draining = false
   }
 
   status(): { inflight: number; draining: boolean; boot_id: string } {
@@ -298,6 +306,7 @@ export class UpdateDrain {
     clearTimeout(this.expiry)
     const { gate, token } = this
     this.pending = false
+    this.pendingVersion++
     this.lease = null
     this.gate = undefined
     this.token = null

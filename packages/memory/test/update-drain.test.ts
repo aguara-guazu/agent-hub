@@ -5,6 +5,7 @@ class Gate implements AdmissionGateLike {
   closed = false
   closes = 0
   reopens = 0
+  reopenCalls = 0
   private token: symbol | null = null
 
   close(): symbol {
@@ -16,6 +17,7 @@ class Gate implements AdmissionGateLike {
   }
 
   async reopenConfirmed(token: symbol): Promise<boolean> {
+    this.reopenCalls++
     if (token !== this.token) return false
     this.closed = false
     this.reopens++
@@ -94,6 +96,55 @@ describe("UpdateDrain convergente", () => {
 
     expect(await drain.acquire()).toEqual({ ok: false, reasons: [{ code: "legacy_gateways", count: 1 }] })
     expect(drain.isDraining).toBe(false)
+    expect(gate.closed).toBe(false)
+  })
+
+  it("conserva ambos gates cerrados si se cancela un shutdown durante un intento pendiente", async () => {
+    const counts = { fleet_live: 1, jobs_nonresumable: 0 }
+    const { gate, drain } = makeDrain(counts)
+
+    await drain.acquire()
+    drain.beginShutdown()
+    drain.endShutdown()
+
+    expect(drain.isDraining).toBe(true)
+    expect(gate.closed).toBe(true)
+  })
+
+  it("reabre una sola vez si se cancela mientras el conteo sigue en curso", async () => {
+    const gate = new Gate()
+    let resolve!: (value: { fleet_live: number; jobs_nonresumable: number }) => void
+    const blockers = new Promise<{ fleet_live: number; jobs_nonresumable: number }>(done => { resolve = done })
+    const drain = new UpdateDrain({
+      gate: () => gate,
+      nonMcpBlockers: () => () => blockers,
+      legacyGateways: async () => ({ count: 0, not_applicable: true }),
+    })
+
+    const acquiring = drain.acquire()
+    await Promise.resolve()
+    expect(await drain.cancelPending()).toEqual({ ok: true, reopened: true })
+    resolve({ fleet_live: 0, jobs_nonresumable: 0 })
+
+    expect(await acquiring).toEqual({ ok: false, reasons: [{ code: "already_draining" }] })
+    expect(gate.reopenCalls).toBe(1)
+  })
+
+  it("no concede un lease con menos margen que el cliente acepta", async () => {
+    let now = 0
+    const counts = { fleet_live: 1, jobs_nonresumable: 0 }
+    const gate = new Gate()
+    const drain = new UpdateDrain({
+      gate: () => gate,
+      nonMcpBlockers: () => async () => ({ ...counts }),
+      legacyGateways: async () => ({ count: 0, not_applicable: true }),
+    }, 120_000, () => now)
+
+    await drain.acquire()
+    now = 61_000
+    counts.fleet_live = 0
+
+    expect(await drain.acquire()).toEqual({ ok: false, reasons: [{ code: "already_draining" }] })
     expect(gate.closed).toBe(false)
   })
 
