@@ -1,5 +1,5 @@
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeSync } from "node:fs"
+import { basename, dirname, join } from "node:path"
 import { renameRetrySync } from "@agenthub/gateway/platform"
 import { redactSecrets } from './secrets.js'
 
@@ -9,12 +9,8 @@ const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0
 export const LOG_SEGMENT_BYTES = 2 * 1024 * 1024
 /** Every log in the folder, active and rotated, from every process; the oldest rotated segments are discarded first. */
 export const LOG_DIR_BUDGET_BYTES = 50 * 1024 * 1024
-/**
- * Writers recount the folder after this many bytes, so concurrent writers can overshoot the last count by about this much each.
- * Pruning aims below the budget by this margin times the writers a Hub runs (desktop: core and daemon logs; core: worker and hub logs).
- */
 const LOG_RESCAN_BYTES = 256 * 1024
-const LOG_PRUNE_TARGET = LOG_DIR_BUDGET_BYTES - 8 * LOG_RESCAN_BYTES
+const LOG_PRUNE_TARGET = LOG_DIR_BUDGET_BYTES
 const SEGMENT = /^(.+\.log)\.(\d+)$/
 /** Very long prefilled URLs may not open; the link carries the newest log lines and the clipboard the full report. */
 const MAX_ISSUE_URL = 7000
@@ -43,45 +39,135 @@ export function redactReport(text: string, home?: string): string {
 }
 
 interface LogEntry { path: string; size: number; active: boolean; order: number }
+const LOG_LOCK_NAME = ".agenthub-log.lock"
+const STALE_LOG_LOCK_MS = 60_000
+
+/** Never follow a log, segment, or lock symlink. */
+function isRegularFile(path: string, missing = false) {
+  try { return lstatSync(path).isFile() } catch (error) { return missing && (error as NodeJS.ErrnoException).code === "ENOENT" }
+}
+
+/** Serializes rotation and pruning between Hub processes. A dead owner's lock is reclaimed after one minute. */
+function withLogLock<T>(directory: string, work: () => T): T | undefined {
+  const path = join(directory, LOG_LOCK_NAME)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const descriptor = openSync(path, "wx", 0o600)
+      const identity = lstatSync(path)
+      closeSync(descriptor)
+      try { return work() } finally {
+        try {
+          const current = lstatSync(path)
+          if (current.isFile() && current.dev === identity.dev && current.ino === identity.ino) unlinkSync(path)
+        } catch { /* A removed or replaced lock is not ours to clean up. */ }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined
+      try {
+        const lock = lstatSync(path)
+        if (!lock.isFile() || Date.now() - lock.mtimeMs <= STALE_LOG_LOCK_MS) return undefined
+        unlinkSync(path)
+      } catch { return undefined }
+    }
+  }
+  return undefined
+}
+
 /** Logs of a folder: `*.log` are active; `<name>.log.1` is the newest rotated segment of each log and `<name>.log.<epoch ms>` the older ones. */
 function logEntries(directory: string): LogEntry[] {
   const entries: LogEntry[] = []
   for (const name of readdirSync(directory)) {
     const segment = SEGMENT.exec(name)
     if (!segment && !name.endsWith(".log")) continue
-    try { entries.push({ path: join(directory, name), size: statSync(join(directory, name)).size, active: !segment, order: !segment ? Infinity : segment[2] === "1" ? Number.MAX_SAFE_INTEGER : Number(segment[2]) }) } catch { /* removed meanwhile */ }
+    const path = join(directory, name)
+    try {
+      const stat = lstatSync(path)
+      if (stat.isFile()) entries.push({ path, size: stat.size, active: !segment, order: !segment ? Infinity : segment[2] === "1" ? Number.MAX_SAFE_INTEGER : Number(segment[2]) })
+    } catch { /* Removed meanwhile or an unsafe link. */ }
   }
   return entries
 }
 /** Discards the oldest rotated segments until the folder fits; active logs are never removed. Returns the remaining total. */
-export function pruneLogs(directory: string, target = LOG_PRUNE_TARGET): number {
+function pruneLogsUnlocked(directory: string, target = LOG_PRUNE_TARGET): number {
   let entries: LogEntry[]
   try { entries = logEntries(directory) } catch { return 0 }
   let total = entries.reduce((sum, entry) => sum + entry.size, 0)
   for (const entry of entries.filter(item => !item.active).sort((a, b) => a.order - b.order)) {
     if (total <= target) break
-    try { unlinkSync(entry.path); total -= entry.size } catch { /* another writer removed it */ }
+    try { if (isRegularFile(entry.path)) { unlinkSync(entry.path); total -= entry.size } } catch { /* Another writer removed it. */ }
   }
   return total
+}
+export function pruneLogs(directory: string, target = LOG_PRUNE_TARGET): number {
+  return withLogLock(directory, () => pruneLogsUnlocked(directory, target)) ?? 0
 }
 /** Rotated segments of one log, newest first. */
 function segmentsOf(path: string): string[] {
   const base = basename(path)
   try {
     return readdirSync(dirname(path)).map(name => SEGMENT.exec(name)).filter((match): match is RegExpExecArray => Boolean(match && match[1] === base))
-      .sort((a, b) => (b[2] === "1" ? Infinity : Number(b[2])) - (a[2] === "1" ? Infinity : Number(a[2]))).map(match => join(dirname(path), match[0]))
+      .sort((a, b) => (b[2] === "1" ? Infinity : Number(b[2])) - (a[2] === "1" ? Infinity : Number(a[2])))
+      .map(match => join(dirname(path), match[0])).filter(file => isRegularFile(file))
   } catch { return [] }
+}
+function uniqueSegmentPath(path: string) {
+  let suffix = Date.now()
+  for (;;) {
+    try { lstatSync(`${path}.${suffix}`); suffix++ } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return `${path}.${suffix}`
+      throw error
+    }
+  }
 }
 
 /** Appends timestamped lines to a log file with credentials already replaced; logging never throws into the caller. */
 export class LogFile {
   private size = 0
   private sinceScan = 0
+  private directory: string
+  private activePath: string
+  private descriptor: number | undefined
   constructor(readonly path: string) {
+    const directory = dirname(path)
     try {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-      this.size = statSync(path).size
-    } catch { this.size = 0 }
+      mkdirSync(directory, { recursive: true, mode: 0o700 })
+      this.directory = realpathSync(directory)
+      this.activePath = join(this.directory, basename(path))
+      this.size = this.activeSize()
+    } catch {
+      this.directory = directory
+      this.activePath = path
+    }
+  }
+  private activeSize() {
+    try {
+      const stat = lstatSync(this.activePath)
+      return stat.isFile() ? stat.size : 0
+    } catch { return 0 }
+  }
+  private closeActive() {
+    if (this.descriptor === undefined) return
+    try { closeSync(this.descriptor) } catch { /* The next append reopens the active log. */ }
+    this.descriptor = undefined
+  }
+  private appendActive(chunk: string) {
+    try {
+      if (this.descriptor === undefined) {
+        const descriptor = openSync(this.activePath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+        if (!fstatSync(descriptor).isFile()) { closeSync(descriptor); return false }
+        this.descriptor = descriptor
+      }
+      const buffer = Buffer.from(chunk)
+      for (let offset = 0; offset < buffer.length;) {
+        const written = writeSync(this.descriptor, buffer, offset, buffer.length - offset)
+        if (!written) throw new Error("Log write made no progress")
+        offset += written
+      }
+      return true
+    } catch {
+      this.closeActive()
+      return false
+    }
   }
   write(text: string, prefix = '') {
     const lines = redactDiagnostics(text).slice(-64_000).split(/\r?\n/).filter(line => line.trim())
@@ -92,21 +178,29 @@ export class LogFile {
   /** Writes lines already redacted by the caller (structured logs), with the same rotation and folder budget. */
   protected append(chunk: string) {
     const bytes = Buffer.byteLength(chunk)
-    try {
-      if (this.size && this.size + bytes > LOG_SEGMENT_BYTES) {
-        // The previous `.1` moves aside first, so no rotation overwrites a segment; a failed rename loses nothing and is retried next write.
-        try { statSync(`${this.path}.1`); renameRetrySync(`${this.path}.1`, `${this.path}.${Date.now()}`) } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
-        renameRetrySync(this.path, `${this.path}.1`)
+    const maintain = this.size + bytes > LOG_SEGMENT_BYTES || this.sinceScan + bytes >= LOG_RESCAN_BYTES
+    if (maintain && withLogLock(this.directory, () => {
+      this.closeActive()
+      this.size = this.activeSize()
+      if (this.size && this.size + bytes > LOG_SEGMENT_BYTES) try {
+        this.closeActive()
+        const latest = `${this.activePath}.1`
+        if (isRegularFile(latest)) renameRetrySync(latest, uniqueSegmentPath(this.activePath))
+        else if (!isRegularFile(latest, true)) throw new Error("Unsafe rotated log")
+        renameRetrySync(this.activePath, latest)
         this.size = 0
-        this.sinceScan = LOG_RESCAN_BYTES
-      }
-    } catch { return /* Retry rotation on the next write; do not grow a locked log without bound. */ }
-    if (this.sinceScan + bytes >= LOG_RESCAN_BYTES) { pruneLogs(dirname(this.path)); this.sinceScan = 0 }
-    try {
-      appendFileSync(this.path, chunk, { mode: 0o600 })
+      } catch { /* Keep the triggering chunk in the active file and retry rotation later. */ }
+      if (!this.appendActive(chunk)) return false
       this.size += bytes
       this.sinceScan += bytes
-    } catch { /* a full or read-only disk must not take the process down */ }
+      pruneLogsUnlocked(this.directory)
+      this.sinceScan = 0
+      return true
+    }) === true) return
+    if (this.appendActive(chunk)) {
+      this.size += bytes
+      this.sinceScan += bytes
+    }
   }
   /** Writes a stream line by line; a partial line waits for its newline or the end of the stream. */
   follow(stream: NodeJS.ReadableStream, prefix = '') {
@@ -145,7 +239,7 @@ export function hubLog(memoryDirectory: string): HubLog {
 
 /** Last `count` lines of a log, reaching into its newest rotated segments when the current file is short. */
 export function tailLog(path: string, count: number): string[] {
-  const read = (file: string) => { try { return readFileSync(file, 'utf8').split('\n').filter(Boolean) } catch { return [] } }
+  const read = (file: string) => { try { return isRegularFile(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [] } catch { return [] } }
   let lines = read(path)
   for (const segment of segmentsOf(path)) {
     if (lines.length >= count) break
