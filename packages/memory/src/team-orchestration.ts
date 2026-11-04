@@ -163,10 +163,7 @@ export class TeamOrchestration {
       if(!rotated.length)return
       const relaunch=(await this.db.query("SELECT 1 FROM chat_team_events WHERE member_id=$1 AND type='joined' LIMIT 1",[memberId])).length>0
       try {
-        const receipt=await this.orca.send(handle,this.workerPrompt(token,relaunch).replace("Agent Hub: ","Agent Hub: you have not joined your team yet. ")) as {state?:unknown,error_code?:unknown}|undefined
-        // A send can resolve with the member's snapshot after the write failed; only a live runtime counts as delivered.
-        const state=String(receipt?.state ?? "unknown")
-        if(["failed","unknown","stopped"].includes(state))throw new Error(String(receipt?.error_code ?? `fleet_${state}`))
+        await this.orca.send(handle,this.workerPrompt(token,relaunch).replace("Agent Hub: ","Agent Hub: you have not joined your team yet. "))
       } catch(error) {
         // Nothing confirmed the delivery, so the invitation goes back to the one the worker already holds.
         await this.db.query(`UPDATE chat_team_members SET invitation_hash=$2,invitation_expires_at=$3,updated_at=now()
