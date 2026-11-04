@@ -128,26 +128,61 @@ export class TeamOrchestration {
    */
   async retryOnboarding(memberId:string,generation:string) {
     await this.serial(memberId,async()=>{
-      const member=(await this.db.query(`SELECT m.*,t.state AS team_state FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id WHERE m.id=$1`,[memberId]))[0]
-      const runtime=typeof member?.runtime==="string"?JSON.parse(member.runtime):member?.runtime
-      if(!member || !activePlan(member.team_state) || member.state!=="accepted" || member.session_id || member.invitation_used_at
-        || !member.launch_handle || runtime?.generation!==generation || !this.collaborationEnabled())return
-      const done=await this.db.query(`SELECT type FROM chat_team_events WHERE member_id=$1 AND type IN ('onboarding_retry','onboarding_not_joined')
-        AND json_extract(payload,'$.generation')=$2`,[memberId,generation])
-      if(done.some(row=>row.type==="onboarding_not_joined"))return
-      if(done.length) {
+      const load=async()=>(await this.db.query(`SELECT m.*,t.state AS team_state FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id WHERE m.id=$1`,[memberId]))[0]
+      const generationOf=(row:Record<string,any>|undefined)=>(typeof row?.runtime==="string"?JSON.parse(row.runtime):row?.runtime)?.generation
+      let member=await load()
+      if(!member || !activePlan(member.team_state) || member.session_id || member.invitation_used_at || !this.collaborationEnabled()
+        || generationOf(member)!==generation)return
+      if(member.state==="launch_intent") {
+        // The turn ended before the launch receipt was persisted; the launch evaluates it again once the member is accepted.
+        const pending=this.pendingUnjoinedIdle.get(memberId) ?? new Set<string>()
+        pending.add(generation)
+        this.pendingUnjoinedIdle.set(memberId,pending)
+        return
+      }
+      if(member.state!=="accepted" || !member.launch_handle)return
+      const done=(await this.db.query(`SELECT type FROM chat_team_events WHERE member_id=$1 AND type IN ('onboarding_retry','onboarding_retry_failed','onboarding_not_joined')
+        AND json_extract(payload,'$.generation')=$2`,[memberId,generation])).map(row=>String(row.type))
+      if(done.includes("onboarding_not_joined"))return
+      if(done.includes("onboarding_retry")) {
         await this.event(this.db,member.team_id,member.id,"onboarding_not_joined",null,null,null,{generation})
         return
       }
       check(this.orca.send,"El backend no permite enviar instrucciones",409)
-      const token=randomBytes(32).toString("base64url"),expires=new Date(Date.now()+30*60_000).toISOString()
+      // Last validation before rotating: the row and the live runtime are read again, never taken from the event that fired the hook.
+      member=await load()
+      const handle=member?.launch_handle ? String(member.launch_handle) : undefined
+      const observed=handle ? await this.orca.status?.(handle).catch(()=>undefined) : undefined
+      if(!member || !handle || !activePlan(member.team_state) || member.state!=="accepted" || member.session_id || member.invitation_used_at
+        || !member.invitation_hash || !(Date.parse(String(member.invitation_expires_at))>Date.now()) || !this.collaborationEnabled()
+        || generationOf(member)!==generation || observed?.generation!==generation || observed.state!=="idle")return
+      const previousHash=String(member.invitation_hash),previousExpires=String(member.invitation_expires_at)
+      const token=randomBytes(32).toString("base64url"),expires=new Date(Date.now()+30*60_000).toISOString(),nextHash=invitationHash(token)
       const rotated=await this.db.query(`UPDATE chat_team_members SET invitation_hash=$2,invitation_expires_at=$3,updated_at=now()
-        WHERE id=$1 AND state='accepted' AND session_id IS NULL AND invitation_used_at IS NULL RETURNING id`,[memberId,invitationHash(token),expires])
+        WHERE id=$1 AND state='accepted' AND session_id IS NULL AND invitation_used_at IS NULL AND invitation_hash=$4 RETURNING id`,[memberId,nextHash,expires,previousHash])
       if(!rotated.length)return
       const relaunch=(await this.db.query("SELECT 1 FROM chat_team_events WHERE member_id=$1 AND type='joined' LIMIT 1",[memberId])).length>0
+      try {
+        await this.orca.send(handle,this.workerPrompt(token,relaunch).replace("Agent Hub: ","Agent Hub: you have not joined your team yet. "))
+      } catch(error) {
+        // Nothing confirmed the delivery, so the invitation goes back to the one the worker already holds.
+        await this.db.query(`UPDATE chat_team_members SET invitation_hash=$2,invitation_expires_at=$3,updated_at=now()
+          WHERE id=$1 AND session_id IS NULL AND invitation_used_at IS NULL AND invitation_hash=$4`,[memberId,previousHash,previousExpires,nextHash])
+        const reason=(error instanceof Error ? error.message : String(error)).split(token).join("[redacted]").split(/[\s:]/)[0]!.slice(0,80)
+        const final=done.includes("onboarding_retry_failed")
+        await this.event(this.db,member.team_id,member.id,final?"onboarding_not_joined":"onboarding_retry_failed",null,null,null,{generation,reason})
+        return
+      }
       await this.event(this.db,member.team_id,member.id,"onboarding_retry",null,null,null,{generation})
-      await this.orca.send(member.launch_handle,this.workerPrompt(token,relaunch).replace("Agent Hub: ","Agent Hub: you have not joined your team yet. "))
     })
+  }
+  private readonly pendingUnjoinedIdle=new Map<string,Set<string>>()
+  /** Evaluates again the idle turns that ended while the member was still launching, once its launch receipt is persisted. */
+  private resumeUnjoinedIdle(memberId:string) {
+    const pending=this.pendingUnjoinedIdle.get(memberId)
+    if(!pending)return
+    this.pendingUnjoinedIdle.delete(memberId)
+    for(const generation of pending)setImmediate(()=>{void this.retryOnboarding(memberId,generation).catch(()=>undefined)})
   }
   private get db() { return this.chat.db }
   private derived?: DerivedPorts
@@ -474,10 +509,12 @@ export class TeamOrchestration {
     }
     await this.event(this.db,plan.id,member.id,'launch_receipt',who.id,who.channel_id,plan.root_thread_id,
       {kind:receipt.kind,prompt_outcome:receipt.prompt_outcome,operation_id:receipt.operation_id ?? null})
+    this.resumeUnjoinedIdle(member.id)
     return true
   }
 
   private async unknown(plan:Record<string,any>,member:Record<string,any>,phase:'workspace'|'launch',who:Record<string,any>,cause:unknown) {
+    this.pendingUnjoinedIdle.delete(String(member.id))
     const error=publicError(phase),receipt=this.recoveryReceipt(cause)
     await this.db.query(`UPDATE chat_team_members SET state=CASE WHEN state IN ('joined','closed') THEN state ELSE 'unknown' END,
       error=$2,operation_id=COALESCE($3,operation_id),launch_handle=COALESCE($4,launch_handle),updated_at=now() WHERE id=$1`,
@@ -1127,6 +1164,7 @@ export class TeamOrchestration {
             await this.db.query('UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL WHERE id=$1',[item.id])
             throw error
           }
+          this.resumeUnjoinedIdle(item.id)
         } catch(error) {
           await this.unknown(plan,item,'launch',who,error)
           await this.updateRuntime(item.id,{state:'unknown'})
