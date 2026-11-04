@@ -575,5 +575,5 @@ export class HubTeamRuntime implements TeamOrca {
   async interrupt(handle: string): Promise<FleetStatus> { this.requireEnabled(); return this.manager.interrupt(handle) }
   async stop(handle: string): Promise<FleetStatus> { return this.manager.stop(handle) }
   async suspend(): Promise<void> { await Promise.all(this.manager.list().map(member => this.manager.stop(member.id))) }
-  async close(): Promise<void> { await this.manager.close() }
+  async close(): Promise<string[]> { return this.manager.close() }
 }

@@ -310,7 +310,14 @@ export class MemoryService {
     await this.initializing?.catch(() => {})
     const failures: unknown[] = []
     const step = async (action: () => unknown) => { try { await action() } catch (error) { failures.push(error) } }
-    for (let attempt = 0; attempt < 3; attempt++) { try { await this.current?.operations.fleet?.close?.(); break } catch { /* retried, then the final close below runs again */ } }
+    const fleetErrors: unknown[] = []
+    const closeFleet = async (fleet: { close?: () => Promise<unknown> } | undefined) => {
+      const unconfirmed = await fleet?.close?.()
+      if (Array.isArray(unconfirmed) && unconfirmed.length) throw Object.assign(new Error("fleet_stop_unconfirmed"), { member_ids: unconfirmed })
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { await closeFleet(this.current?.operations.fleet); fleetErrors.length = 0; break } catch (error) { fleetErrors.push(error) }
+    }
     await step(() => this.current?.schedules?.runtime.close())
     await step(() => this.media.close())
     await step(() => this.nativeEmbeddings.close())
@@ -320,11 +327,12 @@ export class MemoryService {
     const current = this.current
     this.current = null
     if (current) {
-      await step(() => current.operations.fleet?.close?.())
+      try { await closeFleet(current.operations.fleet); fleetErrors.length = 0 } catch (error) { fleetErrors.push(error) }
       await step(() => current.operations.closeInterhub())
       await step(() => current.network.stop())
       await step(() => current.db.close())
     }
+    if (fleetErrors.length) throw fleetErrors[0]
     if (failures.length) throw failures[0]
   }
 }
