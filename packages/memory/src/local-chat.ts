@@ -734,6 +734,10 @@ export class LocalChat {
       if(fresh.waiting_at_close || !route || route.source.state==='busy') {await finish();return}
       const waiting=await sql.query("SELECT status,waiting_for FROM chat_work_state WHERE session_id=$1 AND status<>'completed'",[turn.session_id])
       if(waiting.length && waiting.every(w=>w.status==='waiting' && ['human','permission','schedule','agent','tool'].includes(w.waiting_for))){await finish();return}
+      const reported=await sql.query(`SELECT 1 FROM chat_work_state w JOIN chat_threads h ON h.id=w.thread_id
+        WHERE w.session_id=$1 AND w.status='completed' AND w.report_message_id IS NOT NULL AND w.reported_at>=$2
+        AND (($3 IS NULL AND h.channel_id=$4) OR ($3 IS NOT NULL AND EXISTS(SELECT 1 FROM chat_team_plans p WHERE p.id=$3 AND (w.thread_id=p.root_thread_id OR h.team_root_thread_id=p.root_thread_id)))) LIMIT 1`,[turn.session_id,fresh.opened_at,fresh.team_id ?? null,fresh.channel_id])
+      if(reported.length){await finish();return}
       const {source,recipient,root}=route
       const existing=await sql.query(`SELECT 1 FROM chat_status_notices WHERE session_id=$1 AND recipient_id=$2
         AND ((handled_at IS NULL AND cancelled_at IS NULL) OR created_at>$3) LIMIT 1`,[source.id,recipient.id,new Date(now-300_000).toISOString()])
@@ -894,6 +898,12 @@ export class LocalChat {
         if(alert.cause==='delivery_stalled') {
           if(await this.stalledAlertValid(sql,alert))continue
           await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Entrega resuelta o alcance cerrado' WHERE id=$1",[alert.id]);continue
+        }
+        if(alert.cause!=='liveness') {
+          const reported=await sql.query(`SELECT 1 FROM chat_turns t JOIN chat_work_state w ON w.session_id=t.session_id JOIN chat_threads h ON h.id=w.thread_id
+            WHERE t.session_id=$1 AND t.turn_id=$2 AND w.status='completed' AND w.report_message_id IS NOT NULL AND w.reported_at>=t.opened_at
+            AND (($3 IS NULL AND h.channel_id=t.channel_id) OR ($3 IS NOT NULL AND EXISTS(SELECT 1 FROM chat_team_plans p WHERE p.id=$3 AND (w.thread_id=p.root_thread_id OR h.team_root_thread_id=p.root_thread_id)))) LIMIT 1`,[alert.session_id,alert.turn_id,alert.team_id ?? null])
+          if(reported.length){await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='El agente ya completó y reportó su trabajo' WHERE id=$1",[alert.id]);continue}
         }
         const route=await this.turnAlertRoute(sql,alert)
         const newer=(await sql.query(`SELECT 1 FROM chat_turns WHERE session_id=$1 AND opened_at>(
