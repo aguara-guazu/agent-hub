@@ -417,10 +417,14 @@ export async function runQuitFlow(deps: QuitFlowDeps): Promise<"proceed" | "canc
     if (result.kind === "committed") return "proceed"
     deps.log(`[quit] la parada coordinada terminó ${result.kind}${result.kind === "failed" ? ` (${result.code})` : ""}; se cierra igual`)
     const stopId = (result.kind === "failed" ? result.view?.stopId : null) ?? run.currentStopId
+    // El 409 del cancel es ambiguo (la parada ya es terminal, o la reapertura no se confirmó y sigue activa): sólo un estado terminal
+    // observado, en la vista del cancel o en un status posterior, permite borrar la intención.
+    const terminal = (view: HubStopView | null | undefined): boolean => Boolean(view && ["applied", "resumed", "postponed", "cancelled"].includes(view.state))
     let settled = false
     if (stopId) {
       const outcome = await Promise.race([deps.client.cancel(stopId, "desktop_quit_failed"), timer(null)])
-      settled = Boolean(outcome && (outcome.view || outcome.status === 409))
+      settled = terminal(outcome?.view)
+      if (!settled) settled = terminal((await Promise.race([deps.client.status(stopId), timer(null)]))?.view)
     }
     if (settled) deps.clearIntent()
     else deps.log("[quit] no se confirmó la cancelación de la parada; se reintenta al próximo arranque")
