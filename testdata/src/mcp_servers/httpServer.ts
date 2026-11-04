@@ -7,6 +7,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http'
+import { fileURLToPath } from "node:url"
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { TestServer, ToolError } from './base.js'
 
@@ -114,7 +115,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   })
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
   const port = Number(process.env['PORT'] ?? 8931)
   void startHttpEchoServer({ port })
 }
