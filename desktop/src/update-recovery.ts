@@ -16,7 +16,7 @@ import { sameProcess, startTimeOf } from "./update-watchdog.js"
 
 export { settled } from "./update-watchdog.js"
 
-export type Recovery = "none" | "cleaned" | "monitor" | "monitor_without_watchdog" | "waiting_watchdog" | "rolled_back_cleaned" | "rolled_back_pending_watchdog" | "ambiguous"
+export type Recovery = "none" | "cleaned" | "cleanup_pending" | "monitor" | "monitor_without_watchdog" | "waiting_watchdog" | "rolled_back_cleaned" | "rolled_back_pending_watchdog" | "ambiguous"
 
 export interface RecoveryDeps {
   stateDir: string
@@ -73,6 +73,13 @@ export async function recoverTransaction(deps: RecoveryDeps): Promise<Recovery> 
     clearTransactionFiles(deps.updateDir, tx.transaction_id)
     return true
   }
+  const completeCleanup = (): Recovery => {
+    try { clearTransactionFiles(deps.updateDir, tx.transaction_id); return "cleaned" }
+    catch (error) {
+      log(`[updater] no se pudo cerrar la transacción ${tx.transaction_id}: ${error instanceof Error ? error.message : String(error)}`)
+      return "cleanup_pending"
+    }
+  }
   const running = deps.version
 
   switch (tx.phase) {
@@ -115,24 +122,21 @@ export async function recoverTransaction(deps: RecoveryDeps): Promise<Recovery> 
           return "ambiguous"
         }
         advancePhase(deps.updateDir, tx.transaction_id, "done")
-        clearTransactionFiles(deps.updateDir, tx.transaction_id)
-        return "cleaned"
+        return completeCleanup()
       }
       const evidence = readJson(healthyFile(deps.updateDir, tx.transaction_id))
       const marker = evidence.ok ? parseHealthyMarker(evidence.value) : null
       if (existsSync(tx.paths.incoming) || marker?.transaction_id !== tx.transaction_id || marker.version !== tx.to.version)
         return ambiguous("falta el respaldo sin evidencia durable de salud")
       advancePhase(deps.updateDir, tx.transaction_id, "done")
-      clearTransactionFiles(deps.updateDir, tx.transaction_id)
-      return "cleaned"
+      return completeCleanup()
     }
 
     case "done":
       if (running !== tx.to.version || bundleVersion(tx.paths.installed) !== tx.to.version) return ambiguous("la app que corre no es la confirmada")
       if (inspectSides(tx) === "swapped") return (await finish()) ? "cleaned" : ambiguous("el respaldo no se pudo borrar de forma durable")
       if (existsSync(tx.paths.incoming)) return ambiguous("la fase done conserva un respaldo inesperado")
-      clearTransactionFiles(deps.updateDir, tx.transaction_id)
-      return "cleaned"
+      return completeCleanup()
 
     case "rolled_back":
       if (running !== tx.from.version || inspectSides(tx) !== "not_swapped") return ambiguous("la app que corre no es la versión restaurada")

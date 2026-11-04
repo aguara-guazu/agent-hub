@@ -830,12 +830,17 @@ async function startUpdateBookkeeping(): Promise<void> {
         cleanupRetry = recoverTransaction({
           stateDir,
           updateDir: updateStore.dir,
-          installed: current.tx.paths.installed,
+          installed: bundle ?? current.tx.paths.installed,
           version: app.getVersion(),
           removeTree,
           pid: process.pid,
           log: updaterLog,
-        }).then(outcome => { if (outcome === "cleaned") stopTransactionObservation() })
+        }).then(outcome => {
+          if (outcome === "cleaned") {
+            stopTransactionObservation()
+            whenStablyHealthy({ healthy, stableMs: HEALTH_DEADLINE_MS }, () => { void announceVersion() })
+          }
+        })
           .catch(error => updaterLog(`[updater] reintento de limpieza: ${error instanceof Error ? error.message : String(error)}`))
           .finally(() => { cleanupRetry = null })
       }
@@ -885,7 +890,8 @@ async function startUpdateBookkeeping(): Promise<void> {
   if (!['none', 'cleaned', 'monitor', 'monitor_without_watchdog'].includes(outcome)) updaterLog(`[updater] la recuperación terminó en «${outcome}»`)
   const recovered = readTransaction(updateStore.dir)
   const monitor = outcome === 'monitor' || outcome === 'monitor_without_watchdog'
-  const cleanupPending = recovered.kind === 'ok' && ['healthy', 'done'].includes(recovered.tx.phase) && recovered.tx.to.version === app.getVersion()
+  const cleanupPending = outcome === 'cleanup_pending' && recovered.kind === 'ok' && ['healthy', 'done'].includes(recovered.tx.phase)
+    && recovered.tx.to.version === app.getVersion() && recovered.tx.paths.installed === bundle
   let transaction = recovered.kind === 'ok' && (monitor || cleanupPending) ? recovered.tx : null
   if (transaction && outcome === 'monitor_without_watchdog') {
     try { transaction = await replaceRecoveryWatchdog(transaction) }

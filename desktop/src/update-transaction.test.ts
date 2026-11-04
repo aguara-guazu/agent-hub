@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -90,6 +90,17 @@ describe("transacción del updater", () => {
     expect(second).toMatchObject({ fd: expect.any(Number), release: expect.any(Function) })
     second?.release()
     expect(existsSync(lock)).toBe(true)
+  })
+
+  it.runIf(process.platform === "darwin")("rechaza un lock symlink sin modificar su destino", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenthub-update-lock-link-"))
+    paths.push(dir)
+    const target = join(dir, "target")
+    await writeFile(target, "keep-me")
+    await symlink(target, join(dir, "swap-back.lock"))
+
+    expect(() => acquireSwapBackLock(dir, { pid: 202, start: "owner" }, () => false)).toThrow()
+    expect(await readFile(target, "utf8")).toBe("keep-me")
   })
 
   it("actualiza la identidad de la app al reanudar una transacción admitida", async () => {

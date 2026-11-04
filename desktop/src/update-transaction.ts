@@ -4,7 +4,7 @@
  */
 import { execFileSync } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
-import { closeSync, constants, existsSync, fsyncSync, ftruncateSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeSync } from "node:fs"
+import { closeSync, constants, existsSync, fsyncSync, fstatSync, ftruncateSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeSync } from "node:fs"
 import { dirname, join } from "node:path"
 import {
   HEX64, canAdvance, incomingPrefix, isStrictSemver, parseBlacklist, parseTransaction,
@@ -113,13 +113,15 @@ export function acquireSwapBackLock(dir: string, owner: Identity, _alive: (ident
   const path = swapBackLock(dir)
   let fd: number
   try {
-    fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NONBLOCK | exclusive, 0o600)
+    fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NONBLOCK | constants.O_NOFOLLOW | exclusive, 0o600)
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code === "EAGAIN" || code === "EWOULDBLOCK") return null
     throw error
   }
   try {
+    const info = fstatSync(fd)
+    if (!info.isFile() || info.nlink !== 1) throw new Error("el lock de intercambio no es un archivo privado")
     ftruncateSync(fd, 0)
     writeSync(fd, JSON.stringify(owner))
     fsyncSync(fd)
