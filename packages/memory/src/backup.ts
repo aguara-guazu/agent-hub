@@ -16,7 +16,7 @@ const requiredTables = ['entities', 'connectors', 'sources', 'versions', 'identi
 const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 'agent_notes', 'chat_channels', 'chat_sessions', 'chat_threads', 'chat_messages', 'chat_deliveries', 'chat_read_receipts',
   'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts', 'chat_turns', 'chat_status_notices', 'usage_quota_bindings', 'usage_quota_pools', 'usage_quota_memberships', 'usage_quota_transitions', 'usage_quota_notices',
   'schedules', 'schedule_constraints', 'schedule_runs', 'schedule_run_attempts', 'schedule_run_phases', 'schedule_deliveries', 'schedule_artifacts', 'schedule_item_states', 'schedule_events', 'process_incidents',
-  'decision_exclusions', 'liveness_incidents', 'progress_checkpoints', 'project_automation', 'project_delegations', 'project_repositories', 'push_candidates', 'project_status_snapshots', 'hour_estimates', 'interhub_thread_staging'] as const
+  'decision_exclusions', 'liveness_incidents', 'progress_checkpoints', 'project_automation', 'project_delegations', 'project_repositories', 'push_candidates', 'project_status_snapshots', 'hour_estimates', "interhub_thread_staging"] as const
 const tables = [...requiredTables, ...laterTables] as const
 /** Data-model version of agenthub-memory-v1; backups from 1–23 restore. */
 const BACKUP_SCHEMA_VERSION = 24

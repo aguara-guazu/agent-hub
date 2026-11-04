@@ -935,9 +935,9 @@ UPDATE chat_channels SET closed_at=COALESCE(closed_at,${NOW}),archived_at=COALES
 -- Rollback: DROP TABLE interhub_thread_staging; seeded messages are history and stay; then delete this version from schema_versions.
 CREATE TABLE interhub_thread_staging (
   thread_id TEXT PRIMARY KEY,
-  channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+  channel_id TEXT NOT NULL REFERENCES chat_channels(id),
   title TEXT NOT NULL,
-  author_session_id TEXT NOT NULL,
+  author_session_id TEXT NOT NULL REFERENCES chat_sessions(id),
   origin_hub_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   thread_created_at TIMESTAMP NOT NULL,
