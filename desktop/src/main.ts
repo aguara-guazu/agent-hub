@@ -24,7 +24,7 @@ import { holdLimitFor, KeepAwake } from './keep-awake.js'
 import { deliveryNotice, FeedPoller, ScheduleNoticeBatcher, type FeedResponse, type Notice } from './schedule-feed.js'
 import { AutoUpdater, bundlePathFrom, fetchLatestRelease, fsyncPath, realBundlePath, resolveFeed, revalidateArtifact, type UpdateStatus } from "./updater.js"
 import { UpdateStateCorruptError, UpdateStore } from './update-state.js'
-import { advancePhase, inspectSides, readTransaction, removeTreeDurable, type UpdateTransaction } from './update-transaction.js'
+import { advancePhase, inspectSides, readJson, readTransaction, removeTreeDurable, rollbackRequestFile, type UpdateTransaction } from './update-transaction.js'
 import { prepareWatchdog } from './update-watchdog.js'
 import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
@@ -154,7 +154,7 @@ function startupTransactionId(): string {
   if (read.kind !== 'ok') return ''
   const { phase, to, transaction_id: id } = read.tx
   const physicallySwapped = phase === "swap_intent" && inspectSides(read.tx) === "swapped"
-  return (phase === "swapped" || phase === "launched" || physicallySwapped) && to.version === app.getVersion() ? id : ""
+  return (["swapped", "launched", "admitting", "admitted"].includes(phase) || physicallySwapped) && to.version === app.getVersion() ? id : ""
 }
 delete process.env.AGENTHUB_UPDATE_TX
 Object.defineProperty(coreEnv, 'AGENTHUB_UPDATE_TX', { enumerable: true, configurable: true, get: startupTransactionId })
@@ -623,6 +623,38 @@ async function exitForUpdate(): Promise<void> {
   app.exit(0)
 }
 
+/** A rollback requested after admission must drain the current core; it never lets the watchdog signal this app. */
+async function exitForRollback(transaction: UpdateTransaction): Promise<void> {
+  updateExiting = true
+  silentUpdates.stop()
+  updateHints.stop()
+  const deadline = Date.now() + HEALTH_DEADLINE_MS
+  while (Date.now() < deadline) {
+    if (!await drainClient.admitStartup(transaction.transaction_id)) {
+      await new Promise<void>(resolve => setTimeout(resolve, 1_000))
+      continue
+    }
+    const gate = await acquireDrain()
+    if ("reasons" in gate) {
+      await new Promise<void>(resolve => setTimeout(resolve, 1_000))
+      continue
+    }
+    const releaseHold = coreSupervisor.hold()
+    try {
+      await commitCore(gate.lease)
+      releaseHold()
+      await exitForUpdate()
+      return
+    } catch (error) {
+      await cancelDrain(gate.lease)
+      releaseHold()
+      updaterLog(`[updater] rollback ${transaction.transaction_id}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 1_000))
+  }
+  updaterLog(`[updater] rollback ${transaction.transaction_id}: no se logró drenar antes del plazo; el vigía conserva la evidencia`)
+}
+
 /** Borra y comprueba: rechaza si algo quedó y hace durable el borrado (fsync del padre). Quien cierra una transacción depende de ello. */
 const removeTree = (path: string): Promise<void> => new Promise<void>((resolve, reject) => execFile('/bin/rm', ['-rf', path], error => error ? reject(error) : resolve()))
   .then(async () => {
@@ -746,7 +778,7 @@ function setAutoUpdate(enabled: unknown): boolean {
   updateStore.setEnabled(Boolean(enabled))
   updaterLog(`[updater] actualizaciones automáticas ${updateStore.isEnabled() ? 'activadas' : 'desactivadas'}`)
   if (updateStore.isEnabled()) void silentUpdates.run()
-  else setUpdateReport({ phase: 'disabled' })
+  else { void drainClient.cancelPending(); setUpdateReport({ phase: 'disabled' }) }
   return updateStore.isEnabled()
 }
 
@@ -765,10 +797,30 @@ async function startUpdateBookkeeping(): Promise<void> {
   // Una versión recién aplicada también debe estar apuntada por `runtime/current`: si no, los gateways nuevos arrancarían de otra.
   let expectRuntime = false
   let startupTransaction: string | null = null
+  let activeTransaction: UpdateTransaction | null = null
+  let rollbackExit: Promise<void> | null = null
   const healthy = async (): Promise<boolean> => {
     if (!stateOk || coreSupervisor.state !== "running" || daemonSupervisor.state !== "running" || !sessionToken) return false
     if (expectRuntime && !runtimeCurrentMatches(app.getVersion())) return false
-    if (startupTransaction && !await drainClient.admitStartup(startupTransaction)) return false
+    if (activeTransaction) {
+      const request = readJson(rollbackRequestFile(updateStore.dir, activeTransaction.transaction_id))
+      const value = request.ok ? request.value as { transaction_id?: unknown; version?: unknown } : null
+      if (value?.transaction_id === activeTransaction.transaction_id && value.version === activeTransaction.to.version) {
+        rollbackExit ??= exitForRollback(activeTransaction).catch(error => updaterLog(`[updater] rollback: ${error instanceof Error ? error.message : String(error)}`))
+        return false
+      }
+    }
+    if (startupTransaction) {
+      let current = readTransaction(updateStore.dir)
+      if (current.kind !== "ok" || current.tx.transaction_id !== startupTransaction) return false
+      if (current.tx.phase === "launched") {
+        advancePhase(updateStore.dir, startupTransaction, "admitting")
+        current = readTransaction(updateStore.dir)
+      }
+      if (current.kind !== "ok" || !["admitting", "admitted"].includes(current.tx.phase)) return false
+      if (!await drainClient.admitStartup(startupTransaction)) return false
+      if (current.tx.phase === "admitting") advancePhase(updateStore.dir, startupTransaction, "admitted")
+    }
     return probeMemoryMcp({ baseUrl: CORE_BASE_URL, credentialPath: memoryCredentialPath(stateDir), timeoutMs: HEALTH_PROBE_TIMEOUT_MS })
   }
   // Una versión con claves que se mantiene sana fija la firma como obligatoria para siempre. Lanza si no se pudo persistir.
@@ -801,6 +853,7 @@ async function startUpdateBookkeeping(): Promise<void> {
   }
   expectRuntime = true
   startupTransaction = transaction.transaction_id
+  activeTransaction = transaction
   const startTime = await processStartTime(process.pid) ?? ''
   if (!startTime) { updaterLog('[updater] no se pudo identificar este proceso; no se confirma la actualización'); return }
   confirmWhenHealthy({
@@ -1257,33 +1310,36 @@ function migrateWindowsLoginItem(): void {
 /** Un segundo pedido de cierre mientras se esperan llamadas en curso (o una señal del sistema) cierra sin esperar. */
 let forceQuit = false
 
-/**
- * Cierre pedido por la persona: core deja de admitir llamadas MCP nuevas (los gateways reintentan) y se espera a
- * que terminen las que están en curso. Core no se detiene con una llamada en curso; sólo un segundo pedido de
- * cierre, una señal del sistema o la ausencia de core lo evitan.
- */
-async function waitForMcpIdle(): Promise<void> {
+/** Manual quit closes the same MCP and non-MCP admissions as an update, then waits for protected work to finish. */
+async function waitForProtectedWork(): Promise<void> {
   const headers = { [DRAIN_SECRET_HEADER]: updateDrainSecret }
-  const read = async (path: string, method: 'GET' | 'POST'): Promise<{ inflight: number } | null> => {
+  type State = { inflight: number; fleet_live: number; jobs_nonresumable: number; blockers_known: boolean }
+  const read = async (path: string, method: "GET" | "POST"): Promise<State | null> => {
     try {
       const response = await coreFetch(path, { method, headers })
-      const body = await response.json().catch(() => null) as { inflight?: unknown } | null
-      return response.ok && Number.isSafeInteger(body?.inflight) ? { inflight: body!.inflight as number } : null
+      const body = await response.json().catch(() => null) as Partial<State> | null
+      const valid = response.ok && Number.isSafeInteger(body?.inflight) && Number.isSafeInteger(body?.fleet_live)
+        && Number.isSafeInteger(body?.jobs_nonresumable) && typeof body?.blockers_known === "boolean"
+      return valid ? body as State : null
     } catch { return null }
   }
-  // Core queda cerrando para MCP hasta que el proceso termine: no se reabre solo, ni por tiempo.
-  let state = await read('/api/internal/update-drain/shutdown', 'POST')
+  await drainClient.cancelPending()
+  let state = await read("/api/internal/update-drain/shutdown", "POST")
   if (!state) return
+  const pending = () => state!.inflight + state!.fleet_live + state!.jobs_nonresumable
   let lastLogged = 0
-  while (state.inflight > 0 && !forceQuit && coreSupervisor.state === 'running') {
-    if (Date.now() - lastLogged > 30_000) { lastLogged = Date.now(); updaterLog(`[quit] esperando ${state.inflight} llamada(s) de agentes en curso; cerrar de nuevo fuerza el cierre`) }
-    await new Promise<void>(resolve => setTimeout(resolve, 1000))
-    const next = await read('/api/internal/update-drain/status', 'GET')
+  while ((pending() > 0 || !state.blockers_known) && !forceQuit && coreSupervisor.state === "running") {
+    if (Date.now() - lastLogged > 30_000) {
+      lastLogged = Date.now()
+      updaterLog(`[quit] esperando trabajo protegido: MCP=${state.inflight}, fleet=${state.fleet_live}, jobs=${state.jobs_nonresumable}; cerrar de nuevo fuerza el cierre`)
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 1_000))
+    const next = await read("/api/internal/update-drain/status", "GET")
     if (!next) break
     state = next
   }
-  // Sólo un segundo pedido de la persona o una señal del sistema fuerzan; queda constancia de cuántas llamadas se cortan.
-  if (forceQuit && state.inflight > 0) updaterLog(`[quit] cierre forzado con ${state.inflight} llamada(s) de agentes en curso`)
+  if (forceQuit && (pending() > 0 || !state.blockers_known))
+    updaterLog(`[quit] cierre forzado con trabajo protegido: MCP=${state.inflight}, fleet=${state.fleet_live}, jobs=${state.jobs_nonresumable}`)
 }
 
 async function quit(): Promise<void> {
@@ -1295,7 +1351,7 @@ async function quit(): Promise<void> {
   clockWake.dispose()
   scheduleNotices.dispose()
   // Un cierre de la persona espera las llamadas MCP en curso; una actualización ya tiene core drenado por su lease.
-  if (!installOnQuit && !relaunchAfterQuit && coreSupervisor.state === 'running') await waitForMcpIdle()
+  if (!installOnQuit && !relaunchAfterQuit && coreSupervisor.state === 'running') await waitForProtectedWork()
   // Si algo se cuelga al cerrar, la app sale igual: un proceso que no termina obliga a
   // forzar el cierre y dejaba core y daemon huérfanos bloqueando el próximo arranque.
   const deadline = setTimeout(() => {

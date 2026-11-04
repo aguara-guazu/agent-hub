@@ -7,11 +7,11 @@
  * restos es ambiguo y no se borra nada; la identidad de un proceso es PID + inicio + ejecutable real, no su argv.
  */
 import { execFileSync, spawn } from "node:child_process"
-import { appendFileSync, copyFileSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, copyFileSync, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, isAbsolute, join, sep } from "node:path"
 import {
   acquireSwapBackLock, addToBlacklist, advancePhase, bundleVersion, clearTransactionFiles, fsyncPathSync, hasIncomingRemnants, healthyFile, inspectSides,
-  parseHealthyMarker, parseStartedMarker, phaseRank, readJson, readTransaction, readyFile, removeDurable, sha256File, startedFile, validateLayout, watchdogDir, writeJsonDurable,
+  parseHealthyMarker, parseStartedMarker, phaseRank, readJson, readTransaction, readyFile, removeDurable, rollbackRequestFile, sha256File, startedFile, validateLayout, watchdogDir, writeJsonDurable,
   type Identity, type Sides, type UpdateTransaction as Transaction,
 } from "./update-transaction.js"
 
@@ -124,9 +124,10 @@ export async function prepareWatchdog(options: PrepareWatchdogOptions): Promise<
   fsyncPathSync(copyDir)
   fsyncPathSync(updateDir)
   const script = join(copyDir, "update-watchdog.js")
+  const helperDigest = sha256File(join(tx.paths.runtime_old, "Contents", "Resources", "bin", "agenthub-swap"))
   removeDurable(readyFile(updateDir, tx.transaction_id))
   const args = [script, "--update-dir", updateDir, "--state-dir", options.stateDir, "--tx", tx.transaction_id, "--timeout-ms", String(options.timeoutMs), "--log", options.logFile,
-    "--executable-name", options.executableName,
+    "--executable-name", options.executableName, "--helper-sha256", helperDigest,
     ...(options.oldExitMs ? ["--old-exit-ms", String(options.oldExitMs)] : []), ...(options.relaunchConfirmMs ? ["--relaunch-confirm-ms", String(options.relaunchConfirmMs)] : [])]
   const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1", AGENTHUB_UPDATE_WATCHDOG: "1" }
   const child = spawn(executable, args, { detached: true, stdio: "ignore", env })
@@ -154,7 +155,7 @@ function sameProcessAlive(pid: number): boolean { return startTimeOf(pid) !== nu
 // ---------------------------------------------------------------------------------------------------------------------
 // Vigía
 
-export interface WatchdogArgs { updateDir: string; stateDir: string; tx: string; timeoutMs: number; log: string; executableName: string; oldExitMs: number; relaunchConfirmMs: number }
+export interface WatchdogArgs { updateDir: string; stateDir: string; tx: string; timeoutMs: number; log: string; executableName: string; helperSha256: string; oldExitMs: number; relaunchConfirmMs: number }
 
 export function parseWatchdogArgs(argv: string[]): WatchdogArgs {
   const value = (name: string): string => {
@@ -168,9 +169,11 @@ export function parseWatchdogArgs(argv: string[]): WatchdogArgs {
     const parsed = index >= 0 ? Number.parseInt(argv[index + 1] ?? "", 10) : fallback
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
   }
+  const helperSha256 = value("helper-sha256")
+  if (!/^[a-f0-9]{64}$/.test(helperSha256)) throw new Error("helper-sha256 inválido")
   return {
     updateDir: value("update-dir"), stateDir: value("state-dir"), tx: value("tx"), timeoutMs: Number.parseInt(value("timeout-ms"), 10), log: value("log"),
-    executableName: value("executable-name"),
+    executableName: value("executable-name"), helperSha256,
     oldExitMs: optional("old-exit-ms", OLD_APP_EXIT_MS), relaunchConfirmMs: optional("relaunch-confirm-ms", RELAUNCH_CONFIRM_MS),
   }
 }
@@ -205,7 +208,7 @@ async function launchInstalledApp(installed: string, executableName: string, tra
   const deadline = Date.now() + 5_000
   let start: string | null = null
   while (!(start = startTimeOf(child.pid)) && Date.now() < deadline) await sleep(50)
-  if (!start) throw new Error("la app nueva no confirmó su identidad")
+  if (!start || startTimeOf(child.pid) !== start || !executableUnder(executableOf(child.pid), installed)) throw new Error("la app nueva no confirmó su identidad")
   return { pid: child.pid, start }
 }
 
@@ -245,6 +248,22 @@ export async function performForwardSwap(transaction: Transaction, operations: F
   return operations.advance("launched", { new_app: identity })
 }
 
+export interface RollbackPreparationOperations {
+  request(transaction: Transaction): void
+  waitForExit(identity: Identity): Promise<boolean>
+  stopUnadmitted(transaction: Transaction): Promise<boolean>
+}
+
+/** Never signals a version that admitted work; it requests a convergent drain and waits for its exact identity to exit. */
+export async function prepareRollback(transaction: Transaction, operations: RollbackPreparationOperations): Promise<boolean> {
+  if (transaction.phase === "admitting" || transaction.phase === "admitted") {
+    if (!transaction.new_app) return false
+    operations.request(transaction)
+    return operations.waitForExit(transaction.new_app)
+  }
+  return operations.stopUnadmitted(transaction)
+}
+
 export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
   const log = (line: string): void => {
     try { mkdirSync(dirname(args.log), { recursive: true }); appendFileSync(args.log, `${new Date().toISOString()} [updater] vigía ${args.tx}: ${line}\n`) } catch { /* el registro no debe frenar el rollback */ }
@@ -276,7 +295,7 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
     if (tx.phase === "rolled_back") return "rolled-back"
     if (tx.phase === "healthy" || tx.phase === "done") { log("versión nueva confirmada"); return "healthy" }
     if (tx.watchdog && (tx.watchdog.pid !== myPid || tx.watchdog.start !== myStart)) {
-      if (["swapped", "launched"].includes(tx.phase) && !sameProcess(tx.watchdog))
+      if (["swapped", "launched", "admitting", "admitted"].includes(tx.phase) && !sameProcess(tx.watchdog))
         advancePhase(args.updateDir, args.tx, tx.phase, { watchdog: { pid: myPid, start: myStart } })
       else { log("otro vigía es responsable de esta transacción; este termina"); return "aborted" }
     }
@@ -314,7 +333,7 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
         swap: current => {
           const candidate = join(current.paths.runtime_old, "Contents", "Resources", "bin", "agenthub-swap")
           const info = statSync(candidate)
-          if (!info.isFile() || !(info.mode & 0o111)) throw new Error("el runtime anterior no trae un agenthub-swap ejecutable")
+          if (!info.isFile() || !(info.mode & 0o111) || sha256File(candidate) !== args.helperSha256) throw new Error("el agenthub-swap ya no coincide con el verificado")
           execFileSync(candidate, [current.paths.installed, current.paths.incoming], { stdio: "ignore" })
         },
         sync: current => fsyncPathSync(dirname(current.paths.installed)),
@@ -364,19 +383,39 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
   const latest = readTransaction(args.updateDir)
   if (latest.kind !== "ok" || latest.tx.transaction_id !== args.tx) return ambiguous("el journal no es utilizable para el rollback", false)
   tx = latest.tx
-  if (tx.phase !== "swapped" && tx.phase !== "launched") return ambiguous(`fase ${tx.phase} inesperada para un rollback`)
+  if (tx.phase !== "swapped" && tx.phase !== "launched" && tx.phase !== "admitting" && tx.phase !== "admitted") return ambiguous(`fase ${tx.phase} inesperada para un rollback`)
   if (inspectSides(tx) !== "swapped") return ambiguous("las versiones instalada y de respaldo no son las esperadas")
   const helper = join(runtimeOld, "Contents", "Resources", "bin", "agenthub-swap")
-  try { if (!(statSync(helper).mode & 0o111)) throw new Error("no es ejecutable") } catch { return ambiguous("el runtime anterior no trae un agenthub-swap ejecutable") }
+  try { if (!(statSync(helper).mode & 0o111) || sha256File(helper) !== args.helperSha256) throw new Error("no coincide") } catch { return ambiguous("el agenthub-swap ya no coincide con el verificado") }
 
   // La app vieja exacta debe haber terminado: con ella viva no se intercambia ni se relanza (retiene el candado de instancia única y el puerto).
   if (sameProcess(tx.old_app)) return ambiguous("la app vieja volvió a estar viva antes del rollback; no se toca nada")
   const release = acquireSwapBackLock(args.updateDir)
   if (!release) return ambiguous("otro proceso está deshaciendo el intercambio", false)
+  let released = false
+  const unlock = (): void => { if (!released) { released = true; release() } }
   try {
-    // 4a. Detener la app nueva: identidad exacta (PID + inicio) y ejecutable real dentro del bundle instalado.
-    const stopped = await stopNewApp(tx, installed, (swapSeenAt ?? startedAt) - SWAP_START_TOLERANCE_MS, log)
-    if (!stopped) return ambiguous("no se pudo detener con certeza la app nueva")
+    // 4a. Before admission the exact new app may be stopped. After admission, request its convergent drain and only observe exit.
+    const prepared = await prepareRollback(tx, {
+      request: current => writeJsonDurable(rollbackRequestFile(args.updateDir, current.transaction_id), {
+        transaction_id: current.transaction_id,
+        version: current.to.version,
+        requested_at: new Date().toISOString(),
+      }),
+      waitForExit: async identity => {
+        const deadline = Date.now() + args.oldExitMs
+        while (sameProcess(identity) && Date.now() < deadline) await sleep(500)
+        return !sameProcess(identity)
+      },
+      stopUnadmitted: current => stopNewApp(current, installed, (swapSeenAt ?? startedAt) - SWAP_START_TOLERANCE_MS, log),
+    })
+    if (!prepared) return ambiguous(["admitting", "admitted"].includes(tx.phase) ? "la app nueva no completó el drenaje para rollback" : "no se pudo detener con certeza la app nueva")
+    const beforeSwap = readTransaction(args.updateDir)
+    if (beforeSwap.kind !== "ok" || beforeSwap.tx.transaction_id !== args.tx || !["swapped", "launched", "admitting", "admitted"].includes(beforeSwap.tx.phase))
+      return ambiguous("la transacción cambió antes del rollback", false)
+    tx = beforeSwap.tx
+    if (sameProcess(tx.old_app) || (tx.new_app && sameProcess(tx.new_app))) return ambiguous("una app registrada sigue viva antes del rollback")
+    if (inspectSides(tx) !== "swapped") return ambiguous("los lados cambiaron antes del rollback")
     // 4b. Intercambio atómico de vuelta con el helper de la versión anterior; después se verifica y se hace durable.
     execFileSync(helper, [installed, incoming], { stdio: "ignore" })
     fsyncPathSync(dirname(installed))
@@ -384,19 +423,20 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
     // 4c. Lista negra con versión y digest, sin reconstruir el estado sensible; después el journal.
     const where = addToBlacklist(args.updateDir, { version: tx.to.version, digest: tx.to.digest }, tx.transaction_id)
     if (where === "sidecar") log("state.json no se pudo leer con certeza; la lista negra quedó en un archivo aparte y el estado intacto")
-    release()
+    unlock()
     // 4d. Reabrir la versión anterior UNA vez. Cuenta como éxito cuando ella misma escribe su marcador `started-<id>` con su PID dentro
     // del plazo; sin eso la transacción queda ambigua, sin reintentos en bucle y conservando toda la evidencia.
-    if (await relaunchAndAwaitMarker(installed, args.updateDir, tx, args.relaunchConfirmMs, log)) {
+    if (await relaunchAndAwaitMarker(installed, args.executableName, args.updateDir, tx, args.relaunchConfirmMs, log)) {
       log(`v${tx.to.version} añadida a la lista negra; v${tx.from.version} reabierta y en marcha`)
       clearTransactionFiles(args.updateDir, args.tx)
       return "rolled-back"
     }
     return ambiguous(`v${tx.from.version} no confirmó que quedó en marcha tras reabrirla (sin started-${args.tx}.json); se conserva la evidencia`)
   } catch (error) {
-    release()
     log(`no se pudo restaurar la versión anterior: ${error instanceof Error ? error.message : String(error)}; no se borró nada`)
     return "failed"
+  } finally {
+    unlock()
   }
 }
 
@@ -432,21 +472,10 @@ const RELAUNCH_CONFIRM_MS = 60_000
  * versión anterior. Que el proceso haya nacido (evento `spawn`) no basta: puede salir enseguida por el candado de instancia única.
  * No se reintenta: si el proceso muere o vence el plazo, devuelve `false`.
  */
-async function relaunchAndAwaitMarker(installed: string, updateDir: string, tx: Transaction, confirmMs: number, log: (line: string) => void): Promise<boolean> {
-  const macos = join(installed, "Contents", "MacOS")
-  const executable = readdirSync(macos).find((entry) => entry === "Agent Hub") ?? readdirSync(macos)[0]
-  if (!executable) return false
-  const env = { ...process.env }
-  delete env.ELECTRON_RUN_AS_NODE
-  delete env.AGENTHUB_UPDATE_WATCHDOG
-  const child = spawn(join(macos, executable), ["--hidden", "--updated"], { detached: true, stdio: "ignore", env })
-  const spawned = await new Promise<boolean>((resolve) => {
-    child.once("spawn", () => resolve(true))
-    child.once("error", () => resolve(false))
-  })
-  child.unref()
-  if (!spawned || !child.pid) return false
-  const pid = child.pid, start = startTimeOf(pid)
+async function relaunchAndAwaitMarker(installed: string, executableName: string, updateDir: string, tx: Transaction, confirmMs: number, log: (line: string) => void): Promise<boolean> {
+  let identity: Identity
+  try { identity = await launchInstalledApp(installed, executableName, tx.transaction_id) } catch { return false }
+  const { pid, start } = identity
   const deadline = Date.now() + confirmMs
   while (Date.now() < deadline) {
     const raw = readJson(startedFile(updateDir, tx.transaction_id))

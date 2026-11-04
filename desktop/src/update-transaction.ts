@@ -22,6 +22,7 @@ export const journalFile = (dir: string): string => join(dir, "transaction.json"
 export const startedFile = (dir: string, id: string): string => join(dir, `started-${id}.json`)
 export const healthyFile = (dir: string, id: string): string => join(dir, `healthy-${id}.json`)
 export const readyFile = (dir: string, id: string): string => join(dir, `watchdog-ready-${id}.json`)
+export const rollbackRequestFile = (dir: string, id: string): string => join(dir, `rollback-request-${id}.json`)
 /** Directorio con la copia del vigía y de este módulo para una transacción. */
 export const watchdogDir = (dir: string, id: string): string => join(dir, `watchdog-${id}`)
 export const sidecarFile = (dir: string, id: string): string => join(dir, `blacklist-${id}.json`)
@@ -90,7 +91,7 @@ export function advancePhase(dir: string, expectedId: string, phase: Phase, patc
 
 /** Quita el journal, los marcadores, la copia del vigía y el sidecar de una transacción, con fsync del directorio. */
 export function clearTransactionFiles(dir: string, id: string): void {
-  for (const file of [journalFile(dir), startedFile(dir, id), healthyFile(dir, id), readyFile(dir, id), watchdogDir(dir, id), sidecarFile(dir, id)]) removeDurable(file)
+  for (const file of [journalFile(dir), startedFile(dir, id), healthyFile(dir, id), readyFile(dir, id), rollbackRequestFile(dir, id), watchdogDir(dir, id), sidecarFile(dir, id)]) removeDurable(file)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -95,7 +95,9 @@ export async function recoverTransaction(deps: RecoveryDeps): Promise<Recovery> 
     }
 
     case "swapped":
-    case "launched": {
+    case "launched":
+    case "admitting":
+    case "admitted": {
       if (running === tx.to.version && inspectSides(tx) === "swapped") return tx.watchdog && alive(tx.watchdog) ? "monitor" : "monitor_without_watchdog"
       if (running === tx.from.version && inspectSides(tx) === "not_swapped") {
         // El vigía ya devolvió la versión anterior y se cortó antes de anotarlo.

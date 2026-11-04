@@ -9,7 +9,7 @@
  */
 import { basename, dirname, isAbsolute, join, sep } from "node:path"
 
-export const PHASES = ["staged", "watchdog_ready", "swap_intent", "swapped", "launched", "healthy", "done"] as const
+export const PHASES = ["staged", "watchdog_ready", "swap_intent", "swapped", "launched", "admitting", "admitted", "healthy", "done"] as const
 export const TERMINAL_PHASES = ["rolled_back", "ambiguous"] as const
 export type Phase = (typeof PHASES)[number] | (typeof TERMINAL_PHASES)[number]
 export type TrustAuth = "integrity_only" | "publisher_authenticated"

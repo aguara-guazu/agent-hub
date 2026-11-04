@@ -41,7 +41,10 @@ describe("transacción del updater", () => {
     expect(canAdvance("watchdog_ready", "swap_intent")).toBe(true)
     expect(canAdvance("swap_intent", "swapped")).toBe(true)
     expect(canAdvance("swapped", "launched")).toBe(true)
-    expect(canAdvance("launched", "healthy")).toBe(true)
+    expect(canAdvance("launched", "admitting")).toBe(true)
+    expect(canAdvance("admitting", "admitted")).toBe(true)
+    expect(canAdvance("admitted", "healthy")).toBe(true)
+    expect(canAdvance("launched", "healthy")).toBe(false)
     expect(canAdvance("healthy", "done")).toBe(true)
     expect(canAdvance("staged", "healthy")).toBe(false)
     expect(canAdvance("launched", "swapped")).toBe(false)
@@ -63,8 +66,10 @@ describe("transacción del updater", () => {
     advancePhase(dir, tx.transaction_id, "swap_intent")
     advancePhase(dir, tx.transaction_id, "swapped")
     advancePhase(dir, tx.transaction_id, "launched", { new_app: { pid: 102, start: "new-start" } })
+    advancePhase(dir, tx.transaction_id, "admitting")
+    advancePhase(dir, tx.transaction_id, "admitted")
 
-    expect(readTransaction(dir)).toMatchObject({ kind: "ok", tx: { phase: "launched", new_app: { pid: 102, start: "new-start" } } })
+    expect(readTransaction(dir)).toMatchObject({ kind: "ok", tx: { phase: "admitted", new_app: { pid: 102, start: "new-start" } } })
   })
 
   it("distingue una transacción aplicada cuyo watchdog murió", async () => {

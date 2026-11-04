@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { performForwardSwap, type ForwardSwapOperations } from "./update-watchdog.js"
+import { performForwardSwap, prepareRollback, type ForwardSwapOperations, type RollbackPreparationOperations } from "./update-watchdog.js"
 import type { Phase, UpdateTransaction } from "./update-transaction.js"
 
 const transaction = (): UpdateTransaction => ({
@@ -79,5 +79,33 @@ describe("watchdog forward swap", () => {
     await expect(performForwardSwap(transaction(), run.operations)).rejects.toThrow("helper failed")
     expect(run.current().phase).toBe("swap_intent")
     expect(run.release).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("watchdog rollback preparation", () => {
+  const operations = () => {
+    const request = vi.fn()
+    const waitForExit = vi.fn(async () => true)
+    const stopUnadmitted = vi.fn(async () => true)
+    return { request, waitForExit, stopUnadmitted } satisfies RollbackPreparationOperations
+  }
+
+  it.each(["admitting", "admitted"] as const)("pide drenaje ordenado en fase %s y nunca señala la app", async phase => {
+    const run = operations()
+    const tx = { ...transaction(), phase, new_app: { pid: 102, start: "new-start" } }
+
+    expect(await prepareRollback(tx, run)).toBe(true)
+    expect(run.request).toHaveBeenCalledWith(tx)
+    expect(run.waitForExit).toHaveBeenCalledWith(tx.new_app)
+    expect(run.stopUnadmitted).not.toHaveBeenCalled()
+  })
+
+  it("puede detener la app nueva antes de que admita trabajo", async () => {
+    const run = operations()
+    const tx = { ...transaction(), phase: "launched" as const, new_app: { pid: 102, start: "new-start" } }
+
+    expect(await prepareRollback(tx, run)).toBe(true)
+    expect(run.stopUnadmitted).toHaveBeenCalledWith(tx)
+    expect(run.request).not.toHaveBeenCalled()
   })
 })

@@ -34,6 +34,17 @@ export type DrainResult =
   | { ok: true; lease: string; generation: number; expires_in_ms: number; boot_id: string }
   | { ok: false; reasons: DrainReason[] }
 
+export interface ShutdownStatus {
+  inflight: number
+  draining: boolean
+  boot_id: string
+  startup_transaction: string | null
+  admitted_transaction: string | null
+  fleet_live: number
+  jobs_nonresumable: number
+  blockers_known: boolean
+}
+
 /** Shared gate of the memory service for non-MCP admissions (fleet, schedules, jobs of the worker, backup). */
 export interface AdmissionGateLike {
   /** Synchronous: nothing admitted after it returns can start. Throws with `code: "already_draining"` when somebody else holds it. */
@@ -86,6 +97,8 @@ export class UpdateDrain {
   private pendingVersion = 0
   /** A manual quit waits for MCP calls in flight; it closes nothing but MCP and ends only when core exits or the quit is cancelled. */
   private shutdown = false
+  private shutdownGate: AdmissionGateLike | undefined
+  private shutdownToken: symbol | null = null
   /** Core born closed for the first start of a new version: MCP and the shared gate stay shut until the desktop admits it. */
   private startup: { transactionId: string; gate: AdmissionGateLike | undefined; token: symbol | null } | null = null
   private admittedTransaction: string | null = null
@@ -277,21 +290,45 @@ export class UpdateDrain {
   }
 
   /**
-   * Quit by the person: refuse new MCP calls and report how many are still running. Does nothing while a lease or
-   * an acquisition holds the gate. It never expires: it ends only when core exits or the person cancels the quit.
+   * Quit by the person uses the same non-MCP gate as updates. A pending update closure is adopted rather than reopened,
+   * so new fleet/jobs/schedules cannot enter while existing work converges to zero.
    */
-  beginShutdown(): { inflight: number; draining: boolean; boot_id: string } {
-    if (!this.lease && !this.acquiring && !this.startup) {
-      this.draining = true
+  async beginShutdown(): Promise<ShutdownStatus> {
+    if (!this.shutdown && !this.lease && !this.startup) {
       this.shutdown = true
+      this.draining = true
+      if (this.pending) {
+        clearTimeout(this.expiry)
+        this.shutdownGate = this.gate
+        this.shutdownToken = this.token
+        this.pending = false
+        this.pendingVersion++
+        this.gate = undefined
+        this.token = null
+        this.expiresAt = 0
+      } else if (!this.acquiring) {
+        try {
+          this.shutdownGate = this.deps.gate()
+          this.shutdownToken = this.shutdownGate ? this.shutdownGate.close() : null
+        } catch {
+          this.shutdownGate = undefined
+          this.shutdownToken = null
+        }
+      }
     }
-    return this.status()
+    return this.shutdownStatus()
   }
 
-  endShutdown(): void {
-    if (!this.shutdown) return
-    this.shutdown = false
-    if (!this.lease && !this.acquiring && !this.pending) this.draining = false
+  async endShutdown(): Promise<ShutdownStatus> {
+    if (this.shutdown) {
+      this.shutdown = false
+      const gate = this.shutdownGate, token = this.shutdownToken
+      this.shutdownGate = undefined
+      this.shutdownToken = null
+      await this.reopenGate(gate, token, "cancelación del cierre")
+      if (!this.lease && !this.acquiring && !this.pending && !this.startup) this.draining = false
+    }
+    return this.shutdownStatus()
   }
 
   status(): { inflight: number; draining: boolean; boot_id: string; startup_transaction: string | null; admitted_transaction: string | null } {
@@ -299,12 +336,26 @@ export class UpdateDrain {
       startup_transaction: this.startup?.transactionId ?? null, admitted_transaction: this.admittedTransaction }
   }
 
+  async shutdownStatus(): Promise<ShutdownStatus> {
+    let fleet = 0, jobs = 0, known = true
+    if (this.shutdown || this.pending) {
+      const counter = this.deps.nonMcpBlockers()
+      if (!counter) known = false
+      else try {
+        const blockers = await counter()
+        fleet = blockers.fleet_live
+        jobs = blockers.jobs_nonresumable
+      } catch { known = false }
+    }
+    return { ...this.status(), fleet_live: fleet, jobs_nonresumable: jobs, blockers_known: known }
+  }
+
   async cancel(lease: string, generation: number): Promise<{ ok: boolean; reopened: boolean }> {
     if (!this.lease || this.committed || this.lease !== lease || this.generation !== generation) return { ok: false, reopened: false }
     return { ok: true, reopened: await this.release("cancelación") }
   }
 
-  /** Reopens everything this lease closed, once: MCP first, then the shared gate. */
+  // A manual shutdown owns its gate separately; update lease release must not reopen it.
   private async release(why: string): Promise<boolean> {
     if (this.committed) return true
     clearTimeout(this.expiry)
@@ -424,8 +475,8 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
     return { ok: true, pid: process.pid, boot_id: drain.bootId }
   })
   app.post("/api/internal/update-drain/shutdown", guard, async () => drain.beginShutdown())
-  app.post("/api/internal/update-drain/shutdown/cancel", guard, async () => { drain.endShutdown(); return drain.status() })
-  app.get("/api/internal/update-drain/status", guard, async () => drain.status())
+  app.post("/api/internal/update-drain/shutdown/cancel", guard, async () => drain.endShutdown())
+  app.get("/api/internal/update-drain/status", guard, async () => drain.shutdownStatus())
   app.post("/api/internal/update-drain/cancel", guard, async (request) => {
     const input = parse(z.object({ lease: z.string().min(1).max(100), generation: z.number().int().nonnegative() }).strict(), request.body)
     const result = await drain.cancel(input.lease, input.generation)

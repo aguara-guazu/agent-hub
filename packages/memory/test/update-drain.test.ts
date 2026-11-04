@@ -99,16 +99,33 @@ describe("UpdateDrain convergente", () => {
     expect(gate.closed).toBe(false)
   })
 
-  it("conserva ambos gates cerrados si se cancela un shutdown durante un intento pendiente", async () => {
+  it("usa la misma compuerta para el cierre manual y espera todo el trabajo protegido", async () => {
+    const counts = { fleet_live: 2, jobs_nonresumable: 1 }
+    const { gate, drain } = makeDrain(counts)
+
+    expect(await drain.beginShutdown()).toMatchObject({ inflight: 0, fleet_live: 2, jobs_nonresumable: 1, blockers_known: true })
+    expect(drain.isDraining).toBe(true)
+    expect(gate.closed).toBe(true)
+    expect(drain.admit()).toBe(false)
+
+    counts.fleet_live = 0
+    counts.jobs_nonresumable = 0
+    expect(await drain.shutdownStatus()).toMatchObject({ inflight: 0, fleet_live: 0, jobs_nonresumable: 0, blockers_known: true })
+
+    expect(await drain.endShutdown()).toMatchObject({ draining: false })
+    expect(gate.closed).toBe(false)
+  })
+
+  it("adopta un intento pendiente para shutdown y lo reabre al cancelar el cierre", async () => {
     const counts = { fleet_live: 1, jobs_nonresumable: 0 }
     const { gate, drain } = makeDrain(counts)
 
     await drain.acquire()
-    drain.beginShutdown()
-    drain.endShutdown()
+    await drain.beginShutdown()
+    await drain.endShutdown()
 
-    expect(drain.isDraining).toBe(true)
-    expect(gate.closed).toBe(true)
+    expect(drain.isDraining).toBe(false)
+    expect(gate.closed).toBe(false)
   })
 
   it("reabre una sola vez si se cancela mientras el conteo sigue en curso", async () => {
