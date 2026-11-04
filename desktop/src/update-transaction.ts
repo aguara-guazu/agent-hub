@@ -4,7 +4,7 @@
  */
 import { execFileSync } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeSync } from "node:fs"
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs"
 import { dirname, join } from "node:path"
 import {
   HEX64, canAdvance, incomingPrefix, isStrictSemver, parseBlacklist, parseTransaction,
@@ -119,13 +119,22 @@ export function acquireSwapBackLock(dir: string, owner: Identity, alive: (identi
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      let before: ReturnType<typeof statSync>
+      try { before = statSync(path) } catch { continue }
       const holder = readJson(path)
       const value = holder.ok && isObject(holder.value) ? holder.value : null
       const identity = value && Number.isInteger(value.pid) && typeof value.start === "string"
         ? { pid: value.pid as number, start: value.start } : null
       if (identity && alive(identity)) return null
+      if (!value || typeof value.nonce !== "string") {
+        if (Date.now() - before.mtimeMs <= 60_000) return null
+        let after: ReturnType<typeof statSync>
+        try { after = statSync(path) } catch { continue }
+        if (after.ino === before.ino && after.mtimeMs === before.mtimeMs && after.size === before.size) removeDurable(path)
+        continue
+      }
       const current = readJson(path)
-      if (!current.ok || !isObject(current.value) || current.value.nonce !== value?.nonce) continue
+      if (!current.ok || !isObject(current.value) || current.value.nonce !== value.nonce) continue
       removeDurable(path)
     }
   }

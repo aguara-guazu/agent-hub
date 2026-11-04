@@ -75,8 +75,10 @@ export interface HealthDeps extends StableHealth {
   startTime: string
   /** Borra el respaldo de forma durable (rechaza si algo quedó o el fsync falla). */
   discardBackup: () => Promise<void>
-  /** Persiste lo que trae la versión nueva (claves adoptadas, firma obligatoria). Puede lanzar. */
+  /** Persists trust and other state before health is declared. */
   onConfirmed?: () => void
+  /** Runs only after healthy/done and transaction cleanup are durable. */
+  onCompleted?: () => void
   log: (line: string) => void
 }
 
@@ -104,6 +106,7 @@ export function confirmWhenHealthy(deps: HealthDeps): () => void {
       await deps.discardBackup()
       advancePhase(updateDir, tx.transaction_id, "done")
       clearTransactionFiles(updateDir, tx.transaction_id)
+      deps.onCompleted?.()
       deps.log(`[updater] v${tx.to.version}: actualización confirmada (${tx.transaction_id})`)
     } catch (error) {
       deps.log(`[updater] no se confirmó la actualización; se conserva el respaldo y la evidencia: ${error instanceof Error ? error.message : String(error)}`)

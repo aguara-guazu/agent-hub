@@ -813,10 +813,24 @@ async function startUpdateBookkeeping(): Promise<void> {
   let rollbackObserver: ReturnType<typeof setInterval> | null = null
   const observeRollback = (): boolean => {
     if (!activeTransaction) return false
-    const request = readJson(rollbackRequestFile(updateStore.dir, activeTransaction.transaction_id))
+    const current = readTransaction(updateStore.dir)
+    if (current.kind !== "ok" || current.tx.transaction_id !== activeTransaction.transaction_id) {
+      activeTransaction = null
+      if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
+      return false
+    }
+    if (!["admitting", "admitted"].includes(current.tx.phase)) {
+      if (["healthy", "done", "ambiguous", "rolled_back"].includes(current.tx.phase)) {
+        activeTransaction = null
+        if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
+      }
+      return false
+    }
+    activeTransaction = current.tx
+    const request = readJson(rollbackRequestFile(updateStore.dir, current.tx.transaction_id))
     const value = request.ok ? request.value as { transaction_id?: unknown; version?: unknown } : null
-    if (value?.transaction_id !== activeTransaction.transaction_id || value.version !== activeTransaction.to.version) return false
-    rollbackExit ??= exitForRollback(activeTransaction)
+    if (value?.transaction_id !== current.tx.transaction_id || value.version !== current.tx.to.version) return false
+    rollbackExit ??= exitForRollback(current.tx)
       .catch(error => updaterLog(`[updater] rollback: ${error instanceof Error ? error.message : String(error)}`))
       .finally(() => { rollbackExit = null })
     return true
@@ -881,7 +895,6 @@ async function startUpdateBookkeeping(): Promise<void> {
     healthy,
     discardBackup: () => removeTreeDurable(transaction.paths.incoming, removeTree),
     onConfirmed: () => {
-      if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
       // Todo lo que debe persistir va primero y sin tragar errores: si falla, no se declara sana ni se borra el respaldo.
       if (transaction.next_trust) {
         const trust = parseTrustSet(transaction.next_trust, { requireActive: true })
@@ -893,6 +906,11 @@ async function startUpdateBookkeeping(): Promise<void> {
       // Con la versión confirmada, las copias de runtime que ya no hacen falta se recogen (conservando la actual, la anterior y las de la transacción).
       if (bundle) void collectRuntimes({ stateDir, executable: basename(process.execPath), appName: basename(bundle), keep: [transaction.from.version, transaction.to.version] })
         .catch((error: unknown) => updaterLog(`[updater] recolección de runtimes omitida: ${error instanceof Error ? error.message : String(error)}`))
+    },
+    onCompleted: () => {
+      activeTransaction = null
+      startupTransaction = null
+      if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
     },
     log: updaterLog,
   })
