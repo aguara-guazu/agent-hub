@@ -1,4 +1,5 @@
 import { hubLog } from "./report.js"
+import { sweepIssueDrafts } from "./diagnostic-report.js"
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { SharedNetwork } from './sharing/network.js'
 import { UpdateHints } from './sharing/update-hint.js'
@@ -141,6 +142,7 @@ export class MemoryService {
     operations.chat.usageEnabled=this.usageEnabled
     if (this.orchestrationOwner) await operations.teams?.initialize()
     if (this.orchestrationOwner) hubLog(this.directory).event("service", "start", { pid: process.pid, node: process.version })
+    if (this.orchestrationOwner) sweepIssueDrafts(this.directory)
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     const network = new SharedNetwork(operations.sharing)
     // Inter-hub channels ride the same P2P network; the tools reach it through these services.

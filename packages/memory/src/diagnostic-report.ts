@@ -55,24 +55,62 @@ function hubEvents(path: string, from: string, to: string): string[] {
   }
   return events.slice(-LOG_LINES)
 }
+const DRAFT_NAME = /^[0-9a-f-]{36}\.md$/
 /**
- * Writes the body to a private, Hub-owned draft file (0600 in a 0700 folder) and prunes drafts older than DRAFT_TTL_MS.
- * Returns undefined when the folder cannot be written or its real path is not safe to quote; the caller then offers the url.
+ * The drafts folder inside the real memory root, never through a symlink. POSIX modes are applied; on Windows privacy comes
+ * from the per-user app data folder the memory lives in, whose ACL the folder inherits.
+ */
+function draftsFolder(memoryDirectory: string, create: boolean): { path: string; dev: number; ino: number } | undefined {
+  const root = realpathSync(memoryDirectory)
+  const folder = join(root, "issue-drafts")
+  if (create) mkdirSync(folder, { mode: 0o700 }) // Throws EEXIST when present; the lstat below decides whether it is usable.
+  const stat = lstatSync(folder)
+  if (!stat.isDirectory() || realpathSync(folder) !== folder || !QUOTABLE_PATH.test(folder)) return undefined
+  return { path: folder, dev: stat.dev, ino: stat.ino }
+}
+function sameFolder(folder: { path: string; dev: number; ino: number }): boolean {
+  try { const stat = lstatSync(folder.path); return stat.isDirectory() && stat.dev === folder.dev && stat.ino === folder.ino } catch { return false }
+}
+/** Removes regular draft files older than DRAFT_TTL_MS (all of them with maxAgeMs=0); never follows links. */
+export function sweepIssueDrafts(memoryDirectory: string, maxAgeMs = DRAFT_TTL_MS): number {
+  let removed = 0
+  try {
+    const folder = draftsFolder(memoryDirectory, false)
+    if (!folder) return 0
+    const cutoff = Date.now() - maxAgeMs
+    for (const name of readdirSync(folder.path)) {
+      if (!DRAFT_NAME.test(name)) continue
+      const file = join(folder.path, name)
+      try {
+        const entry = lstatSync(file)
+        if (entry.isFile() && entry.mtimeMs <= cutoff && sameFolder(folder)) { unlinkSync(file); removed++ }
+      } catch { /* Removed meanwhile. */ }
+    }
+  } catch { /* No drafts folder yet. */ }
+  return removed
+}
+/**
+ * Writes the body to a private, Hub-owned draft file and deletes it after DRAFT_TTL_MS while this process lives; the service
+ * sweeps leftovers at startup, so a draft of a stopped Hub goes on its next start.
+ * Returns undefined when the folder is unsafe (symlink, outside the memory root) or its path cannot be quoted; the caller then offers the url.
  */
 function writeDraft(memoryDirectory: string, body: string): string | undefined {
   try {
-    const folder = join(memoryDirectory, "issue-drafts")
-    mkdirSync(folder, { recursive: true, mode: 0o700 })
-    const real = realpathSync(folder)
-    if (!lstatSync(real).isDirectory() || !QUOTABLE_PATH.test(real)) return undefined
-    chmodSync(real, 0o700)
-    const cutoff = Date.now() - DRAFT_TTL_MS
-    for (const name of readdirSync(real)) {
-      if (!/^[0-9a-f-]{36}\.md$/.test(name)) continue
-      try { const entry = lstatSync(join(real, name)); if (entry.isFile() && entry.mtimeMs < cutoff) unlinkSync(join(real, name)) } catch { /* Removed meanwhile. */ }
+    let folder: ReturnType<typeof draftsFolder>
+    try { folder = draftsFolder(memoryDirectory, true) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return undefined
+      folder = draftsFolder(memoryDirectory, false)
     }
-    const file = join(real, `${randomUUID()}.md`)
+    if (!folder) return undefined
+    chmodSync(folder.path, 0o700)
+    sweepIssueDrafts(memoryDirectory)
+    if (!sameFolder(folder)) return undefined
+    const name = `${randomUUID()}.md`, file = join(folder.path, name)
     writeFileSync(file, body, { mode: 0o600, flag: "wx" })
+    const identity = lstatSync(file)
+    setTimeout(() => {
+      try { const entry = lstatSync(file); if (entry.isFile() && entry.dev === identity.dev && entry.ino === identity.ino && sameFolder(folder)) unlinkSync(file) } catch { /* Already published or removed. */ }
+    }, DRAFT_TTL_MS).unref()
     return file
   } catch { return undefined }
 }
@@ -118,5 +156,5 @@ export async function diagnosticReport(sql: Sql, memoryDirectory: string, raw: z
   const bodyFile = writeDraft(memoryDirectory, report.text)
   return { ...report, repository: "aguara-guazu/agent-hub", published: false, ...(bodyFile ? { body_file: bodyFile } : {}),
     local_logs: "core.log, daemon.log and worker.log stay in the Hub logs folder; attach them only if the person reviews and chooses to.",
-    guidance: "Show the person the exact title and body (text) with times in their local zone. If they edit anything, call this tool again with the edited fields and show the new result. Publish only the last returned title and body_file, after their explicit approval; never add content after it. body_file is private and the Hub deletes it within an hour if it is not published." }
+    guidance: "Show the person the exact title and body (text) with times in their local zone. If they edit anything, call this tool again with the edited fields and show the new result. Publish only the last returned title and body_file, after their explicit approval; never add content after it. body_file is private and the Hub deletes it within an hour if it is not published (on its next start if it was closed)." }
 }
