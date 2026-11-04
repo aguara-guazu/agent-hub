@@ -156,6 +156,10 @@ export class FleetProcessManager {
       this.fail(s, 'fleet_event_delivery_failed')
     })
   }
+  /** A stop whose exit was unconfirmed published 'unknown'; a later exit or close confirms it. */
+  private settleLateExit(s: Session) {
+    if (s.stopping && s.status.state === 'unknown') this.publish(s, 'stopped')
+  }
   private live(s: Session) {
     return this.sessions.get(s.status.id) === s && !s.exited && !s.stopping && !['failed', 'stopped'].includes(s.status.state)
   }
@@ -529,10 +533,12 @@ export class FleetProcessManager {
     child.once('error', () => { this.fail(s, 'fleet_spawn_failed'); s.exited = true; closed() })
     child.once('exit', () => {
       s.exited = true
+      this.settleLateExit(s)
       if (!s.stopping && s.status.state !== 'failed') this.fail(s, 'fleet_process_exited')
     })
     child.once('close', () => {
       s.exited = true; buffer = ''; closed()
+      this.settleLateExit(s)
       if (!s.stopping && s.status.state !== 'failed') this.fail(s, 'fleet_process_exited')
       this.rejectPending(s, 'fleet_process_exited')
     })
