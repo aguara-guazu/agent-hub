@@ -21,6 +21,7 @@ const home = join(scratch, 'home')
 const state = join(scratch, 'state')
 const children = []
 const clients = []
+let stopping = false
 const evidence = { date: new Date().toISOString(), checks: [] }
 function record(check, result) {
   evidence.checks.push({ check, ...result })
@@ -35,12 +36,19 @@ async function stop(child) {
   }
   if (child.exitCode !== null || child.signalCode !== null) { signal('SIGTERM'); return }
   const exited = once(child, 'exit')
+  child.stdin?.end()
   signal('SIGTERM')
-  if (!await Promise.race([exited.then(() => true), delay(2000).then(() => false)])) {
+  if (!await Promise.race([exited.then(() => true), delay(5000).then(() => false)])) {
     signal('SIGKILL')
     await exited
   }
 }
+async function stopChildren() { for (const child of children.reverse()) await stop(child) }
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
+  if (stopping) return
+  stopping = true
+  void stopChildren().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143))
+})
 function launch(command, args, env = process.env) {
   const child = spawn(command, args, { cwd: scratch, env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
   children.push(child)
@@ -95,7 +103,7 @@ try {
   const core = launch(process.execPath, [join(root, 'packages/core/dist/server.js')], {
     ...process.env, AGENTHUB_HUB_HOST: '127.0.0.1', AGENTHUB_HUB_PORT: String(port),
     AGENTHUB_LOCAL_MODE: '1', AGENTHUB_DATABASE_PATH: join(state, 'hub.db'),
-    AGENTHUB_JWT_SECRET: 'review-jwt-' + 'y'.repeat(32), AGENTHUB_DESKTOP_BOOTSTRAP_TOKEN: bootstrap,
+    AGENTHUB_JWT_SECRET: 'review-jwt-' + 'y'.repeat(32), AGENTHUB_DESKTOP_BOOTSTRAP_TOKEN: bootstrap, AGENTHUB_STDIN_LIFELINE: '1',
   })
   core.stdout.on('data', () => {})
   let ready = false
