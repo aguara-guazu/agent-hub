@@ -60,8 +60,8 @@ function withLogLock<T>(directory: string, work: () => T): T | undefined {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const descriptor = openSync(path, "wx", 0o600)
-      const identity = lstatSync(path)
-      closeSync(descriptor)
+      let identity: ReturnType<typeof lstatSync>
+      try { identity = lstatSync(path) } finally { closeSync(descriptor) }
       try { return work() } finally {
         try {
           if (sameFile(path, identity)) unlinkSync(path)
@@ -126,6 +126,26 @@ function uniqueSegmentPath(path: string) {
   }
 }
 
+export function appendLogChunk(activePath: string, chunk: Buffer, fs = { openSync, writeSync, fstatSync, lstatSync, closeSync }) {
+  let offset = 0
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let descriptor: number | undefined
+    try {
+      descriptor = fs.openSync(activePath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+      const opened = fs.fstatSync(descriptor), current = fs.lstatSync(activePath)
+      if ((opened.dev !== current.dev || opened.ino !== current.ino) && attempt < 2) continue
+      while (offset < chunk.length) {
+        const written = fs.writeSync(descriptor, chunk, offset, chunk.length - offset)
+        if (!written) break
+        offset += written
+      }
+      return offset
+    } catch { return offset }
+    finally { if (descriptor !== undefined) try { fs.closeSync(descriptor) } catch { /* Logging must not escape. */ } }
+  }
+  return offset
+}
+
 /** Appends timestamped lines to a log file with credentials already replaced; logging never throws into the caller. */
 export class LogFile {
   private size = 0
@@ -151,19 +171,10 @@ export class LogFile {
     } catch { return 0 }
   }
   private appendActive(chunk: string) {
-    let descriptor: number | undefined
-    try {
-      descriptor = openSync(this.activePath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
-      if (!fstatSync(descriptor).isFile()) return false
-      const buffer = Buffer.from(chunk)
-      for (let offset = 0; offset < buffer.length;) {
-        const written = writeSync(descriptor, buffer, offset, buffer.length - offset)
-        if (!written) throw new Error("Log write made no progress")
-        offset += written
-      }
-      return true
-    } catch { return false }
-    finally { if (descriptor !== undefined) try { closeSync(descriptor) } catch { /* Logging must not escape. */ } }
+    const buffer = Buffer.from(chunk)
+    let written = appendLogChunk(this.activePath, buffer)
+    if (written < buffer.length) written += appendLogChunk(this.activePath, buffer.subarray(written))
+    return written
   }
   write(text: string, prefix = '') {
     const lines = redactDiagnostics(text).slice(-64_000).split(/\r?\n/).filter(line => line.trim())
@@ -184,16 +195,18 @@ export class LogFile {
         renameRetrySync(this.activePath, latest)
         this.size = 0
       } catch { /* Keep the triggering chunk in the active file and retry rotation later. */ }
-      if (!this.appendActive(chunk)) return false
-      this.size += bytes
-      this.sinceScan += bytes
+      const written = this.appendActive(chunk)
+      if (!written) return false
+      this.size += written
+      this.sinceScan += written
       pruneLogsUnlocked(this.directory)
       this.sinceScan = 0
       return true
     }) === true) return
-    if (this.appendActive(chunk)) {
-      this.size += bytes
-      this.sinceScan += bytes
+    const written = this.appendActive(chunk)
+    if (written) {
+      this.size += written
+      this.sinceScan += written
     }
   }
   /** Writes a stream line by line; a partial line waits for its newline or the end of the stream. */
@@ -216,7 +229,7 @@ export class LogFile {
 export type HubLogValue = string | number | boolean | null | undefined
 const LOG_EVENT_NAME = /^[a-z][a-z0-9_]{0,39}$/
 const RESERVED_LOG_FIELDS = new Set(["ts", "component", "event"])
-const MAX_LOG_EVENT_BYTES = 4096
+const MAX_LOG_EVENT_BYTES = 4095
 /** JSON lines of Hub activity: ids, states, causes and durations only. Every string value is redacted before it is serialized. */
 export class HubLog extends LogFile {
   event(component: string, event: string, fields: Record<string, unknown> = {}) {
