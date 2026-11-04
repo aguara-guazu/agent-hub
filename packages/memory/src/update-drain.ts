@@ -541,7 +541,11 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
     process.exit(0)
   })
   drain.configureCommittedStop(() => stopCore(drain), async (reason, reopened) => { await (await service.get()).stop.recoverAbandonedCommit(reason, reopened) })
-  if (options.startupTransaction) drain.beginStartup(options.startupTransaction)
+  app.addHook("onReady", async () => {
+    const durable = await (await service.get()).stop.appliedTransaction()
+    const transaction = durable ?? options.startupTransaction
+    if (transaction) drain.beginStartup(transaction)
+  })
   const guard = { preHandler: async (request: FastifyRequest) => { await options.authorize(request) } }
   const leaseBody = z.object({ lease: z.string().min(1).max(100), generation: z.number().int().nonnegative(), boot_id: z.string().min(1).max(100) }).strict()
   app.addHook("onRequest", async (request, reply) => {

@@ -30,6 +30,7 @@ export interface HubStopView {
   reason: HubStopReason
   state: HubStopState
   target_version: string | null
+  transaction_id: string | null
   requested_at: string
   deadline_at: string
   force_at: string | null
@@ -245,6 +246,8 @@ export class HubStopCoordinator {
       check(!["applied", "resumed", "postponed", "cancelled"].includes(stop.state), "La parada ya no se puede cancelar.", 409)
       if (stop.gate_owner === "drain") await this.releaseDrain(stop)
       await this.terminal(await this.requireStop(stopId), "cancelled", reason)
+      const result = await this.requireStop(stopId)
+      check(result.state === "cancelled", "La reapertura no quedó confirmada; la parada sigue activa.", 409)
       return this.view(stopId)
     })
   }
@@ -273,6 +276,11 @@ export class HubStopCoordinator {
       this.log(stop.id, "commit_abandoned", { reason, reopened })
       this.arm(await this.requireStop(stop.id))
     })
+  }
+
+  async appliedTransaction(): Promise<string | null> {
+    const stop = await this.active()
+    return stop?.state === "applied" && stop.reason === "update" && typeof stop.apply_transaction_id === "string" ? stop.apply_transaction_id : null
   }
 
   async assertStartupTransaction(transactionId: string): Promise<void> {
@@ -834,6 +842,7 @@ export class HubStopCoordinator {
     const receipts = await this.deps.db.query("SELECT member_id,generation,attempt,outcome,observed_at FROM hub_stop_member_receipts WHERE stop_id=$1 ORDER BY attempt,observed_at,member_id", [stopId])
     return {
       stop_id: stop.id, source_id: String(stop.source_id), reason: stop.reason, state: stop.state, target_version: stop.target_version ?? null,
+      transaction_id: stop.apply_transaction_id ?? null,
       requested_at: String(stop.requested_at), deadline_at: String(stop.deadline_at), force_at: stop.force_at ? String(stop.force_at) : null,
       grace_started_at: stop.grace_started_at ? String(stop.grace_started_at) : null, backup_id: stop.backup_id ?? null,
       retry_not_before: stop.retry_not_before ? String(stop.retry_not_before) : null,
