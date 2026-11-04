@@ -51,6 +51,8 @@ export interface AdmissionGateLike {
   close(): symbol
   /** Reopens only the closure `token` opened and resolves `true` only once the worker has been told; `false` means it was not confirmed. */
   reopenConfirmed(token: symbol): Promise<boolean>
+  isClosed?(): boolean
+  flush?(): Promise<void>
 }
 
 export interface NonMcpBlockers { fleet_live: number; jobs_nonresumable: number }
@@ -101,6 +103,7 @@ export class UpdateDrain {
   private shutdownToken: symbol | null = null
   /** Core born closed for the first start of a new version: MCP and the shared gate stay shut until the desktop admits it. */
   private startup: { transactionId: string; gate: AdmissionGateLike | undefined; token: symbol | null } | null = null
+  private startupExpiry: ReturnType<typeof setTimeout> | undefined
   private admittedTransaction: string | null = null
 
   constructor(private readonly deps: DrainDependencies, private readonly ttlMs = LEASE_TTL_MS, private readonly now: () => number = Date.now) {}
@@ -128,6 +131,22 @@ export class UpdateDrain {
     return confirmed
   }
 
+  private async reopenStartup(startup: { gate: AdmissionGateLike | undefined; token: symbol | null }, why: string): Promise<boolean> {
+    if (startup.gate?.isClosed?.() === false) {
+      try { await startup.gate.flush?.(); return true } catch { return false }
+    }
+    return this.reopenGate(startup.gate, startup.token, why)
+  }
+
+  private async expireStartup(startup: { transactionId: string; gate: AdmissionGateLike | undefined; token: symbol | null }): Promise<void> {
+    const reopened = await this.reopenStartup(startup, "vencimiento del arranque cerrado")
+    if (this.startup !== startup) return
+    this.startup = null
+    this.admittedTransaction = startup.transactionId
+    this.draining = this.shutdown
+    if (!reopened) console.error(`[update-drain] el arranque ${startup.transactionId} venció sin confirmar la reapertura del worker`)
+  }
+
   /**
    * Starts closed, synchronously, before the listener exists: MCP answers 503 and the shared gate is closed under a token of its
    * own while `/health` keeps answering. Nothing reopens it but `admitStartup` for the same transaction and this process.
@@ -145,6 +164,9 @@ export class UpdateDrain {
       token = null
     }
     this.startup = { transactionId, gate, token }
+    clearTimeout(this.startupExpiry)
+    this.startupExpiry = setTimeout(() => { if (this.startup) void this.expireStartup(this.startup) }, this.ttlMs)
+    this.startupExpiry.unref()
   }
 
   /** Reopens MCP and the gate once, only if the worker confirms it; otherwise core stays closed and the caller may retry. */
@@ -153,8 +175,10 @@ export class UpdateDrain {
     if (!startup) return { ok: false, reason: "not_starting" }
     if (startup.transactionId !== transactionId) return { ok: false, reason: "transaction_mismatch" }
     if (bootId !== this.bootId) return { ok: false, reason: "boot_mismatch" }
-    if (!await this.reopenGate(startup.gate, startup.token, "admisión del arranque")) return { ok: false, reason: "reopen_not_confirmed" }
+    if (!await this.reopenStartup(startup, "admisión del arranque")) return { ok: false, reason: "reopen_not_confirmed" }
     if (this.startup !== startup) return { ok: false, reason: "not_starting" }
+    clearTimeout(this.startupExpiry)
+    this.startupExpiry = undefined
     this.startup = null
     this.admittedTransaction = transactionId
     this.draining = this.shutdown
@@ -227,8 +251,10 @@ export class UpdateDrain {
       if (!this.pending || version !== this.pendingVersion) return { ok: false, reasons: [{ code: "already_draining" }] }
       if (reasons.length > 0) {
         const stable = dedupe(reasons)
-        const converging = stable.every(reason => ["fleet_live", "jobs_nonresumable", "mcp_inflight"].includes(reason.code))
+        const converging = !stable.some(reason => reason.code === "fleet_live")
+          && stable.every(reason => ["jobs_nonresumable", "mcp_inflight"].includes(reason.code))
         if (!converging) await releaseAttempt("bloqueos no convergentes")
+        else this.draining = stable.some(reason => reason.code === "mcp_inflight")
         return { ok: false, reasons: stable }
       }
       const remaining = this.expiresAt - this.now()

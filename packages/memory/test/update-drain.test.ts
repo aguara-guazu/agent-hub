@@ -16,6 +16,9 @@ class Gate implements AdmissionGateLike {
     return this.token
   }
 
+  isClosed(): boolean { return this.closed }
+  async flush(): Promise<void> {}
+
   async reopenConfirmed(token: symbol): Promise<boolean> {
     this.reopenCalls++
     if (token !== this.token) return false
@@ -38,25 +41,36 @@ const makeDrain = (counts: { fleet_live: number; jobs_nonresumable: number }, tt
 }
 
 describe("UpdateDrain convergente", () => {
-  it("mantiene cerradas las admisiones mientras termina la flota y concede el mismo intento al quedar en cero", async () => {
-    const counts = { fleet_live: 1, jobs_nonresumable: 0 }
+  it("mantiene cerrada la admisión no-MCP mientras termina un job y concede el mismo intento al quedar en cero", async () => {
+    const counts = { fleet_live: 0, jobs_nonresumable: 1 }
     const { gate, drain } = makeDrain(counts)
 
-    expect(await drain.acquire()).toEqual({ ok: false, reasons: [{ code: "fleet_live", count: 1 }] })
-    expect(drain.isDraining).toBe(true)
+    expect(await drain.acquire()).toEqual({ ok: false, reasons: [{ code: "jobs_nonresumable", count: 1 }] })
+    expect(drain.isDraining).toBe(false)
     expect(gate.closed).toBe(true)
     expect(gate.closes).toBe(1)
-    expect(drain.admit()).toBe(false)
+    expect(drain.admit()).toBe(true)
+    drain.leave()
 
-    counts.fleet_live = 0
+    counts.jobs_nonresumable = 0
     const granted = await drain.acquire()
     expect(granted).toMatchObject({ ok: true, generation: 1, boot_id: drain.bootId })
     expect(gate.closes).toBe(1)
     expect(gate.reopens).toBe(0)
   })
 
-  it("cancela un intento pendiente y confirma la reapertura", async () => {
+  it("mantiene MCP abierto y libera la gate cuando hay workers vivos", async () => {
     const counts = { fleet_live: 1, jobs_nonresumable: 0 }
+    const { gate, drain } = makeDrain(counts)
+
+    expect(await drain.acquire()).toEqual({ ok: false, reasons: [{ code: "fleet_live", count: 1 }] })
+    expect(drain.isDraining).toBe(false)
+    expect(gate.closed).toBe(false)
+    expect(drain.admit()).toBe(true)
+  })
+
+  it("cancela un intento pendiente y confirma la reapertura", async () => {
+    const counts = { fleet_live: 0, jobs_nonresumable: 1 }
     const { gate, drain } = makeDrain(counts)
 
     await drain.acquire()
@@ -70,11 +84,11 @@ describe("UpdateDrain convergente", () => {
   it("libera un intento pendiente al vencer para no dejar el Hub cerrado", async () => {
     vi.useFakeTimers()
     try {
-      const counts = { fleet_live: 1, jobs_nonresumable: 0 }
+      const counts = { fleet_live: 0, jobs_nonresumable: 1 }
       const { gate, drain } = makeDrain(counts, 1_000)
 
       await drain.acquire()
-      expect(drain.isDraining).toBe(true)
+      expect(drain.isDraining).toBe(false)
       expect(gate.closed).toBe(true)
       await vi.advanceTimersByTimeAsync(1_001)
 
@@ -117,7 +131,7 @@ describe("UpdateDrain convergente", () => {
   })
 
   it("adopta un intento pendiente para shutdown y lo reabre al cancelar el cierre", async () => {
-    const counts = { fleet_live: 1, jobs_nonresumable: 0 }
+    const counts = { fleet_live: 0, jobs_nonresumable: 1 }
     const { gate, drain } = makeDrain(counts)
 
     await drain.acquire()
@@ -149,7 +163,7 @@ describe("UpdateDrain convergente", () => {
 
   it("no concede un lease con menos margen que el cliente acepta", async () => {
     let now = 0
-    const counts = { fleet_live: 1, jobs_nonresumable: 0 }
+    const counts = { fleet_live: 0, jobs_nonresumable: 1 }
     const gate = new Gate()
     const drain = new UpdateDrain({
       gate: () => gate,
@@ -159,7 +173,7 @@ describe("UpdateDrain convergente", () => {
 
     await drain.acquire()
     now = 61_000
-    counts.fleet_live = 0
+    counts.jobs_nonresumable = 0
 
     expect(await drain.acquire()).toEqual({ ok: false, reasons: [{ code: "already_draining" }] })
     expect(gate.closed).toBe(false)
@@ -178,5 +192,19 @@ describe("UpdateDrain convergente", () => {
     expect(drain.status()).toMatchObject({ startup_transaction: null, admitted_transaction: "tx-12345678" })
     expect(gate.closed).toBe(false)
     expect(drain.isDraining).toBe(false)
+  })
+
+  it("reabre el startup cerrado al vencer y conserva prueba de la transacción", async () => {
+    vi.useFakeTimers()
+    try {
+      const counts = { fleet_live: 0, jobs_nonresumable: 0 }
+      const { gate, drain } = makeDrain(counts, 1_000)
+      drain.beginStartup("tx-12345678")
+
+      await vi.advanceTimersByTimeAsync(1_001)
+
+      expect(gate.closed).toBe(false)
+      expect(drain.status()).toMatchObject({ draining: false, startup_transaction: null, admitted_transaction: "tx-12345678" })
+    } finally { vi.useRealTimers() }
   })
 })

@@ -631,6 +631,7 @@ async function exitForRollback(transaction: UpdateTransaction): Promise<void> {
   for (;;) {
     const current = readTransaction(updateStore.dir)
     if (current.kind !== "ok" || current.tx.transaction_id !== transaction.transaction_id || !["admitting", "admitted"].includes(current.tx.phase)) break
+    if (current.tx.watchdog && await processStartTime(current.tx.watchdog.pid) !== current.tx.watchdog.start) break
     if (!await drainClient.admitStartup(transaction.transaction_id)) {
       await new Promise<void>(resolve => setTimeout(resolve, 1_000))
       continue
@@ -744,15 +745,21 @@ async function ensureWatchdogReady(update: Extract<UpdateStatus, { state: 'downl
 
 /** Replaces a dead watchdog after a swapped update without changing the current transaction phase. */
 async function replaceRecoveryWatchdog(transaction: UpdateTransaction): Promise<UpdateTransaction> {
+  let current = transaction
+  if (current.phase === "swapped") {
+    const start = await processStartTime(process.pid)
+    if (!start) throw new Error("no se pudo registrar la app antes de reemplazar el vigía")
+    current = advancePhase(updateStore.dir, current.transaction_id, "launched", { new_app: { pid: process.pid, start } })
+  }
   const identity = await prepareWatchdog({
     stateDir,
     updateDir: updateStore.dir,
-    transaction,
+    transaction: current,
     timeoutMs: HEALTH_DEADLINE_MS,
     logFile: join(logsDir, "core.log"),
     executableName: basename(process.execPath),
   })
-  return advancePhase(updateStore.dir, transaction.transaction_id, transaction.phase, { watchdog: identity })
+  return advancePhase(updateStore.dir, current.transaction_id, current.phase, { watchdog: identity })
 }
 
 /** Otro hub anunció una versión (long-poll a core): sólo adelanta la verificación contra GitHub; `trigger` limita a una por minuto. */
