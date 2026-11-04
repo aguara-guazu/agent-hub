@@ -9,7 +9,11 @@ import { buildReport, tailLog } from "./report.js"
 
 const WINDOW_MAX_MS = 24 * 60 * 60_000
 const LOG_LINES = 200
-const LOGS = ["hub", "core", "daemon", "worker"] as const
+/** Only these hub.log fields reach a public issue; free-form logs (core, daemon, worker) stay local. */
+const PUBLIC_FIELDS = ["ts", "component", "event", "step", "duration_ms", "cause", "action", "state", "from", "error_code", "cli", "count", "uncertain",
+  "session_id", "recipient_id", "member_id", "generation", "notice_id"] as const
+/** Ids, codes and timestamps only: anything else (prose, paths, quotes) is dropped rather than redacted. */
+const PUBLIC_VALUE = /^[A-Za-z0-9_:.+-]{1,100}$/
 const CLIS: Array<[ExtractionCli, string]> = [["claude_code", "Claude Code"], ["codex_cli", "Codex CLI"], ["kiro", "Kiro CLI"]]
 
 export const diagnosticReportInput = z.object({
@@ -29,17 +33,31 @@ function hubVersion(): string {
 function cliInstalled(cli: ExtractionCli): string {
   return findExtractionCli(cli) ? "instalada" : "no instalada"
 }
-/** Log lines whose own timestamp (text prefix or JSON ts) falls inside the window; lines without one are skipped. */
-function windowLines(path: string, from: string, to: string): string[] {
-  return tailLog(path, 20_000).filter(line => {
-    const stamp = line.startsWith("{") ? /"ts":"([^"]+)"/.exec(line)?.[1] : line.split(" ", 1)[0]
-    return Boolean(stamp && stamp >= from && stamp <= to)
-  }).slice(-LOG_LINES)
+/** hub.log events inside the window, re-serialized with allowlisted fields and values only. */
+function hubEvents(path: string, from: string, to: string): string[] {
+  const events: string[] = []
+  for (const line of tailLog(path, 20_000)) {
+    let parsed: Record<string, unknown>
+    try { parsed = JSON.parse(line) as Record<string, unknown> } catch { continue }
+    const ts = typeof parsed.ts === "string" ? parsed.ts : ""
+    if (!(ts >= from && ts <= to)) continue
+    const kept: Record<string, string | number | boolean> = {}
+    for (const key of PUBLIC_FIELDS) {
+      const value = parsed[key]
+      if (typeof value === "number" || typeof value === "boolean" || (typeof value === "string" && PUBLIC_VALUE.test(value))) kept[key] = value
+    }
+    events.push(JSON.stringify(kept))
+  }
+  return events.slice(-LOG_LINES)
+}
+/** A title the agent can pass as one argument: no quotes, backticks, `$`, backslashes or line breaks. */
+function safeTitle(title: string): string {
+  return title.replace(/[^\p{L}\p{N} .,:;()#/_+-]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 160)
 }
 
 /**
- * Read-only draft of an Agent Hub issue: environment, CLI versions, the window's log lines, process incidents and notice causes.
- * Never includes message text, keys or invitations; everything passes through redactReport. Publishing is the agent's job, after approval.
+ * Read-only draft of an Agent Hub issue: environment, installed CLIs, the window's structured hub.log events, process incidents and
+ * notice causes. Free-form logs never enter the public body; everything still passes through redactReport. Publishing needs approval.
  */
 export async function diagnosticReport(sql: Sql, memoryDirectory: string, raw: z.infer<typeof diagnosticReportInput>) {
   const from = new Date(raw.from).toISOString(), to = new Date(raw.to).toISOString()
@@ -53,18 +71,19 @@ export async function diagnosticReport(sql: Sql, memoryDirectory: string, raw: z
     WHERE created_at>=$1 AND created_at<=$2 ORDER BY created_at LIMIT ${LOG_LINES}`, [from, to])
   const platform = ({ win32: "Windows", darwin: "macOS", linux: "Linux" } as Record<string, string>)[process.platform] ?? process.platform
   const report = buildReport({
-    title: raw.title ?? `Agent Hub ${hubVersion()} en ${platform}: ${raw.summary.split("\n")[0]!.slice(0, 120)}`,
+    title: safeTitle(raw.title ?? `Agent Hub ${hubVersion()} en ${platform}: ${raw.summary.split("\n")[0]!.slice(0, 120)}`),
     summary: raw.summary,
     error: raw.observed,
     environment: { Versión: hubVersion(), Sistema: `${process.platform} ${release()} (${process.arch})`, Node: process.version, ...clis, Ventana: `${from} a ${to} (UTC)` },
     details: { ...(raw.steps ? { Pasos: raw.steps } : {}), ...(raw.expected ? { Esperado: raw.expected } : {}) },
     logs: [
-      ...LOGS.map(name => ({ name, lines: windowLines(join(logDir, `${name}.log`), from, to) })),
+      { name: "hub", lines: hubEvents(join(logDir, "hub.log"), from, to) },
       { name: "process_incidents", lines: incidents.map(row => `${row.observed_at} ${row.subject_kind} ${row.cause} ${row.action} member=${row.member_id ?? "-"} generation=${row.generation ?? "-"}`) },
       { name: "status_notices", lines: notices.map(row => `${row.created_at} ${row.cause} session=${row.session_id} recipient=${row.recipient_id}${row.cancelled ? " cancelled" : ""}`) },
     ],
     home: homedir(),
   })
   return { ...report, repository: "aguara-guazu/agent-hub", published: false,
+    local_logs: "core.log, daemon.log and worker.log stay in the Hub logs folder; attach them only if the person reviews and chooses to.",
     guidance: "Show the person the exact title and body (times in their local zone) and publish only after their explicit approval; never add content after it." }
 }
