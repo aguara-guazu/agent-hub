@@ -138,13 +138,35 @@ export class UpdateDrain {
     return this.reopenGate(startup.gate, startup.token, why)
   }
 
-  private async expireStartup(startup: { transactionId: string; gate: AdmissionGateLike | undefined; token: symbol | null }): Promise<void> {
-    const reopened = await this.reopenStartup(startup, "vencimiento del arranque cerrado")
+  private async confirmStartupReopen(startup: { gate: AdmissionGateLike | undefined; token: symbol | null }, why: string): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        this.reopenStartup(startup, why),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 5_000); timer.unref() }),
+      ])
+    } finally { clearTimeout(timer) }
+  }
+
+  private finishStartup(startup: { transactionId: string; gate: AdmissionGateLike | undefined; token: symbol | null }): void {
     if (this.startup !== startup) return
+    clearTimeout(this.startupExpiry)
+    this.startupExpiry = undefined
     this.startup = null
     this.admittedTransaction = startup.transactionId
     this.draining = this.shutdown
-    if (!reopened) console.error(`[update-drain] el arranque ${startup.transactionId} venció sin confirmar la reapertura del worker`)
+  }
+
+  private async expireStartup(startup: { transactionId: string; gate: AdmissionGateLike | undefined; token: symbol | null }): Promise<void> {
+    if (this.startup !== startup) return
+    this.draining = this.shutdown
+    const reopened = await this.confirmStartupReopen(startup, "vencimiento del arranque cerrado")
+    if (this.startup !== startup) return
+    if (reopened) { this.finishStartup(startup); return }
+    console.error(`[update-drain] el arranque ${startup.transactionId} venció sin confirmar la reapertura del worker; MCP queda abierto y se reintenta`)
+    clearTimeout(this.startupExpiry)
+    this.startupExpiry = setTimeout(() => { if (this.startup === startup) void this.expireStartup(startup) }, 5_000)
+    this.startupExpiry.unref()
   }
 
   /**
@@ -175,13 +197,9 @@ export class UpdateDrain {
     if (!startup) return { ok: false, reason: "not_starting" }
     if (startup.transactionId !== transactionId) return { ok: false, reason: "transaction_mismatch" }
     if (bootId !== this.bootId) return { ok: false, reason: "boot_mismatch" }
-    if (!await this.reopenStartup(startup, "admisión del arranque")) return { ok: false, reason: "reopen_not_confirmed" }
+    if (!await this.confirmStartupReopen(startup, "admisión del arranque")) return { ok: false, reason: "reopen_not_confirmed" }
     if (this.startup !== startup) return { ok: false, reason: "not_starting" }
-    clearTimeout(this.startupExpiry)
-    this.startupExpiry = undefined
-    this.startup = null
-    this.admittedTransaction = transactionId
-    this.draining = this.shutdown
+    this.finishStartup(startup)
     return { ok: true }
   }
 
@@ -235,6 +253,16 @@ export class UpdateDrain {
         } catch {
           reasons.push({ code: "blockers_unknown" })
         }
+      }
+      if (!this.pending || version !== this.pendingVersion) return { ok: false, reasons: [{ code: "already_draining" }] }
+      if (reasons.some(reason => reason.code === "fleet_live")) {
+        const stable = dedupe(reasons)
+        await releaseAttempt("flota viva")
+        return { ok: false, reasons: stable }
+      }
+      if (reasons.some(reason => reason.code === "jobs_nonresumable")) {
+        this.draining = false
+        return { ok: false, reasons: dedupe(reasons) }
       }
       if (!this.deps.legacyGateways) reasons.push({ code: "legacy_gateways_unknown" })
       else {

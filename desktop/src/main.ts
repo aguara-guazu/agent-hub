@@ -645,7 +645,19 @@ async function exitForRollback(transaction: UpdateTransaction): Promise<void> {
     try {
       const appStart = await processStartTime(process.pid)
       if (!appStart) throw new Error("no se pudo identificar la app antes del rollback")
+      const beforeCommit = readTransaction(updateStore.dir)
+      if (beforeCommit.kind !== "ok" || beforeCommit.tx.transaction_id !== transaction.transaction_id || !beforeCommit.tx.watchdog
+        || await processStartTime(beforeCommit.tx.watchdog.pid) !== beforeCommit.tx.watchdog.start)
+        throw new Error("el vigía ya no controla el rollback")
       const core = await commitCore(gate.lease)
+      let afterCommit = readTransaction(updateStore.dir)
+      if (afterCommit.kind !== "ok" || afterCommit.tx.transaction_id !== transaction.transaction_id) throw new Error("la transacción cambió después de drenar core")
+      if (!afterCommit.tx.watchdog || await processStartTime(afterCommit.tx.watchdog.pid) !== afterCommit.tx.watchdog.start) {
+        await replaceRecoveryWatchdog(afterCommit.tx)
+        afterCommit = readTransaction(updateStore.dir)
+        if (afterCommit.kind !== "ok" || !afterCommit.tx.watchdog || await processStartTime(afterCommit.tx.watchdog.pid) !== afterCommit.tx.watchdog.start)
+          throw new Error("no se pudo restablecer el vigía después de drenar core")
+      }
       writeJsonDurable(rollbackReadyFile(updateStore.dir, transaction.transaction_id), {
         transaction_id: transaction.transaction_id,
         version: transaction.to.version,

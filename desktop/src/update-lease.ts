@@ -114,7 +114,7 @@ export class DrainClient {
         return false
       }
       if (current.admitted_transaction === transactionId) return true
-      if (!current.draining || current.startup_transaction !== transactionId) return false
+      if (current.startup_transaction !== transactionId) return false
       const response = await this.deps.call("/api/internal/update-admit", {
         method: "POST",
         headers: this.headers(true),

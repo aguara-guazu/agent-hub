@@ -93,7 +93,13 @@ export async function recoverTransaction(deps: RecoveryDeps): Promise<Recovery> 
     case "swap_intent": {
       const sides = inspectSides(tx)
       if (sides === "not_swapped" && running === tx.from.version) {
-        if (tx.watchdog) return alive(tx.watchdog) ? "waiting_watchdog" : ambiguous("el vigía terminó después de swap_intent; se conserva el stage")
+        if (tx.watchdog) {
+          if (alive(tx.watchdog)) {
+            advancePhase(deps.updateDir, tx.transaction_id, "ambiguous")
+            return ambiguous("la versión anterior volvió a abrirse después de swap_intent; el vigía fue cancelado")
+          }
+          return ambiguous("el vigía terminó después de swap_intent; se conserva el stage")
+        }
         return (await finish()) ? "cleaned" : ambiguous("el respaldo no se pudo borrar de forma durable")
       }
       if (sides === "swapped" && running === tx.to.version) {
