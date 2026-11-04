@@ -88,6 +88,7 @@ export class UpdateDrain {
   private shutdown = false
   /** Core born closed for the first start of a new version: MCP and the shared gate stay shut until the desktop admits it. */
   private startup: { transactionId: string; gate: AdmissionGateLike | undefined; token: symbol | null } | null = null
+  private admittedTransaction: string | null = null
 
   constructor(private readonly deps: DrainDependencies, private readonly ttlMs = LEASE_TTL_MS, private readonly now: () => number = Date.now) {}
 
@@ -120,6 +121,7 @@ export class UpdateDrain {
    */
   beginStartup(transactionId: string): void {
     this.draining = true
+    this.admittedTransaction = null
     let gate: AdmissionGateLike | undefined
     let token: symbol | null = null
     try {
@@ -141,6 +143,7 @@ export class UpdateDrain {
     if (!await this.reopenGate(startup.gate, startup.token, "admisión del arranque")) return { ok: false, reason: "reopen_not_confirmed" }
     if (this.startup !== startup) return { ok: false, reason: "not_starting" }
     this.startup = null
+    this.admittedTransaction = transactionId
     this.draining = this.shutdown
     return { ok: true }
   }
@@ -291,8 +294,9 @@ export class UpdateDrain {
     if (!this.lease && !this.acquiring && !this.pending) this.draining = false
   }
 
-  status(): { inflight: number; draining: boolean; boot_id: string } {
-    return { inflight: this.inflight, draining: this.draining, boot_id: this.bootId }
+  status(): { inflight: number; draining: boolean; boot_id: string; startup_transaction: string | null; admitted_transaction: string | null } {
+    return { inflight: this.inflight, draining: this.draining, boot_id: this.bootId,
+      startup_transaction: this.startup?.transactionId ?? null, admitted_transaction: this.admittedTransaction }
   }
 
   async cancel(lease: string, generation: number): Promise<{ ok: boolean; reopened: boolean }> {

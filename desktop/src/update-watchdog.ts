@@ -275,7 +275,11 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
     if (tx.phase === "ambiguous") return "ambiguous"
     if (tx.phase === "rolled_back") return "rolled-back"
     if (tx.phase === "healthy" || tx.phase === "done") { log("versión nueva confirmada"); return "healthy" }
-    if (tx.watchdog && (tx.watchdog.pid !== myPid || tx.watchdog.start !== myStart)) { log("otro vigía es responsable de esta transacción; este termina"); return "aborted" }
+    if (tx.watchdog && (tx.watchdog.pid !== myPid || tx.watchdog.start !== myStart)) {
+      if (["swapped", "launched"].includes(tx.phase) && !sameProcess(tx.watchdog))
+        advancePhase(args.updateDir, args.tx, tx.phase, { watchdog: { pid: myPid, start: myStart } })
+      else { log("otro vigía es responsable de esta transacción; este termina"); return "aborted" }
+    }
     const oldAlive = sameProcess(tx.old_app)
     if (phaseRank(tx.phase) >= phaseRank("swap_intent")) {
       swapSeenAt ??= Date.now()

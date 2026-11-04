@@ -6,17 +6,17 @@
  * lado quedó cada una. Ausencia o corrupción del journal con restos `.incoming-*`, rutas inesperadas o versiones que no
  * coinciden son ambiguos: no se borra nada ni se declara salud.
  */
-import { readdirSync, rmSync } from "node:fs"
+import { existsSync, readdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import {
-  addToBlacklist, advancePhase, bundleVersion, clearTransactionFiles, hasIncomingRemnants, inspectSides, readTransaction, removeDurable, removeTreeDurable,
+  addToBlacklist, advancePhase, bundleVersion, clearTransactionFiles, hasIncomingRemnants, healthyFile, inspectSides, parseHealthyMarker, readJson, readTransaction, removeDurable, removeTreeDurable,
   startedFile, validateLayout, writeJsonDurable, type UpdateTransaction as Transaction,
 } from "./update-transaction.js"
 import { sameProcess, startTimeOf } from "./update-watchdog.js"
 
 export { settled } from "./update-watchdog.js"
 
-export type Recovery = "none" | "cleaned" | "monitor" | "waiting_watchdog" | "rolled_back_cleaned" | "rolled_back_pending_watchdog" | "ambiguous"
+export type Recovery = "none" | "cleaned" | "monitor" | "monitor_without_watchdog" | "waiting_watchdog" | "rolled_back_cleaned" | "rolled_back_pending_watchdog" | "ambiguous"
 
 export interface RecoveryDeps {
   stateDir: string
@@ -96,7 +96,7 @@ export async function recoverTransaction(deps: RecoveryDeps): Promise<Recovery> 
 
     case "swapped":
     case "launched": {
-      if (running === tx.to.version && inspectSides(tx) === "swapped") return "monitor"
+      if (running === tx.to.version && inspectSides(tx) === "swapped") return tx.watchdog && alive(tx.watchdog) ? "monitor" : "monitor_without_watchdog"
       if (running === tx.from.version && inspectSides(tx) === "not_swapped") {
         // El vigía ya devolvió la versión anterior y se cortó antes de anotarlo.
         return finishRollback(deps, tx, remove)
@@ -106,9 +106,17 @@ export async function recoverTransaction(deps: RecoveryDeps): Promise<Recovery> 
     }
 
     case "healthy":
-    case "done":
-      if (running !== tx.to.version || inspectSides(tx) !== "swapped") return ambiguous("la app que corre no es la confirmada")
-      return (await finish()) ? "cleaned" : ambiguous("el respaldo no se pudo borrar de forma durable")
+    case "done": {
+      if (running !== tx.to.version || bundleVersion(tx.paths.installed) !== tx.to.version) return ambiguous("la app que corre no es la confirmada")
+      if (inspectSides(tx) === "swapped") return (await finish()) ? "cleaned" : ambiguous("el respaldo no se pudo borrar de forma durable")
+      const evidence = readJson(healthyFile(deps.updateDir, tx.transaction_id))
+      const marker = evidence.ok ? parseHealthyMarker(evidence.value) : null
+      if (existsSync(tx.paths.incoming) || marker?.transaction_id !== tx.transaction_id || marker.version !== tx.to.version)
+        return ambiguous("falta el respaldo sin evidencia durable de salud")
+      if (tx.phase === "healthy") advancePhase(deps.updateDir, tx.transaction_id, "done")
+      clearTransactionFiles(deps.updateDir, tx.transaction_id)
+      return "cleaned"
+    }
 
     case "rolled_back":
       if (running !== tx.from.version || inspectSides(tx) !== "not_swapped") return ambiguous("la app que corre no es la versión restaurada")

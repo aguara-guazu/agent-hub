@@ -24,7 +24,7 @@ import { holdLimitFor, KeepAwake } from './keep-awake.js'
 import { deliveryNotice, FeedPoller, ScheduleNoticeBatcher, type FeedResponse, type Notice } from './schedule-feed.js'
 import { AutoUpdater, bundlePathFrom, fetchLatestRelease, fsyncPath, realBundlePath, resolveFeed, revalidateArtifact, type UpdateStatus } from "./updater.js"
 import { UpdateStateCorruptError, UpdateStore } from './update-state.js'
-import { advancePhase, readTransaction, removeTreeDurable, type UpdateTransaction } from './update-transaction.js'
+import { advancePhase, inspectSides, readTransaction, removeTreeDurable, type UpdateTransaction } from './update-transaction.js'
 import { prepareWatchdog } from './update-watchdog.js'
 import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
@@ -153,7 +153,8 @@ function startupTransactionId(): string {
   const read = readTransaction(updateStore.dir)
   if (read.kind !== 'ok') return ''
   const { phase, to, transaction_id: id } = read.tx
-  return (phase === 'swapped' || phase === 'launched') && to.version === app.getVersion() ? id : ''
+  const physicallySwapped = phase === "swap_intent" && inspectSides(read.tx) === "swapped"
+  return (phase === "swapped" || phase === "launched" || physicallySwapped) && to.version === app.getVersion() ? id : ""
 }
 delete process.env.AGENTHUB_UPDATE_TX
 Object.defineProperty(coreEnv, 'AGENTHUB_UPDATE_TX', { enumerable: true, configurable: true, get: startupTransactionId })
@@ -698,6 +699,19 @@ async function ensureWatchdogReady(update: Extract<UpdateStatus, { state: 'downl
   return advancePhase(updateStore.dir, tx.transaction_id, 'watchdog_ready', { watchdog: identity })
 }
 
+/** Replaces a dead watchdog after a swapped update without changing the current transaction phase. */
+async function replaceRecoveryWatchdog(transaction: UpdateTransaction): Promise<UpdateTransaction> {
+  const identity = await prepareWatchdog({
+    stateDir,
+    updateDir: updateStore.dir,
+    transaction,
+    timeoutMs: HEALTH_DEADLINE_MS,
+    logFile: join(logsDir, "core.log"),
+    executableName: basename(process.execPath),
+  })
+  return advancePhase(updateStore.dir, transaction.transaction_id, transaction.phase, { watchdog: identity })
+}
+
 /** Otro hub anunció una versión (long-poll a core): sólo adelanta la verificación contra GitHub; `trigger` limita a una por minuto. */
 function onUpdateHint(): void {
   if (!app.isPackaged) return
@@ -772,9 +786,13 @@ async function startUpdateBookkeeping(): Promise<void> {
   // no borra nada ni declara salud.
   const outcome = bundle ? await recoverTransaction({ stateDir, updateDir: updateStore.dir, installed: bundle, version: app.getVersion(), removeTree, pid: process.pid, log: updaterLog })
     .catch((error: unknown) => { updaterLog(`[updater] recuperación: ${error instanceof Error ? error.message : String(error)}`); return 'ambiguous' as const }) : 'none' as const
-  if (outcome !== 'none' && outcome !== 'cleaned' && outcome !== 'monitor') updaterLog(`[updater] la recuperación terminó en «${outcome}»`)
-  const journal = outcome === 'monitor' ? readTransaction(updateStore.dir) : null
-  const transaction = journal?.kind === 'ok' ? journal.tx : null
+  if (!['none', 'cleaned', 'monitor', 'monitor_without_watchdog'].includes(outcome)) updaterLog(`[updater] la recuperación terminó en «${outcome}»`)
+  const journal = outcome === 'monitor' || outcome === 'monitor_without_watchdog' ? readTransaction(updateStore.dir) : null
+  let transaction = journal?.kind === 'ok' ? journal.tx : null
+  if (transaction && outcome === 'monitor_without_watchdog') {
+    try { transaction = await replaceRecoveryWatchdog(transaction) }
+    catch (error) { updaterLog(`[updater] no se pudo reemplazar el vigía: ${error instanceof Error ? error.message : String(error)}`); return }
+  }
   if (!transaction) {
     whenStablyHealthy({ healthy }, ratchet)
     // Una versión que todavía no anunció (p. ej. tras el salto desde 0.14.2) lo hace tras un arranque estable de 180 s.

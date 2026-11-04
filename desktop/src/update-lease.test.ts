@@ -24,7 +24,7 @@ describe("DrainClient", () => {
     const calls: Array<{ path: string; method: string; body?: string }> = []
     const { drain } = client(async (path, init) => {
       calls.push({ path, method: init.method, ...(init.body === undefined ? {} : { body: init.body }) })
-      if (path.endsWith("/status")) return json({ inflight: 0, draining: true, boot_id: "boot-current" })
+      if (path.endsWith("/status")) return json({ inflight: 0, draining: true, boot_id: "boot-current", startup_transaction: "tx-12345678", admitted_transaction: null })
       if (path === "/api/internal/update-admit") return json({ admitted: true })
       return json({}, 404)
     })
@@ -37,7 +37,7 @@ describe("DrainClient", () => {
   })
 
   it("reconoce el mismo core ya admitido sin repetir el POST", async () => {
-    const call = vi.fn(async () => json({ inflight: 0, draining: false, boot_id: "boot-current" }))
+    const call = vi.fn(async () => json({ inflight: 0, draining: false, boot_id: "boot-current", startup_transaction: null, admitted_transaction: "tx-12345678" }))
     const { drain } = client(call)
 
     expect(await drain.admitStartup("tx-12345678")).toBe(true)
@@ -46,11 +46,14 @@ describe("DrainClient", () => {
   })
 
   it("no admite cuando status o el ack no corresponden", async () => {
+    const { drain: openWithoutProof } = client(async () => json({ draining: false, boot_id: "boot-current", startup_transaction: null, admitted_transaction: null }))
+    expect(await openWithoutProof.admitStartup("tx-12345678")).toBe(false)
+
     const { drain: missingBoot } = client(async () => json({ draining: true }))
     expect(await missingBoot.admitStartup("tx-12345678")).toBe(false)
 
     const { drain: refused } = client(async (path) => path.endsWith("/status")
-      ? json({ draining: true, boot_id: "boot-current" })
+      ? json({ draining: true, boot_id: "boot-current", startup_transaction: "tx-12345678", admitted_transaction: null })
       : json({ admitted: false, reason: "transaction_mismatch" }, 409))
     expect(await refused.admitStartup("tx-12345678")).toBe(false)
   })

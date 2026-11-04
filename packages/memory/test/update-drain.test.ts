@@ -154,9 +154,11 @@ describe("UpdateDrain convergente", () => {
 
     drain.beginStartup("tx-12345678")
     expect(drain.isDraining).toBe(true)
+    expect(drain.status()).toMatchObject({ startup_transaction: "tx-12345678", admitted_transaction: null })
     expect(await drain.admitStartup("tx-otra-123", drain.bootId)).toEqual({ ok: false, reason: "transaction_mismatch" })
     expect(await drain.admitStartup("tx-12345678", "otro-boot")).toEqual({ ok: false, reason: "boot_mismatch" })
     expect(await drain.admitStartup("tx-12345678", drain.bootId)).toEqual({ ok: true })
+    expect(drain.status()).toMatchObject({ startup_transaction: null, admitted_transaction: "tx-12345678" })
     expect(gate.closed).toBe(false)
     expect(drain.isDraining).toBe(false)
   })

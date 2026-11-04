@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { advancePhase, canAdvance, journalFile, readTransaction, writeJsonDurable, type UpdateTransaction } from "./update-transaction.js"
+import { advancePhase, canAdvance, healthyFile, journalFile, readTransaction, writeJsonDurable, type UpdateTransaction } from "./update-transaction.js"
+import { recoverTransaction } from "./update-recovery.js"
 
 const paths: string[] = []
 const transaction = (dir: string): UpdateTransaction => ({
@@ -21,6 +22,14 @@ const transaction = (dir: string): UpdateTransaction => ({
   watchdog: { pid: 101, start: "watchdog-start" },
   updated_at: new Date().toISOString(),
 })
+
+const bundle = async (path: string, version: string) => {
+  const contents = join(path, "Contents")
+  await mkdir(contents, { recursive: true })
+  await writeFile(join(contents, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>${version}</string></dict></plist>`)
+}
 
 afterEach(async () => {
   await Promise.all(paths.splice(0).map(path => rm(path, { recursive: true, force: true })))
@@ -56,5 +65,51 @@ describe("transacción del updater", () => {
     advancePhase(dir, tx.transaction_id, "launched", { new_app: { pid: 102, start: "new-start" } })
 
     expect(readTransaction(dir)).toMatchObject({ kind: "ok", tx: { phase: "launched", new_app: { pid: 102, start: "new-start" } } })
+  })
+
+  it("distingue una transacción aplicada cuyo watchdog murió", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenthub-update-watchdog-loss-"))
+    paths.push(dir)
+    const tx = { ...transaction(dir), phase: "launched" as const, new_app: { pid: 102, start: "new-start" } }
+    await bundle(tx.paths.installed, tx.to.version)
+    await bundle(tx.paths.incoming, tx.from.version)
+    writeJsonDurable(journalFile(dir), tx)
+
+    const base = {
+      stateDir: dir,
+      updateDir: dir,
+      installed: tx.paths.installed,
+      version: tx.to.version,
+      removeTree: (path: string) => rm(path, { recursive: true, force: true }),
+      log: () => undefined,
+    }
+    expect(await recoverTransaction({ ...base, isAlive: () => false })).toBe("monitor_without_watchdog")
+    expect(await recoverTransaction({ ...base, isAlive: () => true })).toBe("monitor")
+  })
+
+  it.each(["healthy", "done"] as const)("recupera la fase %s si el respaldo ya fue descartado", async phase => {
+    const dir = await mkdtemp(join(tmpdir(), "agenthub-update-cleanup-"))
+    paths.push(dir)
+    const tx = { ...transaction(dir), phase }
+    await bundle(tx.paths.installed, tx.to.version)
+    writeJsonDurable(journalFile(dir), tx)
+    writeJsonDurable(healthyFile(dir, tx.transaction_id), {
+      transaction_id: tx.transaction_id,
+      version: tx.to.version,
+      at: new Date().toISOString(),
+    })
+
+    const result = await recoverTransaction({
+      stateDir: dir,
+      updateDir: dir,
+      installed: tx.paths.installed,
+      version: tx.to.version,
+      removeTree: path => rm(path, { recursive: true, force: true }),
+      isAlive: () => false,
+      log: () => undefined,
+    })
+
+    expect(result).toBe("cleaned")
+    expect(readTransaction(dir)).toEqual({ kind: "missing" })
   })
 })

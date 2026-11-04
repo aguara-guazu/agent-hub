@@ -106,12 +106,15 @@ export class DrainClient {
   async admitStartup(transactionId: string): Promise<boolean> {
     try {
       const status = await this.deps.call("/api/internal/update-drain/status", { method: "GET", headers: this.headers() })
-      const current = await status.json().catch(() => null) as { boot_id?: unknown; draining?: unknown } | null
+      const current = await status.json().catch(() => null) as {
+        boot_id?: unknown; draining?: unknown; startup_transaction?: unknown; admitted_transaction?: unknown
+      } | null
       if (!status.ok || typeof current?.boot_id !== "string" || !current.boot_id || typeof current.draining !== "boolean") {
         await status.body?.cancel().catch(() => undefined)
         return false
       }
-      if (!current.draining) return true
+      if (current.admitted_transaction === transactionId) return true
+      if (!current.draining || current.startup_transaction !== transactionId) return false
       const response = await this.deps.call("/api/internal/update-admit", {
         method: "POST",
         headers: this.headers(true),
