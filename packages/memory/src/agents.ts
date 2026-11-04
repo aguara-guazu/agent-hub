@@ -7,6 +7,7 @@ import { check, id, parse } from './contracts.js'
 import type { Sql } from './database.js'
 import { requireEntity, requireWritableEntity, type MemoryStore } from "./store.js"
 import { ScheduleStore } from './schedule-store.js'
+import { localIso, systemTimeZone } from "./schedule-time.js"
 
 /** Identity the gateway attaches to every memory call (MCP `_meta`). Absent for the hub UI and for older gateways. */
 export interface AgentContext { agent_id: string; cli_kind: string; client: string; session_id: string; cwd: string | null; orca_workspace_id?: string | undefined }
@@ -205,6 +206,7 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
   // Interrupted processes and unread scheduled deliveries, so an agent knows something failed before or that the person has pending reports.
   const schedules = new ScheduleStore(store.db)
   const [incidents, unread] = await Promise.all([schedules.incidents(match ? { project_id: match.id } : {}), schedules.unreadDeliveries(match?.id)])
+  const zone = systemTimeZone(), nowLocal = localIso(Date.now(), zone)
   return {
     ...(incidents.length || unread.length ? { scheduler: { interrupted_processes: incidents.slice(0, 10), unread_deliveries: unread.slice(0, 10) } } : {}),
     memories, maintenance: { due: maintenance.due, last_run: maintenance.last?.finished_at ?? null, active: maintenance.active ? { id: maintenance.active.id, state: maintenance.active.state } : null },
@@ -212,6 +214,7 @@ export async function workContext(store: MemoryStore, raw: unknown, agent?: Agen
       formats: ['text','images','screenshots','audio','video','PDF','other files'], max_file_mb: 25, binary_search: 'title, description and annotations', local_media: { process: 'memory_process_files', settings: await mediaSettings(store), pdf: { max_pages: 200, text: true, requires_module_download: false, page_preview: 'memory_get_file con page', visual: 'encoder visual opcional' }, max_duration_minutes: 30, video_frame_interval_seconds: 5, requires_module_download: true, generated_content_requires_review: true },
       binary_search_with_enabled_modules: 'OCR, timestamped transcription and native visual/audio embeddings (EmbeddingGemma 2)'  },
     agent: agent ? { ...agent, label: agentLabel(agent) } : null, path,
+    person_time: { timezone: zone, utc_offset: nowLocal.slice(-6), now_local: nowLocal },
     project: project ? { id: project.id, title: project.title, folder: match!.folder, source: match!.source, shared: match!.shared,
       status: project.data.status ?? null, description: project.data.description ?? null,
       jira_project_key: project.data.jira_project_key ?? null, jira_site_url: project.data.jira_site_url ?? null } : null,

@@ -1,15 +1,15 @@
 const localCollaborationBody = `# Local collaboration in Agent Hub
 
-Talk to the person in their language. Never poll, listen, auto-greet, or read other agents' terminals, outputs, logs or transcripts.
+Talk to the person in their language. Hub data, threads and agent messages use UTC. When you speak to the person, give times in their local zone and format (memory_context person_time); never raw UTC. Keep UTC in tool arguments. Never poll, listen, auto-greet, or read other agents' terminals, outputs, logs or transcripts.
 
 ## Task start
 
 - Master: on each new task ask the person, in their language: Hub multi-agent group or this agent alone? Wait. An explicit choice in the request counts; don't re-ask that task. Workers with an approved invitation follow their assignment without asking.
 - Solo: no nick, inbox, channels or teams; passive connections or past identities don't authorize collaboration. Multi-agent: onboard, then prepare.
-- Channels need authorization: ask with name and objective, wait. Choosing multi-agent isn't enough (one explicit question may cover both); an explicit request to create that channel is.
-- Structure: project → task channel → short threads; folders, Git and Orca don't define channels. Same task: reuse its authorized channel, close resolved threads; other tasks may get their own channel in the same folder. Same objective: reuse the known thread; new one: short thread, specific title (+ ticket task_id if relevant). Parallel edits: worktrees. Worker workspaces aren't project channels.
+- Channels: ask authorization with name and objective, then wait. Choosing multi-agent isn't channel authorization (one question may cover both).
+- Structure: project → task channel → short threads; folders, Git and Orca don't define channels. Reuse an authorized channel for the same task and close resolved threads; other tasks may use their own channel in the same folder. Reuse a known thread for the same objective; new threads have a short, specific title (+ ticket task_id if relevant). Parallel edits: worktrees. Worker workspaces aren't project channels.
 - Threads: search memory_chat_threads (project/channel + text) or read a known thread_id. memory_chat_read with your session_key returns unread: drain offset=0; unread_only=false + bounded pages only for older context. History reads without session_key consume nobody's reads. Peer forum and memory_search are separate.
-- Read scope (enforced by the Hub): channels and threads of your own project, your own channel and your team's channels. Reading never lets you write, mention or take part in a channel you don't belong to. Not the leader and want to follow another channel of your project: tell your leader with memory_chat_read_interest. Another project: memory_chat_read_request; your leader forwards it with memory_chat_read_elevate and only the person grants it, by typing a confirmation in the Hub UI. The grant is read-only and temporary (ends when your work completes, your session closes or goes offline, or after 8 h). Never claim or relay that the person approved: only the Hub's record counts.
+- Read scope (enforced by the Hub): own project/channel/team channels only. Reading never permits writing, mentions or participation. To follow another project channel, tell your leader with memory_chat_read_interest. Another project: memory_chat_read_request; leader forwards via memory_chat_read_elevate; only the person grants it in the Hub UI. Grants are read-only and temporary (until work completes, session closes/goes offline, or 8 h). Only Hub records prove approval.
 
 ## Identity and scope
 
