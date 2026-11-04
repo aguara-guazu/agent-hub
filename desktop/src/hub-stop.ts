@@ -3,6 +3,7 @@
  * persona. Core lleva los plazos; aquí sólo se crea la parada, se sondea, se adquiere el lease cuando está `ready` y se hace
  * commit. Sin Electron: la red, el reloj y los procesos son inyectables.
  */
+import type { UpdateReason, UpdateStopReport } from "./update-report.js"
 import { CORE_EXIT_WAIT_MS, CoreDidNotExit, DRAIN_SECRET_HEADER, DrainLeaseLost, LEASE_SAFETY_MS, LEASE_TTL_MAX_MS, type DrainLease } from "./update-lease.js"
 
 export type HubStopReason = "update" | "quit"
@@ -135,6 +136,8 @@ export interface HubStopRunDeps {
   maxUnreachable?: number
   /** Reintentos del commit mientras core responde que el cierre todavía no quedó programado. */
   maxCommitAttempts?: number
+  /** Retiene a core mientras se tiene el lease (no se relanza solo); devuelve la función que lo libera. */
+  holdCore?: () => () => void
 }
 
 export interface HubStopRunInput {
@@ -152,15 +155,23 @@ export class HubStopRun {
   private stopId: string | null = null
   private cancelRequested: string | null = null
   private committing = false
+  private release: (() => void) | null = null
   private wake: (() => void) | null = null
   readonly done: Promise<HubStopOutcome>
 
   constructor(private readonly deps: HubStopRunDeps, private readonly input: HubStopRunInput) {
     this.sleep = deps.sleep ?? ((ms) => new Promise<void>((resolve) => { const timer = setTimeout(resolve, ms); this.wake = () => { clearTimeout(timer); resolve() } }))
-    this.done = this.run().catch((error): HubStopOutcome => {
+    this.done = this.run().then((outcome) => { if (outcome.kind !== "committed") this.releaseCore(); return outcome }).catch((error): HubStopOutcome => {
+      this.releaseCore()
       this.deps.log(`[hub-stop] ${error instanceof Error ? error.message : String(error)}`)
       return error instanceof CoreDidNotExit ? { kind: "failed", code: "core_did_not_exit", view: null } : { kind: "failed", code: error instanceof DrainLeaseLost ? "drain_lease_lost" : "unexpected", view: null }
     })
+  }
+
+  private releaseCore(): void {
+    const release = this.release
+    this.release = null
+    release?.()
   }
 
   /** Pide cancelar. Devuelve false si el commit ya empezó: desde ahí no se puede volver atrás. */
@@ -219,6 +230,7 @@ export class HubStopRun {
       if (this.input.reason === "update" && !this.input.transactionId) return { kind: "failed", code: "transaction_required", view }
       const drained = await client.drain(stopId)
       if (drained.kind === "converging") return null
+      if (drained.kind === "lease" && !this.release) this.release = this.deps.holdCore?.() ?? null
       if (drained.kind !== "lease") { this.deps.log(`[hub-stop] drain ${drained.kind}${"reasons" in drained && drained.reasons.length ? `: ${drained.reasons.join(",")}` : ""}`); return null }
     }
     // La identidad de core se toma antes del commit: la salida se espera de ese mismo proceso (PID e inicio).
@@ -247,4 +259,26 @@ export class HubStopRun {
     if (!await exited()) throw new CoreDidNotExit()
     return { kind: "committed", stopId, pid, start }
   }
+}
+
+/** Lo que la consola ve de la parada: estado, plazos y a quién se espera. */
+export function stopReportOf(view: HubStopView): UpdateStopReport {
+  return {
+    state: view.state,
+    ...(view.deadlineAt ? { deadlineAt: view.deadlineAt } : {}),
+    ...(view.forceAt ? { forceAt: view.forceAt } : {}),
+    ...(view.graceStartedAt ? { graceStartedAt: view.graceStartedAt } : {}),
+    waiting: { coordinators: view.waitingFor.coordinators.length, leadersInTurn: view.waitingFor.leadersInTurn.length, members: view.waitingFor.members.length },
+    ...(view.error ? { errorCode: view.error.code, actions: view.error.actions } : {}),
+  }
+}
+
+/** Razones estables, con el mismo formato que las del drenaje, para el texto de «pospuesta». */
+export function stopReasons(view: HubStopView): UpdateReason[] {
+  const reasons: UpdateReason[] = []
+  if (view.error) reasons.push({ code: view.error.code })
+  if (view.waitingFor.leadersInTurn.length) reasons.push({ code: "stop_waiting_leaders", count: view.waitingFor.leadersInTurn.length })
+  if (view.waitingFor.coordinators.length) reasons.push({ code: "stop_waiting_coordinators", count: view.waitingFor.coordinators.length })
+  if (view.waitingFor.members.length) reasons.push({ code: "stop_waiting_members", count: view.waitingFor.members.length })
+  return reasons.length ? reasons : [{ code: `stop_${view.state}` }]
 }

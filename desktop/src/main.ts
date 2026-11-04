@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
@@ -30,6 +30,7 @@ import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { CoreDidNotExit, DRAIN_SECRET_HEADER, DrainClient, DrainLeaseLost, type DrainLease } from './update-lease.js'
+import { HubStopClient, HubStopRun, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
@@ -545,13 +546,28 @@ const commitCore = (lease: DrainLease): ReturnType<DrainClient['commit']> => dra
 const leaseHeld = (lease: DrainLease): boolean => drainClient.held(lease)
 const drainHeaders = (json = false): Record<string, string> => ({ [DRAIN_SECRET_HEADER]: updateDrainSecret, ...(json ? { "Content-Type": "application/json" } : {}) })
 
+const hubStopClient = new HubStopClient({ call: (path, init) => coreFetch(path, init), secret: updateDrainSecret, log: updaterLog })
+/** Parada coordinada en curso (update o cierre de la persona); una sola a la vez. */
+let activeStop: HubStopRun | null = null
+function startHubStop(reason: HubStopReason, input: { targetVersion?: string; transactionId?: string }, onView: (view: HubStopView) => void): HubStopRun {
+  const run = new HubStopRun({
+    client: hubStopClient,
+    core: { get pid() { return coreSupervisor.pid }, get state() { return coreSupervisor.state } },
+    startTimeOf: processStartTime,
+    log: updaterLog,
+    holdCore: () => coreSupervisor.hold(),
+  }, { sourceId: randomUUID(), reason, ...input, onView })
+  activeStop = run
+  void run.done.finally(() => { if (activeStop === run) activeStop = null })
+  return run
+}
+
 async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<boolean> {
   if (quitting || updateExiting) return false
   // NSIS closes executables in the installation folder. Wait automatically rather
   // than breaking a client's live stdio MCP connection or asking the user to act.
   if (update.strategy === 'nsis' && await updater.bridgesAtRisk() > 0) return postpone(update.version, [{ code: 'mcp_bridges' }])
   if (!updateStore.isEnabled()) return false
-  let tx: UpdateTransaction | null = null
   // macOS, todo esto fuera del drenaje (los gateways esperan sólo 45 s): runtime, helper válido, DMG revalidado, stage con fsync,
   // journal `staged` y vigía preparado (`watchdog_ready`). El Updater nunca invoca el helper: el intercambio es del vigía.
   if (update.strategy === 'dmg') {
@@ -560,7 +576,7 @@ async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }
     const prepared = await updater.prepare(update)
     if (prepared.state === 'postponed') return postpone(update.version, prepared.reasons)
     if (!await recordStagedTransaction(update)) return postpone(update.version, [{ code: 'runtime_unavailable' }])
-    tx = await ensureWatchdogReady(update)
+    return await applyThroughHubStop(update, await ensureWatchdogReady(update))
   }
   const gate = await acquireDrain()
   if ("reasons" in gate) return postpone(update.version, gate.reasons)
@@ -575,17 +591,10 @@ async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }
   try {
     if (!leaseHeld(gate.lease)) return await lost()
     lastPostponed = ''
-    if (update.strategy === 'nsis' || update.strategy === 'appimage') {
-      // El instalador se vuelve a verificar justo antes de lanzarlo: pudo cambiar mientras esperaba su turno.
-      await revalidateArtifact(update.path, update.sha256, update.size)
-      await commitCore(gate.lease)
-      installOnQuit = update
-    } else {
-      // Core sale bajo el lease (commit) y se observa su salida; recién entonces se anota la intención y esta app se va. El vigía
-      // espera a que termine, intercambia y lanza la versión nueva.
-      await commitCore(gate.lease)
-      advancePhase(updateStore.dir, tx!.transaction_id, 'swap_intent')
-    }
+    // El instalador se vuelve a verificar justo antes de lanzarlo: pudo cambiar mientras esperaba su turno.
+    await revalidateArtifact(update.path, update.sha256, update.size)
+    await commitCore(gate.lease)
+    installOnQuit = update
   } catch (error) {
     if (error instanceof DrainLeaseLost || error instanceof CoreDidNotExit) return await lost()
     await cancelDrain(gate.lease)
@@ -594,11 +603,28 @@ async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }
   }
   setUpdateReport({ phase: 'applying', version: update.version, ...(update.trust ? { trust: update.trust } : {}) })
   updaterLog(`[updater] v${update.version}: reinicio silencioso`)
-  if (update.strategy === 'dmg') {
-    await exitForUpdate()
-    return true
-  }
   await quit()
+  return true
+}
+
+/**
+ * macOS: la parada coordinada espera a los líderes y deja a core listo; el commit lo hace salir bajo ese lease y se observa su
+ * salida. Recién entonces se anota la intención y esta app se va. El vigía espera a que termine, intercambia y lanza la versión nueva.
+ */
+async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downloaded' }>, tx: UpdateTransaction): Promise<boolean> {
+  const run = startHubStop('update', { targetVersion: update.version, transactionId: tx.transaction_id }, view => {
+    setUpdateReport({ phase: 'postponed', version: update.version, reasons: stopReasons(view), stop: stopReportOf(view), ...(update.trust ? { trust: update.trust } : {}) })
+  })
+  const outcome = await run.done
+  if (outcome.kind !== 'committed') {
+    updaterLog(`[updater] v${update.version}: parada coordinada ${outcome.kind}${outcome.kind === 'failed' ? ` (${outcome.code})` : ''}`)
+    return postpone(update.version, [{ code: outcome.kind === 'failed' ? outcome.code : `stop_${outcome.kind}` }])
+  }
+  lastPostponed = ''
+  advancePhase(updateStore.dir, tx.transaction_id, 'swap_intent')
+  setUpdateReport({ phase: 'applying', version: update.version, ...(update.trust ? { trust: update.trust } : {}) })
+  updaterLog(`[updater] v${update.version}: reinicio silencioso`)
+  await exitForUpdate()
   return true
 }
 
