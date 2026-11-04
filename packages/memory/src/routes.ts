@@ -415,7 +415,14 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     prepare(); void service.get().then(({ network }) => network.start()).catch(() => {})
     defaultsTimer = setInterval(prepare, 5000); defaultsTimer.unref(); worker.start()
   })
-  app.addHook("preClose", async () => { await watchdog?.close(); await chatRuntime?.close() })
-  app.addHook('onClose', async () => { clearInterval(defaultsTimer); await watchdog?.close(); await chatRuntime?.close(); service.defaults.stop(); await worker.stop(); await service.close() })
+  app.addHook("preClose", async () => { await Promise.allSettled([chatRuntime?.close(), watchdog?.close()]) })
+  app.addHook("onClose", async () => {
+    clearInterval(defaultsTimer)
+    const failures: unknown[] = []
+    for (const step of [() => watchdog?.close(), () => chatRuntime?.close(), () => service.defaults.stop(), () => worker.stop(), () => service.close()]) {
+      try { await step() } catch (error) { failures.push(error) }
+    }
+    if (failures.length) throw failures[0]
+  })
   return { service, credentialReference: credential.reference, tools: memoryTools }
 }
