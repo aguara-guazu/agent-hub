@@ -30,7 +30,7 @@ import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { DRAIN_SECRET_HEADER, DrainClient, type DrainLease } from './update-lease.js'
-import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
+import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
 import { cooldownAfter, cooldownUntilMs, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
@@ -869,22 +869,25 @@ function setAutoUpdate(enabled: unknown): boolean {
  * Un cierre de la persona que quedó a medias (la app murió esperando la parada) deja una intención con reason 'quit'. Esta
  * app está corriendo de nuevo, así que esa parada ya no tiene sentido y no debe forzar un cierre del Hub: se cancela.
  */
+let reconcilePending: Promise<void> | null = null
 async function reconcileQuitIntent(): Promise<void> {
   const intent = updateStore.readStopIntent()
   if (intent?.reason !== 'quit') return
+  // Sólo se borra la intención de ESTE cierre anterior: un cierre nuevo puede haber guardado la suya.
+  const clearMine = (): void => { if (updateStore.readStopIntent()?.source_id === intent.source_id) updateStore.clearStopIntent() }
   for (let attempt = 0; attempt < 10; attempt++) {
     if (coreSupervisor.state === 'running') {
       const known = intent.stop_id ? await hubStopClient.status(intent.stop_id) : await hubStopClient.status()
       const view = known.view
       if (known.status === 404 || (view && view.sourceId === intent.source_id && ['cancelled', 'resumed', 'postponed', 'applied'].includes(view.state)) || (view && view.reason !== 'quit')) {
-        updateStore.clearStopIntent()
+        clearMine()
         return
       }
       if (view && view.sourceId === intent.source_id) {
         const cancelled = await hubStopClient.cancel(view.stopId, 'desktop_restarted')
-        if (cancelled.view || cancelled.status === 409) { updateStore.clearStopIntent(); updaterLog('[quit] se canceló la parada de un cierre anterior'); return }
+        if (cancelled.view || cancelled.status === 409) { clearMine(); updaterLog('[quit] se canceló la parada de un cierre anterior'); return }
       } else if (view || known.status !== null) {
-        updateStore.clearStopIntent()
+        clearMine()
         return
       }
     }
@@ -1499,43 +1502,31 @@ function quitStatusLine(): string | null {
  * (`forceQuit`) no espera: cancela la parada y sigue. Devuelve 'cancelled' si la persona canceló el cierre.
  */
 async function stopHubForQuit(): Promise<'proceed' | 'cancelled'> {
-  if (activeStop) {
-    activeStop.cancel('superseded_by_quit')
-    await activeStop.done
-  }
-  const run = startHubStop(stopAttempt({ reason: 'quit' }), view => { quitView = view; refreshTray() })
-  quitRun = run
-  quitTicker = setInterval(refreshTray, 1_000)
-  let watcher: ReturnType<typeof setInterval> | undefined
-  const system = new Promise<'system'>(resolve => { watcher = setInterval(() => { if (forceQuit) resolve('system') }, 250) })
-  try {
-    const result = await Promise.race([run.done, system])
-    if (result === 'system') {
-      // Se cancela la parada para que el Hub no quede esperando; core se cierra después por su camino normal (flota primero).
-      updaterLog('[quit] señal del sistema: se cancela la parada coordinada (system_signal) y se cierra sin esperar a los líderes')
-      run.cancel('system_signal')
-      await Promise.race([run.done, new Promise<void>(resolve => { setTimeout(resolve, 3_000).unref() })])
-      updateStore.clearStopIntent()
-      return 'proceed'
-    }
-    if (result.kind !== 'committed') updateStore.clearStopIntent()
-    if (result.kind === 'cancelled') return 'cancelled'
-    if (result.kind !== 'committed') updaterLog(`[quit] la parada coordinada terminó ${result.kind}${result.kind === 'failed' ? ` (${result.code})` : ''}; se cierra igual`)
-    return 'proceed'
-  } finally {
-    clearInterval(watcher)
-    clearInterval(quitTicker)
-    quitTicker = undefined
-    quitRun = null
-    quitView = null
-    refreshTray()
-  }
+  return runQuitFlow({
+    activeUpdate: activeStop,
+    startQuit: () => {
+      // Un cierre que quedó a medias antes de reiniciar lo cancela reconcileQuitIntent con su propia copia; este parte de cero.
+      if (updateStore.readStopIntent()?.reason === 'quit') updateStore.clearStopIntent()
+      return startHubStop(stopAttempt({ reason: 'quit' }), view => { quitView = view; refreshTray() })
+    },
+    forced: () => forceQuit,
+    client: hubStopClient,
+    clearIntent: () => updateStore.clearStopIntent(),
+    log: updaterLog,
+    onRun: run => {
+      quitRun = run
+      if (run) quitTicker = setInterval(refreshTray, 1_000)
+      else { clearInterval(quitTicker); quitTicker = undefined; quitView = null; refreshTray() }
+    },
+  })
 }
 
 async function quit(): Promise<void> {
   // Un segundo pedido de cierre no fuerza nada: se cancela desde el tray o vence el plazo de core.
   if (quitting) return
   quitting = true
+  // Si el arranque todavía está cancelando la parada de un cierre anterior, se la espera un momento para no adoptarla.
+  if (reconcilePending) await Promise.race([reconcilePending, new Promise<void>(resolve => { setTimeout(resolve, 3_000).unref() })])
   // Un cierre de la persona pasa por la parada coordinada; una actualización ya tiene core detenido por su commit.
   if (!installOnQuit && !relaunchAfterQuit && coreSupervisor.state === 'running') {
     if (await stopHubForQuit() === 'cancelled') { quitting = false; updaterLog('[quit] cierre cancelado'); refreshTray(); return }
@@ -1614,7 +1605,7 @@ else {
     registerShowWindowShortcut()
     app.on('activate', showWindow)
     // Recover any interrupted transaction and finish cleanup before a new download can create a directory it might remove.
-    void reconcileQuitIntent().catch(error => updaterLog(`[quit] intención anterior: ${error instanceof Error ? error.message : String(error)}`))
+    reconcilePending = reconcileQuitIntent().catch(error => updaterLog(`[quit] intención anterior: ${error instanceof Error ? error.message : String(error)}`))
     void startUpdateBookkeeping().then(() => updater.cleanup()).catch(error => updaterLog(`[updater] arranque: ${error instanceof Error ? error.message : String(error)}`)).then(() => silentUpdates.start())
     if (app.isPackaged && overrideSafe) updateHints.start()
     setInterval(() => void pollPendingRestarts(), PENDING_RESTART_POLL_MS).unref()

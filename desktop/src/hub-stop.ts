@@ -140,6 +140,8 @@ export interface HubStopRunDeps {
   maxUnreachable?: number
   /** Reintentos del commit mientras core responde que el cierre todavía no quedó programado. */
   maxCommitAttempts?: number
+  /** Vueltas de sondeo con el commit sin confirmar (red o 5xx) antes de rendirse. */
+  maxCommitRounds?: number
   /** Retiene a core mientras se tiene el lease (no se relanza solo); devuelve la función que lo libera. */
   holdCore?: () => () => void
 }
@@ -162,8 +164,13 @@ export class HubStopRun {
   private cancelRequested: string | null = null
   private committing = false
   private release: (() => void) | null = null
+  private identity: { pid: number; start: string } | null = null
+  private commitRounds = 0
   private wake: (() => void) | null = null
   readonly done: Promise<HubStopOutcome>
+
+  /** Id de la parada una vez creada; `null` si el backend no llegó a devolverla. */
+  get currentStopId(): string | null { return this.stopId }
 
   constructor(private readonly deps: HubStopRunDeps, private readonly input: HubStopRunInput) {
     this.sleep = deps.sleep ?? ((ms) => new Promise<void>((resolve) => { const timer = setTimeout(resolve, ms); this.wake = () => { clearTimeout(timer); resolve() } }))
@@ -232,25 +239,31 @@ export class HubStopRun {
   private async finish(view: HubStopView): Promise<HubStopOutcome | null> {
     const { client, core } = this.deps
     const stopId = view.stopId
-    if (view.state !== "applied" && !view.error?.actions.includes("commit")) {
-      if (this.input.reason === "update" && !this.input.transactionId) return { kind: "failed", code: "transaction_required", view }
-      const drained = await client.drain(stopId)
-      if (drained.kind === "converging") return null
-      if (drained.kind === "lease" && !this.release) this.release = this.deps.holdCore?.() ?? null
-      if (drained.kind !== "lease") { this.deps.log(`[hub-stop] drain ${drained.kind}${"reasons" in drained && drained.reasons.length ? `: ${drained.reasons.join(",")}` : ""}`); return null }
-    }
-    // La identidad de core se toma antes del commit: la salida se espera de ese mismo proceso (PID e inicio).
-    const pid = core.pid
-    const start = pid ? await this.deps.startTimeOf(pid) : null
-    if (!pid || !start || core.state !== "running") { this.deps.log("[hub-stop] core no está corriendo bajo la parada"); return null }
-    if (this.cancelRequested) return null
-    if (this.input.beforeCommit) {
-      try { await this.input.beforeCommit() } catch (error) {
-        this.deps.log(`[hub-stop] antes del commit: ${error instanceof Error ? error.message : String(error)}`)
-        await client.cancel(stopId, "before_commit_failed")
-        return { kind: "failed", code: "before_commit_failed", view }
+    // Tras el primer commit enviado no se vuelve a adquirir el lease ni a tomar la identidad de core: se repite el mismo commit.
+    if (!this.committing) {
+      if (view.state !== "applied" && !view.error?.actions.includes("commit")) {
+        if (this.input.reason === "update" && !this.input.transactionId) return { kind: "failed", code: "transaction_required", view }
+        const drained = await client.drain(stopId)
+        if (drained.kind === "converging") return null
+        if (drained.kind === "lease" && !this.release) this.release = this.deps.holdCore?.() ?? null
+        if (drained.kind !== "lease") { this.deps.log(`[hub-stop] drain ${drained.kind}${"reasons" in drained && drained.reasons.length ? `: ${drained.reasons.join(",")}` : ""}`); return null }
       }
+      // La identidad de core se toma antes del commit: la salida se espera de ese mismo proceso (PID e inicio).
+      const pid = core.pid
+      const start = pid ? await this.deps.startTimeOf(pid) : null
+      if (!pid || !start || core.state !== "running") { this.deps.log("[hub-stop] core no está corriendo bajo la parada"); return null }
+      if (this.cancelRequested) return null
+      if (this.input.beforeCommit) {
+        try { await this.input.beforeCommit() } catch (error) {
+          this.deps.log(`[hub-stop] antes del commit: ${error instanceof Error ? error.message : String(error)}`)
+          await client.cancel(stopId, "before_commit_failed")
+          return { kind: "failed", code: "before_commit_failed", view }
+        }
+      }
+      this.identity = { pid, start }
     }
+    const { pid, start } = this.identity!
+    // Con el primer commit enviado el servidor pudo comprometer el drenaje: sólo un 4xx explícito devuelve la posibilidad de cancelar.
     this.committing = true
     const maxAttempts = this.deps.maxCommitAttempts ?? 5
     let result = await client.commit(stopId, this.input.transactionId)
@@ -259,10 +272,15 @@ export class HubStopRun {
       result = await client.commit(stopId, this.input.transactionId)
     }
     if (!result.view) {
-      // 4xx: la parada ya no admite el commit (cancelada, vencida). Hasta aquí core no recibió la orden de salir.
-      this.committing = false
       this.deps.log(`[hub-stop] commit no aceptado (HTTP ${result.status ?? "red"})`)
-      return result.status !== null && result.status < 500 ? { kind: "failed", code: "commit_refused", view } : null
+      if (result.status !== null && result.status < 500) {
+        this.committing = false
+        this.identity = null
+        return { kind: "failed", code: "commit_refused", view }
+      }
+      // Red o 5xx: el mismo commit se repite en la próxima vuelta (es idempotente), con un tope.
+      if (++this.commitRounds >= (this.deps.maxCommitRounds ?? 30)) return { kind: "failed", code: "commit_unconfirmed", view }
+      return null
     }
     this.input.onView?.(result.view)
     const exited = async (): Promise<boolean> => await this.deps.startTimeOf(pid) !== start
@@ -315,4 +333,66 @@ export function formatCountdown(ms: number | null): string {
   if (ms === null) return "--:--"
   const total = Math.ceil(ms / 1000)
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`
+}
+
+export interface QuitFlowDeps {
+  /** Parada de update en curso, si la hay: se cancela antes de pedir la del cierre. */
+  activeUpdate: HubStopRun | null
+  /** Crea y arranca la parada del cierre (guarda la intención y engancha la vista). */
+  startQuit: () => HubStopRun
+  /** Señal del sistema (fin de sesión, SIGTERM, SIGINT): no se espera a nadie. */
+  forced: () => boolean
+  client: HubStopClient
+  clearIntent: () => void
+  log: (line: string) => void
+  capMs?: number
+  forcedPollMs?: number
+  /** Para que el llamador (tray) sepa qué parada de cierre está en curso. */
+  onRun?: (run: HubStopRun | null) => void
+}
+
+/**
+ * Espera de un cierre de la persona. Toda espera respeta una señal del sistema (se cancela con `system_signal` y se sigue con un
+ * tope corto). Si la parada termina sin commit, se intenta cancelarla en el backend y la intención sólo se borra si se confirmó.
+ */
+export async function runQuitFlow(deps: QuitFlowDeps): Promise<"proceed" | "cancelled"> {
+  const cap = deps.capMs ?? 3_000
+  let watcher: ReturnType<typeof setInterval> | undefined
+  const system = new Promise<"system">((resolve) => { watcher = setInterval(() => { if (deps.forced()) resolve("system") }, deps.forcedPollMs ?? 250) })
+  const timer = <T>(value: T): Promise<T> => new Promise<T>((resolve) => { setTimeout(() => resolve(value), cap).unref() })
+  const cancelForSignal = async (run: HubStopRun): Promise<"proceed"> => {
+    deps.log("[quit] señal del sistema: se cancela la parada coordinada (system_signal) y se cierra sin esperar a los líderes")
+    run.cancel("system_signal")
+    await Promise.race([run.done, timer(null)])
+    return "proceed"
+  }
+  try {
+    if (deps.activeUpdate) {
+      deps.activeUpdate.cancel("superseded_by_quit")
+      if (await Promise.race([deps.activeUpdate.done, system]) === "system") return await cancelForSignal(deps.activeUpdate)
+    }
+    const run = deps.startQuit()
+    deps.onRun?.(run)
+    const result = await Promise.race([run.done, system])
+    if (result === "system") {
+      const proceed = await cancelForSignal(run)
+      deps.clearIntent()
+      return proceed
+    }
+    if (result.kind === "cancelled") { deps.clearIntent(); return "cancelled" }
+    if (result.kind === "committed") return "proceed"
+    deps.log(`[quit] la parada coordinada terminó ${result.kind}${result.kind === "failed" ? ` (${result.code})` : ""}; se cierra igual`)
+    const stopId = (result.kind === "failed" ? result.view?.stopId : null) ?? run.currentStopId
+    let settled = false
+    if (stopId) {
+      const outcome = await Promise.race([deps.client.cancel(stopId, "desktop_quit_failed"), timer(null)])
+      settled = Boolean(outcome && (outcome.view || outcome.status === 409))
+    }
+    if (settled) deps.clearIntent()
+    else deps.log("[quit] no se confirmó la cancelación de la parada; se reintenta al próximo arranque")
+    return "proceed"
+  } finally {
+    clearInterval(watcher)
+    deps.onRun?.(null)
+  }
 }
