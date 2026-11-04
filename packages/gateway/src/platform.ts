@@ -90,3 +90,34 @@ export function renameRetrySync(from: string, to: string): void {
     }
   }
 }
+
+/**
+ * Calls `onOrphan` once when the process that launched this one is gone, and returns a function that stops the watch.
+ *
+ * It stays inactive when the initial parent is PID 1 or lower (launchd, init or a container entrypoint started it on purpose),
+ * when `AGENTHUB_STDIN_LIFELINE=1` (the desktop app already covers this through stdin) and when `AGENTHUB_EXIT_WITH_PARENT=0`.
+ * Elsewhere it polls: the parent changed (POSIX reparenting), or the initial parent no longer exists (Windows keeps the old ppid).
+ * EPERM means the parent exists but belongs to another user, so it does not count as gone.
+ */
+export function exitWithParent(onOrphan: () => void, options: { intervalMs?: number } = {}): () => void {
+  const initial = process.ppid
+  if (initial <= 1 || process.env.AGENTHUB_STDIN_LIFELINE === "1" || process.env.AGENTHUB_EXIT_WITH_PARENT === "0") return () => undefined
+  let fired = false
+  const gone = (): boolean => {
+    if (process.ppid !== initial) return true
+    try {
+      process.kill(initial, 0)
+      return false
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH"
+    }
+  }
+  const timer = setInterval(() => {
+    if (fired || !gone()) return
+    fired = true
+    clearInterval(timer)
+    onOrphan()
+  }, options.intervalMs ?? 2000)
+  timer.unref()
+  return () => clearInterval(timer)
+}
