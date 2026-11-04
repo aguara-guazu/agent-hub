@@ -72,19 +72,35 @@ function draftsFolder(memoryDirectory: string, create: boolean): { path: string;
 function sameFolder(folder: { path: string; dev: number; ino: number }): boolean {
   try { const stat = lstatSync(folder.path); return stat.isDirectory() && stat.dev === folder.dev && stat.ino === folder.ino } catch { return false }
 }
-/** Removes regular draft files older than DRAFT_TTL_MS (all of them with maxAgeMs=0); never follows links. */
+/** Drafts with a pending deletion timer in this process, so repeated sweeps do not stack timers. */
+const draftTimers = new Set<string>()
+/** Deletes the draft once its TTL elapses, only if it is still the same file (dev/ino) in the same folder. */
+function expireDraft(file: string, identity: { dev: number; ino: number }, folder: { path: string; dev: number; ino: number }, delayMs: number) {
+  if (draftTimers.has(file)) return
+  draftTimers.add(file)
+  setTimeout(() => {
+    draftTimers.delete(file)
+    try { const entry = lstatSync(file); if (entry.isFile() && entry.dev === identity.dev && entry.ino === identity.ino && sameFolder(folder)) unlinkSync(file) } catch { /* Already published or removed. */ }
+  }, Math.max(0, delayMs)).unref()
+}
+/**
+ * Removes regular draft files older than DRAFT_TTL_MS (all of them with maxAgeMs=0) and arms a timer for the remaining TTL of
+ * the younger ones, so a draft survives a restart only until its hour is up; never follows links.
+ */
 export function sweepIssueDrafts(memoryDirectory: string, maxAgeMs = DRAFT_TTL_MS): number {
   let removed = 0
   try {
     const folder = draftsFolder(memoryDirectory, false)
     if (!folder) return 0
-    const cutoff = Date.now() - maxAgeMs
+    const now = Date.now(), cutoff = now - maxAgeMs
     for (const name of readdirSync(folder.path)) {
       if (!DRAFT_NAME.test(name)) continue
       const file = join(folder.path, name)
       try {
         const entry = lstatSync(file)
-        if (entry.isFile() && entry.mtimeMs <= cutoff && sameFolder(folder)) { unlinkSync(file); removed++ }
+        if (!entry.isFile() || !sameFolder(folder)) continue
+        if (entry.mtimeMs <= cutoff) { unlinkSync(file); removed++ }
+        else expireDraft(file, entry, folder, entry.mtimeMs + DRAFT_TTL_MS - now)
       } catch { /* Removed meanwhile. */ }
     }
   } catch { /* No drafts folder yet. */ }
@@ -108,10 +124,7 @@ function writeDraft(memoryDirectory: string, body: string): string | undefined {
     if (!sameFolder(folder)) return undefined
     const name = `${randomUUID()}.md`, file = join(folder.path, name)
     writeFileSync(file, body, { mode: 0o600, flag: "wx" })
-    const identity = lstatSync(file)
-    setTimeout(() => {
-      try { const entry = lstatSync(file); if (entry.isFile() && entry.dev === identity.dev && entry.ino === identity.ino && sameFolder(folder)) unlinkSync(file) } catch { /* Already published or removed. */ }
-    }, DRAFT_TTL_MS).unref()
+    expireDraft(file, lstatSync(file), folder, DRAFT_TTL_MS)
     return file
   } catch { return undefined }
 }
