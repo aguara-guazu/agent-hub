@@ -415,6 +415,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     prepare(); void service.get().then(({ network }) => network.start()).catch(() => {})
     defaultsTimer = setInterval(prepare, 5000); defaultsTimer.unref(); worker.start()
   })
+  app.addHook("preClose", async () => { await watchdog?.close(); await chatRuntime?.close() })
   app.addHook('onClose', async () => { clearInterval(defaultsTimer); await watchdog?.close(); await chatRuntime?.close(); service.defaults.stop(); await worker.stop(); await service.close() })
   return { service, credentialReference: credential.reference, tools: memoryTools }
 }
