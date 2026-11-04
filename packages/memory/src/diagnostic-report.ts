@@ -1,15 +1,12 @@
-import { execFile } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { homedir, release } from "node:os"
 import { join } from "node:path"
-import { promisify } from "node:util"
 import { z } from "zod"
 import { check } from "./contracts.js"
 import { findExtractionCli, type ExtractionCli } from "./cli-extraction.js"
 import type { Sql } from "./database.js"
 import { buildReport, tailLog } from "./report.js"
 
-const exec = promisify(execFile)
 const WINDOW_MAX_MS = 24 * 60 * 60_000
 const LOG_LINES = 200
 const LOGS = ["hub", "core", "daemon", "worker"] as const
@@ -28,15 +25,9 @@ export const diagnosticReportInput = z.object({
 function hubVersion(): string {
   try { return String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version) } catch { return "-" }
 }
-async function cliVersion(cli: ExtractionCli): Promise<string> {
-  const binary = findExtractionCli(cli)
-  if (!binary) return "no instalada"
-  const js = binary.endsWith(".js")
-  try {
-    const { stdout } = await exec(js ? process.execPath : binary, [...(js ? [binary] : []), "--version"],
-      { timeout: 5_000, maxBuffer: 65_536, windowsHide: true, env: { ...process.env, ...(js ? { ELECTRON_RUN_AS_NODE: "1" } : {}) } })
-    return stdout.trim().split("\n")[0]?.slice(0, 120) || "instalada"
-  } catch { return "instalada (sin versión)" }
+/** Installed or not, from the CLI's path only: no CLI is executed (some touch the person's keychain). */
+function cliInstalled(cli: ExtractionCli): string {
+  return findExtractionCli(cli) ? "instalada" : "no instalada"
 }
 /** Log lines whose own timestamp (text prefix or JSON ts) falls inside the window; lines without one are skipped. */
 function windowLines(path: string, from: string, to: string): string[] {
@@ -55,7 +46,7 @@ export async function diagnosticReport(sql: Sql, memoryDirectory: string, raw: z
   check(from < to && Date.parse(to) - Date.parse(from) <= WINDOW_MAX_MS, "La ventana debe ir de from a to y durar como máximo 24 h.", 400)
   const logDir = process.env.AGENTHUB_LOG_DIR || join(memoryDirectory, "logs")
   const clis: Record<string, string> = {}
-  for (const [cli, label] of CLIS) clis[label] = await cliVersion(cli)
+  for (const [cli, label] of CLIS) clis[label] = cliInstalled(cli)
   const incidents = await sql.query(`SELECT observed_at,subject_kind,cause,action,member_id,generation FROM process_incidents
     WHERE observed_at>=$1 AND observed_at<=$2 ORDER BY observed_at LIMIT ${LOG_LINES}`, [from, to])
   const notices = await sql.query(`SELECT created_at,cause,session_id,recipient_id,cancelled_at IS NOT NULL AS cancelled FROM chat_status_notices
