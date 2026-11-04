@@ -927,5 +927,6 @@ UPDATE chat_channels SET closed_at=COALESCE(closed_at,${NOW}),archived_at=${NOW}
   AND NOT EXISTS(SELECT 1 FROM chat_sessions s WHERE s.channel_id=chat_channels.id AND s.closed_at IS NULL);
 UPDATE chat_channels SET closed_at=COALESCE(closed_at,${NOW}),archived_at=COALESCE(archived_at,${NOW}),updated_at=${NOW}
  WHERE kind='virtual' AND deleted_at IS NULL AND id IN (SELECT m.channel_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
-  WHERE m.channel_id IS NOT NULL AND p.state IN ('cancelled','completed'));
+  WHERE m.channel_id IS NOT NULL AND p.state IN ('cancelled','completed'))
+  AND NOT EXISTS(SELECT 1 FROM chat_sessions s WHERE s.channel_id=chat_channels.id AND s.closed_at IS NULL);
 `]
