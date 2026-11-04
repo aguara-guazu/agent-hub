@@ -411,7 +411,7 @@ it('crea canales independientes, conserva identidad y cierra sólo el canal pedi
   await expect(ops.call('chat_join',{session_key:ka},'mcp',first)).rejects.toThrow('cerrado')
   expect((await ops.call('chat_read',{thread_id:message.thread_id})).items[0].text).toBe('Historia')
   const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id))
-  expect(backup.schema_version).toBe(23)
+  expect(backup.schema_version).toBe(24)
   const restored=new MemoryDatabase(join(dir,'restored','memory.sqlite'));await restored.migrate()
   try {
     await restoreMemory(new MemoryStore(restored,join(dir,'restored')),backup)
