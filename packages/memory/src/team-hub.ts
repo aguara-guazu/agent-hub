@@ -575,12 +575,5 @@ export class HubTeamRuntime implements TeamOrca {
   async interrupt(handle: string): Promise<FleetStatus> { this.requireEnabled(); return this.manager.interrupt(handle) }
   async stop(handle: string): Promise<FleetStatus> { return this.manager.stop(handle) }
   async suspend(): Promise<void> { await Promise.all(this.manager.list().map(member => this.manager.stop(member.id))) }
-  /** Resolves only when every member's exit was confirmed; otherwise logs each unconfirmed member and rejects after stopping all of them. */
-  async close(): Promise<void> {
-    await this.manager.close()
-    const unconfirmed = this.manager.list().filter(member => member.state !== 'stopped')
-    if (!unconfirmed.length) return
-    for (const member of unconfirmed) hubLog(this.directory).event("fleet", "stop_unconfirmed", { member_id: member.id, generation: this.generations.get(member.id), state: member.state, error_code: member.error_code })
-    throw new MemoryError(503, `fleet_stop_unconfirmed:${unconfirmed.length}`)
-  }
+  async close(): Promise<void> { await this.manager.close() }
 }
