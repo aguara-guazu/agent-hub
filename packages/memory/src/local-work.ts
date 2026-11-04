@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { check, id } from './contracts.js'
+import { ACTIVE_TEAM_STATES } from './chat-access.js'
 import type { Sql } from './database.js'
 
 const session = {session_key:z.string().min(32).max(200).optional()}
@@ -35,6 +36,15 @@ export async function updateWork(sql:Sql,sessionId:string,input:z.infer<typeof w
   if(input.report_message_id) {
     check((await sql.query('SELECT id FROM chat_messages WHERE id=$1 AND thread_id=$2 AND author_id=$3',
       [input.report_message_id,input.thread_id,sessionId])).length,'El reporte debe ser un mensaje propio del mismo hilo',400)
+  }
+  if(input.event==='completed' && input.report_message_id) {
+    const plan=(await sql.query(`SELECT p.created_by,p.root_thread_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+      WHERE m.session_id=$1 AND m.state='joined' AND p.state IN (${ACTIVE_TEAM_STATES.map(state=>`'${state}'`).join(',')}) LIMIT 1`,[sessionId]))[0]
+    if(plan && plan.created_by!==sessionId) {
+      const inPlan=(await sql.query(`SELECT 1 FROM chat_threads h WHERE h.id=$1 AND (h.id=$2 OR h.team_root_thread_id=$2)`,[input.thread_id,plan.root_thread_id])).length>0
+      if(inPlan) check((await sql.query('SELECT 1 FROM chat_deliveries WHERE message_id=$1 AND recipient_id=$2 AND cancelled_at IS NULL',[input.report_message_id,plan.created_by])).length,
+        'El reporte de cierre debe mencionar al coordinador del plan (master_session_id) en tu work_thread_id.',409)
+    }
   }
   const now=new Date().toISOString(),status=input.event==='waiting'?'waiting':input.event==='completed'?'completed':'active'
   // Starting work, presence, Stop and heartbeat are not proof of task progress.
