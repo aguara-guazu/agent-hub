@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { advancePhase, canAdvance, healthyFile, journalFile, readTransaction, writeJsonDurable, type UpdateTransaction } from "./update-transaction.js"
 import { recoverTransaction } from "./update-recovery.js"
+import { confirmWhenHealthy } from "./update-rollback.js"
 
 const paths: string[] = []
 const transaction = (dir: string): UpdateTransaction => ({
@@ -50,6 +51,7 @@ describe("transacción del updater", () => {
     expect(canAdvance("launched", "swapped")).toBe(false)
     expect(canAdvance("rolled_back", "done")).toBe(false)
     expect(canAdvance("swapped", "rolled_back")).toBe(true)
+    expect(canAdvance("staged", "rolled_back")).toBe(false)
     expect(canAdvance("swap_intent", "ambiguous")).toBe(true)
   })
 
@@ -70,6 +72,26 @@ describe("transacción del updater", () => {
     advancePhase(dir, tx.transaction_id, "admitted")
 
     expect(readTransaction(dir)).toMatchObject({ kind: "ok", tx: { phase: "admitted", new_app: { pid: 102, start: "new-start" } } })
+  })
+
+  it("actualiza la identidad de la app al reanudar una transacción admitida", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenthub-update-identity-"))
+    paths.push(dir)
+    const tx = { ...transaction(dir), phase: "admitted" as const, new_app: { pid: 102, start: "old-new-start" } }
+    writeJsonDurable(journalFile(dir), tx)
+
+    const stop = confirmWhenHealthy({
+      updateDir: dir,
+      transaction: tx,
+      pid: 202,
+      startTime: "replacement-start",
+      healthy: () => false,
+      discardBackup: async () => undefined,
+      log: () => undefined,
+    })
+    stop()
+
+    expect(readTransaction(dir)).toMatchObject({ kind: "ok", tx: { phase: "admitted", new_app: { pid: 202, start: "replacement-start" } } })
   })
 
   it("distingue una transacción aplicada cuyo watchdog murió", async () => {

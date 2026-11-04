@@ -54,7 +54,7 @@ export async function recoverTransaction(deps: RecoveryDeps): Promise<Recovery> 
     }
     // Sin transacción ni restos, los marcadores sueltos no refieren a nada.
     try {
-      for (const name of readdirSync(deps.updateDir)) if (/^(started|healthy|watchdog-ready)-[A-Za-z0-9-]+\.json$|^watchdog-[A-Za-z0-9-]+$/.test(name)) removeDurable(join(deps.updateDir, name))
+      for (const name of readdirSync(deps.updateDir)) if (/^(started|healthy|watchdog-ready|rollback-request|rollback-ready)-[A-Za-z0-9-]+\.json$|^watchdog-[A-Za-z0-9-]+$/.test(name)) removeDurable(join(deps.updateDir, name))
     } catch { /* el directorio puede no existir */ }
     return "none"
   }

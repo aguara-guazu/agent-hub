@@ -125,7 +125,8 @@ export function validateLayout(tx: UpdateTransaction, stateDir: string): void {
 /** A phase advances one durable step at a time; terminal outcomes may be recorded from any nonterminal step. */
 export function canAdvance(from: Phase, to: Phase): boolean {
   if ((TERMINAL_PHASES as readonly string[]).includes(from)) return from === to
-  if ((TERMINAL_PHASES as readonly string[]).includes(to)) return true
+  if (to === "ambiguous") return true
+  if (to === "rolled_back") return ["swapped", "launched", "admitting", "admitted"].includes(from)
   return to === from || phaseRank(to) === phaseRank(from) + 1
 }
 export const phaseRank = (phase: Phase): number => (PHASES as readonly string[]).indexOf(phase)

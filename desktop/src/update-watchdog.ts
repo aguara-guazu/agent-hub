@@ -11,7 +11,7 @@ import { appendFileSync, copyFileSync, mkdirSync, realpathSync, statSync, writeF
 import { basename, dirname, isAbsolute, join, sep } from "node:path"
 import {
   acquireSwapBackLock, addToBlacklist, advancePhase, bundleVersion, clearTransactionFiles, fsyncPathSync, hasIncomingRemnants, healthyFile, inspectSides,
-  parseHealthyMarker, parseStartedMarker, phaseRank, readJson, readTransaction, readyFile, removeDurable, rollbackRequestFile, sha256File, startedFile, validateLayout, watchdogDir, writeJsonDurable,
+  parseHealthyMarker, parseStartedMarker, phaseRank, readJson, readTransaction, readyFile, removeDurable, rollbackReadyFile, rollbackRequestFile, sha256File, startedFile, validateLayout, watchdogDir, writeJsonDurable,
   type Identity, type Sides, type UpdateTransaction as Transaction,
 } from "./update-transaction.js"
 
@@ -329,7 +329,7 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
         read: () => { const current = readTransaction(args.updateDir); return current.kind === "ok" ? current.tx : null },
         isAlive: sameProcess,
         sides: inspectSides,
-        lock: () => acquireSwapBackLock(args.updateDir),
+        lock: () => acquireSwapBackLock(args.updateDir, { pid: myPid, start: myStart }, sameProcess),
         swap: current => {
           const candidate = join(current.paths.runtime_old, "Contents", "Resources", "bin", "agenthub-swap")
           const info = statSync(candidate)
@@ -390,7 +390,7 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
 
   // La app vieja exacta debe haber terminado: con ella viva no se intercambia ni se relanza (retiene el candado de instancia única y el puerto).
   if (sameProcess(tx.old_app)) return ambiguous("la app vieja volvió a estar viva antes del rollback; no se toca nada")
-  const release = acquireSwapBackLock(args.updateDir)
+  const release = acquireSwapBackLock(args.updateDir, { pid: myPid, start: myStart }, sameProcess)
   if (!release) return ambiguous("otro proceso está deshaciendo el intercambio", false)
   let released = false
   const unlock = (): void => { if (!released) { released = true; release() } }
@@ -405,7 +405,15 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
       waitForExit: async identity => {
         const deadline = Date.now() + args.oldExitMs
         while (sameProcess(identity) && Date.now() < deadline) await sleep(500)
-        return !sameProcess(identity)
+        if (sameProcess(identity)) return false
+        const ready = readJson(rollbackReadyFile(args.updateDir, tx.transaction_id))
+        const value = ready.ok ? ready.value as {
+          transaction_id?: unknown; version?: unknown; app?: { pid?: unknown; start?: unknown }; core?: { pid?: unknown; start?: unknown }
+        } : null
+        const appMatches = value?.transaction_id === tx.transaction_id && value.version === tx.to.version
+          && value.app?.pid === identity.pid && value.app.start === identity.start
+        const corePid = value?.core?.pid, coreStart = value?.core?.start
+        return Boolean(appMatches && Number.isInteger(corePid) && typeof coreStart === "string" && startTimeOf(corePid as number) !== coreStart)
       },
       stopUnadmitted: current => stopNewApp(current, installed, (swapSeenAt ?? startedAt) - SWAP_START_TOLERANCE_MS, log),
     })
@@ -416,6 +424,7 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
     tx = beforeSwap.tx
     if (sameProcess(tx.old_app) || (tx.new_app && sameProcess(tx.new_app))) return ambiguous("una app registrada sigue viva antes del rollback")
     if (inspectSides(tx) !== "swapped") return ambiguous("los lados cambiaron antes del rollback")
+    if (sha256File(helper) !== args.helperSha256) return ambiguous("el agenthub-swap cambió antes del rollback")
     // 4b. Intercambio atómico de vuelta con el helper de la versión anterior; después se verifica y se hace durable.
     execFileSync(helper, [installed, incoming], { stdio: "ignore" })
     fsyncPathSync(dirname(installed))

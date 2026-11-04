@@ -4,7 +4,7 @@
  */
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { advancePhase, clearTransactionFiles, healthyFile, startedFile, writeJsonDurable, type UpdateTransaction } from "./update-transaction.js"
+import { advancePhase, clearTransactionFiles, healthyFile, readTransaction, startedFile, writeJsonDurable, type UpdateTransaction } from "./update-transaction.js"
 
 /** Arranque de core y sesión del escritorio: igual a `SESSION_TIMEOUT_MS` de main.ts. */
 export const HEALTH_STARTUP_MS = 60_000
@@ -90,8 +90,12 @@ export function confirmWhenHealthy(deps: HealthDeps): () => void {
   const now = deps.now ?? Date.now
   const { updateDir, transaction: tx } = deps
   writeJsonDurable(startedFile(updateDir, tx.transaction_id), { transaction_id: tx.transaction_id, version: tx.to.version, pid: deps.pid, start: deps.startTime })
-  // Un segundo arranque durante la misma confirmación (fase ya `launched`) conserva la fase y vuelve a escribir su marcador.
-  if (tx.phase === "swapped") advancePhase(updateDir, tx.transaction_id, "launched", { new_app: { pid: deps.pid, start: deps.startTime } })
+  const current = readTransaction(updateDir)
+  if (current.kind !== "ok" || current.tx.transaction_id !== tx.transaction_id) throw new Error("la transacción cambió antes de registrar la app nueva")
+  const identity = { new_app: { pid: deps.pid, start: deps.startTime } }
+  if (current.tx.phase === "swapped") advancePhase(updateDir, tx.transaction_id, "launched", identity)
+  else if (["launched", "admitting", "admitted"].includes(current.tx.phase)) advancePhase(updateDir, tx.transaction_id, current.tx.phase, identity)
+  else throw new Error(`la fase ${current.tx.phase} no admite una app nueva`)
   return whenStablyHealthy(deps, async () => {
     try {
       deps.onConfirmed?.()

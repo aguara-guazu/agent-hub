@@ -8,7 +8,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readdirSync, 
 import { dirname, join } from "node:path"
 import {
   HEX64, canAdvance, incomingPrefix, isStrictSemver, parseBlacklist, parseTransaction,
-  type BlacklistEntry, type Phase, type UpdateTransaction,
+  type BlacklistEntry, type Identity, type Phase, type UpdateTransaction,
 } from "./update-contract.js"
 
 export * from "./update-contract.js"
@@ -23,6 +23,7 @@ export const startedFile = (dir: string, id: string): string => join(dir, `start
 export const healthyFile = (dir: string, id: string): string => join(dir, `healthy-${id}.json`)
 export const readyFile = (dir: string, id: string): string => join(dir, `watchdog-ready-${id}.json`)
 export const rollbackRequestFile = (dir: string, id: string): string => join(dir, `rollback-request-${id}.json`)
+export const rollbackReadyFile = (dir: string, id: string): string => join(dir, `rollback-ready-${id}.json`)
 /** Directorio con la copia del vigía y de este módulo para una transacción. */
 export const watchdogDir = (dir: string, id: string): string => join(dir, `watchdog-${id}`)
 export const sidecarFile = (dir: string, id: string): string => join(dir, `blacklist-${id}.json`)
@@ -91,7 +92,7 @@ export function advancePhase(dir: string, expectedId: string, phase: Phase, patc
 
 /** Quita el journal, los marcadores, la copia del vigía y el sidecar de una transacción, con fsync del directorio. */
 export function clearTransactionFiles(dir: string, id: string): void {
-  for (const file of [journalFile(dir), startedFile(dir, id), healthyFile(dir, id), readyFile(dir, id), rollbackRequestFile(dir, id), watchdogDir(dir, id), sidecarFile(dir, id)]) removeDurable(file)
+  for (const file of [journalFile(dir), startedFile(dir, id), healthyFile(dir, id), readyFile(dir, id), rollbackRequestFile(dir, id), rollbackReadyFile(dir, id), watchdogDir(dir, id), sidecarFile(dir, id)]) removeDurable(file)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -104,19 +105,27 @@ const swapBackLock = (dir: string): string => join(dir, "swap-back.lock")
  * de invocar el helper, para que dos intercambios de vuelta nunca se encadenen y vuelvan a dejar la versión nueva instalada.
  * Un candado cuyo dueño ya no existe se recupera. Devuelve la función que lo libera, o `null` si lo tiene otro proceso vivo.
  */
-export function acquireSwapBackLock(dir: string, alive: (pid: number) => boolean = (pid) => { try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH" } }): (() => void) | null {
+export function acquireSwapBackLock(dir: string, owner: Identity, alive: (identity: Identity) => boolean): (() => void) | null {
   const path = swapBackLock(dir)
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const nonce = randomBytes(16).toString("hex")
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const fd = openSync(path, "wx", 0o600)
-      try { writeSync(fd, JSON.stringify({ pid: process.pid })); fsyncSync(fd) } finally { closeSync(fd) }
+      try { writeSync(fd, JSON.stringify({ ...owner, nonce })); fsyncSync(fd) } finally { closeSync(fd) }
       fsyncPathSync(dir)
-      return () => removeDurable(path)
+      return () => {
+        const current = readJson(path)
+        if (current.ok && isObject(current.value) && current.value.nonce === nonce) removeDurable(path)
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
       const holder = readJson(path)
-      const pid = holder.ok && isObject(holder.value) && Number.isInteger(holder.value.pid) ? (holder.value.pid as number) : null
-      if (pid !== null && alive(pid)) return null
+      const value = holder.ok && isObject(holder.value) ? holder.value : null
+      const identity = value && Number.isInteger(value.pid) && typeof value.start === "string"
+        ? { pid: value.pid as number, start: value.start } : null
+      if (identity && alive(identity)) return null
+      const current = readJson(path)
+      if (!current.ok || !isObject(current.value) || current.value.nonce !== value?.nonce) continue
       removeDurable(path)
     }
   }

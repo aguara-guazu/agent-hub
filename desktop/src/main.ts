@@ -24,7 +24,7 @@ import { holdLimitFor, KeepAwake } from './keep-awake.js'
 import { deliveryNotice, FeedPoller, ScheduleNoticeBatcher, type FeedResponse, type Notice } from './schedule-feed.js'
 import { AutoUpdater, bundlePathFrom, fetchLatestRelease, fsyncPath, realBundlePath, resolveFeed, revalidateArtifact, type UpdateStatus } from "./updater.js"
 import { UpdateStateCorruptError, UpdateStore } from './update-state.js'
-import { advancePhase, inspectSides, readJson, readTransaction, removeTreeDurable, rollbackRequestFile, type UpdateTransaction } from './update-transaction.js'
+import { advancePhase, inspectSides, readJson, readTransaction, removeTreeDurable, rollbackReadyFile, rollbackRequestFile, writeJsonDurable, type UpdateTransaction } from './update-transaction.js'
 import { prepareWatchdog } from './update-watchdog.js'
 import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
@@ -628,8 +628,9 @@ async function exitForRollback(transaction: UpdateTransaction): Promise<void> {
   updateExiting = true
   silentUpdates.stop()
   updateHints.stop()
-  const deadline = Date.now() + HEALTH_DEADLINE_MS
-  while (Date.now() < deadline) {
+  for (;;) {
+    const current = readTransaction(updateStore.dir)
+    if (current.kind !== "ok" || current.tx.transaction_id !== transaction.transaction_id || !["admitting", "admitted"].includes(current.tx.phase)) break
     if (!await drainClient.admitStartup(transaction.transaction_id)) {
       await new Promise<void>(resolve => setTimeout(resolve, 1_000))
       continue
@@ -641,8 +642,16 @@ async function exitForRollback(transaction: UpdateTransaction): Promise<void> {
     }
     const releaseHold = coreSupervisor.hold()
     try {
-      await commitCore(gate.lease)
-      releaseHold()
+      const appStart = await processStartTime(process.pid)
+      if (!appStart) throw new Error("no se pudo identificar la app antes del rollback")
+      const core = await commitCore(gate.lease)
+      writeJsonDurable(rollbackReadyFile(updateStore.dir, transaction.transaction_id), {
+        transaction_id: transaction.transaction_id,
+        version: transaction.to.version,
+        app: { pid: process.pid, start: appStart },
+        core,
+        ready_at: new Date().toISOString(),
+      })
       await exitForUpdate()
       return
     } catch (error) {
@@ -652,7 +661,9 @@ async function exitForRollback(transaction: UpdateTransaction): Promise<void> {
     }
     await new Promise<void>(resolve => setTimeout(resolve, 1_000))
   }
-  updaterLog(`[updater] rollback ${transaction.transaction_id}: no se logró drenar antes del plazo; el vigía conserva la evidencia`)
+  await drainClient.cancelPending()
+  updateExiting = false
+  updaterLog(`[updater] rollback ${transaction.transaction_id}: la transacción dejó de admitir rollback; se conserva la evidencia`)
 }
 
 /** Borra y comprueba: rechaza si algo quedó y hace durable el borrado (fsync del padre). Quien cierra una transacción depende de ello. */
@@ -799,17 +810,21 @@ async function startUpdateBookkeeping(): Promise<void> {
   let startupTransaction: string | null = null
   let activeTransaction: UpdateTransaction | null = null
   let rollbackExit: Promise<void> | null = null
+  let rollbackObserver: ReturnType<typeof setInterval> | null = null
+  const observeRollback = (): boolean => {
+    if (!activeTransaction) return false
+    const request = readJson(rollbackRequestFile(updateStore.dir, activeTransaction.transaction_id))
+    const value = request.ok ? request.value as { transaction_id?: unknown; version?: unknown } : null
+    if (value?.transaction_id !== activeTransaction.transaction_id || value.version !== activeTransaction.to.version) return false
+    rollbackExit ??= exitForRollback(activeTransaction)
+      .catch(error => updaterLog(`[updater] rollback: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => { rollbackExit = null })
+    return true
+  }
   const healthy = async (): Promise<boolean> => {
+    if (observeRollback()) return false
     if (!stateOk || coreSupervisor.state !== "running" || daemonSupervisor.state !== "running" || !sessionToken) return false
     if (expectRuntime && !runtimeCurrentMatches(app.getVersion())) return false
-    if (activeTransaction) {
-      const request = readJson(rollbackRequestFile(updateStore.dir, activeTransaction.transaction_id))
-      const value = request.ok ? request.value as { transaction_id?: unknown; version?: unknown } : null
-      if (value?.transaction_id === activeTransaction.transaction_id && value.version === activeTransaction.to.version) {
-        rollbackExit ??= exitForRollback(activeTransaction).catch(error => updaterLog(`[updater] rollback: ${error instanceof Error ? error.message : String(error)}`))
-        return false
-      }
-    }
     if (startupTransaction) {
       let current = readTransaction(updateStore.dir)
       if (current.kind !== "ok" || current.tx.transaction_id !== startupTransaction) return false
@@ -854,6 +869,8 @@ async function startUpdateBookkeeping(): Promise<void> {
   expectRuntime = true
   startupTransaction = transaction.transaction_id
   activeTransaction = transaction
+  rollbackObserver = setInterval(() => { observeRollback() }, 2_000)
+  rollbackObserver.unref()
   const startTime = await processStartTime(process.pid) ?? ''
   if (!startTime) { updaterLog('[updater] no se pudo identificar este proceso; no se confirma la actualización'); return }
   confirmWhenHealthy({
@@ -864,6 +881,7 @@ async function startUpdateBookkeeping(): Promise<void> {
     healthy,
     discardBackup: () => removeTreeDurable(transaction.paths.incoming, removeTree),
     onConfirmed: () => {
+      if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
       // Todo lo que debe persistir va primero y sin tragar errores: si falla, no se declara sana ni se borra el respaldo.
       if (transaction.next_trust) {
         const trust = parseTrustSet(transaction.next_trust, { requireActive: true })
@@ -1323,8 +1341,11 @@ async function waitForProtectedWork(): Promise<void> {
       return valid ? body as State : null
     } catch { return null }
   }
-  await drainClient.cancelPending()
-  let state = await read("/api/internal/update-drain/shutdown", "POST")
+  let state: State | null = null
+  while (!state && !forceQuit && coreSupervisor.state === "running") {
+    state = await read("/api/internal/update-drain/shutdown", "POST")
+    if (!state) await new Promise<void>(resolve => setTimeout(resolve, 1_000))
+  }
   if (!state) return
   const pending = () => state!.inflight + state!.fleet_live + state!.jobs_nonresumable
   let lastLogged = 0
@@ -1335,7 +1356,7 @@ async function waitForProtectedWork(): Promise<void> {
     }
     await new Promise<void>(resolve => setTimeout(resolve, 1_000))
     const next = await read("/api/internal/update-drain/status", "GET")
-    if (!next) break
+    if (!next) continue
     state = next
   }
   if (forceQuit && (pending() > 0 || !state.blockers_known))
