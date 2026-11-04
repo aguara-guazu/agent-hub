@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs"
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { renameRetrySync } from "@agenthub/gateway/platform"
 import { redactSecrets } from './secrets.js'
@@ -9,6 +9,7 @@ const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0
 export const LOG_SEGMENT_BYTES = 2 * 1024 * 1024
 /** Every log in the folder, active and rotated, from every process; the oldest rotated segments are discarded first. */
 export const LOG_DIR_BUDGET_BYTES = 50 * 1024 * 1024
+const LOG_RESCAN_BYTES = 256 * 1024
 const LOG_PRUNE_TARGET = LOG_DIR_BUDGET_BYTES
 const SEGMENT = /^(.+\.log)\.(\d+)$/
 /** Very long prefilled URLs may not open; the link carries the newest log lines and the clipboard the full report. */
@@ -122,11 +123,51 @@ function uniqueSegmentPath(path: string) {
 /** Appends timestamped lines to a log file with credentials already replaced; logging never throws into the caller. */
 export class LogFile {
   private size = 0
+  private sinceScan = 0
+  private directory: string
+  private activePath: string
+  private descriptor: number | undefined
   constructor(readonly path: string) {
+    const directory = dirname(path)
     try {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-      this.size = isRegularFile(path) ? statSync(path).size : 0
-    } catch { this.size = 0 }
+      mkdirSync(directory, { recursive: true, mode: 0o700 })
+      this.directory = realpathSync(directory)
+      this.activePath = join(this.directory, basename(path))
+      this.size = this.activeSize()
+    } catch {
+      this.directory = directory
+      this.activePath = path
+    }
+  }
+  private activeSize() {
+    try {
+      const stat = lstatSync(this.activePath)
+      return stat.isFile() ? stat.size : 0
+    } catch { return 0 }
+  }
+  private closeActive() {
+    if (this.descriptor === undefined) return
+    try { closeSync(this.descriptor) } catch { /* The next append reopens the active log. */ }
+    this.descriptor = undefined
+  }
+  private appendActive(chunk: string) {
+    try {
+      if (this.descriptor === undefined) {
+        const descriptor = openSync(this.activePath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+        if (!fstatSync(descriptor).isFile()) { closeSync(descriptor); return false }
+        this.descriptor = descriptor
+      }
+      const buffer = Buffer.from(chunk)
+      for (let offset = 0; offset < buffer.length;) {
+        const written = writeSync(this.descriptor, buffer, offset, buffer.length - offset)
+        if (!written) throw new Error("Log write made no progress")
+        offset += written
+      }
+      return true
+    } catch {
+      this.closeActive()
+      return false
+    }
   }
   write(text: string, prefix = '') {
     const lines = redactDiagnostics(text).slice(-64_000).split(/\r?\n/).filter(line => line.trim())
@@ -136,25 +177,30 @@ export class LogFile {
   }
   /** Writes lines already redacted by the caller (structured logs), with the same rotation and folder budget. */
   protected append(chunk: string) {
-    const bytes = Buffer.byteLength(chunk), directory = dirname(this.path)
-    try {
-      withLogLock(directory, () => {
-        if (!isRegularFile(this.path, true)) return
-        this.size = isRegularFile(this.path) ? statSync(this.path).size : 0
-        if (this.size && this.size + bytes > LOG_SEGMENT_BYTES) {
-          const latest = `${this.path}.1`
-          if (isRegularFile(latest)) renameRetrySync(latest, uniqueSegmentPath(this.path))
-          else if (!isRegularFile(latest, true)) return
-          renameRetrySync(this.path, latest)
-          this.size = 0
-        }
-        // Prune while holding the shared lock. It counts every regular log and segment in the directory, never a link.
-        if (!isRegularFile(this.path, true)) return
-        appendFileSync(this.path, chunk, { mode: 0o600 })
-        this.size += bytes
-        pruneLogsUnlocked(directory)
-      })
-    } catch { /* A full disk, lock conflict, or unsafe path must not take the process down. */ }
+    const bytes = Buffer.byteLength(chunk)
+    const maintain = this.size + bytes > LOG_SEGMENT_BYTES || this.sinceScan + bytes >= LOG_RESCAN_BYTES
+    if (maintain && withLogLock(this.directory, () => {
+      this.closeActive()
+      this.size = this.activeSize()
+      if (this.size && this.size + bytes > LOG_SEGMENT_BYTES) try {
+        this.closeActive()
+        const latest = `${this.activePath}.1`
+        if (isRegularFile(latest)) renameRetrySync(latest, uniqueSegmentPath(this.activePath))
+        else if (!isRegularFile(latest, true)) throw new Error("Unsafe rotated log")
+        renameRetrySync(this.activePath, latest)
+        this.size = 0
+      } catch { /* Keep the triggering chunk in the active file and retry rotation later. */ }
+      if (!this.appendActive(chunk)) return false
+      this.size += bytes
+      this.sinceScan += bytes
+      pruneLogsUnlocked(this.directory)
+      this.sinceScan = 0
+      return true
+    }) === true) return
+    if (this.appendActive(chunk)) {
+      this.size += bytes
+      this.sinceScan += bytes
+    }
   }
   /** Writes a stream line by line; a partial line waits for its newline or the end of the stream. */
   follow(stream: NodeJS.ReadableStream, prefix = '') {
