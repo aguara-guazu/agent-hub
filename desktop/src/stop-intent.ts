@@ -3,7 +3,7 @@
  * `source_id` con el que se pidió la parada (la misma solicitud devuelve la misma parada), el `transaction_id` de una
  * actualización que el core nuevo debe admitir, y el enfriamiento posterior a una parada que no llegó al commit. Sin Electron.
  */
-import type { HubStopOutcome, HubStopReason } from "./hub-stop.js"
+import type { HubStopOutcome, HubStopReason, HubStopView } from "./hub-stop.js"
 
 export type StopStrategy = "dmg" | "nsis" | "appimage"
 
@@ -77,4 +77,19 @@ export function startupTransactionFor(intent: StopIntent | null, journalId: stri
   if (intent.reason !== "update" || intent.target_version !== runningVersion || !intent.transaction_id) return ""
   if (intent.strategy === "dmg") return journalId === intent.transaction_id ? journalId : ""
   return intent.transaction_id
+}
+
+/** Resultado de leer la intención: ausente y dañada se distinguen, porque ninguna de las dos puede abrir un core de actualización. */
+export type StopIntentRead = { kind: "ok"; intent: StopIntent } | { kind: "missing" } | { kind: "corrupt" }
+
+/**
+ * Reconstruye la intención de una actualización aplicada a partir de la parada activa del backend, sólo si coincide con lo que
+ * corre: reason update, estado applied, versión destino igual a la de esta app y un transaction_id que el backend recuperó.
+ * En macOS la estrategia es dmg y el journal manda; allí no se reconstruye.
+ */
+export function intentFromActiveStop(view: HubStopView | null, runningVersion: string, platform: NodeJS.Platform): StopIntent | null {
+  if (!view || view.reason !== "update" || view.state !== "applied" || !view.sourceId || !view.transactionId || view.targetVersion !== runningVersion) return null
+  const strategy: StopStrategy | null = platform === "win32" ? "nsis" : platform === "linux" ? "appimage" : null
+  if (!strategy) return null
+  return parseStopIntent({ schema: 1, source_id: view.sourceId, reason: "update", strategy, transaction_id: view.transactionId, target_version: view.targetVersion, stop_id: view.stopId })
 }

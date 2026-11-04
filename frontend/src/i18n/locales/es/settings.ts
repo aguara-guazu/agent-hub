@@ -97,6 +97,7 @@ const settings = {
         commit_abandoned: "el cierre no se completó; se reintentará",
         drain_owner_recovered: "se recuperó una preparación anterior; se reintentará",
         fleet_stop_unconfirmed: "no se confirmó la detención de algunos miembros de los equipos",
+        stop_intent_corrupt: "el registro de la parada de la actualización está dañado; se reconstruye desde el Hub",
         unknown: "hay trabajo en curso",
       },
     },

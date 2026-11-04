@@ -31,7 +31,7 @@ import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { DRAIN_SECRET_HEADER, DrainClient, type DrainLease } from './update-lease.js'
 import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
-import { cooldownAfter, cooldownUntilMs, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
+import { cooldownAfter, cooldownUntilMs, intentFromActiveStop, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
@@ -928,6 +928,28 @@ async function reconcileQuitIntent(): Promise<void> {
   }
 }
 
+let stopIntentRecovered = false
+let stopIntentCorruptShown = false
+/** La intención de la parada, reconstruida una vez desde el backend si falta o está dañada (nunca se abre un core sin transacción admitida). */
+async function recoverStopIntent(): Promise<StopIntent | null> {
+  const read = updateStore.readStopIntentState()
+  if (read.kind === 'ok') return read.intent
+  if (read.kind === 'corrupt' && !stopIntentCorruptShown) {
+    stopIntentCorruptShown = true
+    updaterLog('[updater] stop-intent.json dañado: se intenta reconstruir desde la parada activa del Hub')
+    setUpdateReport({ phase: 'postponed', reasons: [{ code: 'stop_intent_corrupt' }] })
+  }
+  if (stopIntentRecovered) return null
+  const known = await hubStopClient.status()
+  if (known.status === null || (known.status >= 500)) return null
+  stopIntentRecovered = true
+  const rebuilt = intentFromActiveStop(known.view, app.getVersion(), process.platform)
+  if (!rebuilt) return null
+  updateStore.writeStopIntent(rebuilt)
+  updaterLog('[updater] intención de parada reconstruida desde el Hub')
+  return rebuilt
+}
+
 async function startUpdateBookkeeping(): Promise<void> {
   // Un estado que no se puede leer o escribir impide declarar sana una versión recién aplicada: se conserva el respaldo y la evidencia.
   let stateOk = true
@@ -994,7 +1016,8 @@ async function startUpdateBookkeeping(): Promise<void> {
     if (!stateOk || coreSupervisor.state !== "running" || daemonSupervisor.state !== "running" || !sessionToken) return false
     if (expectRuntime && !runtimeCurrentMatches(app.getVersion())) return false
     // Windows y Linux: no hay journal de intercambio; el core nuevo nació cerrado y lo abre la intención de la parada.
-    const pendingStop = updateStore.readStopIntent()
+    // Si falta o está dañada, el core sigue cerrado (el backend recupera la actualización aplicada): se reconstruye desde la parada activa.
+    const pendingStop = await recoverStopIntent()
     if (pendingStop?.reason === 'update' && pendingStop.strategy !== 'dmg' && pendingStop.target_version === app.getVersion() && pendingStop.transaction_id) {
       if (!await drainClient.admitStartup(pendingStop.transaction_id)) return false
       updateStore.clearStopIntent()

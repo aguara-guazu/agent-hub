@@ -99,6 +99,7 @@ const settings = {
         commit_abandoned: "the stop did not complete; it will be retried",
         drain_owner_recovered: "an earlier preparation was recovered; it will be retried",
         fleet_stop_unconfirmed: "the stop of some team members was not confirmed",
+        stop_intent_corrupt: "the update stop record is damaged; it is being rebuilt from the Hub",
         unknown: "work is in progress",
       },
     },

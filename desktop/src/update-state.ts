@@ -12,7 +12,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, wr
 import { dirname, join } from "node:path"
 import { compareVersions } from "./updater.js"
 import { blocked, isStrictSemver, journalFile, mergeBlacklistSidecars, parseBlacklist, parseTransaction, readTransaction, removeDurable, validateLayout, writeJsonDurable, type BlacklistEntry, type UpdateTransaction } from "./update-transaction.js"
-import { parseStopIntent, type StopIntent } from "./stop-intent.js"
+import { parseStopIntent, type StopIntent, type StopIntentRead } from "./stop-intent.js"
 import { parseTrustSet, type TrustSet } from "./update-trust.js"
 
 /** `state.json` existe pero no es válido: se bloquea la actualización y se conserva como evidencia, nunca se reescribe. */
@@ -152,6 +152,18 @@ export class UpdateStore {
   /** Intención de parada coordinada. Ausente o ilegible: `null` (sólo guarda un `source_id` y un enfriamiento, nada irrecuperable). */
   readStopIntent(): StopIntent | null {
     try { return parseStopIntent(JSON.parse(readFileSync(this.file("stop-intent.json"), "utf8"))) } catch { return null }
+  }
+
+  /** Como `readStopIntent`, pero distingue un archivo ausente de uno dañado. */
+  readStopIntentState(): StopIntentRead {
+    let text: string
+    try { text = readFileSync(this.file("stop-intent.json"), "utf8") } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "missing" } : { kind: "corrupt" }
+    }
+    try {
+      const intent = parseStopIntent(JSON.parse(text))
+      return intent ? { kind: "ok", intent } : { kind: "corrupt" }
+    } catch { return { kind: "corrupt" } }
   }
 
   writeStopIntent(intent: StopIntent): void {

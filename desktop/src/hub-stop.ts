@@ -15,6 +15,9 @@ const STATES: readonly HubStopState[] = ["requested", "notifying", "waiting_conf
 export interface HubStopView {
   stopId: string
   sourceId: string | null
+  /** Sólo en una actualización aplicada: la transacción que el core nuevo debe admitir. */
+  transactionId: string | null
+  targetVersion: string | null
   reason: HubStopReason
   state: HubStopState
   deadlineAt: string | null
@@ -53,7 +56,7 @@ export function parseStopView(body: unknown): HubStopView | null {
   const error = view.error && typeof view.error === "object" ? view.error as Record<string, any> : null
   const actions = list(error?.actions).filter((action): action is HubStopAction => action === "retry" || action === "cancel" || action === "commit")
   return {
-    stopId, sourceId: text(view.source_id), reason: view.reason, state: view.state,
+    stopId, sourceId: text(view.source_id), transactionId: text(view.transaction_id), targetVersion: text(view.target_version), reason: view.reason, state: view.state,
     deadlineAt: text(view.deadline_at), forceAt: text(view.force_at), graceStartedAt: text(view.grace_started_at), retryNotBefore: text(view.retry_not_before),
     ready: view.ready === true, forced: view.forced === true,
     waitingFor: {
