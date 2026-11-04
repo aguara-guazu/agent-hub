@@ -93,8 +93,8 @@ const controlInput = z.object({ ...session, plan_id:identifier, member_id:identi
 
 export const teamDefinitions = {
   team_catalog: ['Check readiness before researching the ticket: coordinator identity, Git/virtual workspace, CLIs, models. Returns readiness (blockers, actions), preferred_backend. repository_path: another repo, same session. Listed models: quota/access unverified.', z.object({...session,repository_path:z.string().min(1).max(4000).optional()}).strict()],
-  team_prepare: ['Prepare an immutable plan (no processes, worktrees, or channel creation/activation). task_key labels the task, keeping its channel and coordinator. Needs an active channel from chat_create_channel(task_key,name), created after the person authorizes it. repository_path: workers repo. base_revision: full hash of any local commit, HEAD or not (default HEAD/virtual). Propose the editable plan; confirm the exact plan before launch.', prepareInput],
-  team_launch: ['Launch the exact plan the person chose. Needs plan_id, unchanged digest and human_instruction quoting what the person said. Keeps native permissions; never downgrades model/effort.', launchInput],
+  team_prepare: ['Prepare an immutable plan (no processes, worktrees, or channel creation/activation). task_key labels the task, keeping its channel and coordinator. Needs an active channel from chat_create_channel(task_key,name), created after the person authorizes it. repository_path: workers repo. base_revision: full hash of any local commit, HEAD or not (default HEAD/virtual). Show the person only composition, permissions, channel and base commit, never plan_id, digest or URLs; confirm in conversation before launch.', prepareInput],
+  team_launch: ['Launch the plan the person confirmed in conversation. Needs plan_id and unchanged digest (internal, never shown to the person) and human_instruction quoting what the person said. Keeps native permissions; never downgrades model/effort.', launchInput],
   team_answer: ['Current leader only: answer a pending native question from a Hub worker in the active plan. Needs current generation and question_id; answers maps question IDs to {answers:[text]}. Use available context or ask the person first. Answers are not stored in events or sent elsewhere.',answerInput],
   team_control: ['Control a Hub member of the approved plan: start, stop, interrupt, send, clear, edit (role/task/prompt). Needs current generation. clear: new conversation, same worktree. CLI/model changes need another prepared, confirmed plan. Metadata only; never terminal, logs or transcripts.', controlInput],
   team_status: ['View plan, persisted effects, joins and uncertain outcomes; never exposes invitations or keys.', statusInput],
@@ -1089,8 +1089,7 @@ export class TeamOrchestration {
       launch:{started_at:plan.launch_started_at,accepted_at:plan.launched_at,instruction_declared:Boolean(plan.human_instruction)},
       authorization:this.authorization(plan),
       close:{at:plan.closed_at,reason:plan.close_reason},members,
-      progress:{prepared:true,workspaces_created:members.filter(m=>m.workspace_id).length,processes_accepted:members.filter(m=>m.launch_handle && m.prompt_outcome).length,joined:members.filter(m=>m.session_id).length,total:members.length},
-      approval_url:plan.state==='prepared'?`/memory/collaboration?plan=${plan.id}`:null}
+      progress:{prepared:true,workspaces_created:members.filter(m=>m.workspace_id).length,processes_accepted:members.filter(m=>m.launch_handle && m.prompt_outcome).length,joined:members.filter(m=>m.session_id).length,total:members.length}}
   }
 
   private async event(sql:Sql,teamId:string,memberId:string|null,type:string,
