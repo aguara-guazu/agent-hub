@@ -122,11 +122,11 @@ export function validateLayout(tx: UpdateTransaction, stateDir: string): void {
 }
 
 
-/** Una fase de la secuencia nunca retrocede; las terminales no se sobreescriben con otra y se alcanzan desde cualquier fase. */
+/** A phase advances one durable step at a time; terminal outcomes may be recorded from any nonterminal step. */
 export function canAdvance(from: Phase, to: Phase): boolean {
   if ((TERMINAL_PHASES as readonly string[]).includes(from)) return from === to
   if ((TERMINAL_PHASES as readonly string[]).includes(to)) return true
-  return phaseRank(to) >= phaseRank(from)
+  return to === from || phaseRank(to) === phaseRank(from) + 1
 }
 export const phaseRank = (phase: Phase): number => (PHASES as readonly string[]).indexOf(phase)
 
