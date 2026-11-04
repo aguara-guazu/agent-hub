@@ -634,6 +634,11 @@ async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downl
   }, strategy === 'dmg' ? undefined : () => revalidateArtifact(update.path, update.sha256, update.size))
   const outcome = await run.done
   if (outcome.kind !== 'committed') {
+    // Un resultado incierto (la parada puede seguir viva) ni inicia enfriamiento ni abandona el source_id: el próximo intento reconcilia la misma.
+    if (outcome.kind === 'failed' && outcome.uncertain) {
+      updaterLog(`[updater] v${update.version}: parada coordinada incierta (${outcome.code}); se conserva la intención y se reintenta`)
+      return postpone(update.version, [{ code: outcome.code }])
+    }
     const cooldown = cooldownAfter(outcome, Date.now())
     const view = outcome.kind === 'postponed' || outcome.kind === 'cancelled' ? outcome.view : outcome.kind === 'failed' ? outcome.view : null
     try { updateStore.writeStopIntent({ ...(updateStore.readStopIntent() ?? intent), ...(view ? { stop_id: view.stopId } : {}), cooldown_until: cooldown }) }
@@ -860,8 +865,36 @@ function setAutoUpdate(enabled: unknown): boolean {
   updateStore.setEnabled(Boolean(enabled))
   updaterLog(`[updater] actualizaciones automáticas ${updateStore.isEnabled() ? 'activadas' : 'desactivadas'}`)
   if (updateStore.isEnabled()) void silentUpdates.run()
-  else { void drainClient.cancelPending(); setUpdateReport({ phase: 'disabled' }) }
+  else { void cancelUpdateStops().catch(error => updaterLog(`[updater] al desactivar: ${error instanceof Error ? error.message : String(error)}`)); setUpdateReport({ phase: 'disabled' }) }
   return updateStore.isEnabled()
+}
+
+/**
+ * Con las actualizaciones desactivadas no puede quedar una parada de update viva: se cancela con /hub-stop/cancel hasta observar
+ * `cancelled` (la cancelación del drenaje pendiente heredada no alcanza). Tanto la parada de esta sesión como una adoptada por su intención.
+ */
+async function cancelUpdateStops(): Promise<void> {
+  await drainClient.cancelPending()
+  const run = activeStop
+  if (run?.reason === 'update') {
+    run.cancel('updates_disabled')
+    const outcome = await Promise.race([run.done, new Promise<null>(resolve => { setTimeout(() => resolve(null), 10_000).unref() })])
+    if (outcome?.kind !== 'cancelled') updaterLog(`[updater] no se confirmó la cancelación de la parada al desactivar (${outcome ? outcome.kind : 'sin respuesta'})`)
+    return
+  }
+  const intent = updateStore.readStopIntent()
+  if (intent?.reason !== 'update' || intent.cooldown_until) return
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const known = intent.stop_id ? await hubStopClient.status(intent.stop_id) : await hubStopClient.status()
+    const view = known.view
+    if (known.status === 404 || (view && (view.sourceId !== intent.source_id || ['cancelled', 'postponed', 'resumed'].includes(view.state)))) { updateStore.clearStopIntent(); return }
+    if (view?.sourceId === intent.source_id) {
+      const cancelled = await hubStopClient.cancel(view.stopId, 'updates_disabled')
+      if (cancelled.view?.state === 'cancelled') { updateStore.clearStopIntent(); return }
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 2_000))
+  }
+  updaterLog('[updater] la parada de una actualización sigue sin cancelarse; la intención se conserva')
 }
 
 /** Versión máxima instalada; recuperación del journal; confirmación de salud de una actualización recién aplicada; ratchet de la firma. */

@@ -125,7 +125,8 @@ export type HubStopOutcome =
   | { kind: "committed"; stopId: string; pid: number; start: string }
   | { kind: "postponed"; view: HubStopView }
   | { kind: "cancelled"; view: HubStopView | null }
-  | { kind: "failed"; code: string; view: HubStopView | null }
+  /** `uncertain`: no se sabe en qué estado quedó la parada; no se inicia enfriamiento ni se abandona el source_id. */
+  | { kind: "failed"; code: string; view: HubStopView | null; uncertain?: boolean }
 
 export interface HubStopRunDeps {
   client: HubStopClient
@@ -142,6 +143,9 @@ export interface HubStopRunDeps {
   maxCommitAttempts?: number
   /** Vueltas de sondeo con el commit sin confirmar (red o 5xx) antes de rendirse. */
   maxCommitRounds?: number
+  /** Intentos de cancelar (hasta observar `cancelled`) y de tomar la identidad de core con el lease concedido. */
+  maxCancelAttempts?: number
+  maxIdentityFailures?: number
   /** Retiene a core mientras se tiene el lease (no se relanza solo); devuelve la función que lo libera. */
   holdCore?: () => () => void
 }
@@ -166,8 +170,14 @@ export class HubStopRun {
   private release: (() => void) | null = null
   private identity: { pid: number; start: string } | null = null
   private commitRounds = 0
+  private cancelAttempts = 0
+  private identityFailures = 0
+  private leased = false
+  private beforeCommitDone = false
   private wake: (() => void) | null = null
   readonly done: Promise<HubStopOutcome>
+
+  get reason(): HubStopReason { return this.input.reason }
 
   /** Id de la parada una vez creada; `null` si el backend no llegó a devolverla. */
   get currentStopId(): string | null { return this.stopId }
@@ -177,7 +187,7 @@ export class HubStopRun {
     this.done = this.run().then((outcome) => { if (outcome.kind !== "committed") this.releaseCore(); return outcome }).catch((error): HubStopOutcome => {
       this.releaseCore()
       this.deps.log(`[hub-stop] ${error instanceof Error ? error.message : String(error)}`)
-      return error instanceof CoreDidNotExit ? { kind: "failed", code: "core_did_not_exit", view: null } : { kind: "failed", code: error instanceof DrainLeaseLost ? "drain_lease_lost" : "unexpected", view: null }
+      return error instanceof CoreDidNotExit ? { kind: "failed", code: "core_did_not_exit", view: null, uncertain: true } : { kind: "failed", code: error instanceof DrainLeaseLost ? "drain_lease_lost" : "unexpected", view: null }
     })
   }
 
@@ -208,7 +218,7 @@ export class HubStopRun {
     let last: HubStopView | null = null
     let first = await client.request(this.input.sourceId, this.input.reason, this.input.targetVersion)
     for (let attempt = 0; !first.view && attempt < 3; attempt++) { await this.sleep(pollMs); first = await client.request(this.input.sourceId, this.input.reason, this.input.targetVersion) }
-    if (!first.view) return { kind: "failed", code: "stop_not_created", view: null }
+    if (!first.view) return { kind: "failed", code: "stop_not_created", view: null, uncertain: true }
     this.stopId = first.view.stopId
     let current: HubStopView | null = first.view
     for (;;) {
@@ -220,12 +230,13 @@ export class HubStopRun {
         if (current.state === "cancelled") return { kind: "cancelled", view: current }
         if (current.state === "resumed") return { kind: "failed", code: "stop_resumed", view: current }
       } else if (++unreachable >= maxUnreachable) {
-        return { kind: "failed", code: "core_unreachable", view: last }
+        return { kind: "failed", code: "core_unreachable", view: last, uncertain: true }
       }
       if (this.cancelRequested) {
+        // Sólo un estado `cancelled` observado confirma la cancelación; red, 5xx, 409 o un estado activo se reintentan.
         const cancelled = await client.cancel(this.stopId, this.cancelRequested)
-        this.cancelRequested = null
-        if (cancelled.view) { this.input.onView?.(cancelled.view); return { kind: "cancelled", view: cancelled.view } }
+        if (cancelled.view?.state === "cancelled") { this.input.onView?.(cancelled.view); return { kind: "cancelled", view: cancelled.view } }
+        if (++this.cancelAttempts >= (this.deps.maxCancelAttempts ?? 30)) return { kind: "failed", code: "cancel_unconfirmed", view: current ?? last, uncertain: true }
       } else if (current && (current.state === "ready" || current.state === "applied" || current.error?.actions.includes("commit"))) {
         const committed = await this.finish(current)
         if (committed) return committed
@@ -241,26 +252,37 @@ export class HubStopRun {
     const stopId = view.stopId
     // Tras el primer commit enviado no se vuelve a adquirir el lease ni a tomar la identidad de core: se repite el mismo commit.
     if (!this.committing) {
-      if (view.state !== "applied" && !view.error?.actions.includes("commit")) {
+      // Con el lease concedido no se vuelve a /drain aunque falle momentáneamente la identidad de core.
+      if (!this.leased && view.state !== "applied" && !view.error?.actions.includes("commit")) {
         if (this.input.reason === "update" && !this.input.transactionId) return { kind: "failed", code: "transaction_required", view }
         const drained = await client.drain(stopId)
         if (drained.kind === "converging") return null
         if (drained.kind === "lease" && !this.release) this.release = this.deps.holdCore?.() ?? null
         if (drained.kind !== "lease") { this.deps.log(`[hub-stop] drain ${drained.kind}${"reasons" in drained && drained.reasons.length ? `: ${drained.reasons.join(",")}` : ""}`); return null }
+        this.leased = true
       }
       // La identidad de core se toma antes del commit: la salida se espera de ese mismo proceso (PID e inicio).
-      const pid = core.pid
-      const start = pid ? await this.deps.startTimeOf(pid) : null
-      if (!pid || !start || core.state !== "running") { this.deps.log("[hub-stop] core no está corriendo bajo la parada"); return null }
+      if (!this.identity) {
+        const pid = core.pid
+        const start = pid ? await this.deps.startTimeOf(pid) : null
+        if (!pid || !start || core.state !== "running") {
+          this.deps.log("[hub-stop] core no está corriendo bajo la parada")
+          if (++this.identityFailures < (this.deps.maxIdentityFailures ?? 30)) return null
+          const released = await client.cancel(stopId, "core_identity_unavailable")
+          return { kind: "failed", code: "core_identity_unavailable", view, uncertain: released.view?.state !== "cancelled" }
+        }
+        this.identity = { pid, start }
+      }
       if (this.cancelRequested) return null
-      if (this.input.beforeCommit) {
-        try { await this.input.beforeCommit() } catch (error) {
+      if (this.input.beforeCommit && !this.beforeCommitDone) {
+        try { await this.input.beforeCommit(); this.beforeCommitDone = true } catch (error) {
           this.deps.log(`[hub-stop] antes del commit: ${error instanceof Error ? error.message : String(error)}`)
-          await client.cancel(stopId, "before_commit_failed")
-          return { kind: "failed", code: "before_commit_failed", view }
+          const released = await client.cancel(stopId, "before_commit_failed")
+          return { kind: "failed", code: "before_commit_failed", view, uncertain: released.view?.state !== "cancelled" }
         }
       }
-      this.identity = { pid, start }
+      // Una cancelación pedida mientras corría beforeCommit gana: todavía no se envió el primer commit.
+      if (this.cancelRequested) return null
     }
     const { pid, start } = this.identity!
     // Con el primer commit enviado el servidor pudo comprometer el drenaje: sólo un 4xx explícito devuelve la posibilidad de cancelar.
@@ -279,7 +301,7 @@ export class HubStopRun {
         return { kind: "failed", code: "commit_refused", view }
       }
       // Red o 5xx: el mismo commit se repite en la próxima vuelta (es idempotente), con un tope.
-      if (++this.commitRounds >= (this.deps.maxCommitRounds ?? 30)) return { kind: "failed", code: "commit_unconfirmed", view }
+      if (++this.commitRounds >= (this.deps.maxCommitRounds ?? 30)) return { kind: "failed", code: "commit_unconfirmed", view, uncertain: true }
       return null
     }
     this.input.onView?.(result.view)
@@ -304,20 +326,13 @@ export function stopReportOf(view: HubStopView): UpdateStopReport {
   }
 }
 
-/** El backend deja la cantidad de sesiones heredadas en el detalle del error (JSON con `count` o texto con el número). */
+/** El backend deja la cantidad de sesiones heredadas en el detalle del error como JSON `{"count":N}`. */
 function withCount(code: string, detail: string | null): UpdateReason {
-  let count: number | null = null
-  if (detail) {
-    try {
-      const parsed: unknown = JSON.parse(detail)
-      const value = typeof parsed === "number" ? parsed : (parsed as { count?: unknown } | null)?.count
-      if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) count = value
-    } catch {
-      const match = /\d+/.exec(detail)
-      if (match) count = Number(match[0])
-    }
-  }
-  return count === null ? { code } : { code, count }
+  try {
+    const count = (JSON.parse(detail ?? "null") as { count?: unknown } | null)?.count
+    if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) return { code, count }
+  } catch { /* detalle sin formato: se muestra sin cantidad */ }
+  return { code }
 }
 
 /** Razones estables, con el mismo formato que las del drenaje, para el texto de «pospuesta». */
