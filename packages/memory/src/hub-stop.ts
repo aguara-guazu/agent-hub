@@ -124,10 +124,12 @@ export class HubStopCoordinator {
       }
       if (stop.state === "applied") {
         if (stop.reason === "quit" && stop.apply_boot_id !== this.bootId) await this.resume(stop)
-        else if (stop.reason === "update" && (!this.deps.startupTransaction || this.deps.startupTransaction !== stop.apply_transaction_id)) {
-          const code = this.deps.startupTransaction ? "resume_transaction_mismatch" : "resume_transaction_missing"
-          await this.deps.db.query("UPDATE hub_stops SET last_error_code=$2,last_error_detail='La actualización aplicada no coincide con la transacción de arranque; se conserva la evidencia.',updated_at=now() WHERE id=$1", [stop.id, code])
-          this.log(stop.id, "blocked", { error_code: code, startup_transaction: this.deps.startupTransaction ?? null })
+        else if (stop.reason === "update" && this.deps.startupTransaction && this.deps.startupTransaction !== stop.apply_transaction_id) {
+          await this.deps.db.query("UPDATE hub_stops SET last_error_code='resume_transaction_mismatch',last_error_detail='La actualización aplicada no coincide con la transacción de arranque; se conserva la evidencia.',updated_at=now() WHERE id=$1", [stop.id])
+          this.log(stop.id, "blocked", { error_code: "resume_transaction_mismatch", startup_transaction: this.deps.startupTransaction })
+        } else if (stop.reason === "update" && !this.deps.startupTransaction) {
+          await this.deps.db.transaction(sql => this.event(sql, stop.id, "startup_tx_from_stop", { transaction_id: stop.apply_transaction_id }))
+          this.log(stop.id, "startup_tx_from_stop", { transaction_id: stop.apply_transaction_id })
         }
         return
       }
@@ -287,7 +289,8 @@ export class HubStopCoordinator {
   async assertStartupTransaction(transactionId: string): Promise<void> {
     const stop = await this.active()
     if (!stop || stop.state !== "applied") return
-    check(stop.reason === "update" && stop.apply_transaction_id === transactionId && this.deps.startupTransaction === transactionId,
+    check(stop.reason === "update" && stop.apply_transaction_id === transactionId
+      && (!this.deps.startupTransaction || this.deps.startupTransaction === transactionId),
       "La transacción de arranque no coincide con la parada aplicada; el Hub conserva el bloqueo.", 409)
   }
 
@@ -295,7 +298,8 @@ export class HubStopCoordinator {
     return this.exclusive(async () => {
       const stop = await this.active()
       if (!stop || stop.state !== "applied") return null
-      check(stop.reason === "update" && stop.apply_transaction_id === transactionId && this.deps.startupTransaction === transactionId,
+      check(stop.reason === "update" && stop.apply_transaction_id === transactionId
+      && (!this.deps.startupTransaction || this.deps.startupTransaction === transactionId),
         "La admisión pertenece a otra transacción de actualización.", 409)
       await this.resume(stop)
       return this.view(stop.id)
