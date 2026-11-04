@@ -105,11 +105,48 @@ export class UpdateDrain {
   private startup: { transactionId: string; gate: AdmissionGateLike | undefined; token: symbol | null } | null = null
   private startupExpiry: ReturnType<typeof setTimeout> | undefined
   private admittedTransaction: string | null = null
+  private committedStop: (() => void | Promise<void>) | undefined
+  private commitAbandoned: ((reason: string, reopened: boolean) => void | Promise<void>) | undefined
+  private committedStopRequested = false
 
   constructor(private readonly deps: DrainDependencies, private readonly ttlMs = LEASE_TTL_MS, private readonly now: () => number = Date.now) {}
 
   get isDraining(): boolean { return this.draining }
   get inflightCount(): number { return this.inflight }
+  get hasPendingAttempt(): boolean { return this.pending && !this.lease && !this.committed }
+
+  configureCommittedStop(stop: () => void | Promise<void>, abandoned?: (reason: string, reopened: boolean) => void | Promise<void>): void {
+    this.committedStop = stop
+    this.commitAbandoned = abandoned
+  }
+
+  isCommittedLease(lease: string, generation: number, bootId: string): boolean {
+    return this.committed && this.lease === lease && this.generation === generation && this.bootId === bootId
+  }
+
+  /** Schedules the configured core stop once, after the caller durably recorded the commit. */
+  requestCommittedStop(): boolean {
+    if (!this.committed || !this.committedStop) return false
+    if (this.committedStopRequested) return true
+    this.committedStopRequested = true
+    const timer = setTimeout(() => { void Promise.resolve(this.committedStop!()).catch(() => undefined) }, 50)
+    timer.unref()
+    return true
+  }
+
+  /** Takes ownership of an already-closed non-MCP gate without reopening it between the coordinated stop and MCP drain. */
+  adoptAdmission(gate: AdmissionGateLike, token: symbol): boolean {
+    if (this.startup || this.lease || this.acquiring || this.pending || this.committed) return false
+    this.pending = true
+    this.pendingVersion++
+    this.gate = gate
+    this.token = token
+    this.expiresAt = this.now() + this.ttlMs
+    clearTimeout(this.expiry)
+    this.expiry = setTimeout(() => { void this.release("vencimiento de parada coordinada") }, this.ttlMs)
+    this.expiry.unref()
+    return true
+  }
 
   /** `false` while draining: the caller answers 503 without running anything. */
   admit(): boolean {
@@ -293,6 +330,7 @@ export class UpdateDrain {
       this.pending = false
       this.shutdown = false
       this.committed = false
+      this.committedStopRequested = false
       this.lease = randomUUID()
       this.generation++
       clearTimeout(this.expiry)
@@ -311,6 +349,11 @@ export class UpdateDrain {
   async cancelPending(): Promise<{ ok: boolean; reopened: boolean }> {
     if (!this.pending || this.lease || this.committed) return { ok: false, reopened: false }
     return { ok: true, reopened: await this.release("cancelación pendiente") }
+  }
+
+  /** Whether this exact lease still belongs to this core and has usable time left. */
+  ownsLease(lease: string, generation: number, bootId: string): boolean {
+    return this.confirm(lease, generation, bootId).ok
   }
 
   /** The same lease, generation and core process, still unexpired and not yet committed. */
@@ -340,7 +383,10 @@ export class UpdateDrain {
     if (!this.committed) return false
     console.error(`[update-drain] commit abandonado: ${why}`)
     this.committed = false
-    return this.release("commit abandonado")
+    this.committedStopRequested = false
+    const reopened = await this.release("commit abandonado")
+    await this.commitAbandoned?.(why, reopened)
+    return reopened
   }
 
   /**
@@ -420,6 +466,7 @@ export class UpdateDrain {
     this.gate = undefined
     this.token = null
     this.expiresAt = 0
+    this.committedStopRequested = false
     this.draining = this.shutdown
     return this.reopenGate(gate, token, why)
   }
@@ -461,6 +508,10 @@ export interface UpdateDrainOptions {
   shutdown?: (drain: UpdateDrain) => void | Promise<void>
   /** Transaction of the update that launched this core: it starts closed until `POST /api/internal/update-admit`. */
   startupTransaction?: string
+  /** Validates durable stop evidence before reopening the startup gate. */
+  beforeStartupAdmit?: (transactionId: string, bootId: string) => void | Promise<void>
+  /** Called only after the new core confirmed reopening its startup gate. */
+  startupAdmitted?: (transactionId: string, bootId: string) => void | Promise<void>
 }
 
 /** Gate hook and routes; call before the MCP route is registered so the hook covers it. */
@@ -489,6 +540,7 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
     }
     process.exit(0)
   })
+  drain.configureCommittedStop(() => stopCore(drain), async (reason, reopened) => { await (await service.get()).stop.recoverAbandonedCommit(reason, reopened) })
   if (options.startupTransaction) drain.beginStartup(options.startupTransaction)
   const guard = { preHandler: async (request: FastifyRequest) => { await options.authorize(request) } }
   const leaseBody = z.object({ lease: z.string().min(1).max(100), generation: z.number().int().nonnegative(), boot_id: z.string().min(1).max(100) }).strict()
@@ -504,8 +556,12 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
   })
   app.post("/api/internal/update-admit", guard, async (request, reply) => {
     const input = parse(z.object({ transaction_id: z.string().min(1).max(100), boot_id: z.string().min(1).max(100) }).strict(), request.body)
+    await options.beforeStartupAdmit?.(input.transaction_id, drain.bootId)
     const result = await drain.admitStartup(input.transaction_id, input.boot_id)
-    return result.ok ? { admitted: true } : reply.code(409).send({ admitted: false, reason: result.reason })
+    const alreadyAdmitted = !result.ok && result.reason === "not_starting" && input.boot_id === drain.bootId
+      && drain.status().admitted_transaction === input.transaction_id
+    if (result.ok || alreadyAdmitted) await options.startupAdmitted?.(input.transaction_id, drain.bootId)
+    return result.ok || alreadyAdmitted ? { admitted: true } : reply.code(409).send({ admitted: false, reason: result.reason })
   })
   app.post("/api/internal/update-drain", guard, async (_request, reply) => {
     const result = await drain.acquire()
@@ -522,10 +578,9 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
   })
   app.post("/api/internal/update-drain/commit", guard, async (request, reply) => {
     const input = parse(leaseBody, request.body)
-    if (!drain.commit(input.lease, input.generation, input.boot_id)) return reply.code(409).send({ ok: false, reasons: [{ code: "drain_lease_lost" }] })
-    // The answer goes out first; then core shuts down gracefully. The desktop waits for this exact process to exit.
-    const timer = setTimeout(() => { void Promise.resolve(stopCore(drain)).catch(() => undefined) }, 50)
-    timer.unref()
+    if (!drain.commit(input.lease, input.generation, input.boot_id) && !drain.isCommittedLease(input.lease, input.generation, input.boot_id))
+      return reply.code(409).send({ ok: false, reasons: [{ code: "drain_lease_lost" }] })
+    check(drain.requestCommittedStop(), "No se pudo programar el cierre del core", 503)
     return { ok: true, pid: process.pid, boot_id: drain.bootId }
   })
   app.post("/api/internal/update-drain/shutdown", guard, async () => drain.beginShutdown())

@@ -959,4 +959,40 @@ INSERT INTO chat_messages(id,thread_id,author_id,text,request_id,request_hash,ki
  SELECT lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||substr(lower(hex(randomblob(2))),2)||'-'||substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))),t.id,p.created_by,m.role||' ('||m.worktree_name||'): '||m.task,'team-seed:'||t.id,'team-seed:'||t.id,'fact',t.created_at
  FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id JOIN chat_threads t ON t.id=m.work_thread_id JOIN chat_channels c ON c.id=t.channel_id
  WHERE c.kind<>'inter-hub' AND NOT EXISTS(SELECT 1 FROM chat_messages x WHERE x.thread_id=t.id);
+`, String.raw`
+-- Durable coordinated shutdown protocol. Private notices are delivery only; these rows own authority and receipts.
+ALTER TABLE chat_status_notices ADD COLUMN payload JSON NOT NULL DEFAULT '{}';
+CREATE TABLE hub_stops (
+ id TEXT PRIMARY KEY, reason TEXT NOT NULL CHECK(reason IN ('update','quit')), source_id TEXT NOT NULL,
+ target_version TEXT, state TEXT NOT NULL CHECK(state IN ('requested','notifying','waiting_confirmations','waiting_members','stopping_fleet','ready','applied','resumed','postponed','cancelled')),
+ requested_at TIMESTAMP NOT NULL, deadline_at TIMESTAMP NOT NULL, force_at TIMESTAMP, grace_started_at TIMESTAMP,
+ backup_id TEXT, admission_closed_at TIMESTAMP, gate_owner TEXT, ready_at TIMESTAMP,
+ drain_boot_id TEXT, drain_generation INTEGER, drain_lease TEXT, applied_at TIMESTAMP, apply_boot_id TEXT,
+ apply_transaction_id TEXT, resumed_at TIMESTAMP, terminal_reason TEXT, last_error_code TEXT, last_error_detail TEXT,
+ updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE UNIQUE INDEX hub_stops_source ON hub_stops(source_id);
+CREATE UNIQUE INDEX hub_stops_one_active ON hub_stops((1)) WHERE state NOT IN ('resumed','postponed','cancelled');
+CREATE TABLE hub_stop_targets (
+ id TEXT PRIMARY KEY, stop_id TEXT NOT NULL REFERENCES hub_stops(id) ON DELETE CASCADE,
+ plan_id TEXT REFERENCES chat_team_plans(id), session_id TEXT NOT NULL REFERENCES chat_sessions(id),
+ target_kind TEXT NOT NULL CHECK(target_kind IN ('coordinator','informative_tui')), required BOOLEAN NOT NULL,
+ authority_generation TEXT NOT NULL, notified_at TIMESTAMP, confirmed_at TIMESTAMP, confirmed_members JSON,
+ invalidated_at TIMESTAMP,
+ exemption_reason TEXT, created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, UNIQUE(stop_id,target_kind,session_id,plan_id)
+);
+CREATE INDEX hub_stop_targets_stop ON hub_stop_targets(stop_id,required,confirmed_at,invalidated_at);
+CREATE TABLE hub_stop_member_receipts (
+ stop_id TEXT NOT NULL REFERENCES hub_stops(id) ON DELETE CASCADE,
+ member_id TEXT NOT NULL REFERENCES chat_team_members(id), generation TEXT NOT NULL DEFAULT '',
+ before_state TEXT NOT NULL, outcome TEXT NOT NULL CHECK(outcome IN ('stopped','already_terminal','uncertain')),
+ observed_at TIMESTAMP NOT NULL DEFAULT ${NOW}, detail JSON NOT NULL DEFAULT '{}',
+ PRIMARY KEY(stop_id,member_id,generation)
+);
+CREATE TABLE hub_stop_events (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+ stop_id TEXT NOT NULL REFERENCES hub_stops(id) ON DELETE CASCADE, type TEXT NOT NULL,
+ actor_session_id TEXT REFERENCES chat_sessions(id), payload JSON NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
+);
+CREATE INDEX hub_stop_events_stop ON hub_stop_events(stop_id,seq);
 `]

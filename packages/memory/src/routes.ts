@@ -65,12 +65,42 @@ export interface MemoryRouteOptions {
 }
 export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions) {
   const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true, options.collaborationEnabled,
-    { enabled: options.automationsEnabled ?? (() => true), ...(options.scheduleEffects ? { effects: options.scheduleEffects } : {}) })
+    { enabled: options.automationsEnabled ?? (() => true), ...(options.scheduleEffects ? { effects: options.scheduleEffects } : {}) }, options.updateTransaction)
   const collaborationEnabled = options.collaborationEnabled ?? (() => true)
   const requireCollaboration = () => check(collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
   registerUsageRoutes(app,service,options)
-  registerUpdateDrain(app, service, { authorize: options.authorizeUpdate ?? updateSecretAuthorizer(undefined), ...(options.updateTransaction ? { startupTransaction: options.updateTransaction } : {}), ...(options.legacyGateways ? { legacyGateways: () => options.legacyGateways!() } : {}) })
+  const updateDrain = registerUpdateDrain(app, service, { authorize: options.authorizeUpdate ?? updateSecretAuthorizer(undefined),
+    beforeStartupAdmit: transactionId => service.get().then(({ stop }) => stop.assertStartupTransaction(transactionId)),
+    startupAdmitted: async transactionId => { await (await service.get()).stop.resumeApplied(transactionId) },
+    ...(options.updateTransaction ? { startupTransaction: options.updateTransaction } : {}), ...(options.legacyGateways ? { legacyGateways: () => options.legacyGateways!() } : {}) })
+  const stopGuard = { preHandler: async (request: FastifyRequest) => { await (options.authorizeUpdate ?? updateSecretAuthorizer(undefined))(request) } }
+  const stopIdBody = z.object({ stop_id: id }).strict()
+  app.post("/api/internal/hub-stop", stopGuard, async request => {
+    const input = parse(z.object({ source_id: id, reason: z.enum(["update", "quit"]), target_version: z.string().min(1).max(100).optional() }).strict(), request.body)
+    return (await service.get()).stop.request({ source_id: input.source_id, reason: input.reason, ...(input.target_version ? { target_version: input.target_version } : {}) })
+  })
+  app.get("/api/internal/hub-stop/status", stopGuard, async request => {
+    const input = parse(z.object({ stop_id: id.optional() }).strict(), request.query)
+    return (await service.get()).stop.status(input.stop_id)
+  })
+  app.post("/api/internal/hub-stop/retry", stopGuard, async request => {
+    const input = parse(stopIdBody, request.body)
+    return (await service.get()).stop.retry(input.stop_id)
+  })
+  app.post("/api/internal/hub-stop/cancel", stopGuard, async request => {
+    const input = parse(stopIdBody.extend({ reason: z.string().trim().min(1).max(500).default("cancelled_by_user") }), request.body)
+    return (await service.get()).stop.cancel(input.stop_id, input.reason)
+  })
+  app.post("/api/internal/hub-stop/drain", stopGuard, async (request, reply) => {
+    const input = parse(stopIdBody, request.body)
+    const result = await (await service.get()).stop.acquireDrain(input.stop_id, updateDrain)
+    return result.ok ? result : reply.code(409).send(result)
+  })
+  app.post("/api/internal/hub-stop/commit", stopGuard, async request => {
+    const input = parse(stopIdBody.extend({ transaction_id: z.string().min(1).max(100).optional() }), request.body)
+    return (await service.get()).stop.commit(input.stop_id, updateDrain, input.transaction_id)
+  })
   if (options.authorizeUpdate) registerUpdateHintRoutes(app, async () => (await service.get()).hints, options.authorizeUpdate)
   const credential = service.vault.mcpCredential()
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl)

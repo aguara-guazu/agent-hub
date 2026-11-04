@@ -1102,12 +1102,12 @@ export class LocalChat {
       const result = await this.page(`SELECT * FROM (
         SELECT m.id,m.thread_id,m.author_id,m.text,m.reply_to,m.request_id,m.created_at,m.seq,
           s.label AS author_label,s.cli_kind,${AUTHOR_SOURCE_SQL} AS author_source,'mention' AS kind,t.title,d.read_at,d.handled_at,d.response_required,
-          NULL AS session_id,NULL AS turn_id,NULL AS cause,NULL AS work_thread_id
+          NULL AS session_id,NULL AS turn_id,NULL AS cause,NULL AS work_thread_id,NULL AS payload
         FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id JOIN chat_threads t ON t.id=m.thread_id
           JOIN chat_sessions s ON s.id=m.author_id WHERE d.recipient_id=$1 AND d.handled_at IS NULL AND d.cancelled_at IS NULL AND ($2=0 OR d.read_at IS NULL)
         UNION ALL
         SELECT id,NULL,'agenthub-system',text,NULL,NULL,created_at,NULL,
-          'Agent Hub','hub','hub','status_notice',NULL,read_at,handled_at,0,session_id,turn_id,cause,work_thread_id
+          'Agent Hub','hub','hub','status_notice',NULL,read_at,handled_at,0,session_id,turn_id,cause,work_thread_id,payload
         FROM chat_status_notices WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL AND ($2=0 OR read_at IS NULL)
         )`,[who.id,input.unread_only ? 1 : 0],'created_at,id',input)
       for (const m of result.items) {

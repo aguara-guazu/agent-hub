@@ -1,6 +1,6 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs'
-import { dirname } from 'node:path'
-import { redactSecrets } from './secrets.js'
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { redactSecrets } from "./secrets.js"
 
 export const ISSUES_URL = 'https://github.com/aguara-guazu/agent-hub/issues/new'
 const EMAIL = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g
@@ -41,11 +41,14 @@ export class LogFile {
       this.size = statSync(path).size
     } catch { this.size = 0 }
   }
-  write(text: string, prefix = '') {
+  write(text: string, prefix = "") {
     const lines = redactDiagnostics(text).slice(-64_000).split(/\r?\n/).filter(line => line.trim())
     if (!lines.length) return
     const stamp = new Date().toISOString()
-    const chunk = lines.map(line => `${stamp} ${prefix}${line}\n`).join('')
+    this.append(lines.map(line => `${stamp} ${prefix}${line}\n`).join(""))
+  }
+  /** Appends already-redacted structured lines through the same bounded writer. */
+  protected append(chunk: string): void {
     try {
       if (this.size && this.size + Buffer.byteLength(chunk) > MAX_LOG_BYTES) { renameSync(this.path, `${this.path}.1`); this.size = 0 }
     } catch { return /* Retry rotation on the next write; do not grow a locked log without bound. */ }
@@ -69,6 +72,32 @@ export class LogFile {
     })
     stream.on('end', () => { if (rest) this.write(rest, prefix); rest = '' })
   }
+}
+
+export type HubLogValue = string | number | boolean | null | undefined
+
+/** Structured Hub activity. String fields are redacted and bounded before serialization. */
+export class HubLog extends LogFile {
+  event(component: string, event: string, fields: Record<string, HubLogValue> = {}): void {
+    const record: Record<string, HubLogValue> = { ts: new Date().toISOString(), component, event }
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) record[key] = typeof value === "string" ? redactDiagnostics(value).slice(0, 500) : value
+    }
+    this.append(`${JSON.stringify(record)}\n`)
+  }
+}
+
+const hubLogs = new Map<string, HubLog>()
+
+/** Core activity log beside desktop logs, or under memory/logs for standalone cores. */
+export function hubLog(memoryDirectory: string): HubLog {
+  const path = join(process.env.AGENTHUB_LOG_DIR || join(memoryDirectory, "logs"), "hub.log")
+  let log = hubLogs.get(path)
+  if (!log) {
+    log = new HubLog(path)
+    hubLogs.set(path, log)
+  }
+  return log
 }
 
 /** Last `count` lines of a log, reaching into the rotated `<name>.1` when the current file is short. */

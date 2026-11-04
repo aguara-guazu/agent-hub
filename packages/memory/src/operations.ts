@@ -39,11 +39,14 @@ import { listProjectSuggestions, projectSuggestionReview, reviewProjectSuggestio
 import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput, saveProjectCompany, saveProjectCompanyInput } from './project-assistance.js'
 
 import { mergeProjects, mergeProjectsInput } from "./project-merge.js"
+import type { HubStopCoordinator } from "./hub-stop.js"
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
   skill_reference: ['Only when needed: collaboration guides or the full tool reference. Runs nothing; grants no permissions.', z.object({section:z.enum(['memory-tools','local-collaboration','team-orchestration','inter-hub'])}).strict()],
   usage_status: ['Native quotas and team notices: windows, resets, source, freshness. Unknown does not mean available; quota guarantees neither access nor completion. No inference or provider refresh.', z.object({session_key:z.string().min(32).max(200).optional(),cli:z.enum(CLI_KINDS).optional(),model:z.string().max(300).optional()}).strict()],
+  hub_stop_confirm: ["Confirm a requested coordinated stop only after telling every member to reach a safe point, report and stop. Current notified coordinator only; idempotent; does not stop processes.",
+    z.object({ session_key: z.string().min(32).max(200), stop_id: id }).strict()],
   ...chatDefinitions,
   ...interhubDefinitions,
   ...teamDefinitions,
@@ -152,6 +155,8 @@ export class MemoryOperations {
   setSharedPaused: ((projectId: string, paused: boolean) => Promise<{ paused: boolean }>) | undefined
   /** Set by the service: backups run inside it so a stop never cuts one. */
   admission: AdmissionGate | undefined
+  /** Set by the core service; absent in worker-only memory processes. */
+  hubStop: HubStopCoordinator | undefined
   readonly projectAutomation: ProjectAutomationService
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
@@ -193,7 +198,7 @@ export class MemoryOperations {
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
     // Cleanup remains allowed and deletion keeps its original lifecycle lock ordering.
     if (!READ_OPERATIONS.has(operation) && !["delete_entity", "unlink_entities"].includes(operation)) await assertWritableEntityTargets(this.store.db, raw)
-    if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
+    if (isCollaborationTool(operation) || operation === "hub_stop_confirm" || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
       check(this.collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
     if (isInterhubOperation(operation)) {
       check(actor !== 'mcp' || agent, 'La colaboración por MCP requiere la identidad de agente que agrega el gateway.', 403)
@@ -226,6 +231,10 @@ export class MemoryOperations {
     const author = agent ? `agent:${agent.cli_kind || 'mcp'}:${agent.session_id.slice(0, 8)}` : actor
     switch (operation) {
       case 'skill_reference': return {section:input.section,text:input.section==='memory-tools'?renderMemoryToolReference():input.section==='local-collaboration'?localCollaborationSkill.body:input.section==='inter-hub'?interhubReference:localOrchestrationReference}
+      case "hub_stop_confirm": {
+        check(agent && this.hubStop, "La parada coordinada requiere una sesión de agente registrada en el core.", 403)
+        return this.hubStop.confirm(agent, input.session_key, input.stop_id)
+      }
 
       case 'usage_status': {
         const who=agent && input.session_key && this.collaborationEnabled() ? await this.chat.identity(agent,input.session_key) : undefined
