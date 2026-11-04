@@ -6,6 +6,7 @@
  */
 
 import { setTimeout as delay } from 'node:timers/promises'
+import { fileURLToPath } from "node:url"
 import { TestServer, ToolError } from './base.js'
 
 export const SERVER_NAME = 'flaky'
@@ -46,6 +47,6 @@ export function createFlakyServer(): TestServer {
   return server
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
   void createFlakyServer().runStdio()
 }

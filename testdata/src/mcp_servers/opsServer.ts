@@ -15,6 +15,7 @@
 
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { fileURLToPath } from "node:url"
 import { TestServer, ToolError } from './base.js'
 
 export const SERVER_NAME = 'ops'
@@ -72,6 +73,6 @@ export function createOpsServer(): TestServer {
   return server
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
   void createOpsServer().runStdio()
 }
