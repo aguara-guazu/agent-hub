@@ -304,10 +304,26 @@ export function stopReportOf(view: HubStopView): UpdateStopReport {
   }
 }
 
+/** El backend deja la cantidad de sesiones heredadas en el detalle del error (JSON con `count` o texto con el número). */
+function withCount(code: string, detail: string | null): UpdateReason {
+  let count: number | null = null
+  if (detail) {
+    try {
+      const parsed: unknown = JSON.parse(detail)
+      const value = typeof parsed === "number" ? parsed : (parsed as { count?: unknown } | null)?.count
+      if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) count = value
+    } catch {
+      const match = /\d+/.exec(detail)
+      if (match) count = Number(match[0])
+    }
+  }
+  return count === null ? { code } : { code, count }
+}
+
 /** Razones estables, con el mismo formato que las del drenaje, para el texto de «pospuesta». */
 export function stopReasons(view: HubStopView): UpdateReason[] {
   const reasons: UpdateReason[] = []
-  if (view.error) reasons.push({ code: view.error.code })
+  if (view.error) reasons.push(view.error.code === "legacy_gateways" ? withCount(view.error.code, view.error.detail) : { code: view.error.code })
   if (view.waitingFor.leadersInTurn.length) reasons.push({ code: "stop_waiting_leaders", count: view.waitingFor.leadersInTurn.length })
   if (view.waitingFor.coordinators.length) reasons.push({ code: "stop_waiting_coordinators", count: view.waitingFor.coordinators.length })
   if (view.waitingFor.members.length) reasons.push({ code: "stop_waiting_members", count: view.waitingFor.members.length })
