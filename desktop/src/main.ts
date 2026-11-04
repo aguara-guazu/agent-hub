@@ -30,7 +30,7 @@ import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { CoreDidNotExit, DRAIN_SECRET_HEADER, DrainClient, DrainLeaseLost, type DrainLease } from './update-lease.js'
-import { HubStopClient, HubStopRun, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
+import { HubStopClient, HubStopRun, StopCooldown, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
@@ -549,6 +549,8 @@ const drainHeaders = (json = false): Record<string, string> => ({ [DRAIN_SECRET_
 const hubStopClient = new HubStopClient({ call: (path, init) => coreFetch(path, init), secret: updateDrainSecret, log: updaterLog })
 /** Parada coordinada en curso (update o cierre de la persona); una sola a la vez. */
 let activeStop: HubStopRun | null = null
+/** Después de una parada pospuesta no se vuelve a pedir otra antes de 30 min: cada una avisa de nuevo a los líderes. */
+const stopCooldown = new StopCooldown()
 function startHubStop(reason: HubStopReason, input: { targetVersion?: string; transactionId?: string }, onView: (view: HubStopView) => void): HubStopRun {
   const run = new HubStopRun({
     client: hubStopClient,
@@ -568,6 +570,7 @@ async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }
   // than breaking a client's live stdio MCP connection or asking the user to act.
   if (update.strategy === 'nsis' && await updater.bridgesAtRisk() > 0) return postpone(update.version, [{ code: 'mcp_bridges' }])
   if (!updateStore.isEnabled()) return false
+  if (update.strategy === 'dmg' && stopCooldown.active()) return false
   // macOS, todo esto fuera del drenaje (los gateways esperan sólo 45 s): runtime, helper válido, DMG revalidado, stage con fsync,
   // journal `staged` y vigía preparado (`watchdog_ready`). El Updater nunca invoca el helper: el intercambio es del vigía.
   if (update.strategy === 'dmg') {
@@ -616,6 +619,7 @@ async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downl
     setUpdateReport({ phase: 'postponed', version: update.version, reasons: stopReasons(view), stop: stopReportOf(view), ...(update.trust ? { trust: update.trust } : {}) })
   })
   const outcome = await run.done
+  if (outcome.kind === 'postponed') stopCooldown.start()
   if (outcome.kind !== 'committed') {
     updaterLog(`[updater] v${update.version}: parada coordinada ${outcome.kind}${outcome.kind === 'failed' ? ` (${outcome.code})` : ''}`)
     return postpone(update.version, [{ code: outcome.kind === 'failed' ? outcome.code : `stop_${outcome.kind}` }])

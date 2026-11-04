@@ -280,5 +280,15 @@ export function stopReasons(view: HubStopView): UpdateReason[] {
   if (view.waitingFor.leadersInTurn.length) reasons.push({ code: "stop_waiting_leaders", count: view.waitingFor.leadersInTurn.length })
   if (view.waitingFor.coordinators.length) reasons.push({ code: "stop_waiting_coordinators", count: view.waitingFor.coordinators.length })
   if (view.waitingFor.members.length) reasons.push({ code: "stop_waiting_members", count: view.waitingFor.members.length })
-  return reasons.length ? reasons : [{ code: `stop_${view.state}` }]
+  return reasons.length ? reasons : [{ code: `stop_state_${view.state}` }]
+}
+
+/** Tiempo mínimo entre una parada pospuesta y la siguiente: reintentar antes volvería a avisar a los líderes. */
+export const STOP_COOLDOWN_MS = 30 * 60_000
+
+export class StopCooldown {
+  private until = 0
+  constructor(private readonly now: () => number = () => Date.now(), private readonly durationMs: number = STOP_COOLDOWN_MS) {}
+  start(): void { this.until = this.now() + this.durationMs }
+  active(): boolean { return this.now() < this.until }
 }
