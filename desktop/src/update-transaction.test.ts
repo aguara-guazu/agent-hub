@@ -75,20 +75,20 @@ describe("transacción del updater", () => {
     expect(readTransaction(dir)).toMatchObject({ kind: "ok", tx: { phase: "admitted", new_app: { pid: 102, start: "new-start" } } })
   })
 
-  it("libera el lock con el descriptor y nunca borra el archivo de otro dueño", async () => {
+  it.runIf(process.platform === "darwin")("libera el lock con el descriptor y nunca borra el archivo de otro dueño", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenthub-update-lock-"))
     paths.push(dir)
     const lock = join(dir, "swap-back.lock")
     await writeFile(lock, "{")
 
     const first = acquireSwapBackLock(dir, { pid: 202, start: "owner-one" }, () => false)
-    expect(first).toBeTypeOf("function")
+    expect(first).toMatchObject({ fd: expect.any(Number), release: expect.any(Function) })
     expect(acquireSwapBackLock(dir, { pid: 203, start: "owner-two" }, () => false)).toBeNull()
-    first?.()
+    first?.release()
 
     const second = acquireSwapBackLock(dir, { pid: 203, start: "owner-two" }, () => false)
-    expect(second).toBeTypeOf("function")
-    second?.()
+    expect(second).toMatchObject({ fd: expect.any(Number), release: expect.any(Function) })
+    second?.release()
     expect(existsSync(lock)).toBe(true)
   })
 

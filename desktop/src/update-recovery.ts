@@ -107,18 +107,24 @@ export async function recoverTransaction(deps: RecoveryDeps): Promise<Recovery> 
       return ambiguous("la versión que corre no es ninguna de las dos o el intercambio quedó a medias")
     }
 
-    case "healthy":
-    case "done": {
+    case "healthy": {
       if (running !== tx.to.version || bundleVersion(tx.paths.installed) !== tx.to.version) return ambiguous("la app que corre no es la confirmada")
       if (inspectSides(tx) === "swapped") return (await finish()) ? "cleaned" : ambiguous("el respaldo no se pudo borrar de forma durable")
       const evidence = readJson(healthyFile(deps.updateDir, tx.transaction_id))
       const marker = evidence.ok ? parseHealthyMarker(evidence.value) : null
       if (existsSync(tx.paths.incoming) || marker?.transaction_id !== tx.transaction_id || marker.version !== tx.to.version)
         return ambiguous("falta el respaldo sin evidencia durable de salud")
-      if (tx.phase === "healthy") advancePhase(deps.updateDir, tx.transaction_id, "done")
+      advancePhase(deps.updateDir, tx.transaction_id, "done")
       clearTransactionFiles(deps.updateDir, tx.transaction_id)
       return "cleaned"
     }
+
+    case "done":
+      if (running !== tx.to.version || bundleVersion(tx.paths.installed) !== tx.to.version) return ambiguous("la app que corre no es la confirmada")
+      if (inspectSides(tx) === "swapped") return (await finish()) ? "cleaned" : ambiguous("el respaldo no se pudo borrar de forma durable")
+      if (existsSync(tx.paths.incoming)) return ambiguous("la fase done conserva un respaldo inesperado")
+      clearTransactionFiles(deps.updateDir, tx.transaction_id)
+      return "cleaned"
 
     case "rolled_back":
       if (running !== tx.from.version || inspectSides(tx) !== "not_swapped") return ambiguous("la app que corre no es la versión restaurada")

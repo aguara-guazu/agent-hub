@@ -810,19 +810,34 @@ async function startUpdateBookkeeping(): Promise<void> {
   let startupTransaction: string | null = null
   let activeTransaction: UpdateTransaction | null = null
   let rollbackExit: Promise<void> | null = null
+  let cleanupRetry: Promise<void> | null = null
   let rollbackObserver: ReturnType<typeof setInterval> | null = null
+  const stopTransactionObservation = (): void => {
+    activeTransaction = null
+    startupTransaction = null
+    if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
+  }
   const observeRollback = (): boolean => {
     if (!activeTransaction) return false
     const current = readTransaction(updateStore.dir)
     if (current.kind !== "ok" || current.tx.transaction_id !== activeTransaction.transaction_id) {
-      activeTransaction = null
-      if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
+      stopTransactionObservation()
       return false
     }
     if (!["admitting", "admitted"].includes(current.tx.phase)) {
-      if (["ambiguous", "rolled_back"].includes(current.tx.phase)) {
-        activeTransaction = null
-        if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
+      if (["ambiguous", "rolled_back"].includes(current.tx.phase)) stopTransactionObservation()
+      else if (["healthy", "done"].includes(current.tx.phase) && !cleanupRetry) {
+        cleanupRetry = recoverTransaction({
+          stateDir,
+          updateDir: updateStore.dir,
+          installed: current.tx.paths.installed,
+          version: app.getVersion(),
+          removeTree,
+          pid: process.pid,
+          log: updaterLog,
+        }).then(outcome => { if (outcome === "cleaned") stopTransactionObservation() })
+          .catch(error => updaterLog(`[updater] reintento de limpieza: ${error instanceof Error ? error.message : String(error)}`))
+          .finally(() => { cleanupRetry = null })
       }
       return false
     }
@@ -907,11 +922,7 @@ async function startUpdateBookkeeping(): Promise<void> {
       if (bundle) void collectRuntimes({ stateDir, executable: basename(process.execPath), appName: basename(bundle), keep: [transaction.from.version, transaction.to.version] })
         .catch((error: unknown) => updaterLog(`[updater] recolección de runtimes omitida: ${error instanceof Error ? error.message : String(error)}`))
     },
-    onCompleted: () => {
-      activeTransaction = null
-      startupTransaction = null
-      if (rollbackObserver) { clearInterval(rollbackObserver); rollbackObserver = null }
-    },
+    onCompleted: stopTransactionObservation,
     log: updaterLog,
   })
 }

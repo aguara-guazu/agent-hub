@@ -12,7 +12,7 @@ import { basename, dirname, isAbsolute, join, sep } from "node:path"
 import {
   acquireSwapBackLock, addToBlacklist, advancePhase, bundleVersion, clearTransactionFiles, fsyncPathSync, hasIncomingRemnants, healthyFile, inspectSides,
   parseHealthyMarker, parseStartedMarker, phaseRank, readJson, readTransaction, readyFile, removeDurable, rollbackReadyFile, rollbackRequestFile, sha256File, startedFile, validateLayout, watchdogDir, writeJsonDurable,
-  type Identity, type Sides, type UpdateTransaction as Transaction,
+  type Identity, type Sides, type SwapLock, type UpdateTransaction as Transaction,
 } from "./update-transaction.js"
 
 export * from "./update-transaction.js"
@@ -216,8 +216,8 @@ export interface ForwardSwapOperations {
   read(): Transaction | null
   isAlive(identity: Identity): boolean
   sides(transaction: Transaction): Sides
-  lock(): (() => void) | null
-  swap(transaction: Transaction): void
+  lock(): SwapLock | null
+  swap(transaction: Transaction, lock: SwapLock): void
   sync(transaction: Transaction): void
   launch(transaction: Transaction): Promise<Identity>
   advance(phase: "swapped" | "launched", patch?: Partial<Pick<Transaction, "new_app">>): Transaction
@@ -228,20 +228,20 @@ export async function performForwardSwap(transaction: Transaction, operations: F
   if (transaction.phase !== "swap_intent") throw new Error("la transacción no está lista para intercambiar")
   if (operations.isAlive(transaction.old_app)) throw new Error("la app vieja sigue viva")
   if (operations.sides(transaction) !== "not_swapped") throw new Error("los lados no están listos para el intercambio")
-  const release = operations.lock()
-  if (!release) throw new Error("otro proceso controla el intercambio")
+  const lock = operations.lock()
+  if (!lock) throw new Error("otro proceso controla el intercambio")
   let swapped: Transaction
   try {
     const current = operations.read()
     if (!current || current.transaction_id !== transaction.transaction_id || current.phase !== "swap_intent") throw new Error("la transacción cambió antes del intercambio")
     if (operations.isAlive(current.old_app)) throw new Error("la app vieja volvió a estar viva")
     if (operations.sides(current) !== "not_swapped") throw new Error("los lados cambiaron antes del intercambio")
-    operations.swap(current)
+    operations.swap(current, lock)
     operations.sync(current)
     if (operations.sides(current) !== "swapped") throw new Error("el helper no dejó las versiones en los lados esperados")
     swapped = operations.advance("swapped")
   } finally {
-    release()
+    lock.release()
   }
   const identity = await operations.launch(swapped)
   if (!Number.isInteger(identity.pid) || identity.pid <= 1 || !identity.start) throw new Error("la app nueva no confirmó su identidad")
@@ -330,11 +330,14 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
         isAlive: sameProcess,
         sides: inspectSides,
         lock: () => acquireSwapBackLock(args.updateDir, { pid: myPid, start: myStart }, sameProcess),
-        swap: current => {
+        swap: (current, lock) => {
           const candidate = join(current.paths.runtime_old, "Contents", "Resources", "bin", "agenthub-swap")
           const info = statSync(candidate)
           if (!info.isFile() || !(info.mode & 0o111) || sha256File(candidate) !== args.helperSha256) throw new Error("el agenthub-swap ya no coincide con el verificado")
-          execFileSync(candidate, [current.paths.installed, current.paths.incoming], { stdio: "ignore" })
+          execFileSync(candidate, [current.paths.installed, current.paths.incoming], {
+            stdio: ["ignore", "ignore", "ignore", lock.fd],
+            env: { ...process.env, AGENTHUB_SWAP_LOCK_FD: "3" },
+          })
         },
         sync: current => fsyncPathSync(dirname(current.paths.installed)),
         launch,
@@ -390,10 +393,10 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
 
   // La app vieja exacta debe haber terminado: con ella viva no se intercambia ni se relanza (retiene el candado de instancia única y el puerto).
   if (sameProcess(tx.old_app)) return ambiguous("la app vieja volvió a estar viva antes del rollback; no se toca nada")
-  const release = acquireSwapBackLock(args.updateDir, { pid: myPid, start: myStart }, sameProcess)
-  if (!release) return ambiguous("otro proceso está deshaciendo el intercambio", false)
+  const lock = acquireSwapBackLock(args.updateDir, { pid: myPid, start: myStart }, sameProcess)
+  if (!lock) return ambiguous("otro proceso está deshaciendo el intercambio", false)
   let released = false
-  const unlock = (): void => { if (!released) { released = true; release() } }
+  const unlock = (): void => { if (!released) { released = true; lock.release() } }
   try {
     // 4a. Before admission the exact new app may be stopped. After admission, request its convergent drain and only observe exit.
     const prepared = await prepareRollback(tx, {
@@ -426,7 +429,10 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
     if (inspectSides(tx) !== "swapped") return ambiguous("los lados cambiaron antes del rollback")
     if (sha256File(helper) !== args.helperSha256) return ambiguous("el agenthub-swap cambió antes del rollback")
     // 4b. Intercambio atómico de vuelta con el helper de la versión anterior; después se verifica y se hace durable.
-    execFileSync(helper, [installed, incoming], { stdio: "ignore" })
+    execFileSync(helper, [installed, incoming], {
+      stdio: ["ignore", "ignore", "ignore", lock.fd],
+      env: { ...process.env, AGENTHUB_SWAP_LOCK_FD: "3" },
+    })
     fsyncPathSync(dirname(installed))
     if (bundleVersion(installed) !== tx.from.version || bundleVersion(incoming) !== tx.to.version) return ambiguous("tras el intercambio las versiones no son las esperadas")
     // 4c. Lista negra con versión y digest, sin reconstruir el estado sensible; después el journal.
