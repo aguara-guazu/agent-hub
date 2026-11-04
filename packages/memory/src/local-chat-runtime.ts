@@ -12,8 +12,21 @@ const exec = promisify(execFile)
 export type FleetReadiness = 'idle' | 'mid_turn' | 'busy' | 'unowned'
 export const chatWakeText = (ids: string[]) => `Agent Hub: pending mentions/private notices (${ids.join(', ')}). Before continuing, read memory_chat_inbox (your session_key) and verify team.leader_id. Requests: reply in-thread via reply_to. response_due: check your pending request in work_thread_id. Other status notices: request any missing report in the existing thread. Never read another agent's terminal, output, logs or transcript. memory_chat_ack the id only once handled. No polling or empty auto-replies.`
 
+/** A probe of a process or peer the tick does not own; past this the session is skipped until the next tick. */
+export const TICK_PROBE_TIMEOUT_MS = 5_000
+/** A tick still running after this no longer holds back the next one; the step it was in is reported. */
+export const TICK_STUCK_MS = 60_000
+const TICK_SLOW_MS = 10_000
+const TIMED_OUT = Symbol("timed_out")
+export type TickEvent = { event: "probe_timeout" | "tick_slow" | "tick_stuck"; step: string; duration_ms: number; session_id?: string }
+
 /** Only the local Hub owns the dispatcher. No inference process is created to listen. */
 export class LocalChatRuntime {
+  /** Diagnostics only: ids, steps and durations, never message content. Replaced by the Hub's history log when wired. */
+  observer: (event: TickEvent) => void = event => { process.stderr.write(`[chat-runtime] ${JSON.stringify(event)}\n`) }
+  private tickStarted = 0
+  private step = "idle"
+  private slowest = { step: "idle", ms: 0 }
   private timer?: ReturnType<typeof setInterval>
   private running: Promise<void> | undefined
   private stopped = false
@@ -42,29 +55,64 @@ export class LocalChatRuntime {
     this.timer = setInterval(this.kick,5000); this.timer.unref(); this.kick()
   }
   private kick = () => {
-    if (!this.stopped && !this.running) this.running = this.tick().catch(() => {}).finally(() => { this.running = undefined })
+    if (this.stopped) return
+    if (this.running) {
+      const elapsed = Date.now() - this.tickStarted
+      if (elapsed < TICK_STUCK_MS) return
+      // A hung await must not stop deliveries, leases and notices for every session; claims stay transactional across ticks.
+      this.report({ event: "tick_stuck", step: this.step, duration_ms: elapsed })
+    }
+    this.tickStarted = Date.now()
+    const run: Promise<void> = this.tick().catch(() => {}).finally(() => {
+      if (this.running !== run) return
+      this.running = undefined
+      const elapsed = Date.now() - this.tickStarted
+      if (elapsed >= TICK_SLOW_MS) this.report({ event: "tick_slow", step: this.slowest.step, duration_ms: elapsed })
+    })
+    this.running = run
   }
   async close() {
     this.stopped = true; clearInterval(this.timer); this.chat.events.off('change',this.kick)
     for (const c of this.controllers) c.abort()
-    await this.running
+    // Shutdown has a few seconds before the supervisor kills the core; a hung tick must not consume them.
+    await Promise.race([this.running, new Promise(resolve => setTimeout(resolve, 2_000).unref())])
+  }
+  private report(event: TickEvent) { try { this.observer(event) } catch { /* Diagnostics never break delivery. */ } }
+  private phase(step: string) {
+    const now = Date.now(), ms = now - this.phaseStarted
+    if (ms > this.slowest.ms) this.slowest = { step: this.step, ms }
+    this.step = step; this.phaseStarted = now
+  }
+  private phaseStarted = 0
+  /** Resolves TIMED_OUT when a probe outlives TICK_PROBE_TIMEOUT_MS; the probe itself keeps running and its late result is ignored. */
+  private async bounded<T>(step: string, probe: () => Promise<T>, sessionId?: string): Promise<T | typeof TIMED_OUT> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const started = Date.now()
+    const result = await Promise.race([probe(), new Promise<typeof TIMED_OUT>(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), TICK_PROBE_TIMEOUT_MS); timer.unref() })])
+      .finally(() => clearTimeout(timer))
+    if (result === TIMED_OUT) this.report({ event: "probe_timeout", step, duration_ms: Date.now() - started, ...(sessionId ? { session_id: sessionId } : {}) })
+    return result
   }
   async tick() {
     if (!this.collaborationEnabled()) return
+    this.slowest = { step: "idle", ms: 0 }; this.phaseStarted = Date.now(); this.step = "read_access"
     // Grants are re-checked on every read, but a session that closes or goes silent and then reconnects before a sweep would
     // regain one; a failure in any later step of the tick must not postpone revocation.
     await this.chat.sweepReadAccess().catch(() => undefined)
+    this.phase("fleet_lease")
     if(this.fleet)for(const session of await this.chat.db.query("SELECT id FROM chat_sessions WHERE capability='hub_fleet' AND closed_at IS NULL")) {
-      if(await this.fleet.connected(String(session.id))) {
+      const fleet=this.fleet
+      if(await this.bounded("fleet_connected",()=>fleet.connected(String(session.id)),String(session.id))===true) {
         await this.chat.db.query('UPDATE chat_sessions SET lease_until=$2 WHERE id=$1 AND closed_at IS NULL',[session.id,new Date(Date.now()+90000).toISOString()])
         await this.recordFleetActivity(String(session.id))
       }
     }
+    this.phase("pid_check")
     // PID birth time prevents a recycled PID from keeping a dead session online.
     const processes = await this.chat.db.query('SELECT s.id,s.process_id,s.process_started FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE s.closed_at IS NULL AND c.closed_at IS NULL AND s.process_id IS NOT NULL')
     for (const s of processes) {
-      const live=await this.inspectProcess(s.process_id)
-      if(live===undefined)continue
+      const live=await this.bounded("inspect_process",()=>this.inspectProcess(s.process_id),String(s.id))
+      if(live===undefined || live===TIMED_OUT)continue
       if(live && !s.process_started)continue // No birth identity: a live PID cannot prove replacement.
       // A birth identity stored by an older version (ps lstart) cannot be compared with the stable Linux one; it proves nothing.
       if(live && isStableProcessStart(live.started)!==isStableProcessStart(s.process_started))continue
@@ -76,21 +124,30 @@ export class LocalChatRuntime {
       }
     }
     // After the fleet and PID lease renewals, so a live session is never taken as disconnected.
+    this.phase("archive")
     await this.chat.sweepArchive().catch(() => undefined)
+    this.phase("turn_alerts")
     await this.chat.processTurnAlerts()
+    this.phase("response_alerts")
     await this.chat.processResponseAlerts()
+    this.phase("liveness")
     if(this.fleet?.readiness) {
       const now=Date.now()
       for(const candidate of await this.chat.fleetLivenessCandidates()) try {
         const runtime=typeof candidate.runtime==="string"?JSON.parse(candidate.runtime):candidate.runtime
-        if(await this.fleet.readiness(String(candidate.session_id))==="unowned" && now-Date.parse(runtime.updated_at)>60_000)
+        const fleet=this.fleet
+        if(await this.bounded("fleet_readiness",()=>fleet.readiness!(String(candidate.session_id)),String(candidate.session_id))==="unowned" && now-Date.parse(runtime.updated_at)>60_000)
           await this.chat.raiseLiveness(now,candidate,candidate.hub_restart?"hub_restart":["failed","stopped"].includes(runtime.state)?"exited":"unowned")
       } catch {
         // A malformed or unavailable runtime is retried on the next tick.
       }
     }
-    await this.chat.interhubSweep?.().catch(() => undefined)
+    this.phase("interhub")
+    const interhub=this.chat.interhubSweep?.bind(this.chat)
+    if(interhub)await this.bounded("interhub_sweep",()=>interhub().catch(() => undefined))
+    this.phase("read_access")
     await this.chat.sweepReadAccess()
+    this.phase("deliveries")
     // Native queue addresses the exact conversation and verifies it at delivery time.
     // A managed app-server may not expose a per-TUI PID to hooks; its idle lease is
     // advisory presence, not a reason to silently suppress durable notifications.
@@ -105,8 +162,9 @@ export class LocalChatRuntime {
       if (this.stopped) return
       if (!this.enabled(s.agent_id)) continue
       // The persisted row of a Hub worker can lag its process; the manager decides whether input is accepted now.
-      const readiness=s.capability==='hub_fleet' ? await this.fleetReadiness(s) : undefined
-      if (readiness==='busy') continue
+      const probed=s.capability==='hub_fleet' ? await this.bounded("fleet_readiness",()=>this.fleetReadiness(s),String(s.id)) : undefined
+      if (probed===TIMED_OUT || probed==='busy') continue
+      const readiness=probed
       const deliveries = await this.claim(s.id,true,readiness!==undefined)
       const quota=new UsageNotices(this.chat),notices=await quota.claim(s.id)
       if (!deliveries.length && !notices.length) continue
@@ -126,6 +184,7 @@ export class LocalChatRuntime {
         }
       }
     }
+    this.phase("bootstrap")
     const newcomers=await this.chat.db.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id WHERE c.leader_id IS NOT NULL AND c.closed_at IS NULL AND (c.kind<>'virtual' OR c.activated_at IS NOT NULL) AND s.team_seen=0 AND s.bootstrap_attempts<5 AND (s.bootstrap_sent_at IS NULL OR s.bootstrap_sent_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 seconds')) AND s.closed_at IS NULL AND s.state='idle' AND s.capability IN ('codex_queue','hub_fleet') AND s.native_id IS NOT NULL
       AND NOT EXISTS(SELECT 1 FROM chat_deliveries d WHERE d.recipient_id=s.id AND d.read_at IS NULL AND d.cancelled_at IS NULL)
       AND NOT EXISTS(SELECT 1 FROM chat_status_notices n WHERE n.recipient_id=s.id AND n.read_at IS NULL AND n.cancelled_at IS NULL)`)
@@ -136,15 +195,19 @@ export class LocalChatRuntime {
       try {await this.dispatch(s,s.nickname?teamBootstrap:'Agent Hub: register a nickname via memory_chat_set_nick.')}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
     }
     // After dispatch, so a delivery this tick could still make never raises a notice that is cancelled moments later.
+    this.phase("stalled_deliveries")
     await this.chat.processStalledDeliveries()
+    this.phase("idle")
   }
   /**
    * Persists output evidence of a busy Hub worker at most every 30 s. Only output_at moves, plus the session activity record: the lifecycle
    * columns and chat_turns stay owned by native turn events, and an idle or closed row ignores a late timestamp.
    */
   private async recordFleetActivity(sid:string) {
-    const evidence=await this.fleet?.activityAt?.(sid)
-    if(!evidence)return
+    const fleet=this.fleet
+    if(!fleet?.activityAt)return
+    const evidence=await this.bounded("fleet_activity",()=>fleet.activityAt!(sid),sid)
+    if(!evidence || evidence===TIMED_OUT)return
     const last=this.activityWritten.get(sid)
     if(last?.at===evidence.at || (last && Date.now()-last.written<30_000))return
     // Only an open turn with the same id may extend the busy interval; a late chunk of an earlier turn finds no match.
