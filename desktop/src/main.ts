@@ -22,15 +22,16 @@ import { AutostartOffer } from './autostart-offer.js'
 import { ClockWake } from './clock-wake.js'
 import { holdLimitFor, KeepAwake } from './keep-awake.js'
 import { deliveryNotice, FeedPoller, ScheduleNoticeBatcher, type FeedResponse, type Notice } from './schedule-feed.js'
-import { AutoUpdater, bundlePathFrom, fetchLatestRelease, fsyncPath, realBundlePath, resolveFeed, revalidateArtifact, type UpdateStatus } from "./updater.js"
+import { AutoUpdater, bundlePathFrom, fetchLatestRelease, fsyncPath, newTransactionId, realBundlePath, resolveFeed, revalidateArtifact, type UpdateStatus } from "./updater.js"
 import { UpdateStateCorruptError, UpdateStore } from './update-state.js'
 import { advancePhase, inspectSides, readJson, readTransaction, removeTreeDurable, rollbackReadyFile, rollbackRequestFile, writeJsonDurable, type UpdateTransaction } from './update-transaction.js'
 import { prepareWatchdog } from './update-watchdog.js'
 import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
-import { CoreDidNotExit, DRAIN_SECRET_HEADER, DrainClient, DrainLeaseLost, type DrainLease } from './update-lease.js'
-import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, StopCooldown, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
+import { DRAIN_SECRET_HEADER, DrainClient, type DrainLease } from './update-lease.js'
+import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
+import { cooldownAfter, cooldownUntilMs, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
@@ -152,10 +153,13 @@ const coreEnv: NodeJS.ProcessEnv = {
  */
 function startupTransactionId(): string {
   const read = readTransaction(updateStore.dir)
-  if (read.kind !== 'ok') return ''
-  const { phase, to, transaction_id: id } = read.tx
-  const physicallySwapped = phase === "swap_intent" && inspectSides(read.tx) === "swapped"
-  return (["swapped", "launched", "admitting", "admitted"].includes(phase) || physicallySwapped) && to.version === app.getVersion() ? id : ""
+  const journal = ((): string => {
+    if (read.kind !== 'ok') return ''
+    const { phase, to, transaction_id: id } = read.tx
+    const physicallySwapped = phase === "swap_intent" && inspectSides(read.tx) === "swapped"
+    return (["swapped", "launched", "admitting", "admitted"].includes(phase) || physicallySwapped) && to.version === app.getVersion() ? id : ""
+  })()
+  return startupTransactionFor(updateStore.readStopIntent(), journal, app.getVersion())
 }
 delete process.env.AGENTHUB_UPDATE_TX
 Object.defineProperty(coreEnv, 'AGENTHUB_UPDATE_TX', { enumerable: true, configurable: true, get: startupTransactionId })
@@ -543,22 +547,50 @@ const drainClient = new DrainClient({
 const acquireDrain = (): ReturnType<DrainClient['acquire']> => drainClient.acquire()
 const cancelDrain = (lease: { lease: string; generation: number }): Promise<void> => drainClient.cancel(lease)
 const commitCore = (lease: DrainLease): ReturnType<DrainClient['commit']> => drainClient.commit(lease)
-const leaseHeld = (lease: DrainLease): boolean => drainClient.held(lease)
 const drainHeaders = (json = false): Record<string, string> => ({ [DRAIN_SECRET_HEADER]: updateDrainSecret, ...(json ? { "Content-Type": "application/json" } : {}) })
 
 const hubStopClient = new HubStopClient({ call: (path, init) => coreFetch(path, init), secret: updateDrainSecret, log: updaterLog })
 /** Parada coordinada en curso (update o cierre de la persona); una sola a la vez. */
 let activeStop: HubStopRun | null = null
-/** Después de una parada pospuesta, cancelada o fallida no se vuelve a pedir otra antes de 30 min: cada una avisa de nuevo a los líderes. */
-const stopCooldown = new StopCooldown()
-function startHubStop(reason: HubStopReason, input: { targetVersion?: string; transactionId?: string }, onView: (view: HubStopView) => void): HubStopRun {
+
+/**
+ * Intento de parada: la misma actualización continúa con el `source_id` guardado (la misma solicitud devuelve la misma parada,
+ * también tras un reinicio); cualquier otra cosa estrena uno. Se persiste ANTES de pedir la parada.
+ */
+function stopAttempt(wanted: { reason: HubStopReason; strategy?: StopStrategy; transactionId?: string; targetVersion?: string }): StopIntent {
+  const stored = updateStore.readStopIntent()
+  if (sameAttempt(stored, wanted)) return stored
+  const intent: StopIntent = {
+    schema: 1, source_id: randomUUID(), reason: wanted.reason,
+    ...(wanted.strategy ? { strategy: wanted.strategy } : {}),
+    ...(wanted.transactionId ? { transaction_id: wanted.transactionId } : {}),
+    ...(wanted.targetVersion ? { target_version: wanted.targetVersion } : {}),
+  }
+  updateStore.writeStopIntent(intent)
+  return intent
+}
+
+function startHubStop(intent: StopIntent, onView: (view: HubStopView) => void, beforeCommit?: () => Promise<void>): HubStopRun {
+  let known = intent
   const run = new HubStopRun({
     client: hubStopClient,
     core: { get pid() { return coreSupervisor.pid }, get state() { return coreSupervisor.state } },
     startTimeOf: processStartTime,
     log: updaterLog,
     holdCore: () => coreSupervisor.hold(),
-  }, { sourceId: randomUUID(), reason, ...input, onView })
+  }, {
+    sourceId: intent.source_id, reason: intent.reason,
+    ...(intent.target_version ? { targetVersion: intent.target_version } : {}),
+    ...(intent.transaction_id ? { transactionId: intent.transaction_id } : {}),
+    ...(beforeCommit ? { beforeCommit } : {}),
+    onView: view => {
+      if (known.stop_id !== view.stopId && !known.cooldown_until) {
+        known = { ...known, stop_id: view.stopId }
+        try { updateStore.writeStopIntent(known) } catch (error) { updaterLog(`[updater] no se pudo guardar la parada: ${error instanceof Error ? error.message : String(error)}`) }
+      }
+      onView(view)
+    },
+  })
   activeStop = run
   void run.done.finally(() => { if (activeStop === run) activeStop = null })
   return run
@@ -570,7 +602,8 @@ async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }
   // than breaking a client's live stdio MCP connection or asking the user to act.
   if (update.strategy === 'nsis' && await updater.bridgesAtRisk() > 0) return postpone(update.version, [{ code: 'mcp_bridges' }])
   if (!updateStore.isEnabled()) return false
-  if (update.strategy === 'dmg' && stopCooldown.active()) return false
+  // Después de una parada que no llegó al commit no se pide otra antes del enfriamiento: cada una avisa de nuevo a los líderes.
+  if (cooldownUntilMs(updateStore.readStopIntent()) > Date.now()) return false
   // macOS, todo esto fuera del drenaje (los gateways esperan sólo 45 s): runtime, helper válido, DMG revalidado, stage con fsync,
   // journal `staged` y vigía preparado (`watchdog_ready`). El Updater nunca invoca el helper: el intercambio es del vigía.
   if (update.strategy === 'dmg') {
@@ -579,56 +612,45 @@ async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }
     const prepared = await updater.prepare(update)
     if (prepared.state === 'postponed') return postpone(update.version, prepared.reasons)
     if (!await recordStagedTransaction(update)) return postpone(update.version, [{ code: 'runtime_unavailable' }])
-    return await applyThroughHubStop(update, await ensureWatchdogReady(update))
+    const tx = await ensureWatchdogReady(update)
+    return await applyThroughHubStop(update, 'dmg', tx.transaction_id)
   }
-  const gate = await acquireDrain()
-  if ("reasons" in gate) return postpone(update.version, gate.reasons)
-  // Con un lease vigente core no se reinicia solo: si muere, el lease se da por perdido y se libera la retención.
-  const releaseHold = coreSupervisor.hold()
-  const lost = async (): Promise<false> => {
-    await cancelDrain(gate.lease)
-    releaseHold()
-    updaterLog(`[updater] v${update.version}: el drenaje se perdió antes de aplicar; se reintenta`)
-    return postpone(update.version, [{ code: "drain_lease_lost" }])
-  }
-  try {
-    if (!leaseHeld(gate.lease)) return await lost()
-    lastPostponed = ''
-    // El instalador se vuelve a verificar justo antes de lanzarlo: pudo cambiar mientras esperaba su turno.
-    await revalidateArtifact(update.path, update.sha256, update.size)
-    await commitCore(gate.lease)
-    installOnQuit = update
-  } catch (error) {
-    if (error instanceof DrainLeaseLost || error instanceof CoreDidNotExit) return await lost()
-    await cancelDrain(gate.lease)
-    releaseHold()
-    throw error
-  }
-  setUpdateReport({ phase: 'applying', version: update.version, ...(update.trust ? { trust: update.trust } : {}) })
-  updaterLog(`[updater] v${update.version}: reinicio silencioso`)
-  await quit()
-  return true
+  if (update.strategy !== 'nsis' && update.strategy !== 'appimage') return false
+  // Sin journal de swap: el transaction_id lo genera esta app y queda en la intención antes de pedir la parada.
+  const stored = updateStore.readStopIntent()
+  const reuse = stored && !stored.cooldown_until && stored.reason === 'update' && stored.strategy === update.strategy && stored.target_version === update.version
+  return await applyThroughHubStop(update, update.strategy, reuse && stored.transaction_id ? stored.transaction_id : newTransactionId())
 }
 
 /**
- * macOS: la parada coordinada espera a los líderes y deja a core listo; el commit lo hace salir bajo ese lease y se observa su
- * salida. Recién entonces se anota la intención y esta app se va. El vigía espera a que termine, intercambia y lanza la versión nueva.
+ * La parada coordinada espera a los líderes y deja a core listo; el commit lo hace salir y se observa su salida.
+ * - macOS (dmg): recién entonces se anota la intención de intercambio y esta app se va; el vigía espera, intercambia y lanza la nueva.
+ * - Windows y Linux: el instalador se vuelve a verificar justo antes del commit (pudo cambiar mientras se esperaba) y se lanza al cerrar.
  */
-async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downloaded' }>, tx: UpdateTransaction): Promise<boolean> {
-  const run = startHubStop('update', { targetVersion: update.version, transactionId: tx.transaction_id }, view => {
+async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downloaded' }>, strategy: StopStrategy, transactionId: string): Promise<boolean> {
+  const intent = stopAttempt({ reason: 'update', strategy, transactionId, targetVersion: update.version })
+  const run = startHubStop(intent, view => {
     setUpdateReport({ phase: 'postponed', version: update.version, reasons: stopReasons(view), stop: stopReportOf(view), ...(update.trust ? { trust: update.trust } : {}) })
-  })
+  }, strategy === 'dmg' ? undefined : () => revalidateArtifact(update.path, update.sha256, update.size))
   const outcome = await run.done
   if (outcome.kind !== 'committed') {
-    stopCooldown.start()
-    updaterLog(`[updater] v${update.version}: parada coordinada ${outcome.kind}${outcome.kind === 'failed' ? ` (${outcome.code})` : ''}`)
+    const cooldown = cooldownAfter(outcome, Date.now())
+    const view = outcome.kind === 'postponed' || outcome.kind === 'cancelled' ? outcome.view : outcome.kind === 'failed' ? outcome.view : null
+    try { updateStore.writeStopIntent({ ...(updateStore.readStopIntent() ?? intent), ...(view ? { stop_id: view.stopId } : {}), cooldown_until: cooldown }) }
+    catch (error) { updaterLog(`[updater] no se pudo guardar el enfriamiento: ${error instanceof Error ? error.message : String(error)}`) }
+    updaterLog(`[updater] v${update.version}: parada coordinada ${outcome.kind}${outcome.kind === 'failed' ? ` (${outcome.code})` : ''}; sin nueva parada hasta ${cooldown}`)
     return postpone(update.version, [{ code: outcome.kind === 'failed' ? outcome.code : `stop_${outcome.kind}` }])
   }
   lastPostponed = ''
-  advancePhase(updateStore.dir, tx.transaction_id, 'swap_intent')
   setUpdateReport({ phase: 'applying', version: update.version, ...(update.trust ? { trust: update.trust } : {}) })
   updaterLog(`[updater] v${update.version}: reinicio silencioso`)
-  await exitForUpdate()
+  if (strategy === 'dmg') {
+    advancePhase(updateStore.dir, transactionId, 'swap_intent')
+    await exitForUpdate()
+    return true
+  }
+  installOnQuit = update
+  await quit()
   return true
 }
 
@@ -843,6 +865,33 @@ function setAutoUpdate(enabled: unknown): boolean {
 }
 
 /** Versión máxima instalada; recuperación del journal; confirmación de salud de una actualización recién aplicada; ratchet de la firma. */
+/**
+ * Un cierre de la persona que quedó a medias (la app murió esperando la parada) deja una intención con reason 'quit'. Esta
+ * app está corriendo de nuevo, así que esa parada ya no tiene sentido y no debe forzar un cierre del Hub: se cancela.
+ */
+async function reconcileQuitIntent(): Promise<void> {
+  const intent = updateStore.readStopIntent()
+  if (intent?.reason !== 'quit') return
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (coreSupervisor.state === 'running') {
+      const known = intent.stop_id ? await hubStopClient.status(intent.stop_id) : await hubStopClient.status()
+      const view = known.view
+      if (known.status === 404 || (view && view.sourceId === intent.source_id && ['cancelled', 'resumed', 'postponed', 'applied'].includes(view.state)) || (view && view.reason !== 'quit')) {
+        updateStore.clearStopIntent()
+        return
+      }
+      if (view && view.sourceId === intent.source_id) {
+        const cancelled = await hubStopClient.cancel(view.stopId, 'desktop_restarted')
+        if (cancelled.view || cancelled.status === 409) { updateStore.clearStopIntent(); updaterLog('[quit] se canceló la parada de un cierre anterior'); return }
+      } else if (view || known.status !== null) {
+        updateStore.clearStopIntent()
+        return
+      }
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 3_000))
+  }
+}
+
 async function startUpdateBookkeeping(): Promise<void> {
   // Un estado que no se puede leer o escribir impide declarar sana una versión recién aplicada: se conserva el respaldo y la evidencia.
   let stateOk = true
@@ -908,6 +957,12 @@ async function startUpdateBookkeeping(): Promise<void> {
     if (observeRollback()) return false
     if (!stateOk || coreSupervisor.state !== "running" || daemonSupervisor.state !== "running" || !sessionToken) return false
     if (expectRuntime && !runtimeCurrentMatches(app.getVersion())) return false
+    // Windows y Linux: no hay journal de intercambio; el core nuevo nació cerrado y lo abre la intención de la parada.
+    const pendingStop = updateStore.readStopIntent()
+    if (pendingStop?.reason === 'update' && pendingStop.strategy !== 'dmg' && pendingStop.target_version === app.getVersion() && pendingStop.transaction_id) {
+      if (!await drainClient.admitStartup(pendingStop.transaction_id)) return false
+      updateStore.clearStopIntent()
+    }
     if (startupTransaction) {
       let current = readTransaction(updateStore.dir)
       if (current.kind !== "ok" || current.tx.transaction_id !== startupTransaction) return false
@@ -918,6 +973,7 @@ async function startUpdateBookkeeping(): Promise<void> {
       if (current.kind !== "ok" || !["admitting", "admitted"].includes(current.tx.phase)) return false
       if (!await drainClient.admitStartup(startupTransaction)) return false
       if (current.tx.phase === "admitting") advancePhase(updateStore.dir, startupTransaction, "admitted")
+      if (updateStore.readStopIntent()?.transaction_id === startupTransaction) updateStore.clearStopIntent()
     }
     return probeMemoryMcp({ baseUrl: CORE_BASE_URL, credentialPath: memoryCredentialPath(stateDir), timeoutMs: HEALTH_PROBE_TIMEOUT_MS })
   }
@@ -1447,7 +1503,7 @@ async function stopHubForQuit(): Promise<'proceed' | 'cancelled'> {
     activeStop.cancel('superseded_by_quit')
     await activeStop.done
   }
-  const run = startHubStop('quit', {}, view => { quitView = view; refreshTray() })
+  const run = startHubStop(stopAttempt({ reason: 'quit' }), view => { quitView = view; refreshTray() })
   quitRun = run
   quitTicker = setInterval(refreshTray, 1_000)
   let watcher: ReturnType<typeof setInterval> | undefined
@@ -1455,10 +1511,14 @@ async function stopHubForQuit(): Promise<'proceed' | 'cancelled'> {
   try {
     const result = await Promise.race([run.done, system])
     if (result === 'system') {
-      updaterLog('[quit] señal del sistema: se cancela la parada coordinada y se cierra sin esperar')
-      run.cancel('system_shutdown')
+      // Se cancela la parada para que el Hub no quede esperando; core se cierra después por su camino normal (flota primero).
+      updaterLog('[quit] señal del sistema: se cancela la parada coordinada (system_signal) y se cierra sin esperar a los líderes')
+      run.cancel('system_signal')
+      await Promise.race([run.done, new Promise<void>(resolve => { setTimeout(resolve, 3_000).unref() })])
+      updateStore.clearStopIntent()
       return 'proceed'
     }
+    if (result.kind !== 'committed') updateStore.clearStopIntent()
     if (result.kind === 'cancelled') return 'cancelled'
     if (result.kind !== 'committed') updaterLog(`[quit] la parada coordinada terminó ${result.kind}${result.kind === 'failed' ? ` (${result.code})` : ''}; se cierra igual`)
     return 'proceed'
@@ -1554,6 +1614,7 @@ else {
     registerShowWindowShortcut()
     app.on('activate', showWindow)
     // Recover any interrupted transaction and finish cleanup before a new download can create a directory it might remove.
+    void reconcileQuitIntent().catch(error => updaterLog(`[quit] intención anterior: ${error instanceof Error ? error.message : String(error)}`))
     void startUpdateBookkeeping().then(() => updater.cleanup()).catch(error => updaterLog(`[updater] arranque: ${error instanceof Error ? error.message : String(error)}`)).then(() => silentUpdates.start())
     if (app.isPackaged && overrideSafe) updateHints.start()
     setInterval(() => void pollPendingRestarts(), PENDING_RESTART_POLL_MS).unref()

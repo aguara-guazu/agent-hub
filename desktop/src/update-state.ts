@@ -11,7 +11,8 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { compareVersions } from "./updater.js"
-import { blocked, isStrictSemver, journalFile, mergeBlacklistSidecars, parseBlacklist, parseTransaction, readTransaction, validateLayout, writeJsonDurable, type BlacklistEntry, type UpdateTransaction } from "./update-transaction.js"
+import { blocked, isStrictSemver, journalFile, mergeBlacklistSidecars, parseBlacklist, parseTransaction, readTransaction, removeDurable, validateLayout, writeJsonDurable, type BlacklistEntry, type UpdateTransaction } from "./update-transaction.js"
+import { parseStopIntent, type StopIntent } from "./stop-intent.js"
 import { parseTrustSet, type TrustSet } from "./update-trust.js"
 
 /** `state.json` existe pero no es válido: se bloquea la actualización y se conserva como evidencia, nunca se reescribe. */
@@ -146,6 +147,22 @@ export class UpdateStore {
 
   adoptTrust(trust: TrustSet): void {
     this.write({ ...this.read(), trust })
+  }
+
+  /** Intención de parada coordinada. Ausente o ilegible: `null` (sólo guarda un `source_id` y un enfriamiento, nada irrecuperable). */
+  readStopIntent(): StopIntent | null {
+    try { return parseStopIntent(JSON.parse(readFileSync(this.file("stop-intent.json"), "utf8"))) } catch { return null }
+  }
+
+  writeStopIntent(intent: StopIntent): void {
+    const checked = parseStopIntent(JSON.parse(JSON.stringify(intent)))
+    if (!checked) throw new Error("la intención de parada no cumple el esquema")
+    this.ensure()
+    writeJsonDurable(this.file("stop-intent.json"), checked)
+  }
+
+  clearStopIntent(): void {
+    removeDurable(this.file("stop-intent.json"))
   }
 
   /**

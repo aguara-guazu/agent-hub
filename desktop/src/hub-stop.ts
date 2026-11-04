@@ -14,11 +14,14 @@ const STATES: readonly HubStopState[] = ["requested", "notifying", "waiting_conf
 
 export interface HubStopView {
   stopId: string
+  sourceId: string | null
   reason: HubStopReason
   state: HubStopState
   deadlineAt: string | null
   forceAt: string | null
   graceStartedAt: string | null
+  /** Después de un `postponed`, hasta cuándo el backend devuelve esa misma parada en vez de crear otra. */
+  retryNotBefore: string | null
   ready: boolean
   forced: boolean
   waitingFor: { coordinators: string[]; leadersInTurn: string[]; members: string[] }
@@ -50,8 +53,8 @@ export function parseStopView(body: unknown): HubStopView | null {
   const error = view.error && typeof view.error === "object" ? view.error as Record<string, any> : null
   const actions = list(error?.actions).filter((action): action is HubStopAction => action === "retry" || action === "cancel" || action === "commit")
   return {
-    stopId, reason: view.reason, state: view.state,
-    deadlineAt: text(view.deadline_at), forceAt: text(view.force_at), graceStartedAt: text(view.grace_started_at),
+    stopId, sourceId: text(view.source_id), reason: view.reason, state: view.state,
+    deadlineAt: text(view.deadline_at), forceAt: text(view.force_at), graceStartedAt: text(view.grace_started_at), retryNotBefore: text(view.retry_not_before),
     ready: view.ready === true, forced: view.forced === true,
     waitingFor: {
       coordinators: list(waiting.coordinators), leadersInTurn: list(waiting.leaders_in_turn),
@@ -87,7 +90,8 @@ export class HubStopClient {
   request(sourceId: string, reason: HubStopReason, targetVersion?: string) {
     return this.view("/api/internal/hub-stop", "POST", { source_id: sourceId, reason, ...(targetVersion ? { target_version: targetVersion } : {}) })
   }
-  status(stopId: string) { return this.view(`/api/internal/hub-stop/status?stop_id=${encodeURIComponent(stopId)}`, "GET") }
+  /** Sin `stopId`, la parada activa que tenga el backend. */
+  status(stopId?: string) { return this.view(stopId ? `/api/internal/hub-stop/status?stop_id=${encodeURIComponent(stopId)}` : "/api/internal/hub-stop/status", "GET") }
   retry(stopId: string) { return this.view("/api/internal/hub-stop/retry", "POST", { stop_id: stopId }) }
   cancel(stopId: string, reason: string) { return this.view("/api/internal/hub-stop/cancel", "POST", { stop_id: stopId, reason }) }
   commit(stopId: string, transactionId?: string) {
@@ -147,6 +151,8 @@ export interface HubStopRunInput {
   /** Obligatorio para actualizaciones: identifica la transacción que se admite al volver a arrancar. */
   transactionId?: string
   onView?: (view: HubStopView) => void
+  /** Último paso antes del commit (con el lease ya tomado). Si lanza, la parada se cancela y no se hace commit. */
+  beforeCommit?: () => Promise<void>
 }
 
 /** Una ejecución de la parada. `cancel()` y `retry()` valen mientras no haya commit; después sólo se espera la salida de core. */
@@ -238,6 +244,13 @@ export class HubStopRun {
     const start = pid ? await this.deps.startTimeOf(pid) : null
     if (!pid || !start || core.state !== "running") { this.deps.log("[hub-stop] core no está corriendo bajo la parada"); return null }
     if (this.cancelRequested) return null
+    if (this.input.beforeCommit) {
+      try { await this.input.beforeCommit() } catch (error) {
+        this.deps.log(`[hub-stop] antes del commit: ${error instanceof Error ? error.message : String(error)}`)
+        await client.cancel(stopId, "before_commit_failed")
+        return { kind: "failed", code: "before_commit_failed", view }
+      }
+    }
     this.committing = true
     const maxAttempts = this.deps.maxCommitAttempts ?? 5
     let result = await client.commit(stopId, this.input.transactionId)
@@ -281,16 +294,6 @@ export function stopReasons(view: HubStopView): UpdateReason[] {
   if (view.waitingFor.coordinators.length) reasons.push({ code: "stop_waiting_coordinators", count: view.waitingFor.coordinators.length })
   if (view.waitingFor.members.length) reasons.push({ code: "stop_waiting_members", count: view.waitingFor.members.length })
   return reasons.length ? reasons : [{ code: `stop_state_${view.state}` }]
-}
-
-/** Tiempo mínimo entre una parada pospuesta y la siguiente: reintentar antes volvería a avisar a los líderes. */
-export const STOP_COOLDOWN_MS = 30 * 60_000
-
-export class StopCooldown {
-  private until = 0
-  constructor(private readonly now: () => number = () => Date.now(), private readonly durationMs: number = STOP_COOLDOWN_MS) {}
-  start(): void { this.until = this.now() + this.durationMs }
-  active(): boolean { return this.now() < this.until }
 }
 
 export type QuitPhase = { phase: "waiting" | "grace" | "forced" | "closing"; remainingMs: number | null }
