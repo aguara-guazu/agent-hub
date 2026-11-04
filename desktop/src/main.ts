@@ -297,9 +297,10 @@ const updater = new AutoUpdater({
   log: updaterLog,
 })
 
+const versionFeed = resolveFeed(updateSource, updaterLog)
 const readVersionInfo = createVersionInfoReader({
   currentVersion: app.getVersion(),
-  fetchRelease: () => fetchLatestRelease(updateSource),
+  fetchRelease: () => fetchLatestRelease({ apiBase: versionFeed.apiBase, repo: versionFeed.repo }),
 })
 
 function notify(title: string, body: string): void {
@@ -749,9 +750,13 @@ async function startUpdateBookkeeping(): Promise<void> {
   // Salud = procesos arriba, sesión del escritorio y un `tools/list` real contra el MCP de memoria con la credencial de los gateways.
   // Una versión recién aplicada también debe estar apuntada por `runtime/current`: si no, los gateways nuevos arrancarían de otra.
   let expectRuntime = false
-  const healthy = async (): Promise<boolean> => stateOk && coreSupervisor.state === 'running' && daemonSupervisor.state === 'running' && Boolean(sessionToken)
-    && (!expectRuntime || runtimeCurrentMatches(app.getVersion()))
-    && await probeMemoryMcp({ baseUrl: CORE_BASE_URL, credentialPath: memoryCredentialPath(stateDir), timeoutMs: HEALTH_PROBE_TIMEOUT_MS })
+  let startupTransaction: string | null = null
+  const healthy = async (): Promise<boolean> => {
+    if (!stateOk || coreSupervisor.state !== "running" || daemonSupervisor.state !== "running" || !sessionToken) return false
+    if (expectRuntime && !runtimeCurrentMatches(app.getVersion())) return false
+    if (startupTransaction && !await drainClient.admitStartup(startupTransaction)) return false
+    return probeMemoryMcp({ baseUrl: CORE_BASE_URL, credentialPath: memoryCredentialPath(stateDir), timeoutMs: HEALTH_PROBE_TIMEOUT_MS })
+  }
   // Una versión con claves que se mantiene sana fija la firma como obligatoria para siempre. Lanza si no se pudo persistir.
   const ratchetStrict = (): void => {
     if (bundledTrust.kind === 'ok' && bundledTrust.trust.keys.length > 0 && !updateStore.read().requireSignature) {
@@ -777,6 +782,7 @@ async function startUpdateBookkeeping(): Promise<void> {
     return
   }
   expectRuntime = true
+  startupTransaction = transaction.transaction_id
   const startTime = await processStartTime(process.pid) ?? ''
   if (!startTime) { updaterLog('[updater] no se pudo identificar este proceso; no se confirma la actualización'); return }
   confirmWhenHealthy({

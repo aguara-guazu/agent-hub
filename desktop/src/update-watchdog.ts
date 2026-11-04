@@ -8,11 +8,11 @@
  */
 import { execFileSync, spawn } from "node:child_process"
 import { appendFileSync, copyFileSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs"
-import { dirname, isAbsolute, join, sep } from "node:path"
+import { basename, dirname, isAbsolute, join, sep } from "node:path"
 import {
   acquireSwapBackLock, addToBlacklist, advancePhase, bundleVersion, clearTransactionFiles, fsyncPathSync, hasIncomingRemnants, healthyFile, inspectSides,
   parseHealthyMarker, parseStartedMarker, phaseRank, readJson, readTransaction, readyFile, removeDurable, sha256File, startedFile, validateLayout, watchdogDir, writeJsonDurable,
-  type Identity, type UpdateTransaction as Transaction,
+  type Identity, type Sides, type UpdateTransaction as Transaction,
 } from "./update-transaction.js"
 
 export * from "./update-transaction.js"
@@ -126,6 +126,7 @@ export async function prepareWatchdog(options: PrepareWatchdogOptions): Promise<
   const script = join(copyDir, "update-watchdog.js")
   removeDurable(readyFile(updateDir, tx.transaction_id))
   const args = [script, "--update-dir", updateDir, "--state-dir", options.stateDir, "--tx", tx.transaction_id, "--timeout-ms", String(options.timeoutMs), "--log", options.logFile,
+    "--executable-name", options.executableName,
     ...(options.oldExitMs ? ["--old-exit-ms", String(options.oldExitMs)] : []), ...(options.relaunchConfirmMs ? ["--relaunch-confirm-ms", String(options.relaunchConfirmMs)] : [])]
   const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1", AGENTHUB_UPDATE_WATCHDOG: "1" }
   const child = spawn(executable, args, { detached: true, stdio: "ignore", env })
@@ -153,7 +154,7 @@ function sameProcessAlive(pid: number): boolean { return startTimeOf(pid) !== nu
 // ---------------------------------------------------------------------------------------------------------------------
 // Vigía
 
-export interface WatchdogArgs { updateDir: string; stateDir: string; tx: string; timeoutMs: number; log: string; oldExitMs: number; relaunchConfirmMs: number }
+export interface WatchdogArgs { updateDir: string; stateDir: string; tx: string; timeoutMs: number; log: string; executableName: string; oldExitMs: number; relaunchConfirmMs: number }
 
 export function parseWatchdogArgs(argv: string[]): WatchdogArgs {
   const value = (name: string): string => {
@@ -169,6 +170,7 @@ export function parseWatchdogArgs(argv: string[]): WatchdogArgs {
   }
   return {
     updateDir: value("update-dir"), stateDir: value("state-dir"), tx: value("tx"), timeoutMs: Number.parseInt(value("timeout-ms"), 10), log: value("log"),
+    executableName: value("executable-name"),
     oldExitMs: optional("old-exit-ms", OLD_APP_EXIT_MS), relaunchConfirmMs: optional("relaunch-confirm-ms", RELAUNCH_CONFIRM_MS),
   }
 }
@@ -184,6 +186,64 @@ const STOP_GRACE_MS = 25_000
 const NEW_APP_GONE_GRACE_MS = 5_000
 /** Holgura entre el inicio del intercambio y la primera vez que el vigía lo ve (sondeo de 0,5 s) más la resolución de 1 s de `ps`. */
 const SWAP_START_TOLERANCE_MS = 1_500
+
+async function launchInstalledApp(installed: string, executableName: string, transactionId: string): Promise<Identity> {
+  if (!executableName || basename(executableName) !== executableName) throw new Error("nombre de ejecutable inválido")
+  const executable = join(installed, "Contents", "MacOS", executableName)
+  const info = statSync(executable)
+  if (!info.isFile() || !(info.mode & 0o111) || !executableUnder(executable, installed)) throw new Error("el ejecutable de la app nueva no es válido")
+  const env: NodeJS.ProcessEnv = { ...process.env, AGENTHUB_UPDATE_TX: transactionId }
+  delete env.ELECTRON_RUN_AS_NODE
+  delete env.AGENTHUB_UPDATE_WATCHDOG
+  const child = spawn(executable, ["--hidden", "--updated"], { detached: true, stdio: "ignore", env })
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", resolve)
+    child.once("error", reject)
+  })
+  child.unref()
+  if (!child.pid) throw new Error("la app nueva no tiene PID")
+  const deadline = Date.now() + 5_000
+  let start: string | null = null
+  while (!(start = startTimeOf(child.pid)) && Date.now() < deadline) await sleep(50)
+  if (!start) throw new Error("la app nueva no confirmó su identidad")
+  return { pid: child.pid, start }
+}
+
+export interface ForwardSwapOperations {
+  read(): Transaction | null
+  isAlive(identity: Identity): boolean
+  sides(transaction: Transaction): Sides
+  lock(): (() => void) | null
+  swap(transaction: Transaction): void
+  sync(transaction: Transaction): void
+  launch(transaction: Transaction): Promise<Identity>
+  advance(phase: "swapped" | "launched", patch?: Partial<Pick<Transaction, "new_app">>): Transaction
+}
+
+/** Executes the one forward swap after revalidating every destructive precondition under the durable swap lock. */
+export async function performForwardSwap(transaction: Transaction, operations: ForwardSwapOperations): Promise<Transaction> {
+  if (transaction.phase !== "swap_intent") throw new Error("la transacción no está lista para intercambiar")
+  if (operations.isAlive(transaction.old_app)) throw new Error("la app vieja sigue viva")
+  if (operations.sides(transaction) !== "not_swapped") throw new Error("los lados no están listos para el intercambio")
+  const release = operations.lock()
+  if (!release) throw new Error("otro proceso controla el intercambio")
+  let swapped: Transaction
+  try {
+    const current = operations.read()
+    if (!current || current.transaction_id !== transaction.transaction_id || current.phase !== "swap_intent") throw new Error("la transacción cambió antes del intercambio")
+    if (operations.isAlive(current.old_app)) throw new Error("la app vieja volvió a estar viva")
+    if (operations.sides(current) !== "not_swapped") throw new Error("los lados cambiaron antes del intercambio")
+    operations.swap(current)
+    operations.sync(current)
+    if (operations.sides(current) !== "swapped") throw new Error("el helper no dejó las versiones en los lados esperados")
+    swapped = operations.advance("swapped")
+  } finally {
+    release()
+  }
+  const identity = await operations.launch(swapped)
+  if (!Number.isInteger(identity.pid) || identity.pid <= 1 || !identity.start) throw new Error("la app nueva no confirmó su identidad")
+  return operations.advance("launched", { new_app: identity })
+}
 
 export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
   const log = (line: string): void => {
@@ -232,21 +292,53 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
     await sleep(500)
   }
 
-  // 2. Desde swap_intent hay que saber de qué lado quedó cada versión antes de esperar la salud.
+  // 2. El vigía es el único dueño del intercambio hacia adelante y del primer arranque de la versión nueva.
   let tx = (readTransaction(args.updateDir) as { kind: "ok"; tx: Transaction }).tx
+  let forwardFailure: string | null = null
+  const launch = (current: Transaction) => launchInstalledApp(current.paths.installed, args.executableName, current.transaction_id)
   if (tx.phase === "swap_intent") {
-    // Un intercambio que acaba de cortarse puede verse un instante a medias: se vuelve a mirar unos segundos antes de dudar.
     let sides = inspectSides(tx)
     for (let attempt = 0; attempt < 6 && sides === "unknown"; attempt++) { await sleep(500); sides = inspectSides(tx) }
-    if (sides === "not_swapped") { log("el intercambio no llegó a ocurrir"); return "aborted" }
     if (sides === "unknown") return ambiguous("las versiones de las dos rutas no permiten saber cómo quedó el intercambio")
-    tx = advancePhase(args.updateDir, args.tx, "swapped")
+    if (sides === "swapped") tx = advancePhase(args.updateDir, args.tx, "swapped")
+    else try {
+      tx = await performForwardSwap(tx, {
+        read: () => { const current = readTransaction(args.updateDir); return current.kind === "ok" ? current.tx : null },
+        isAlive: sameProcess,
+        sides: inspectSides,
+        lock: () => acquireSwapBackLock(args.updateDir),
+        swap: current => {
+          const candidate = join(current.paths.runtime_old, "Contents", "Resources", "bin", "agenthub-swap")
+          const info = statSync(candidate)
+          if (!info.isFile() || !(info.mode & 0o111)) throw new Error("el runtime anterior no trae un agenthub-swap ejecutable")
+          execFileSync(candidate, [current.paths.installed, current.paths.incoming], { stdio: "ignore" })
+        },
+        sync: current => fsyncPathSync(dirname(current.paths.installed)),
+        launch,
+        advance: (phase, patch) => advancePhase(args.updateDir, args.tx, phase, patch),
+      })
+    } catch (error) {
+      forwardFailure = error instanceof Error ? error.message : String(error)
+      const latest = readTransaction(args.updateDir)
+      if (latest.kind !== "ok" || latest.tx.transaction_id !== args.tx) return ambiguous(`falló el intercambio hacia adelante (${forwardFailure})`, false)
+      tx = latest.tx
+      if (tx.phase === "swap_intent" && inspectSides(tx) === "swapped") tx = advancePhase(args.updateDir, args.tx, "swapped")
+      else if (tx.phase === "swap_intent") return ambiguous(`falló el intercambio hacia adelante (${forwardFailure})`)
+    }
+  }
+  if (tx.phase === "swapped" && !forwardFailure) {
+    try {
+      const identity = await launch(tx)
+      tx = advancePhase(args.updateDir, args.tx, "launched", { new_app: identity })
+    } catch (error) {
+      forwardFailure = error instanceof Error ? error.message : String(error)
+    }
   }
 
   // 3. Espera de salud con marcador de esta transacción. El plazo corre desde que la app vieja terminó.
-  const deadline = Date.now() + args.timeoutMs
+  const deadline = Date.now() + (forwardFailure ? 0 : args.timeoutMs)
   let newAppGoneAt: number | null = null
-  let reason = "no confirmó salud a tiempo"
+  let reason = forwardFailure ? `no pudo iniciar (${forwardFailure})` : "no confirmó salud a tiempo"
   while (Date.now() < deadline) {
     const state = settled(args.updateDir, args.tx)
     if (state === "healthy") { log("versión nueva confirmada"); return "healthy" }

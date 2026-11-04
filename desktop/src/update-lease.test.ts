@@ -36,6 +36,15 @@ describe("DrainClient", () => {
     ])
   })
 
+  it("reconoce el mismo core ya admitido sin repetir el POST", async () => {
+    const call = vi.fn(async () => json({ inflight: 0, draining: false, boot_id: "boot-current" }))
+    const { drain } = client(call)
+
+    expect(await drain.admitStartup("tx-12345678")).toBe(true)
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledWith("/api/internal/update-drain/status", expect.objectContaining({ method: "GET" }))
+  })
+
   it("no admite cuando status o el ack no corresponden", async () => {
     const { drain: missingBoot } = client(async () => json({ draining: true }))
     expect(await missingBoot.admitStartup("tx-12345678")).toBe(false)
