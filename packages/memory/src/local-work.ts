@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { check, id } from './contracts.js'
-import { canReadChannel } from './chat-read-access.js'
-import { ACTIVE_TEAM_STATES } from './chat-access.js'
+import { canReadChannel } from "./chat-read-access.js"
+import { ACTIVE_TEAM_STATES } from "./chat-access.js"
 import type { Sql } from './database.js'
 
 const session = {session_key:z.string().min(32).max(200).optional()}
@@ -38,13 +38,13 @@ export async function updateWork(sql:Sql,sessionId:string,input:z.infer<typeof w
     check((await sql.query('SELECT id FROM chat_messages WHERE id=$1 AND thread_id=$2 AND author_id=$3',
       [input.report_message_id,input.thread_id,sessionId])).length,'El reporte debe ser un mensaje propio del mismo hilo',400)
   }
-  if(input.event==='completed' && input.report_message_id) {
+  if(input.event==="completed" && input.report_message_id) {
     const plan=(await sql.query(`SELECT p.created_by FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
       WHERE m.session_id=$1 AND m.state='joined' AND p.state IN (${ACTIVE_TEAM_STATES.map(state=>`'${state}'`).join(',')}) LIMIT 1`,[sessionId]))[0]
     if(plan && plan.created_by!==sessionId) {
       const thread=(await sql.query('SELECT * FROM chat_threads WHERE id=$1',[input.thread_id]))[0]
       check(thread && await canReadChannel(sql,plan.created_by,thread.channel_id),
-        'El coordinador del plan no puede leer este hilo; reportá el cierre en tu work_thread_id.',409)
+        "El coordinador del plan no puede leer este hilo; reportá el cierre en tu work_thread_id.",409)
       await sql.query('INSERT OR IGNORE INTO chat_deliveries(message_id,recipient_id) VALUES($1,$2)',[input.report_message_id,plan.created_by])
       const turn=(await sql.query(`SELECT turn_id FROM chat_turns WHERE session_id=$1 AND terminal_at IS NULL ORDER BY opened_at DESC LIMIT 1`,[sessionId]))[0]
       if(turn) {
@@ -55,7 +55,7 @@ export async function updateWork(sql:Sql,sessionId:string,input:z.infer<typeof w
       }
     }
   }
-  const now=new Date().toISOString(),status=input.event==='waiting'?'waiting':input.event==='completed'?'completed':'active'
+  const now=new Date().toISOString(),status=input.event==="waiting"?"waiting":input.event==="completed"?"completed":"active"
   // Starting work, presence, Stop and heartbeat are not proof of task progress.
   const progress=input.event==='progress'?now:current?.last_progress_at??null
   const rows=await sql.query(`INSERT INTO chat_work_state(session_id,work_id,thread_id,status,summary,waiting_for,last_progress_at,reported_at,report_message_id,version,updated_at)
@@ -65,7 +65,7 @@ export async function updateWork(sql:Sql,sessionId:string,input:z.infer<typeof w
       version=excluded.version,updated_at=excluded.updated_at RETURNING *`,
     [sessionId,input.work_id,input.thread_id,status,input.summary,input.waiting_for??null,progress,input.event==='completed'?now:null,
       input.report_message_id??null,(current?.version??0)+1,now])
-  const result={...rows[0],source:'agent' as const,report_receipt:input.event==='completed'?'persisted':null}
+  const result={...rows[0],source:"agent" as const,report_receipt:input.event==="completed"?"persisted":null}
   await sql.query('INSERT INTO chat_work_events(session_id,request_id,request_hash,snapshot) VALUES($1,$2,$3,$4)',
     [sessionId,input.request_id,requestHash,JSON.stringify(result)])
   return result

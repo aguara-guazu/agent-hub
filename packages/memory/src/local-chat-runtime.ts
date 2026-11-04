@@ -85,7 +85,9 @@ export class LocalChatRuntime {
         const runtime=typeof candidate.runtime==="string"?JSON.parse(candidate.runtime):candidate.runtime
         if(await this.fleet.readiness(String(candidate.session_id))==="unowned" && now-Date.parse(runtime.updated_at)>60_000)
           await this.chat.raiseLiveness(now,candidate,candidate.hub_restart?"hub_restart":["failed","stopped"].includes(runtime.state)?"exited":"unowned")
-      } catch {}
+      } catch {
+        // A malformed or unavailable runtime is retried on the next tick.
+      }
     }
     await this.chat.interhubSweep?.().catch(() => undefined)
     await this.chat.sweepReadAccess()
