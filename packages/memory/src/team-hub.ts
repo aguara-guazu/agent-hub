@@ -42,6 +42,7 @@ export interface CoordinatedFleetMember {
   session_id: string | null
   ordinal: number
   generation: string
+  pid?: number
   state: string
   owned: boolean
   live: boolean
@@ -617,9 +618,11 @@ export class HubTeamRuntime implements TeamOrca {
       const launching = this.launching.has(memberId)
       const state = launching ? "starting" : generationOwned ? String(owned!.state) : runtime?.state ?? "unowned"
       const terminal = ["failed", "stopped"].includes(state)
-      const proofComplete = generationOwned || launching || terminal || Boolean(incident)
+      const proofComplete = generationOwned ? state !== "unknown" || this.manager.exitConfirmed(memberId)
+        : launching || terminal || Boolean(incident)
       members.push({ member_id: memberId, plan_id: String(row.plan_id), session_id: row.session_id ? String(row.session_id) : null,
-        ordinal: Number(row.ordinal), generation, state, owned: generationOwned || launching, live: liveIds.has(memberId) || launching,
+        ordinal: Number(row.ordinal), generation, ...(typeof owned?.pid === "number" ? { pid: owned.pid } : typeof runtime?.pid === "number" ? { pid: runtime.pid } : {}),
+        state, owned: generationOwned || launching, live: liveIds.has(memberId) || launching,
         proof_complete: proofComplete })
     }
     return { fleet_live: new Set([...liveIds, ...this.launching]).size, proof_complete: members.every(member => member.proof_complete), members }
@@ -639,6 +642,17 @@ export class HubTeamRuntime implements TeamOrca {
     this.beginCoordinatedStop(stopId)
     const receipts: CoordinatedFleetReceipt[] = []
     for (const member of [...members].sort((a, b) => a.plan_id.localeCompare(b.plan_id) || a.ordinal - b.ordinal || a.member_id.localeCompare(b.member_id))) {
+      if (force && member.owned && !member.proof_complete) {
+        try {
+          const stopped = await this.manager.retryStop(member.member_id)
+          receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state,
+            outcome: stopped.state === "stopped" ? "stopped" : "uncertain", ...(stopped.state === "stopped" ? {} : { detail: { state: stopped.state, error_code: stopped.error_code ?? null } }) })
+        } catch (error) {
+          receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state, outcome: "uncertain",
+            detail: { reason: error instanceof Error ? error.message : "stop_retry_failed" } })
+        }
+        continue
+      }
       if (!member.live) {
         receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state,
           outcome: member.proof_complete ? "already_terminal" : "uncertain" })

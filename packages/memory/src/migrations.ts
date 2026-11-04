@@ -966,7 +966,8 @@ CREATE TABLE hub_stops (
  id TEXT PRIMARY KEY, reason TEXT NOT NULL CHECK(reason IN ('update','quit')), source_id TEXT NOT NULL,
  target_version TEXT, state TEXT NOT NULL CHECK(state IN ('requested','notifying','waiting_confirmations','waiting_members','stopping_fleet','ready','applied','resumed','postponed','cancelled')),
  requested_at TIMESTAMP NOT NULL, deadline_at TIMESTAMP NOT NULL, force_at TIMESTAMP, grace_started_at TIMESTAMP,
- backup_id TEXT, admission_closed_at TIMESTAMP, gate_owner TEXT, ready_at TIMESTAMP,
+ backup_id TEXT, admission_closed_at TIMESTAMP, gate_owner TEXT, ready_at TIMESTAMP, retry_not_before TIMESTAMP,
+ force_attempts INTEGER NOT NULL DEFAULT 0, force_next_at TIMESTAMP,
  drain_boot_id TEXT, drain_generation INTEGER, drain_lease TEXT, applied_at TIMESTAMP, apply_boot_id TEXT,
  apply_transaction_id TEXT, resumed_at TIMESTAMP, terminal_reason TEXT, last_error_code TEXT, last_error_detail TEXT,
  updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
@@ -984,10 +985,10 @@ CREATE TABLE hub_stop_targets (
 CREATE INDEX hub_stop_targets_stop ON hub_stop_targets(stop_id,required,confirmed_at,invalidated_at);
 CREATE TABLE hub_stop_member_receipts (
  stop_id TEXT NOT NULL REFERENCES hub_stops(id) ON DELETE CASCADE,
- member_id TEXT NOT NULL REFERENCES chat_team_members(id), generation TEXT NOT NULL DEFAULT '',
+ member_id TEXT NOT NULL REFERENCES chat_team_members(id), generation TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 1,
  before_state TEXT NOT NULL, outcome TEXT NOT NULL CHECK(outcome IN ('stopped','already_terminal','uncertain')),
  observed_at TIMESTAMP NOT NULL DEFAULT ${NOW}, detail JSON NOT NULL DEFAULT '{}',
- PRIMARY KEY(stop_id,member_id,generation)
+ PRIMARY KEY(stop_id,member_id,generation,attempt)
 );
 CREATE TABLE hub_stop_events (
  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,

@@ -25,6 +25,7 @@ export interface HubStopRequest {
 
 export interface HubStopView {
   stop_id: string
+  source_id: string
   reason: HubStopReason
   state: HubStopState
   target_version: string | null
@@ -33,10 +34,11 @@ export interface HubStopView {
   force_at: string | null
   grace_started_at: string | null
   backup_id: string | null
+  retry_not_before: string | null
   ready: boolean
   forced: boolean
   waiting_for: { coordinators: string[]; leaders_in_turn: string[]; members: Array<{ member_id: string; state: string; proof_complete: boolean }> }
-  receipts: Array<{ member_id: string; generation: string; outcome: string; observed_at: string }>
+  receipts: Array<{ member_id: string; generation: string; attempt: number; outcome: string; observed_at: string }>
   error: { code: string; detail: string | null; actions: Array<"retry" | "cancel" | "commit"> } | null
   drain: { owner: string | null; boot_id: string | null; generation: number | null; lease: string | null }
 }
@@ -76,8 +78,10 @@ export class HubStopCoordinator {
     this.timer = undefined
     if (TERMINAL_STATES.includes(stop.state as typeof TERMINAL_STATES[number]) || stop.state === "applied") return
     const deadline = Date.parse(stop.deadline_at)
-    const protocolAt = stop.state === "ready" ? Infinity
-      : stop.reason === "quit" && stop.grace_started_at && stop.force_at ? Date.parse(stop.force_at) : deadline
+    const forcedRetryAt = stop.force_next_at ? Date.parse(stop.force_next_at) : null
+    const protocolAt = forcedRetryAt ?? (stop.state === "ready"
+      ? stop.reason === "update" && stop.gate_owner !== "drain" ? deadline : Infinity
+      : stop.reason === "quit" && stop.grace_started_at && stop.force_at ? Date.parse(stop.force_at) : deadline)
     const renewalAt = stop.gate_owner === "coordinator" ? this.now() + GATE_RENEW_MS : Infinity
     const drainCheckAt = stop.gate_owner === "drain" ? this.now() + 60_000 : Infinity
     const at = Math.min(protocolAt, renewalAt, drainCheckAt)
@@ -136,6 +140,10 @@ export class HubStopCoordinator {
   async request(input: HubStopRequest): Promise<HubStopView> {
     return this.exclusive(async () => {
       let stop = (await this.deps.db.query<StopRow>("SELECT * FROM hub_stops WHERE source_id=$1", [input.source_id]))[0]
+      if (!stop && input.reason === "update") {
+        const cooldown = (await this.deps.db.query<StopRow>("SELECT * FROM hub_stops WHERE state='postponed' AND retry_not_before>=$1 ORDER BY retry_not_before DESC LIMIT 1", [new Date(this.now()).toISOString()]))[0]
+        if (cooldown) return this.view(cooldown.id)
+      }
       if (!stop) {
         const current = await this.active()
         check(!current, "Ya existe una parada coordinada activa.", 409)
@@ -575,6 +583,18 @@ export class HubStopCoordinator {
   private async advance(stopId: string): Promise<void> {
     let stop = await this.requireStop(stopId)
     if (TERMINAL_STATES.includes(stop.state as typeof TERMINAL_STATES[number]) || stop.state === "applied") return
+    const now = this.now(), deadline = Date.parse(stop.deadline_at), forceAt = stop.force_at ? Date.parse(stop.force_at) : Infinity
+    // Manual quit is irreversible at force_at by explicit contract; it outranks backup, authority and liveness blockers.
+    if (stop.reason === "quit" && now >= forceAt && stop.state !== "ready") {
+      await this.forceStop(stop, await this.deps.fleet?.coordinatedSnapshot())
+      return
+    }
+    const drainActive = stop.gate_owner === "drain" && (this.drainCommitted(stop) || this.drainLeaseValid(stop) || Boolean(this.drain?.hasPendingAttempt))
+    if (stop.reason === "update" && now >= deadline && !drainActive) {
+      if (stop.gate_owner === "drain") await this.releaseDrain(stop)
+      await this.terminal(await this.requireStop(stop.id), "postponed", "deadline_elapsed")
+      return
+    }
     if (stop.gate_owner === "drain" && this.drainCommitted(stop)) {
       await this.deps.db.transaction(async sql => {
         await sql.query("UPDATE hub_stops SET last_error_code='commit_persistence_pending',last_error_detail='El drain quedó comprometido; reintentá el mismo commit para persistir applied y detener core.',updated_at=now() WHERE id=$1", [stop.id])
@@ -592,12 +612,6 @@ export class HubStopCoordinator {
       this.log(stop.id, "blocked", { error_code: code })
       return
     }
-    const now = this.now(), deadline = Date.parse(stop.deadline_at), forceAt = stop.force_at ? Date.parse(stop.force_at) : Infinity
-    if (stop.reason === "update" && now >= deadline && stop.state !== "ready") {
-      if (stop.gate_owner === "drain") await this.releaseDrain(stop)
-      await this.terminal(await this.requireStop(stop.id), "postponed", "deadline_elapsed")
-      return
-    }
     if (stop.reason === "quit" && now >= deadline && !stop.grace_started_at && stop.state !== "ready") {
       await this.deps.db.transaction(async sql => {
         await sql.query("UPDATE hub_stops SET grace_started_at=now(),updated_at=now() WHERE id=$1 AND grace_started_at IS NULL", [stop.id])
@@ -612,18 +626,21 @@ export class HubStopCoordinator {
     if (["requested", "notifying"].includes(stop.state)) {
       await this.prepare(stop)
       stop = await this.requireStop(stopId)
+      if (stop.reason === "quit" && this.now() >= forceAt) return this.advance(stopId)
       if (stop.last_error_code) return
       if (this.now() >= deadline && now < deadline) return this.advance(stopId)
     }
     let snapshot = await this.deps.fleet?.coordinatedSnapshot()
     await this.reconcile(stop, snapshot)
     stop = await this.requireStop(stopId)
+    if (stop.reason === "quit" && this.now() >= forceAt && stop.state !== "ready") return this.advance(stopId)
     if (stop.last_error_code === "coordinator_authority_changed") return
     const force = stop.reason === "quit" && this.now() >= forceAt
     if (force && stop.state !== "ready") {
       await this.forceStop(stop, snapshot)
       return
     }
+    if (stop.gate_owner === "coordinator" && !await this.ensureGate(stop)) return
     const pending = Number((await this.deps.db.query("SELECT count(*) AS n FROM hub_stop_targets WHERE stop_id=$1 AND required=1 AND confirmed_at IS NULL AND invalidated_at IS NULL", [stop.id]))[0]?.n ?? 0)
     if (pending > 0) {
       if (stop.state !== "waiting_confirmations") {
@@ -669,49 +686,60 @@ export class HubStopCoordinator {
 
   private async stopFleet(stop: StopRow, members: CoordinatedFleetMember[], force: boolean): Promise<void> {
     check(this.deps.fleet, "La flota no está disponible para completar la parada.", 503)
+    const attempt = force ? Number(stop.force_attempts ?? 0) + 1 : 1
     await this.deps.db.transaction(async sql => {
-      await sql.query("UPDATE hub_stops SET state='stopping_fleet',updated_at=now() WHERE id=$1", [stop.id])
-      await this.event(sql, stop.id, force ? "quit_forced" : "fleet_stop_started", { members: members.length })
+      await sql.query("UPDATE hub_stops SET state='stopping_fleet',force_attempts=$2,force_next_at=NULL,updated_at=now() WHERE id=$1", [stop.id, force ? attempt : Number(stop.force_attempts ?? 0)])
+      await this.event(sql, stop.id, force ? "quit_forced" : "fleet_stop_started", { members: members.length, attempt })
     })
-    this.log(stop.id, force ? "quit_forced" : "fleet_stop_started", { members: members.length })
+    this.log(stop.id, force ? "quit_forced" : "fleet_stop_started", { members: members.length, attempt })
     const receipts = await this.deps.fleet.stopOrdered(stop.id, members, force)
-    await this.storeReceipts(stop.id, receipts)
+    await this.storeReceipts(stop.id, receipts, attempt)
     const after = await this.deps.fleet.coordinatedSnapshot()
     const uncertain = receipts.some(receipt => receipt.outcome === "uncertain") || !after.proof_complete || after.fleet_live > 0
-    if (uncertain) {
+    if (uncertain && force && attempt < 4) {
+      const backoff = [5_000, 15_000, 30_000][attempt - 1]!
+      await this.deps.db.query(`UPDATE hub_stops SET last_error_code='fleet_stop_unconfirmed',last_error_detail='La parada forzada conserva procesos sin salida confirmada.',
+        force_next_at=$2,updated_at=now() WHERE id=$1`, [stop.id, new Date(this.now() + backoff).toISOString()])
+      this.log(stop.id, "force_retry_scheduled", { attempt, backoff_ms: backoff, fleet_live: after.fleet_live })
+      return
+    }
+    if (uncertain && !force) {
       await this.deps.db.query("UPDATE hub_stops SET last_error_code='fleet_stop_unconfirmed',last_error_detail='La parada de uno o más procesos no quedó confirmada.',updated_at=now() WHERE id=$1", [stop.id])
       this.log(stop.id, "blocked", { error_code: "fleet_stop_unconfirmed", fleet_live: after.fleet_live })
       return
     }
     await this.deps.db.transaction(async sql => {
-      await sql.query("UPDATE hub_stops SET state='ready',ready_at=COALESCE(ready_at,now()),last_error_code=NULL,last_error_detail=NULL,updated_at=now() WHERE id=$1", [stop.id])
-      await this.event(sql, stop.id, "ready", { fleet_live: after.fleet_live, receipts: receipts.length })
+      await sql.query(`UPDATE hub_stops SET state='ready',ready_at=COALESCE(ready_at,now()),force_next_at=NULL,
+        last_error_code=$2,last_error_detail=$3,updated_at=now() WHERE id=$1`, [stop.id,
+        uncertain ? "forced_with_uncertain_members" : null, uncertain ? "El cierre continúa después de tres reintentos sin confirmar todos los procesos." : null])
+      await this.event(sql, stop.id, "ready", { fleet_live: after.fleet_live, receipts: receipts.length, forced: force, uncertain, attempt })
     })
-    this.log(stop.id, "ready", { fleet_live: after.fleet_live, receipts: receipts.length })
+    this.log(stop.id, "ready", { fleet_live: after.fleet_live, receipts: receipts.length, forced: force, uncertain, attempt })
   }
 
   private async forceStop(stop: StopRow, snapshot: Awaited<ReturnType<HubTeamRuntime["coordinatedSnapshot"]>> | undefined): Promise<void> {
+    if (stop.force_next_at && this.now() < Date.parse(stop.force_next_at)) return
     if (!await this.ensureGate(stop)) return
     const leaders = (await this.deps.db.query("SELECT session_id FROM hub_stop_targets WHERE stop_id=$1 AND required=1 AND confirmed_at IS NULL AND invalidated_at IS NULL", [stop.id])).map(row => String(row.session_id))
     const members = (snapshot?.members ?? []).filter(member => member.live || !member.proof_complete)
     await this.deps.db.transaction(async sql => {
-      await this.event(sql, stop.id, "quit_forced_pending", { leaders, members: members.map(member => ({ id: member.member_id, state: member.state })) })
+      await this.event(sql, stop.id, "quit_forced_pending", { leaders, members: members.map(member => ({ id: member.member_id, state: member.state, generation: member.generation, pid: member.pid ?? null })) })
     })
     for (const sessionId of leaders) this.log(stop.id, "quit_forced_pending_leader", { session_id: sessionId })
-    for (const member of members) this.log(stop.id, "quit_forced_pending_member", { member_id: member.member_id, state: member.state, generation: member.generation })
+    for (const member of members) this.log(stop.id, "quit_forced_pending_member", { member_id: member.member_id, state: member.state, generation: member.generation, pid: member.pid ?? null })
     await this.stopFleet(stop, snapshot?.members ?? [], true)
   }
 
-  private async storeReceipts(stopId: string, receipts: CoordinatedFleetReceipt[]): Promise<void> {
+  private async storeReceipts(stopId: string, receipts: CoordinatedFleetReceipt[], attempt: number): Promise<void> {
     await this.deps.db.transaction(async sql => {
       for (const receipt of receipts) {
-        await sql.query(`INSERT INTO hub_stop_member_receipts(stop_id,member_id,generation,before_state,outcome,detail)
-          VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(stop_id,member_id,generation) DO UPDATE SET outcome=excluded.outcome,observed_at=now(),detail=excluded.detail`,
-        [stopId, receipt.member_id, receipt.generation, receipt.before_state, receipt.outcome, JSON.stringify(receipt.detail ?? {})])
-        await this.event(sql, stopId, "member_stop_receipt", { member_id: receipt.member_id, generation: receipt.generation, outcome: receipt.outcome })
+        await sql.query(`INSERT INTO hub_stop_member_receipts(stop_id,member_id,generation,attempt,before_state,outcome,detail)
+          VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(stop_id,member_id,generation,attempt) DO UPDATE SET outcome=excluded.outcome,observed_at=now(),detail=excluded.detail`,
+        [stopId, receipt.member_id, receipt.generation, attempt, receipt.before_state, receipt.outcome, JSON.stringify(receipt.detail ?? {})])
+        await this.event(sql, stopId, "member_stop_receipt", { member_id: receipt.member_id, generation: receipt.generation, attempt, outcome: receipt.outcome })
       }
     })
-    for (const receipt of receipts) this.log(stopId, "member_stop_receipt", { member_id: receipt.member_id, generation: receipt.generation, outcome: receipt.outcome })
+    for (const receipt of receipts) this.log(stopId, "member_stop_receipt", { member_id: receipt.member_id, generation: receipt.generation, attempt, outcome: receipt.outcome })
   }
 
   private async releaseDrain(stop: StopRow): Promise<void> {
@@ -743,7 +771,8 @@ export class HubStopCoordinator {
     }
     this.deps.fleet?.endCoordinatedStop(stop.id)
     await this.deps.db.transaction(async sql => {
-      await sql.query("UPDATE hub_stops SET state=$2,terminal_reason=$3,gate_owner=NULL,updated_at=now() WHERE id=$1", [stop.id, state, reason])
+      await sql.query("UPDATE hub_stops SET state=$2,terminal_reason=$3,gate_owner=NULL,retry_not_before=$4,updated_at=now() WHERE id=$1",
+        [stop.id, state, reason, state === "postponed" ? new Date(this.now() + UPDATE_DEADLINE_MS).toISOString() : null])
       await sql.query("UPDATE chat_status_notices SET cancelled_at=COALESCE(cancelled_at,now()),error=$2 WHERE turn_id LIKE $1 AND handled_at IS NULL", [`%:${stop.id}:%`, `Parada ${state}`])
       await this.event(sql, stop.id, state, { reason, reopened })
     })
@@ -771,18 +800,19 @@ export class HubStopCoordinator {
     const targets = await this.deps.db.query("SELECT session_id,required,confirmed_at,invalidated_at FROM hub_stop_targets WHERE stop_id=$1", [stopId])
     const snapshot = await this.deps.fleet?.coordinatedSnapshot()
     const leaders = await this.leaderTurns(stopId)
-    const receipts = await this.deps.db.query("SELECT member_id,generation,outcome,observed_at FROM hub_stop_member_receipts WHERE stop_id=$1 ORDER BY observed_at,member_id", [stopId])
+    const receipts = await this.deps.db.query("SELECT member_id,generation,attempt,outcome,observed_at FROM hub_stop_member_receipts WHERE stop_id=$1 ORDER BY attempt,observed_at,member_id", [stopId])
     return {
-      stop_id: stop.id, reason: stop.reason, state: stop.state, target_version: stop.target_version ?? null,
+      stop_id: stop.id, source_id: String(stop.source_id), reason: stop.reason, state: stop.state, target_version: stop.target_version ?? null,
       requested_at: String(stop.requested_at), deadline_at: String(stop.deadline_at), force_at: stop.force_at ? String(stop.force_at) : null,
       grace_started_at: stop.grace_started_at ? String(stop.grace_started_at) : null, backup_id: stop.backup_id ?? null,
+      retry_not_before: stop.retry_not_before ? String(stop.retry_not_before) : null,
       ready: stop.state === "ready", forced: stop.reason === "quit" && Boolean(stop.force_at) && this.now() >= Date.parse(stop.force_at),
       waiting_for: {
         coordinators: targets.filter(row => Boolean(row.required) && !row.confirmed_at && !row.invalidated_at).map(row => String(row.session_id)),
         leaders_in_turn: leaders,
         members: (snapshot?.members ?? []).filter(member => member.live || !member.proof_complete).map(member => ({ member_id: member.member_id, state: member.state, proof_complete: member.proof_complete })),
       },
-      receipts: receipts.map(row => ({ member_id: String(row.member_id), generation: String(row.generation), outcome: String(row.outcome), observed_at: String(row.observed_at) })),
+      receipts: receipts.map(row => ({ member_id: String(row.member_id), generation: String(row.generation), attempt: Number(row.attempt), outcome: String(row.outcome), observed_at: String(row.observed_at) })),
       error: stop.last_error_code ? { code: String(stop.last_error_code), detail: stop.last_error_detail ? String(stop.last_error_detail) : null,
         actions: stop.state === "applied" ? [] : stop.last_error_code === "commit_persistence_pending" ? ["commit"] : ["retry", "cancel"] } : null,
       drain: { owner: stop.gate_owner ?? null, boot_id: stop.drain_boot_id ?? null, generation: stop.drain_generation === null || stop.drain_generation === undefined ? null : Number(stop.drain_generation), lease: stop.drain_lease ?? null },

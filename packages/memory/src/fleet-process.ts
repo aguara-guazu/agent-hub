@@ -727,6 +727,17 @@ export class FleetProcessManager {
     await s.eventQueue
     return this.snapshot(s.status)
   }
+  /** Repeats the bounded TERM/KILL sequence only for a child whose previous stop remained unconfirmed. */
+  async retryStop(id: string): Promise<FleetStatus> {
+    const s = this.sessions.get(id)
+    if (!s) throw new Error("fleet_unknown_id")
+    if (!s.exited && s.status.state === "unknown" && s.cleanup) {
+      s.cleanup = undefined
+      s.stopping = false
+    }
+    return this.stop(id)
+  }
+
   async close(): Promise<void> {
     this.closing = true
     await Promise.all([...this.sessions.keys()].map(id => this.stop(id)))
