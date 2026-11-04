@@ -883,8 +883,10 @@ async function startUpdateBookkeeping(): Promise<void> {
   const outcome = bundle ? await recoverTransaction({ stateDir, updateDir: updateStore.dir, installed: bundle, version: app.getVersion(), removeTree, pid: process.pid, log: updaterLog })
     .catch((error: unknown) => { updaterLog(`[updater] recuperación: ${error instanceof Error ? error.message : String(error)}`); return 'ambiguous' as const }) : 'none' as const
   if (!['none', 'cleaned', 'monitor', 'monitor_without_watchdog'].includes(outcome)) updaterLog(`[updater] la recuperación terminó en «${outcome}»`)
-  const journal = outcome === 'monitor' || outcome === 'monitor_without_watchdog' ? readTransaction(updateStore.dir) : null
-  let transaction = journal?.kind === 'ok' ? journal.tx : null
+  const recovered = readTransaction(updateStore.dir)
+  const monitor = outcome === 'monitor' || outcome === 'monitor_without_watchdog'
+  const cleanupPending = recovered.kind === 'ok' && ['healthy', 'done'].includes(recovered.tx.phase) && recovered.tx.to.version === app.getVersion()
+  let transaction = recovered.kind === 'ok' && (monitor || cleanupPending) ? recovered.tx : null
   if (transaction && outcome === 'monitor_without_watchdog') {
     try { transaction = await replaceRecoveryWatchdog(transaction) }
     catch (error) { updaterLog(`[updater] no se pudo reemplazar el vigía: ${error instanceof Error ? error.message : String(error)}`); return }
@@ -893,6 +895,13 @@ async function startUpdateBookkeeping(): Promise<void> {
     whenStablyHealthy({ healthy }, ratchet)
     // Una versión que todavía no anunció (p. ej. tras el salto desde 0.14.2) lo hace tras un arranque estable de 180 s.
     whenStablyHealthy({ healthy, stableMs: HEALTH_DEADLINE_MS }, () => { void announceVersion() })
+    return
+  }
+  if (cleanupPending) {
+    activeTransaction = transaction
+    rollbackObserver = setInterval(() => { observeRollback() }, 2_000)
+    rollbackObserver.unref()
+    observeRollback()
     return
   }
   expectRuntime = true

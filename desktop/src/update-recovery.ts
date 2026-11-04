@@ -109,7 +109,15 @@ export async function recoverTransaction(deps: RecoveryDeps): Promise<Recovery> 
 
     case "healthy": {
       if (running !== tx.to.version || bundleVersion(tx.paths.installed) !== tx.to.version) return ambiguous("la app que corre no es la confirmada")
-      if (inspectSides(tx) === "swapped") return (await finish()) ? "cleaned" : ambiguous("el respaldo no se pudo borrar de forma durable")
+      if (inspectSides(tx) === "swapped") {
+        try { await removeTreeDurable(tx.paths.incoming, remove) } catch (error) {
+          log(`[updater] no se pudo borrar el respaldo ${tx.paths.incoming}: ${error instanceof Error ? error.message : String(error)}; se conserva la transacción`)
+          return "ambiguous"
+        }
+        advancePhase(deps.updateDir, tx.transaction_id, "done")
+        clearTransactionFiles(deps.updateDir, tx.transaction_id)
+        return "cleaned"
+      }
       const evidence = readJson(healthyFile(deps.updateDir, tx.transaction_id))
       const marker = evidence.ok ? parseHealthyMarker(evidence.value) : null
       if (existsSync(tx.paths.incoming) || marker?.transaction_id !== tx.transaction_id || marker.version !== tx.to.version)

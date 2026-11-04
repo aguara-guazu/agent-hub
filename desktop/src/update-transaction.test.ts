@@ -138,7 +138,7 @@ describe("transacción del updater", () => {
     const tx = { ...transaction(dir), phase }
     await bundle(tx.paths.installed, tx.to.version)
     writeJsonDurable(journalFile(dir), tx)
-    writeJsonDurable(healthyFile(dir, tx.transaction_id), {
+    if (phase === "healthy") writeJsonDurable(healthyFile(dir, tx.transaction_id), {
       transaction_id: tx.transaction_id,
       version: tx.to.version,
       at: new Date().toISOString(),

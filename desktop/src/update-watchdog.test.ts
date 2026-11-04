@@ -28,7 +28,7 @@ const harness = () => {
     read: () => current,
     isAlive: () => false,
     sides: () => swapped ? "swapped" : "not_swapped",
-    lock: () => { order.push("lock"); return { fd: 9, release } },
+    lock: () => { order.push("lock"); return { fd: 9, path: "/tmp/swap-back.lock", release } },
     swap: () => { order.push("swap"); swapped = true },
     sync: () => { order.push("sync") },
     launch: async () => { order.push("launch"); return { pid: 102, start: "new-start" } },
@@ -64,7 +64,7 @@ describe("watchdog forward swap", () => {
     const run = harness()
     run.operations.lock = () => {
       run.setCurrent({ ...run.current(), phase: "ambiguous" })
-      return { fd: 9, release: run.release }
+      return { fd: 9, path: "/tmp/swap-back.lock", release: run.release }
     }
 
     await expect(performForwardSwap(transaction(), run.operations)).rejects.toThrow("cambió")

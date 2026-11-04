@@ -105,7 +105,7 @@ const swapBackLock = (dir: string): string => join(dir, "swap-back.lock")
  * de invocar el helper, para que dos intercambios de vuelta nunca se encadenen y vuelvan a dejar la versión nueva instalada.
  * Un candado cuyo dueño ya no existe se recupera. Devuelve la función que lo libera, o `null` si lo tiene otro proceso vivo.
  */
-export interface SwapLock { fd: number; release(): void }
+export interface SwapLock { fd: number; path: string; release(): void }
 
 export function acquireSwapBackLock(dir: string, owner: Identity, _alive: (identity: Identity) => boolean): SwapLock | null {
   const exclusive = process.platform === "darwin" ? 0x20 : null
@@ -129,7 +129,7 @@ export function acquireSwapBackLock(dir: string, owner: Identity, _alive: (ident
     throw error
   }
   let released = false
-  return { fd, release: () => { if (!released) { released = true; closeSync(fd) } } }
+  return { fd, path, release: () => { if (!released) { released = true; closeSync(fd) } } }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

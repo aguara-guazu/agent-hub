@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -50,10 +51,15 @@ static int expected_pair(const char *installed, const char *incoming) {
 
 static int inherited_lock_fd(void) {
   const char *value = getenv("AGENTHUB_SWAP_LOCK_FD");
-  if (!value || !*value) return -1;
+  const char *path = getenv("AGENTHUB_SWAP_LOCK_PATH");
+  if (!value || !*value || !path || path[0] != '/') return -1;
   char *end = NULL;
   long fd = strtol(value, &end, 10);
-  if (!end || *end || fd < 3 || fd > INT_MAX || fcntl((int)fd, F_GETFD) < 0) return -1;
+  if (!end || *end || fd < 3 || fd > INT_MAX) return -1;
+  struct stat held, expected;
+  if (fstat((int)fd, &held) != 0 || lstat(path, &expected) != 0 || !S_ISREG(held.st_mode) || S_ISLNK(expected.st_mode)
+      || held.st_dev != expected.st_dev || held.st_ino != expected.st_ino) return -1;
+  if (flock((int)fd, LOCK_EX | LOCK_NB) != 0) return -1;
   return (int)fd;
 }
 

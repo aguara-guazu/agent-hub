@@ -336,7 +336,7 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
           if (!info.isFile() || !(info.mode & 0o111) || sha256File(candidate) !== args.helperSha256) throw new Error("el agenthub-swap ya no coincide con el verificado")
           execFileSync(candidate, [current.paths.installed, current.paths.incoming], {
             stdio: ["ignore", "ignore", "ignore", lock.fd],
-            env: { ...process.env, AGENTHUB_SWAP_LOCK_FD: "3" },
+            env: { ...process.env, AGENTHUB_SWAP_LOCK_FD: "3", AGENTHUB_SWAP_LOCK_PATH: lock.path },
           })
         },
         sync: current => fsyncPathSync(dirname(current.paths.installed)),
@@ -431,7 +431,7 @@ export async function runWatchdog(args: WatchdogArgs): Promise<WatchdogResult> {
     // 4b. Intercambio atómico de vuelta con el helper de la versión anterior; después se verifica y se hace durable.
     execFileSync(helper, [installed, incoming], {
       stdio: ["ignore", "ignore", "ignore", lock.fd],
-      env: { ...process.env, AGENTHUB_SWAP_LOCK_FD: "3" },
+      env: { ...process.env, AGENTHUB_SWAP_LOCK_FD: "3", AGENTHUB_SWAP_LOCK_PATH: lock.path },
     })
     fsyncPathSync(dirname(installed))
     if (bundleVersion(installed) !== tx.from.version || bundleVersion(incoming) !== tx.to.version) return ambiguous("tras el intercambio las versiones no son las esperadas")
