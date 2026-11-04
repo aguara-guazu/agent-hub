@@ -27,6 +27,8 @@ export interface TeamOrca {
   interrupt?(handle: string): Promise<unknown>
   stop?(handle: string): Promise<unknown>
   bind?(memberId: string, sessionId: string): Promise<unknown>
+  /** Set by the orchestration: a launched member of this generation ended a turn idle without having joined. */
+  onUnjoinedIdle?: (memberId: string, generation: string) => Promise<void>
   suspend?(): Promise<unknown>
   close?(): Promise<unknown>
   preflight?(members: Array<{ cli: ExtractionCli; model: string; effort?: string }>): Promise<void>

@@ -119,7 +119,36 @@ export class TeamOrchestration {
   private recovery?:Promise<void>
   private readonly memberOperations=new Map<string,Promise<unknown>>()
   constructor(readonly chat:LocalChat, private readonly catalog:TeamCatalog, private readonly orca:TeamOrca,
-    private readonly usage?:Pick<UsageQuotas,'forCli'>, private readonly collaborationEnabled:()=>boolean=()=>true) {}
+    private readonly usage?:Pick<UsageQuotas,'forCli'>, private readonly collaborationEnabled:()=>boolean=()=>true) {
+    if(orca.provider==="hub")orca.onUnjoinedIdle=(memberId,generation)=>this.retryOnboarding(memberId,generation)
+  }
+  /**
+   * A launched worker that ends its first turn idle without joining gets one more onboarding prompt with a fresh invitation.
+   * A second miss is recorded so team_status shows onboarding: not_joined; the Hub never retries again for that generation.
+   */
+  async retryOnboarding(memberId:string,generation:string) {
+    await this.serial(memberId,async()=>{
+      const member=(await this.db.query(`SELECT m.*,t.state AS team_state FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id WHERE m.id=$1`,[memberId]))[0]
+      const runtime=typeof member?.runtime==="string"?JSON.parse(member.runtime):member?.runtime
+      if(!member || !activePlan(member.team_state) || member.state!=="accepted" || member.session_id || member.invitation_used_at
+        || !member.launch_handle || runtime?.generation!==generation || !this.collaborationEnabled())return
+      const done=await this.db.query(`SELECT type FROM chat_team_events WHERE member_id=$1 AND type IN ('onboarding_retry','onboarding_not_joined')
+        AND json_extract(payload,'$.generation')=$2`,[memberId,generation])
+      if(done.some(row=>row.type==="onboarding_not_joined"))return
+      if(done.length) {
+        await this.event(this.db,member.team_id,member.id,"onboarding_not_joined",null,null,null,{generation})
+        return
+      }
+      check(this.orca.send,"El backend no permite enviar instrucciones",409)
+      const token=randomBytes(32).toString("base64url"),expires=new Date(Date.now()+30*60_000).toISOString()
+      const rotated=await this.db.query(`UPDATE chat_team_members SET invitation_hash=$2,invitation_expires_at=$3,updated_at=now()
+        WHERE id=$1 AND state='accepted' AND session_id IS NULL AND invitation_used_at IS NULL RETURNING id`,[memberId,invitationHash(token),expires])
+      if(!rotated.length)return
+      const relaunch=(await this.db.query("SELECT 1 FROM chat_team_events WHERE member_id=$1 AND type='joined' LIMIT 1",[memberId])).length>0
+      await this.event(this.db,member.team_id,member.id,"onboarding_retry",null,null,null,{generation})
+      await this.orca.send(member.launch_handle,this.workerPrompt(token,relaunch).replace("Agent Hub: ","Agent Hub: you have not joined your team yet. "))
+    })
+  }
   private get db() { return this.chat.db }
   private derived?: DerivedPorts
   /** Wired once by the service owner; without it launchDerived is unavailable. */
@@ -1146,6 +1175,11 @@ export class TeamOrchestration {
       // Status is a public snapshot, never a writer racing native events in the same generation.
       const activity=item.session_id ? (await sql.query('SELECT output_at FROM chat_sessions WHERE id=$1',[item.session_id]))[0]?.output_at : undefined
       item.runtime=this.publicRuntime(observed?{...item.runtime,...observed}:{...item.runtime,state:'unknown'},observed?.generation ?? item.runtime.generation,activity)
+      if(item.state==="accepted" && !item.session_id) {
+        const onboarding=(await sql.query(`SELECT type FROM chat_team_events WHERE member_id=$1 AND type IN ('onboarding_retry','onboarding_not_joined')
+          AND json_extract(payload,'$.generation')=$2 ORDER BY seq DESC LIMIT 1`,[item.id,item.runtime.generation]))[0]?.type
+        if(onboarding)item.onboarding=onboarding==="onboarding_not_joined"?"not_joined":"retried"
+      }
     }
     return result
   }
@@ -1186,7 +1220,7 @@ export class TeamOrchestration {
   }
 
   private async event(sql:Sql,teamId:string,memberId:string|null,type:string,
-    actor:string,sourceChannel:string,targetThread:string,payload:Record<string,unknown>) {
+    actor:string|null,sourceChannel:string|null,targetThread:string|null,payload:Record<string,unknown>) {
     await sql.query(`INSERT INTO chat_team_events(id,team_id,member_id,type,actor_session_id,source_channel_id,target_thread_id,payload)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[randomUUID(),teamId,memberId,type,actor,sourceChannel,targetThread,JSON.stringify(payload)])
   }

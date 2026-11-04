@@ -68,6 +68,7 @@ export class HubTeamRuntime implements TeamOrca {
   readonly provider = 'hub' as const
   readonly supportsProfiles: boolean = false
   private readonly manager: FleetProcessManager
+  onUnjoinedIdle?: (memberId: string, generation: string) => Promise<void>
   private readonly generations = new Map<string, string>()
   private readonly nextGenerations = new Map<string, string>()
   private readonly queues = new Map<string, Promise<void>>()
@@ -431,6 +432,11 @@ export class HubTeamRuntime implements TeamOrca {
     await this.chat.db.query('UPDATE chat_team_members SET runtime=$1 WHERE id=$2', [JSON.stringify(runtime), event.id])
     if (runtime.questions) await (this.chat as ManagedChat).managedQuestions(event.id, runtime.questions, generation)
     if (member.session_id) await this.lifecycle(String(member.session_id), runtime)
+    // Outside this member's event queue: the hook sends the onboarding prompt again, which publishes on this same queue.
+    else if (runtime.state === 'idle' && this.onUnjoinedIdle) {
+      const hook = this.onUnjoinedIdle
+      setImmediate(() => { void hook(event.id, generation).catch(() => undefined) })
+    }
   }
   private runtime(raw: unknown): HubTeamStatus | undefined {
     try {
