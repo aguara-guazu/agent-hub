@@ -13,6 +13,7 @@ const ACTIVE_PLAN_SQL = "('launching','launched','partial','uncertain','active')
 const UPDATE_DEADLINE_MS = 30 * 60_000
 const QUIT_GRACE_MS = 15 * 60_000
 const GATE_RENEW_MS = 5 * 60_000
+const QUIT_READY_TIMEOUT_MS = 15 * 60_000
 
 export type HubStopReason = "update" | "quit"
 export type HubStopState = "requested" | "notifying" | "waiting_confirmations" | "waiting_members" | "stopping_fleet" | "ready" | "applied" | typeof TERMINAL_STATES[number]
@@ -80,7 +81,8 @@ export class HubStopCoordinator {
     const deadline = Date.parse(stop.deadline_at)
     const forcedRetryAt = stop.force_next_at ? Date.parse(stop.force_next_at) : null
     const protocolAt = forcedRetryAt ?? (stop.state === "ready"
-      ? stop.reason === "update" && stop.gate_owner !== "drain" ? deadline : Infinity
+      ? stop.reason === "update" && stop.gate_owner !== "drain" ? deadline
+        : stop.reason === "quit" && stop.gate_owner !== "drain" && stop.ready_at ? Date.parse(stop.ready_at) + QUIT_READY_TIMEOUT_MS : Infinity
       : stop.reason === "quit" && stop.grace_started_at && stop.force_at ? Date.parse(stop.force_at) : deadline)
     const renewalAt = stop.gate_owner === "coordinator" ? this.now() + GATE_RENEW_MS : Infinity
     const drainCheckAt = stop.gate_owner === "drain" ? this.now() + 60_000 : Infinity
@@ -146,6 +148,15 @@ export class HubStopCoordinator {
       }
       if (!stop) {
         const current = await this.active()
+        if (current && input.reason === "quit" && current.reason === "quit") {
+          await this.deps.db.transaction(async sql => {
+            await this.event(sql, current.id, "quit_adopted", { previous_source_id: current.source_id, requested_source_id: input.source_id })
+          })
+          this.log(current.id, "quit_adopted", { previous_source_id: current.source_id, requested_source_id: input.source_id })
+          await this.advance(current.id)
+          this.arm(await this.requireStop(current.id))
+          return this.view(current.id)
+        }
         check(!current, "Ya existe una parada coordinada activa.", 409)
         const now = this.now(), deadline = now + UPDATE_DEADLINE_MS
         const stopId = randomUUID()
@@ -590,6 +601,10 @@ export class HubStopCoordinator {
       return
     }
     const drainActive = stop.gate_owner === "drain" && (this.drainCommitted(stop) || this.drainLeaseValid(stop) || Boolean(this.drain?.hasPendingAttempt))
+    if (stop.reason === "quit" && stop.state === "ready" && !drainActive && stop.ready_at && now >= Date.parse(stop.ready_at) + QUIT_READY_TIMEOUT_MS) {
+      await this.terminal(stop, "cancelled", "quit_ready_timeout")
+      return
+    }
     if (stop.reason === "update" && now >= deadline && !drainActive) {
       if (stop.gate_owner === "drain") await this.releaseDrain(stop)
       await this.terminal(await this.requireStop(stop.id), "postponed", "deadline_elapsed")
@@ -709,7 +724,7 @@ export class HubStopCoordinator {
       return
     }
     await this.deps.db.transaction(async sql => {
-      await sql.query(`UPDATE hub_stops SET state='ready',ready_at=COALESCE(ready_at,now()),force_next_at=NULL,
+      await sql.query(`UPDATE hub_stops SET state='ready',ready_at=COALESCE(ready_at,now()),force_next_at=NULL,force_gate_failures=0,
         last_error_code=$2,last_error_detail=$3,updated_at=now() WHERE id=$1`, [stop.id,
         uncertain ? "forced_with_uncertain_members" : null, uncertain ? "El cierre continúa después de tres reintentos sin confirmar todos los procesos." : null])
       await this.event(sql, stop.id, "ready", { fleet_live: after.fleet_live, receipts: receipts.length, forced: force, uncertain, attempt })
@@ -719,7 +734,17 @@ export class HubStopCoordinator {
 
   private async forceStop(stop: StopRow, snapshot: Awaited<ReturnType<HubTeamRuntime["coordinatedSnapshot"]>> | undefined): Promise<void> {
     if (stop.force_next_at && this.now() < Date.parse(stop.force_next_at)) return
-    if (!await this.ensureGate(stop)) return
+    if (!await this.ensureGate(stop)) {
+      const failures = Number(stop.force_gate_failures ?? 0) + 1
+      const backoff = [5_000, 15_000, 30_000][Math.min(failures - 1, 2)]!
+      await this.deps.db.transaction(async sql => {
+        await sql.query("UPDATE hub_stops SET force_gate_failures=$2,force_next_at=$3,updated_at=now() WHERE id=$1",
+          [stop.id, failures, new Date(this.now() + backoff).toISOString()])
+        await this.event(sql, stop.id, "force_gate_retry_scheduled", { failures, backoff_ms: backoff, error_code: stop.last_error_code ?? "admission_close_failed" })
+      })
+      this.log(stop.id, "force_gate_retry_scheduled", { failures, backoff_ms: backoff })
+      return
+    }
     const leaders = (await this.deps.db.query("SELECT session_id FROM hub_stop_targets WHERE stop_id=$1 AND required=1 AND confirmed_at IS NULL AND invalidated_at IS NULL", [stop.id])).map(row => String(row.session_id))
     const members = (snapshot?.members ?? []).filter(member => member.live || !member.proof_complete)
     await this.deps.db.transaction(async sql => {

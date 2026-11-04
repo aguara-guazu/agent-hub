@@ -967,7 +967,7 @@ CREATE TABLE hub_stops (
  target_version TEXT, state TEXT NOT NULL CHECK(state IN ('requested','notifying','waiting_confirmations','waiting_members','stopping_fleet','ready','applied','resumed','postponed','cancelled')),
  requested_at TIMESTAMP NOT NULL, deadline_at TIMESTAMP NOT NULL, force_at TIMESTAMP, grace_started_at TIMESTAMP,
  backup_id TEXT, admission_closed_at TIMESTAMP, gate_owner TEXT, ready_at TIMESTAMP, retry_not_before TIMESTAMP,
- force_attempts INTEGER NOT NULL DEFAULT 0, force_next_at TIMESTAMP,
+ force_attempts INTEGER NOT NULL DEFAULT 0, force_gate_failures INTEGER NOT NULL DEFAULT 0, force_next_at TIMESTAMP,
  drain_boot_id TEXT, drain_generation INTEGER, drain_lease TEXT, applied_at TIMESTAMP, apply_boot_id TEXT,
  apply_transaction_id TEXT, resumed_at TIMESTAMP, terminal_reason TEXT, last_error_code TEXT, last_error_detail TEXT,
  updated_at TIMESTAMP NOT NULL DEFAULT ${NOW}
