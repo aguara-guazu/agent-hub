@@ -304,5 +304,27 @@ export class MemoryService {
     const status=member ? await operations.fleet?.status?.(String(member.id)) : undefined
     return !!status && ['starting','busy','idle','waiting_input'].includes(status.state ?? '')
   }
-  async close() { if (this.orchestrationOwner) hubLog(this.directory).event("service", "stop", { pid: process.pid }); this.defaults.stop(); await this.initializing?.catch(() => {}); for (let attempt = 0; attempt < 3; attempt++) { try { await this.current?.operations.fleet?.close?.(); break } catch { /* retried, then the final close below runs again */ } } await this.current?.schedules?.runtime.close(); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.operations.fleet?.close?.(); current.operations.closeInterhub(); await current.network.stop(); await current.db.close() } }
+  async close() {
+    if (this.orchestrationOwner) hubLog(this.directory).event("service", "stop", { pid: process.pid })
+    this.defaults.stop()
+    await this.initializing?.catch(() => {})
+    const failures: unknown[] = []
+    const step = async (action: () => unknown) => { try { await action() } catch (error) { failures.push(error) } }
+    for (let attempt = 0; attempt < 3; attempt++) { try { await this.current?.operations.fleet?.close?.(); break } catch { /* retried, then the final close below runs again */ } }
+    await step(() => this.current?.schedules?.runtime.close())
+    await step(() => this.media.close())
+    await step(() => this.nativeEmbeddings.close())
+    await step(() => this.cliExtraction.close())
+    await step(() => this.openCode.close())
+    await step(() => this.defaults.idle())
+    const current = this.current
+    this.current = null
+    if (current) {
+      await step(() => current.operations.fleet?.close?.())
+      await step(() => current.operations.closeInterhub())
+      await step(() => current.network.stop())
+      await step(() => current.db.close())
+    }
+    if (failures.length) throw failures[0]
+  }
 }
