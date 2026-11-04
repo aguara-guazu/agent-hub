@@ -1258,6 +1258,13 @@ export class LocalChat {
         check(recipient !== who.id,'No podés despertarte mencionándote a vos mismo',400)
         const target=(await sql.query('SELECT id,channel_id,removed_at,cli_kind FROM chat_sessions WHERE id=$1',[recipient]))[0]
         check(!target || !(NON_AGENT_CLI_KINDS as readonly string[]).includes(target.cli_kind),'Sólo se menciona a agentes; la persona lee el hilo en la UI.',400)
+        if(linkedTeam && !target) {
+          // A nick or a stale id is the usual mistake; name the current id instead of a generic refusal. Never resolved silently.
+          const byNick=(await sql.query(`SELECT s.id FROM chat_sessions s WHERE (s.nickname=$2 OR s.label=$2) AND s.closed_at IS NULL AND s.removed_at IS NULL
+            AND ((s.id=$3 AND s.channel_id=$4) OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=$1 AND m.session_id=s.id AND m.state='joined'))`,
+          [linkedTeam.id,recipient,linkedTeam.created_by,linkedTeam.master_channel_id]))[0]
+          check(false,byNick?`«${recipient}» es un nick; mencioná su id de sesión: ${byNick.id}.`:"La mención debe ser el id de sesión vigente de un miembro del equipo; consultá memory_chat_agents.",400)
+        }
         if(linkedTeam)check(await this.teamRecipient(sql,linkedTeam,recipient),'La mención debe pertenecer al equipo vinculado a este hilo.',400)
         else if(target && target.channel_id===thread.channel_id && target.id!==channelLeadership.displaced_leader_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
         else if(target && target.id===channelLeadership.leader_id)check(!target.removed_at,'La mención no puede dirigirse a una sesión expulsada',400)
