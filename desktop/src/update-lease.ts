@@ -32,7 +32,7 @@ export type DrainCall = "ok" | "gone" | "forbidden" | "unreachable"
 
 export interface DrainClientDeps {
   /** Pedido autenticado al core local (token de sesión incluido). */
-  call: (path: string, init: { method: "POST"; headers: Record<string, string>; body?: string }) => Promise<Response>
+  call: (path: string, init: { method: "GET" | "POST"; headers: Record<string, string>; body?: string }) => Promise<Response>
   secret: string
   log: (line: string) => void
   core: { readonly pid: number | undefined; readonly state: string }
@@ -88,6 +88,39 @@ export class DrainClient {
       }
     } catch { /* core ocupado o reiniciando */ }
     return { reasons: [{ code: "core_unreachable" }] }
+  }
+
+  /** Reopens a blocker-bearing attempt when updates are disabled or the app is leaving for another reason. */
+  async cancelPending(): Promise<void> {
+    try {
+      const response = await this.deps.call("/api/internal/update-drain/pending/cancel", { method: "POST", headers: this.headers() })
+      if (!response.ok && response.status !== 409) this.deps.log(`[updater] no se pudo cancelar el drenaje pendiente (HTTP ${response.status})`)
+      await response.body?.cancel().catch(() => undefined)
+    } catch (error) {
+      this.deps.log(`[updater] no se pudo cancelar el drenaje pendiente: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /** Opens a transaction-started core only after observing this process's boot id and receiving its explicit acknowledgement. */
+  async admitStartup(transactionId: string): Promise<boolean> {
+    try {
+      const status = await this.deps.call("/api/internal/update-drain/status", { method: "GET", headers: this.headers() })
+      const current = await status.json().catch(() => null) as { boot_id?: unknown } | null
+      if (!status.ok || typeof current?.boot_id !== "string" || !current.boot_id) {
+        await status.body?.cancel().catch(() => undefined)
+        return false
+      }
+      const response = await this.deps.call("/api/internal/update-admit", {
+        method: "POST",
+        headers: this.headers(true),
+        body: JSON.stringify({ transaction_id: transactionId, boot_id: current.boot_id }),
+      })
+      const admitted = await response.json().catch(() => null) as { admitted?: unknown } | null
+      return response.ok && admitted?.admitted === true
+    } catch (error) {
+      this.deps.log(`[updater] no se pudo admitir el core nuevo: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
   }
 
   private async post(path: string, lease: { lease: string; generation: number; bootId?: string }): Promise<{ result: DrainCall; remainingMs?: number; reopened?: boolean }> {

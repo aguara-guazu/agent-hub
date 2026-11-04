@@ -79,6 +79,8 @@ export class UpdateDrain {
   private expiresAt = 0
   private expiry: ReturnType<typeof setTimeout> | undefined
   private committed = false
+  /** A blocker-bearing attempt keeps both admission gates closed so existing work converges to zero. */
+  private pending = false
   /** A manual quit waits for MCP calls in flight; it closes nothing but MCP and ends only when core exits or the quit is cancelled. */
   private shutdown = false
   /** Core born closed for the first start of a new version: MCP and the shared gate stay shut until the desktop admits it. */
@@ -146,22 +148,34 @@ export class UpdateDrain {
     this.acquiring = true
     // Synchronous from here to the first await: MCP is refused before anything else happens.
     this.draining = true
-    let gate: AdmissionGateLike | undefined
-    let token: symbol | null = null
-    // Releases exactly what this attempt took: the gate only if it was closed here, MCP back to what a manual quit needs.
-    const undo = async (why: string): Promise<void> => {
+    let gate = this.pending ? this.gate : undefined
+    let token = this.pending ? this.token : null
+    const releaseAttempt = async (why: string): Promise<void> => {
+      clearTimeout(this.expiry)
+      this.pending = false
+      this.expiresAt = 0
+      this.gate = undefined
+      this.token = null
       this.draining = this.shutdown
       await this.reopenGate(gate, token, why)
     }
     try {
-      gate = this.deps.gate()
-      if (!gate) { await undo("sin compuerta"); return { ok: false, reasons: [{ code: "blockers_unknown" }] } }
-      try {
-        token = gate.close()
-      } catch (error) {
-        token = null
-        await undo("cierre fallido")
-        return { ok: false, reasons: [{ code: (error as { code?: string } | null)?.code === "already_draining" ? "already_draining" : "blockers_unknown" }] }
+      if (!this.pending) {
+        gate = this.deps.gate()
+        if (!gate) { await releaseAttempt("sin compuerta"); return { ok: false, reasons: [{ code: "blockers_unknown" }] } }
+        try {
+          token = gate.close()
+        } catch (error) {
+          token = null
+          await releaseAttempt("cierre fallido")
+          return { ok: false, reasons: [{ code: (error as { code?: string } | null)?.code === "already_draining" ? "already_draining" : "blockers_unknown" }] }
+        }
+        this.pending = true
+        this.gate = gate
+        this.token = token
+        this.expiresAt = this.now() + this.ttlMs
+        this.expiry = setTimeout(() => { void this.release("vencimiento") }, this.ttlMs)
+        this.expiry.unref()
       }
       const reasons: DrainReason[] = []
       const counter = this.deps.nonMcpBlockers()
@@ -187,24 +201,38 @@ export class UpdateDrain {
       }
       // In-flight is read last and synchronously with the grant: with MCP refused it can only have fallen.
       if (this.inflight > 0) reasons.push({ code: "mcp_inflight", count: this.inflight })
-      if (reasons.length > 0) { await undo("bloqueos"); return { ok: false, reasons: dedupe(reasons) } }
+      if (reasons.length > 0) {
+        const stable = dedupe(reasons)
+        const converging = stable.every(reason => ["fleet_live", "jobs_nonresumable", "mcp_inflight"].includes(reason.code))
+        if (!converging) await releaseAttempt("bloqueos no convergentes")
+        return { ok: false, reasons: stable }
+      }
+      const remaining = this.expiresAt - this.now()
+      if (remaining <= 0) {
+        await releaseAttempt("vencimiento antes del lease")
+        return { ok: false, reasons: [{ code: "already_draining" }] }
+      }
+      this.pending = false
       this.shutdown = false
       this.committed = false
       this.lease = randomUUID()
       this.generation++
-      this.gate = gate
-      this.token = token
-      this.expiresAt = this.now() + this.ttlMs
       clearTimeout(this.expiry)
-      this.expiry = setTimeout(() => { void this.release("vencimiento") }, this.ttlMs)
+      this.expiry = setTimeout(() => { void this.release("vencimiento") }, remaining)
       this.expiry.unref()
-      return { ok: true, lease: this.lease, generation: this.generation, expires_in_ms: this.ttlMs, boot_id: this.bootId }
+      return { ok: true, lease: this.lease, generation: this.generation, expires_in_ms: remaining, boot_id: this.bootId }
     } catch {
-      await undo("error inesperado")
+      await releaseAttempt("error inesperado")
       return { ok: false, reasons: [{ code: "blockers_unknown" }] }
     } finally {
       this.acquiring = false
     }
+  }
+
+  /** Cancels a blocker-bearing attempt before a lease exists, reopening both gates exactly once. */
+  async cancelPending(): Promise<{ ok: boolean; reopened: boolean }> {
+    if (!this.pending || this.lease || this.committed) return { ok: false, reopened: false }
+    return { ok: true, reopened: await this.release("cancelación pendiente") }
   }
 
   /** The same lease, generation and core process, still unexpired and not yet committed. */
@@ -269,6 +297,7 @@ export class UpdateDrain {
     if (this.committed) return true
     clearTimeout(this.expiry)
     const { gate, token } = this
+    this.pending = false
     this.lease = null
     this.gate = undefined
     this.token = null
@@ -362,6 +391,10 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
   })
   app.post("/api/internal/update-drain", guard, async (_request, reply) => {
     const result = await drain.acquire()
+    return result.ok ? result : reply.code(409).send(result)
+  })
+  app.post("/api/internal/update-drain/pending/cancel", guard, async (request, reply) => {
+    const result = await drain.cancelPending()
     return result.ok ? result : reply.code(409).send(result)
   })
   app.post("/api/internal/update-drain/confirm", guard, async (request, reply) => {
