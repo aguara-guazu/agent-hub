@@ -16,7 +16,8 @@ const DRAFT_TTL_MS = 60 * 60_000
 const QUOTABLE_PATH = /^[^'\0\r\n`$"]+$/
 /** Only these hub.log fields reach a public issue; free-form logs (core, daemon, worker) stay local. */
 const PUBLIC_FIELDS = ["ts", "component", "event", "step", "duration_ms", "cause", "action", "state", "from", "error_code", "cli", "count", "uncertain",
-  "session_id", "recipient_id", "member_id", "generation", "notice_id", "stop_id", "boot_id", "plan_id", "reason", "transaction_id", "attempt", "outcome"] as const
+  "session_id", "recipient_id", "member_id", "generation", "notice_id", "stop_id", "boot_id", "plan_id", "reason", "transaction_id", "attempt", "outcome",
+  "drain_boot_id", "previous_boot_id", "startup_transaction", "backup_id"] as const
 /** Ids, codes and timestamps only: anything else (prose, paths, quotes) is dropped rather than redacted. */
 const PUBLIC_VALUE = /^[A-Za-z0-9_:.+-]{1,100}$/
 const CLIS: Array<[ExtractionCli, string]> = [["claude_code", "Claude Code"], ["codex_cli", "Codex CLI"], ["kiro", "Kiro CLI"]]
