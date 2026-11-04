@@ -240,7 +240,7 @@ export class UpdateDrain {
     return { ok: true }
   }
 
-  async acquire(): Promise<DrainResult> {
+  async acquire(purpose: "update" | "quit" = "update"): Promise<DrainResult> {
     if (this.startup) return { ok: false, reasons: [{ code: "already_draining" }] }
     if (this.lease || this.acquiring) return { ok: false, reasons: [{ code: "already_draining" }] }
     this.acquiring = true
@@ -301,14 +301,16 @@ export class UpdateDrain {
         this.draining = false
         return { ok: false, reasons: dedupe(reasons) }
       }
-      if (!this.deps.legacyGateways) reasons.push({ code: "legacy_gateways_unknown" })
-      else {
-        try {
-          const scan = await this.deps.legacyGateways()
-          if (scan.error !== undefined) reasons.push({ code: "legacy_gateways_unknown" })
-          else if (scan.count > 0) reasons.push({ code: "legacy_gateways", count: scan.count })
-        } catch {
-          reasons.push({ code: "legacy_gateways_unknown" })
+      if (purpose === "update") {
+        if (!this.deps.legacyGateways) reasons.push({ code: "legacy_gateways_unknown" })
+        else {
+          try {
+            const scan = await this.deps.legacyGateways()
+            if (scan.error !== undefined) reasons.push({ code: "legacy_gateways_unknown" })
+            else if (scan.count > 0) reasons.push({ code: "legacy_gateways", count: scan.count })
+          } catch {
+            reasons.push({ code: "legacy_gateways_unknown" })
+          }
         }
       }
       // In-flight is read last and synchronously with the grant: with MCP refused it can only have fallen.

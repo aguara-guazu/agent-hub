@@ -64,6 +64,7 @@ export class HubStopCoordinator {
     backup(): Promise<BackupReceipt>
     log: HubLog
     startupTransaction?: string
+    legacyGateways?(): Promise<import("./update-drain.js").LegacyGatewayScan>
     now?: () => number
   }) {}
 
@@ -316,7 +317,7 @@ export class HubStopCoordinator {
         this.gateToken = null
         await this.deps.db.query("UPDATE hub_stops SET gate_owner='drain',updated_at=now() WHERE id=$1 AND state='ready'", [stopId])
       }
-      const result = await drain.acquire()
+      const result = await drain.acquire(stop.reason)
       if (result.ok) {
         await this.deps.db.transaction(async sql => {
           await sql.query("UPDATE hub_stops SET drain_boot_id=$2,drain_generation=$3,drain_lease=$4,last_error_code=NULL,last_error_detail=NULL,updated_at=now() WHERE id=$1 AND state='ready'",
@@ -329,8 +330,11 @@ export class HubStopCoordinator {
       }
       const converging = result.reasons.every(item => item.code === "jobs_nonresumable" || item.code === "mcp_inflight")
       if (!converging) {
-        await this.deps.db.query("UPDATE hub_stops SET state='waiting_members',gate_owner=NULL,last_error_code='drain_not_ready',last_error_detail=$2,updated_at=now() WHERE id=$1 AND state='ready'",
-          [stopId, JSON.stringify(result.reasons)])
+        const legacy = result.reasons.find(reason => reason.code === "legacy_gateways")
+        const code = legacy ? "legacy_gateways" : "drain_not_ready"
+        const detail = legacy ? JSON.stringify({ count: legacy.count ?? 0 }) : JSON.stringify(result.reasons)
+        await this.deps.db.query("UPDATE hub_stops SET state='waiting_members',gate_owner=NULL,last_error_code=$2,last_error_detail=$3,updated_at=now() WHERE id=$1 AND state='ready'",
+          [stopId, code, detail])
         this.log(stopId, "drain_refused", { reasons: result.reasons.map(item => item.code).join(",") })
       }
       this.arm(await this.requireStop(stopId))
@@ -430,6 +434,21 @@ export class HubStopCoordinator {
   }
 
   private async prepare(stop: StopRow): Promise<void> {
+    if (stop.reason === "update" && this.deps.legacyGateways) {
+      try {
+        const legacy = await this.deps.legacyGateways()
+        if (legacy.error === undefined && legacy.count > 0) {
+          const detail = JSON.stringify({ count: legacy.count })
+          await this.deps.db.transaction(async sql => {
+            await sql.query("UPDATE hub_stops SET last_error_code='legacy_gateways',last_error_detail=$2,updated_at=now() WHERE id=$1", [stop.id, detail])
+            await this.event(sql, stop.id, "legacy_gateways", { count: legacy.count })
+          })
+          this.log(stop.id, "legacy_gateways", { count: legacy.count })
+          await this.terminal(await this.requireStop(stop.id), "postponed", "legacy_gateways")
+          return
+        }
+      } catch { /* UpdateDrain repeats the fail-closed scan before granting a lease. */ }
+    }
     if (!stop.backup_id) {
       try {
         const backup = await this.deps.backup()
@@ -553,7 +572,7 @@ export class HubStopCoordinator {
       : cause === "stop_grace"
         ? `El cierre ${stop.id} entró en los 15 minutos finales de gracia. Ordená la parada de los miembros pendientes; al vencer se hará un cierre forzado ordenado.`
         : required
-          ? `Agent Hub necesita ${stop.reason === "update" ? "reiniciarse para una actualización" : "cerrarse"}. Pedí a cada agente que llegue a un punto seguro, reporte y pare; después confirmá con memory_hub_stop_confirm(session_key, stop_id=${stop.id}). MCP seguirá disponible hasta que todos estén parados.`
+          ? `Agent Hub necesita ${stop.reason === "update" ? "reiniciarse para una actualización" : "cerrarse"}. Pedí a cada agente que llegue a un punto seguro, reporte y pare; podés usar memory_team_control action=interrupt o action=stop para reducir trabajo. Después confirmá con memory_hub_stop_confirm(session_key, stop_id=${stop.id}). MCP seguirá disponible hasta que todos estén parados.`
           : `Agent Hub prepara ${stop.reason === "update" ? "un reinicio por actualización" : "un cierre"}. Esta sesión TUI recibe el aviso pero no bloquea ni necesita confirmar.`
     const turn = `${cause}:${stop.id}:${target.session_id}:${noticeKey}`
     const payload = JSON.stringify({ stop_id: stop.id, reason: stop.reason, state: payloadState, deadline_at: stop.deadline_at, force_at: stop.force_at, required })
@@ -854,7 +873,8 @@ export class HubStopCoordinator {
       },
       receipts: receipts.map(row => ({ member_id: String(row.member_id), generation: String(row.generation), attempt: Number(row.attempt), outcome: String(row.outcome), observed_at: String(row.observed_at) })),
       error: stop.last_error_code ? { code: String(stop.last_error_code), detail: stop.last_error_detail ? String(stop.last_error_detail) : null,
-        actions: stop.state === "applied" ? [] : stop.last_error_code === "commit_persistence_pending" ? ["commit"] : ["retry", "cancel"] } : null,
+        actions: stop.state === "applied" || TERMINAL_STATES.includes(stop.state as typeof TERMINAL_STATES[number]) ? []
+          : stop.last_error_code === "commit_persistence_pending" ? ["commit"] : ["retry", "cancel"] } : null,
       drain: { owner: stop.gate_owner ?? null, boot_id: stop.drain_boot_id ?? null, generation: stop.drain_generation === null || stop.drain_generation === undefined ? null : Number(stop.drain_generation), lease: stop.drain_lease ?? null },
     }
   }
