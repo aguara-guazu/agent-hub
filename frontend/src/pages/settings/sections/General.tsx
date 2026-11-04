@@ -38,7 +38,7 @@ export default function General() {
   const reasonText = (reasons: readonly { code: string; count?: number }[]): string => reasons.map(reason => {
     const code = KNOWN_REASONS.has(reason.code) ? reason.code : "unknown"
     return PLURAL_REASONS.has(code)
-      ? plural(`general.updateStatus.reasons.${code}`, reason.count ?? 1)
+      ? plural(`general.updateStatus.reasons.${code}` as "general.updateStatus.reasons.fleet_live", reason.count ?? 1)
       : t(`general.updateStatus.reasons.${code}` as "general.updateStatus.reasons.unknown")
   }).join("; ")
   const statusLine = (): string => {
