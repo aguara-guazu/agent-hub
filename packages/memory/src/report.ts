@@ -133,6 +133,7 @@ export function appendLogChunk(activePath: string, chunk: Buffer, fs = { openSyn
     try {
       descriptor = fs.openSync(activePath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
       const opened = fs.fstatSync(descriptor), current = fs.lstatSync(activePath)
+      if (!opened.isFile()) return offset
       if ((opened.dev !== current.dev || opened.ino !== current.ino) && attempt < 2) continue
       while (offset < chunk.length) {
         const written = fs.writeSync(descriptor, chunk, offset, chunk.length - offset)
