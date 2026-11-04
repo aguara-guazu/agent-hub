@@ -915,4 +915,17 @@ ALTER TABLE interhub_channels ADD COLUMN shared_project_hint_event TEXT;
 ALTER TABLE interhub_channels ADD COLUMN project_unlink_reason TEXT;
 ALTER TABLE interhub_channels ADD COLUMN project_unlinked_id TEXT;
 ALTER TABLE interhub_channels ADD COLUMN project_unlinked_at TEXT;
+`, String.raw`
+-- Worker conversations that were replaced before members kept a stable channel left activated, unlinked virtual channels in their worktree.
+-- They hold no thread and no open session, so they are closed and archived; the channels of finished plans are retired the same way.
+-- Rollback: not reversible; closed_at and archived_at are only informational. Delete this version from schema_versions to run it again.
+UPDATE chat_channels SET closed_at=COALESCE(closed_at,${NOW}),archived_at=${NOW},updated_at=${NOW}
+ WHERE kind='virtual' AND scope_key LIKE 'session:%' AND activated_at IS NOT NULL AND archived_at IS NULL AND deleted_at IS NULL
+  AND NOT EXISTS(SELECT 1 FROM chat_team_members m WHERE m.channel_id=chat_channels.id)
+  AND EXISTS(SELECT 1 FROM chat_team_members m WHERE m.workspace_path=chat_channels.path)
+  AND NOT EXISTS(SELECT 1 FROM chat_threads t WHERE t.channel_id=chat_channels.id)
+  AND NOT EXISTS(SELECT 1 FROM chat_sessions s WHERE s.channel_id=chat_channels.id AND s.closed_at IS NULL);
+UPDATE chat_channels SET closed_at=COALESCE(closed_at,${NOW}),archived_at=COALESCE(archived_at,${NOW}),updated_at=${NOW}
+ WHERE kind='virtual' AND deleted_at IS NULL AND id IN (SELECT m.channel_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
+  WHERE m.channel_id IS NOT NULL AND p.state IN ('cancelled','completed'));
 `]

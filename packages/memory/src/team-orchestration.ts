@@ -465,6 +465,8 @@ export class TeamOrchestration {
       if(changed.length) {
         await sql.query(`UPDATE chat_team_members SET state=CASE WHEN state='joined' THEN state ELSE 'closed' END,
           invitation_hash=NULL,invitation_expires_at=NULL,updated_at=now() WHERE team_id=$1`,[plan.id])
+        await sql.query(`UPDATE chat_channels SET closed_at=COALESCE(closed_at,now()),archived_at=COALESCE(archived_at,now()),updated_at=now()
+          WHERE kind='virtual' AND id IN (SELECT channel_id FROM chat_team_members WHERE team_id=$1 AND channel_id IS NOT NULL)`,[plan.id])
         await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Equipo cerrado por su líder' WHERE handled_at IS NULL AND cancelled_at IS NULL
           AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_threads h ON h.id=m.thread_id
             WHERE h.id=$1 OR h.team_root_thread_id=$1)`,[plan.root_thread_id])
@@ -847,16 +849,34 @@ export class TeamOrchestration {
           AND child.closed_at IS NULL AND ${this.orca.provider==='hub'?'child.path=m.workspace_path':'child.orca_workspace_id=m.workspace_id'}`,[member.id,digest,who.id]))[0]
         check(current && activePlan(current.team_state) && current.leader_id===member.created_by && !current.leader_closed && !current.leader_removed,
           'El líder master o el equipo ya no están vigentes',409)
+        // A relaunched member keeps the channel of its first conversation; the provisional channel of the new conversation is retired.
+        const provisionalId=String(who.channel_id)
+        let channelId=provisionalId
+        const priorId=(await sql.query('SELECT channel_id FROM chat_team_members WHERE id=$1',[member.id]))[0]?.channel_id ?? null
+        if(priorId && priorId!==provisionalId) {
+          const stable=(await sql.query('SELECT * FROM chat_channels WHERE id=$1',[priorId]))[0]
+          if(stable && stable.kind==='virtual' && !stable.closed_at && !stable.deleted_at
+            && (this.orca.provider==='hub'?stable.path===member.workspace_path:stable.orca_workspace_id===member.workspace_id)) {
+            channelId=String(priorId)
+            await sql.query('UPDATE chat_sessions SET channel_id=$2 WHERE id=$1',[who.id,channelId])
+            await sql.query('UPDATE chat_turns SET channel_id=$3 WHERE session_id=$1 AND channel_id=$2',[who.id,provisionalId,channelId])
+            await sql.query('UPDATE chat_status_notices SET channel_id=$2 WHERE channel_id=$1',[provisionalId,channelId])
+            await sql.query('UPDATE usage_quota_notices SET channel_id=$2 WHERE channel_id=$1',[provisionalId,channelId])
+            await sql.query("UPDATE chat_channels SET closed_at=COALESCE(closed_at,now()),leader_id=NULL,updated_at=now() WHERE id=$1 AND kind='virtual' AND activated_at IS NULL",[provisionalId])
+          }
+        }
         const used=await sql.query(`UPDATE chat_team_members SET state='joined',invitation_used_at=now(),invitation_hash=NULL,session_id=$2,channel_id=$3,updated_at=now()
-          WHERE id=$1 AND invitation_used_at IS NULL AND invitation_hash=$4 RETURNING *`,[member.id,who.id,who.channel_id,digest])
+          WHERE id=$1 AND invitation_used_at IS NULL AND invitation_hash=$4 RETURNING *`,[member.id,who.id,channelId,digest])
         check(used.length,'La invitación ya fue consumida',409)
         // The approved invitation also authorizes this worker's virtual conversation.
-        await sql.query("UPDATE chat_channels SET activated_at=COALESCE(activated_at,now()),leader_id=COALESCE(leader_id,$2) WHERE id=$1 AND kind='virtual' AND closed_at IS NULL",[who.channel_id,who.id])
-        await this.event(sql,member.team_id,member.id,'joined',who.id,who.channel_id,member.root_thread_id,{})
+        await sql.query(`UPDATE chat_channels SET activated_at=COALESCE(activated_at,now()),
+          leader_id=CASE WHEN leader_id IS NULL OR leader_id IN (SELECT id FROM chat_sessions WHERE closed_at IS NOT NULL) THEN $2 ELSE leader_id END
+          WHERE id=$1 AND kind='virtual' AND closed_at IS NULL`,[channelId,who.id])
+        await this.event(sql,member.team_id,member.id,'joined',who.id,channelId,member.root_thread_id,{})
         const plan=(await sql.query('SELECT * FROM chat_team_plans WHERE id=$1',[member.team_id]))[0]!
         const peers=await sql.query('SELECT id,session_id,role,task,cli,model,state,work_thread_id FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal,id',[member.team_id])
         return {team_id:member.team_id,member_id:member.id,root_thread_id:member.root_thread_id,work_thread_id:member.work_thread_id,master_channel_id:member.master_channel_id,
-          master_session_id:member.created_by,session:{id:who.id,channel_id:who.channel_id},state:'joined',
+          master_session_id:member.created_by,session:{id:who.id,channel_id:channelId},state:'joined',
           task:member.task,role:member.role,prompt:member.prompt,peers,
           authorization:{...this.authorization(plan),assignment:plan.plan.members.find((entry:{id:string})=>entry.id===member.id)},source_workspace:plan.parent,
           guidance:'Master (TL) coordinates from root_thread_id and decides technical matters within approved scope. The attached authorization shows provenance; it grants nothing beyond the plan and lifts no CLI restriction. Never ask the person directly, not even to re-approve an authorized action; ask the master via the Hub, mentioning master_session_id. On missing scope or a real blocker, tell the master the action, exact rule or error, and what is missing. Peers may request in-role subtasks in the team thread: answer them; escalate only conflicts or out-of-scope decisions to the TL. Work and report in work_thread_id (mention master_session_id); root_thread_id is general coordination. Peers may post in your thread and you in theirs. On join, record work and report; if blocked by a PR or other result, record waiting with it. Idle is not done. Write in the language of your task.'}
@@ -990,7 +1010,7 @@ export class TeamOrchestration {
             await sql.query('UPDATE chat_channels SET leader_id=NULL WHERE id=$1 AND leader_id=$2',[item.channel_id,item.session_id])
             await sql.query("UPDATE chat_deliveries SET cancelled_at=now(),error='Conversación del worker reemplazada' WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL",[item.session_id])
           }
-          await sql.query(`UPDATE chat_team_members SET state='launch_intent',session_id=NULL,channel_id=NULL,
+          await sql.query(`UPDATE chat_team_members SET state='launch_intent',session_id=NULL,
             invitation_used_at=NULL,invitation_hash=$2,invitation_expires_at=$3,launch_handle=NULL,error=NULL,updated_at=now() WHERE id=$1`,
             [item.id,invitationHash(token),expires])
         })
@@ -1074,6 +1094,7 @@ export class TeamOrchestration {
       ${this.orca.provider==='hub'?'runtime,':''}launch_handle,launch_kind,operation_id,prompt_outcome,error,invitation_expires_at,invitation_used_at,session_id,channel_id,work_thread_id,created_at,updated_at
       FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal,id`,[planId])
     for(const item of members) {
+      if(!item.session_id)item.channel_id=null
       if(item.runtime)item.runtime=this.publicRuntime(item.runtime)
       const session=item.session_id?(await sql.query('SELECT nickname FROM chat_sessions WHERE id=$1',[item.session_id]))[0]:null
       item.nickname=session?.nickname ?? null
