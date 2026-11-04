@@ -310,7 +310,9 @@ export class MemoryService {
     await this.initializing?.catch(() => {})
     const failures: unknown[] = []
     const step = async (action: () => unknown) => { try { await action() } catch (error) { failures.push(error) } }
-    for (let attempt = 0; attempt < 3; attempt++) { try { await this.current?.operations.fleet?.close?.(); break } catch { /* retried, then the final close below runs again */ } }
+    // First and alone: the fleet's failure stays the reported one, and an unconfirmed exit is a failure, not a resolved close.
+    await step(() => this.current?.operations.fleet?.close?.())
+    const fleetFailed = failures.length > 0
     await step(() => this.current?.schedules?.runtime.close())
     await step(() => this.media.close())
     await step(() => this.nativeEmbeddings.close())
@@ -320,7 +322,8 @@ export class MemoryService {
     const current = this.current
     this.current = null
     if (current) {
-      await step(() => current.operations.fleet?.close?.())
+      // Stops are memoized per process, so this sends no second signal; it only re-checks members that were still exiting.
+      if (fleetFailed) await step(() => current.operations.fleet?.close?.())
       await step(() => current.operations.closeInterhub())
       await step(() => current.network.stop())
       await step(() => current.db.close())
