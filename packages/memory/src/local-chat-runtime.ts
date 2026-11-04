@@ -20,7 +20,7 @@ export const TICK_STUCK_MS = 60_000
 const TICK_SLOW_MS = 10_000
 const TIMED_OUT = Symbol("timed_out")
 const FAILED = Symbol("failed")
-export type TickEvent = { event: "probe_timeout" | "probe_failed" | "tick_slow" | "tick_stuck" | "dispatch_in_flight" | "delivery_failed" | "delivery_notified" | "notice" | "process_incident"; step: string; duration_ms: number
+export type TickEvent = { event: "probe_timeout" | "probe_failed" | "tick_slow" | "tick_stuck" | "tick_failed" | "dispatch_in_flight" | "delivery_failed" | "delivery_notified" | "delivery_retry_later" | "bootstrap_failed" | "notice" | "process_incident"; step: string; duration_ms: number
   session_id?: string; recipient_id?: string; notice_id?: string; cause?: string; count?: number; uncertain?: boolean; action?: string; member_id?: string; generation?: string }
 /** Diagnostic state of one tick; overlapping ticks never share it. */
 type TickRun = { started: number; step: string; phaseStarted: number; slowest: { step: string; ms: number } }
@@ -73,7 +73,9 @@ export class LocalChatRuntime {
       this.report({ event: "tick_stuck", step: this.current.run.step, duration_ms: elapsed })
     }
     const run = newRun()
-    const done: Promise<void> = this.runContext.run(run, () => this.tick()).catch(() => {}).finally(() => {
+    const done: Promise<void> = this.runContext.run(run, () => this.tick()).catch(() => {
+      this.report({ event: "tick_failed", step: run.step, duration_ms: Date.now() - run.started })
+    }).finally(() => {
       this.runs.delete(done)
       const elapsed = Date.now() - run.started
       if (elapsed >= TICK_SLOW_MS) this.report({ event: "tick_slow", step: run.slowest.step, duration_ms: elapsed })
@@ -228,7 +230,11 @@ export class LocalChatRuntime {
         await this.notified(s.id,deliveries.map(d=>d.message_id))
         this.report({ event: "delivery_notified", step: "deliveries", duration_ms: 0, session_id: String(s.id), count: deliveries.length + notices.length })
       } catch (error) {
-        if((error as {retryLater?:boolean}).retryLater) {await this.release(s.id,deliveries,notices);continue}
+        if((error as {retryLater?:boolean}).retryLater) {
+          this.report({ event: "delivery_retry_later", step: "deliveries", duration_ms: 0, session_id: String(s.id), count: deliveries.length + notices.length })
+          await this.release(s.id,deliveries,notices)
+          continue
+        }
         const uncertain=(error as {retryable?:boolean}).retryable===false
         this.report({event:"delivery_failed",step:"deliveries",duration_ms:0,session_id:String(s.id),count:deliveries.length+notices.length,uncertain})
         await this.chat.db.query('UPDATE chat_sessions SET wake_error=$2 WHERE id=$1',[s.id,uncertain?'Entrega incierta; no se reenvía automáticamente. El mensaje sigue en inbox.':'No se pudo notificar a la sesión; comprobá versión, sesión y conexión. Se reintentará hasta 5 veces.'])
@@ -251,7 +257,10 @@ export class LocalChatRuntime {
       try {
         if(!await this.claimBootstrap(s.id))continue
         if (!this.collaborationEnabled() || !this.enabled(s.agent_id) || this.stopped) continue
-        try {await this.dispatch(s,s.nickname?teamBootstrap:'Agent Hub: register a nickname via memory_chat_set_nick.')}catch{await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])}
+        try {await this.dispatch(s,s.nickname?teamBootstrap:'Agent Hub: register a nickname via memory_chat_set_nick.')}catch (error) {
+          this.report({ event: "bootstrap_failed", step: "bootstrap", duration_ms: 0, session_id: String(s.id), uncertain: (error as { retryable?: boolean }).retryable === false })
+          await this.chat.db.query("UPDATE chat_sessions SET wake_error='No se pudo iniciar el registro automático' WHERE id=$1",[s.id])
+        }
       } finally { this.inFlight.delete(String(s.id)) }
     }
     // After dispatch, so a delivery this tick could still make never raises a notice that is cancelled moments later.

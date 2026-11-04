@@ -178,9 +178,9 @@ export class SqlRecoveryIncidentLog implements RecoveryIncidentLog {
     return rows.length > 0
   }
   async settle(input: Parameters<RecoveryIncidentLog['settle']>[0]): Promise<void> {
-    await this.db.query(`UPDATE process_incidents SET action=$3,detail=json_patch(detail,$4)
+    await this.db.query(`UPDATE process_incidents SET action=$3,observed_at=$4,detail=json_patch(detail,$5)
       WHERE subject_kind='fleet_member' AND subject_id=$1 AND generation=$2 AND cause='quota_resume'`,
-    [input.member_id, input.generation, input.action, JSON.stringify(input.detail ?? {})])
+    [input.member_id, input.generation, input.action, new Date().toISOString(), JSON.stringify(input.detail ?? {})])
   }
 }
 
