@@ -929,4 +929,34 @@ UPDATE chat_channels SET closed_at=COALESCE(closed_at,${NOW}),archived_at=COALES
  WHERE kind='virtual' AND deleted_at IS NULL AND id IN (SELECT m.channel_id FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id
   WHERE m.channel_id IS NOT NULL AND p.state IN ('cancelled','completed'))
   AND NOT EXISTS(SELECT 1 FROM chat_sessions s WHERE s.channel_id=chat_channels.id AND s.closed_at IS NULL);
+`, String.raw`
+-- A team thread is created together with its first message. Empty root and work threads of local teams get the equivalent
+-- message, dated as the thread, without touching thread activity. Remote threads wait in staging until their first message arrives.
+-- Rollback: DROP TABLE interhub_thread_staging; seeded messages are history and stay; then delete this version from schema_versions.
+CREATE TABLE interhub_thread_staging (
+  thread_id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  author_session_id TEXT NOT NULL,
+  origin_hub_id TEXT NOT NULL,
+  envelope_id TEXT NOT NULL,
+  thread_created_at TIMESTAMP NOT NULL,
+  received_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+  materialized_at TIMESTAMP
+);
+CREATE INDEX interhub_thread_staging_channel ON interhub_thread_staging(channel_id,received_at);
+INSERT INTO chat_messages(id,thread_id,author_id,text,request_id,request_hash,kind,created_at)
+ SELECT lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||substr(lower(hex(randomblob(2))),2)||'-'||substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))),t.id,p.created_by,
+  'Equipo propuesto.'||char(10)||'Objetivo: '||substr(p.objective,1,2000)||char(10)
+  ||'Base: '||CASE WHEN p.base_revision='virtual' THEN 'carpeta virtual' ELSE 'commit '||substr(p.base_revision,1,8) END||char(10)
+  ||'Permisos: '||COALESCE(json_extract(p.plan,'$.permissions'),'native')||char(10)||'Miembros:'
+  ||COALESCE((SELECT char(10)||group_concat(line,char(10)) FROM (SELECT '- '||m.role||': '||m.cli||' · '||m.model||COALESCE(' · esfuerzo '||m.effort,'')||' ('||m.worktree_name||')' AS line
+     FROM chat_team_members m WHERE m.team_id=p.id ORDER BY m.ordinal)),''),
+  'team-seed:'||t.id,'team-seed:'||t.id,'proposal',t.created_at
+ FROM chat_team_plans p JOIN chat_threads t ON t.id=p.root_thread_id JOIN chat_channels c ON c.id=t.channel_id
+ WHERE c.kind<>'inter-hub' AND NOT EXISTS(SELECT 1 FROM chat_messages x WHERE x.thread_id=t.id);
+INSERT INTO chat_messages(id,thread_id,author_id,text,request_id,request_hash,kind,created_at)
+ SELECT lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||substr(lower(hex(randomblob(2))),2)||'-'||substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))),t.id,p.created_by,m.role||' ('||m.worktree_name||'): '||m.task,'team-seed:'||t.id,'team-seed:'||t.id,'fact',t.created_at
+ FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id JOIN chat_threads t ON t.id=m.work_thread_id JOIN chat_channels c ON c.id=t.channel_id
+ WHERE c.kind<>'inter-hub' AND NOT EXISTS(SELECT 1 FROM chat_messages x WHERE x.thread_id=t.id);
 `]

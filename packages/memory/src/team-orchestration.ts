@@ -310,9 +310,22 @@ export class TeamOrchestration {
         await sql.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,effort,role,task,prompt,capabilities,state,work_thread_id)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared',$1)`,[item.id,planId,item.ordinal,item.worktree_name,item.cli,item.model,item.effort ?? null,item.role,item.task,item.prompt,JSON.stringify(item.capabilities ?? null)])
       }
+      await this.seedThreads(sql,who.id,root.id,{objective:input.objective,base:baseRevision,permissions:document.permissions,members})
       await this.event(sql,planId,null,'prepared',who.id,channel.id,root.id,{digest})
       return this.view(planId,who,sql)
     })
+  }
+
+  private async seedThreads(sql:Sql,authorId:string,rootId:string,plan:{objective:string;base:string;permissions:string;
+    members:Array<{id:string;worktree_name:string;role:string;cli:string;model:string;effort?:string|null|undefined;task:string}>}) {
+    const add=async(threadId:string,kind:"proposal"|"fact",text:string)=>{
+      await sql.query("INSERT INTO chat_messages(id,thread_id,author_id,text,request_id,request_hash,kind) VALUES($1,$2,$3,$4,$5,$5,$6)",
+        [randomUUID(),threadId,authorId,text,`team-seed:${threadId}`,kind])
+    }
+    const lines=plan.members.map(item=>`- ${item.role}: ${item.cli} · ${item.model}${item.effort?` · esfuerzo ${item.effort}`:""} (${item.worktree_name})`)
+    await add(rootId,"proposal",["Equipo propuesto.",`Objetivo: ${plan.objective.slice(0,2000)}`,
+      `Base: ${plan.base==="virtual"?"carpeta virtual":`commit ${plan.base.slice(0,8)}`}`,`Permisos: ${plan.permissions}`,"Miembros:",...lines].join("\n"))
+    for(const item of plan.members)await add(item.id,"fact",`${item.role} (${item.worktree_name}): ${item.task}`)
   }
 
   private async resolveBase(parent:TeamWorkspace,base:string) {
@@ -723,6 +736,7 @@ export class TeamOrchestration {
           await sql.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,effort,role,task,prompt,capabilities,state,work_thread_id)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared',$1)`,[item.id,planId,item.ordinal,item.worktree_name,item.cli,item.model,item.effort ?? null,item.role,item.task,item.prompt,JSON.stringify(item.capabilities ?? null)])
         }
+        await this.seedThreads(sql,who.id,root.id,{objective:derived.objective,base:baseRevision,permissions:document.permissions,members})
         await this.event(sql,planId,null,'prepared',who.id,channel.id,root.id,{digest:derived.digest,delegation_version:input.delegation_version,follow_up_ref:followUp.ref})
       })
     } catch(error) {
