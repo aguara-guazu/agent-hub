@@ -15,7 +15,7 @@ import type { Sql } from './database.js'
 import { teamGuidance, teamGuidanceVersion } from './local-chat-team.js'
 import { canReadChannel, readAccessDefinitions, readDenied, readElevate, readInterest, readNoticeValid, readRequest, readScope, sweepReadAccess,
   READ_GRANT_LIVENESS_GRACE_MS, confirmReadRequest, rejectReadRequest, revokeReadGrant, personReadGrants, personReadRequests, type ReadScope } from './chat-read-access.js'
-import { channelProjectId, interhubAgentChannelIds, interhubLocalAgent, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
+import { channelMembership, channelProjectId, interhubAgentChannelIds, interhubLocalAgent, recordAuthorityEvent, sessionProjectId, ACTIVE_TEAM_STATES, type AuthorityEvent } from "./chat-access.js"
 import { lastLiveness, leaseActive, writeAssociation, LEADER_LIVENESS_TIMEOUT_MS, LEADERSHIP_ATTEMPT_WINDOW_MS,
   LEADERSHIP_ATTEMPTS_PER_CHANNEL, LEADERSHIP_ATTEMPTS_PER_SESSION, LEADERSHIP_COOLDOWN_MS, SESSION_LEASE_MS } from "./channel-authority.js"
 import { AUTHOR_SOURCE_SQL, NON_AGENT_CLI_KINDS, THREAD_AGENT_COUNT_COLUMN, agentCountField, messageKind } from "./chat-debate.js"
@@ -750,12 +750,14 @@ export class LocalChat {
   }
   /** One durable escalation per unanswered request. No polling agents, fake replies, or new threads. */
   async processResponseAlerts(now=Date.now(),graceMs=300_000) {
-    const pending=await this.db.query(`SELECT d.recipient_id,m.id,m.author_id,m.thread_id,t.channel_id,s.label
+    const pending=await this.db.query(`SELECT d.recipient_id,m.id,m.author_id,m.thread_id,t.channel_id,s.label,s.state,s.event_at,s.output_at,s.lease_until,s.closed_at,s.removed_at
       FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id JOIN chat_threads t ON t.id=m.thread_id
       JOIN chat_sessions s ON s.id=d.recipient_id JOIN chat_channels c ON c.id=t.channel_id
       WHERE d.response_required=1 AND d.response_message_id IS NULL AND d.cancelled_at IS NULL AND d.response_alerted_at IS NULL
-      AND m.created_at<=$1 AND t.state='open' AND c.closed_at IS NULL AND c.deleted_at IS NULL AND s.state<>'busy'`,[new Date(now-graceMs).toISOString()])
-    for(const item of pending)await this.db.transaction(async sql=>{
+      AND m.created_at<=$1 AND t.state='open' AND c.closed_at IS NULL AND c.deleted_at IS NULL`,[new Date(now-graceMs).toISOString()])
+    for(const item of pending) {
+      if(sessionStatus(item,now).state==='busy')continue
+      await this.db.transaction(async sql=>{
       const notice={session_id:item.recipient_id,recipient_id:item.author_id,work_thread_id:item.thread_id,turn_id:'response:'+item.id}
       if(!await this.responseAlertValid(sql,notice))return
       if((await sql.query('SELECT 1 FROM chat_status_notices WHERE session_id=$1 AND recipient_id=$2 AND handled_at IS NULL AND cancelled_at IS NULL',[item.recipient_id,item.author_id])).length)return
@@ -763,7 +765,8 @@ export class LocalChat {
       await sql.query(`INSERT OR IGNORE INTO chat_status_notices(id,session_id,turn_id,cause,channel_id,recipient_id,work_thread_id,text,created_at)
         VALUES($1,$2,$3,'response_due',$4,$5,$6,$7,$8)`,[randomUUID(),item.recipient_id,notice.turn_id,item.channel_id,item.author_id,item.thread_id,text,new Date(now).toISOString()])
       await sql.query('UPDATE chat_deliveries SET response_alerted_at=$3 WHERE message_id=$1 AND recipient_id=$2',[item.id,item.recipient_id,new Date(now).toISOString()])
-    })
+      })
+    }
   }
   /**
    * One durable notice per mention the Hub never delivered. The Hub owns waking Hub-managed and queue-native recipients,
@@ -814,6 +817,8 @@ export class LocalChat {
         ((s.id=$2 AND s.channel_id=$3) OR EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=$4 AND m.session_id=s.id AND m.channel_id=s.channel_id AND m.state='joined'))`,[notice.session_id,team.created_by,team.master_channel_id,team.id])
       return strictTeam ? member.length>0 : true
     }
+    const channel=(await sql.query('SELECT kind FROM chat_channels WHERE id=$1',[thread.channel_id]))[0]
+    if(channel?.kind===INTERHUB_CHANNEL_KIND)return await channelMembership(sql,author.id,thread.channel_id)!==null && await channelMembership(sql,notice.session_id,thread.channel_id)!==null
     return thread.channel_id===author.channel_id && (await sql.query('SELECT 1 FROM chat_sessions WHERE id=$1 AND channel_id=$2 AND removed_at IS NULL',[notice.session_id,thread.channel_id])).length>0
   }
   /** Presence is deliberately not an authorization condition: an offline leader retains a durable notice. */
@@ -839,6 +844,30 @@ export class LocalChat {
       WHERE c.id=$1 AND c.closed_at IS NULL AND s.removed_at IS NULL AND s.cli_kind<>'hub'`,[channelId]))[0]
     if(!recipient || recipient.id===source.id)return null
     return {source,recipient,channelId,root}
+  }
+  async fleetLivenessCandidates() {
+    return this.db.query(`SELECT s.id AS session_id,m.id AS member_id,m.team_id,m.work_thread_id,s.channel_id,s.label,m.runtime,
+      EXISTS(SELECT 1 FROM process_incidents i WHERE i.subject_kind='fleet_member' AND i.subject_id=m.id
+        AND i.generation=m.runtime->>'generation' AND i.cause='hub_restart') AS hub_restart
+      FROM chat_team_members m JOIN chat_team_plans p ON p.id=m.team_id JOIN chat_sessions s ON s.id=m.session_id
+      JOIN chat_channels master ON master.id=p.master_channel_id JOIN chat_sessions leader ON leader.id=p.created_by
+      WHERE m.state='joined' AND m.session_id IS NOT NULL AND m.channel_id=s.channel_id AND s.closed_at IS NULL
+        AND s.removed_at IS NULL AND s.capability='hub_fleet' AND p.state IN ('launching','launched','partial','uncertain','active')
+        AND master.closed_at IS NULL AND master.leader_id=p.created_by AND leader.channel_id=master.id AND leader.removed_at IS NULL`)
+  }
+  async raiseLiveness(now:number,c:Record<string,any>,reason:'hub_restart'|'exited') {
+    const runtime=typeof c.runtime==='string'?JSON.parse(c.runtime):c.runtime
+    const generation=runtime?.generation
+    if(typeof generation!=='string')return
+    await this.db.transaction(async sql=>{
+      const route=await this.turnAlertRoute(sql,{session_id:c.session_id,channel_id:c.channel_id,team_id:c.team_id})
+      if(!route)return
+      if((await sql.query("SELECT 1 FROM chat_status_notices WHERE session_id=$1 AND turn_id=$2 LIMIT 1",[c.session_id,`liveness:${generation}`])).length)return
+      await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Superado por aviso de liveness' WHERE session_id=$1 AND recipient_id=$2 AND cause<>'liveness' AND handled_at IS NULL AND cancelled_at IS NULL",[c.session_id,route.recipient.id])
+      const text=`${c.label} is not reachable: ${reason==='hub_restart'?'the Hub restarted and no longer owns its process':'its process exited or failed'} (runtime ${runtime.state}, since ${runtime.updated_at}). Mentions to it will not be delivered. Relaunch it with team_control start using the current generation from team_status, then re-check pending requests in its work thread. A registered wait does not cover a lost process. Never read its terminal, output, logs or transcript. Private notice, not a thread.`
+      await sql.query(`INSERT INTO chat_status_notices(id,session_id,turn_id,cause,channel_id,team_id,recipient_id,work_thread_id,text,created_at)
+        VALUES($1,$2,$3,'liveness',$4,$5,$6,$7,$8,$9)`,[randomUUID(),c.session_id,`liveness:${generation}`,c.channel_id,c.team_id,route.recipient.id,c.work_thread_id,text,new Date(now).toISOString()])
+    })
   }
   /** Revalidate both read and wake paths; a durable message never grants a revoked coordination scope. */
   async cancelInvalidTurnAlerts() {

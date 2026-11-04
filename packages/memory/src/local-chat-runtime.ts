@@ -79,6 +79,14 @@ export class LocalChatRuntime {
     await this.chat.sweepArchive().catch(() => undefined)
     await this.chat.processTurnAlerts()
     await this.chat.processResponseAlerts()
+    if(this.fleet?.readiness) {
+      const now=Date.now()
+      for(const candidate of await this.chat.fleetLivenessCandidates()) try {
+        const runtime=typeof candidate.runtime==='string'?JSON.parse(candidate.runtime):candidate.runtime
+        if(await this.fleet.readiness(String(candidate.session_id))==='unowned' && now-Date.parse(runtime.updated_at)>60_000)
+          await this.chat.raiseLiveness(now,candidate,candidate.hub_restart || runtime.error_code==='fleet_process_not_owned'?'hub_restart':'exited')
+      } catch {}
+    }
     await this.chat.interhubSweep?.().catch(() => undefined)
     await this.chat.sweepReadAccess()
     // Native queue addresses the exact conversation and verifies it at delivery time.
