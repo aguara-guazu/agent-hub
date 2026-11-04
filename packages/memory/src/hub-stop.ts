@@ -129,6 +129,11 @@ export class HubStopCoordinator {
         }
         return
       }
+      if (stop.reason === "quit") {
+        if (stop.gate_owner === "drain") await this.releaseDrain(stop)
+        await this.terminal(await this.requireStop(stop.id), "cancelled", "core_restarted")
+        return
+      }
       if (stop.gate_owner === "drain") {
         await this.deps.db.query("UPDATE hub_stops SET gate_owner=NULL,last_error_code='drain_owner_recovered',last_error_detail='El core anterior terminó; se reconstruyó el cierre con un token nuevo.',updated_at=now() WHERE id=$1", [stop.id])
         stop.gate_owner = null
@@ -602,7 +607,8 @@ export class HubStopCoordinator {
     }
     const drainActive = stop.gate_owner === "drain" && (this.drainCommitted(stop) || this.drainLeaseValid(stop) || Boolean(this.drain?.hasPendingAttempt))
     if (stop.reason === "quit" && stop.state === "ready" && !drainActive && stop.ready_at && now >= Date.parse(stop.ready_at) + QUIT_READY_TIMEOUT_MS) {
-      await this.terminal(stop, "cancelled", "quit_ready_timeout")
+      if (stop.gate_owner === "drain") await this.releaseDrain(stop)
+      await this.terminal(await this.requireStop(stop.id), "cancelled", "quit_ready_timeout")
       return
     }
     if (stop.reason === "update" && now >= deadline && !drainActive) {
