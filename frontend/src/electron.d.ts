@@ -50,6 +50,16 @@ export interface UpdateStatusView {
   trust?: "integrity_only" | "publisher_authenticated"
   reasons?: UpdateReason[]
   error?: string
+  /** Avance de la parada coordinada del Hub previa a aplicar la actualización. */
+  stop?: {
+    state: string
+    deadlineAt?: string
+    forceAt?: string
+    graceStartedAt?: string
+    waiting?: { coordinators: number; leadersInTurn: number; members: number }
+    errorCode?: string
+    actions?: string[]
+  }
 }
 
 export interface AgentHubBridge {

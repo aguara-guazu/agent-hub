@@ -8,7 +8,8 @@ const AUTOSTART_KEY = ["desktop-autostart"] as const
 const AUTO_UPDATE_KEY = ["desktop-auto-update"] as const
 const UPDATE_STATUS_KEY = ["desktop-update-status"] as const
 const UPDATE_STATUS_REFRESH_MS = 5_000
-const KNOWN_REASONS = new Set(["fleet_live", "legacy_gateways", "legacy_gateways_unknown", "mcp_inflight", "jobs_nonresumable", "already_draining", "drain_lease_lost", "swap_helper_unavailable", "runtime_unavailable", "blockers_unknown", "core_unreachable", "mcp_bridges"])
+const KNOWN_REASONS = new Set(["fleet_live", "legacy_gateways", "legacy_gateways_unknown", "mcp_inflight", "jobs_nonresumable", "already_draining", "drain_lease_lost", "swap_helper_unavailable", "runtime_unavailable", "blockers_unknown", "core_unreachable", "mcp_bridges", "stop_waiting_leaders", "stop_waiting_coordinators", "stop_waiting_members", "stop_state_requested", "stop_state_notifying", "stop_state_waiting_confirmations", "stop_state_waiting_members", "stop_state_stopping_fleet", "stop_state_ready", "stop_state_applied", "stop_postponed", "stop_cancelled", "stop_cooldown", "core_did_not_exit", "commit_refused", "stop_not_created", "transaction_required", "stop_resumed", "unexpected", "backup_failed", "coordinator_authority_changed", "drain_not_ready", "admission_close_failed", "admission_publish_failed", "admission_reopen_unconfirmed", "commit_persistence_pending", "commit_abandoned", "drain_owner_recovered", "fleet_stop_unconfirmed"])
+const PLURAL_REASONS = new Set(["fleet_live", "legacy_gateways", "stop_waiting_leaders", "stop_waiting_coordinators", "stop_waiting_members"])
 const THEMES: readonly ThemePreference[] = ["dark", "light", "system"]
 
 /** General: idioma, tema e inicio automático (este último solo con el puente de escritorio). Guardado automático. */
@@ -36,7 +37,7 @@ export default function General() {
   })
   const reasonText = (reasons: readonly { code: string; count?: number }[]): string => reasons.map(reason => {
     const code = KNOWN_REASONS.has(reason.code) ? reason.code : "unknown"
-    return code === "fleet_live" || code === "legacy_gateways"
+    return PLURAL_REASONS.has(code)
       ? plural(`general.updateStatus.reasons.${code}`, reason.count ?? 1)
       : t(`general.updateStatus.reasons.${code}` as "general.updateStatus.reasons.unknown")
   }).join("; ")

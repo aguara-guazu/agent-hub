@@ -7,12 +7,24 @@ import type { TrustState } from "./update-trust.js"
 /** Razón estable por la que una actualización espera; `count` es opcional (sesiones, trabajadores). */
 export interface UpdateReason { code: string; count?: number }
 
+/** Avance de la parada coordinada del Hub que precede a aplicar una actualización. */
+export interface UpdateStopReport {
+  state: string
+  deadlineAt?: string
+  forceAt?: string
+  graceStartedAt?: string
+  waiting?: { coordinators: number; leadersInTurn: number; members: number }
+  errorCode?: string
+  actions?: string[]
+}
+
 export interface UpdateReport {
   phase: "idle" | "checking" | "available" | "downloading" | "ready" | "postponed" | "applying" | "failed" | "disabled"
   version?: string
   trust?: TrustState
   reasons?: UpdateReason[]
   error?: string
+  stop?: UpdateStopReport
 }
 
 /** Línea estable para el registro: mismas razones, mismo texto, sin importar el orden. */
