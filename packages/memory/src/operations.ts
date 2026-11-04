@@ -1,3 +1,4 @@
+import { diagnosticReport, diagnosticReportInput } from "./diagnostic-report.js"
 import { isCollaborationTool } from './collaboration.js'
 import { renderMemoryToolReference } from './skill.js'
 import { interhubReference, localCollaborationSkill, localOrchestrationReference } from './local-chat-skill.js'
@@ -75,6 +76,7 @@ const definitions = {
   manage_memory: ['Archive/restore/pin an agent memory with reason and history. Archived: out of active recall, originals and citations kept. Needs current expected_updated_at.', manageMemoryInput],
   tidy_memory: ['Queue local worker maintenance: explicit expirations, exact-duplicate merge, embedding-related pairs, prune regenerable old vectors. Keeps originals, citations. No repeat within 24 h unless force.', tidyInput],
   health: ['Last maintenance, related-memory hints, and whether another worker review is due.', maintenanceStatusInput],
+  diagnostic_report: ["Only when the person reports a problem with Agent Hub itself (skill report-hub-issue): read-only, redacted issue draft (title, body, prefilled URL) with versions, OS, CLIs, the window's log lines, process incidents and notice causes. Publishes nothing.", diagnosticReportInput],
   import_file: ['Store a file (absolute local path) or base64, max 25 MB: screenshot, image, audio, video, PDF, other. Add description, annotations (offset_ms, end_offset_ms, page, region). Original kept, never sent to providers. OCR, transcription, A/V indexing run locally if enabled in «Ajustes».', importFileInput],
   get_file: ['File of a version: metadata, download link; page returns a PDF page as image. include_content returns up to 5 MB, as image/audio if the client supports it.', getFileInput],
   import_source: ['Import a source (original + utterances). Stable external IDs dedupe.', importInput],
@@ -132,7 +134,7 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...interhubReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...interhubReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','diagnostic_report','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
   readonly usage: UsageQuotas
@@ -333,6 +335,7 @@ export class MemoryOperations {
       case 'manage_memory': return manageMemory(store, input, author)
       case 'tidy_memory': return requestTidy(store, input, author)
       case 'health': return maintenanceStatus(store, input.project_id)
+      case 'diagnostic_report': return diagnosticReport(store.db, store.directory, input)
       case 'process_files': return queueMedia(store, input, false, this.media)
       case 'import_file': return importFile(store, input, author)
       case 'get_file': return getFile(store, input, signal)

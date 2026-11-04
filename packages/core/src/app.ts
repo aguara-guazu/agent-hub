@@ -70,7 +70,7 @@ import { CLI_KINDS as SHARED_CLI_KINDS, renderSkillMd, SKILL_FILENAME, type CliK
 import { CATALOG_RESTORE_WINDOW_MS, SKILL_ZIP_MAX_BYTES, UNMANAGED_MAX_ITEMS, UNMANAGED_MAX_NAME, UNMANAGED_MAX_PATH, type LocalUnmanaged, type SkillZipImportExtras, type UnmanagedInventory } from "@agenthub/shared"
 import { auth as oauthAuthorize } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ConnectionPool, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore } from '@agenthub/gateway'
-import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
+import { registerMemory, memoryTools, memorySkill, collaborationSkill, localCollaborationSkill, responsabilidadSkill, googleSetupSkill, hubIssueSkill, MemoryError, delegatedPushPolicy } from '@agenthub/memory'
 import { createJiraTaskReader } from './memory-jira.js'
 import { createPoolCallAudit } from './effects/call-audit.js'
 import { createCoreScheduleEffects } from './effects/wiring.js'
@@ -515,6 +515,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       { key: 'local_collaboration_skill', skill: localCollaborationSkill },
       { key: 'responsabilidad_skill', skill: responsabilidadSkill },
       { key: 'google_setup_skill', skill: googleSetupSkill },
+      { key: "hub_issue_skill", skill: hubIssueSkill },
     ]
     const registerMemorySkill = () => { for (const entry of factorySkills) applyFactorySkill(store, owner, entry.key, entry.skill) }
     registerCatalog()
