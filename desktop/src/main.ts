@@ -31,7 +31,7 @@ import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { DRAIN_SECRET_HEADER, DrainClient, type DrainLease } from './update-lease.js'
 import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, reconcileQuitStop, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
-import { cooldownAfter, cooldownUntilMs, intentFromActiveStop, intentOpensCore, sameAttempt, startupTransactionFor, withInstallerFailure, type StopIntent, type StopStrategy } from './stop-intent.js'
+import { clearIntentIfSame, cooldownAfter, cooldownUntilMs, intentFromActiveStop, intentOpensCore, markInstallerRecovery, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
@@ -654,6 +654,13 @@ async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downl
     await exitForUpdate()
     return true
   }
+  // La parada ya está aplicada y core salió: si el instalador NSIS no llega a instalar (falla, sale sin instalar, o el cierre vence y
+  // se relanza), esta versión tiene que poder admitir esa transacción. Se marca de forma durable ANTES de cualquier camino que lance
+  // el instalador o relance; si no se pudo confirmar, no se lanza.
+  if (strategy === 'nsis' && !markInstallerRecovery(updateStore, transactionId, app.getVersion(), updaterLog)) {
+    updaterLog(`[updater] v${update.version}: no se pudo marcar la recuperación del instalador; no se lanza`)
+    return postpone(update.version, [{ code: 'recovery_not_marked' }])
+  }
   installOnQuit = update
   await quit()
   return true
@@ -1008,7 +1015,8 @@ async function startUpdateBookkeeping(): Promise<void> {
     const pendingStop = await recoverStopIntent()
     if (pendingStop && pendingStop.strategy !== 'dmg' && intentOpensCore(pendingStop, app.getVersion()) && pendingStop.transaction_id) {
       if (!await drainClient.admitStartup(pendingStop.transaction_id)) return false
-      updateStore.clearStopIntent()
+      // Se relee: otra intención (otra actualización) pudo guardarse durante la espera y no es la que se admitió.
+      clearIntentIfSame(updateStore, pendingStop)
     }
     if (startupTransaction) {
       let current = readTransaction(updateStore.dir)
@@ -1602,11 +1610,6 @@ async function quit(): Promise<void> {
       } catch (error) {
         // The installed version stays; reopen it instead of leaving the person without the hub.
         updaterLog(`[updater] no se pudo iniciar el instalador: ${error instanceof Error ? error.message : String(error)}`)
-        // La parada ya está aplicada y core salió: esta versión (la vieja) tiene que poder admitir esa transacción al relanzarse.
-        try {
-          const intent = updateStore.readStopIntent()
-          if (intent) updateStore.writeStopIntent(withInstallerFailure(intent, app.getVersion()))
-        } catch (writeError) { updaterLog(`[updater] no se pudo marcar el fallo del instalador: ${writeError instanceof Error ? writeError.message : String(writeError)}`) }
         relaunchAfterQuit = true
       }
     }

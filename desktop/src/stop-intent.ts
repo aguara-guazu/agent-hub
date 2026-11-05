@@ -102,3 +102,31 @@ export function intentFromActiveStop(view: HubStopView | null, runningVersion: s
   if (!strategy) return null
   return parseStopIntent({ schema: 1, source_id: view.sourceId, reason: "update", strategy, transaction_id: view.transactionId, target_version: view.targetVersion, stop_id: view.stopId })
 }
+
+/** Lo mínimo del almacén que usan las operaciones atómicas de la intención (el `UpdateStore` real las cumple). */
+export interface StopIntentStore {
+  readStopIntent(): StopIntent | null
+  writeStopIntent(intent: StopIntent): void
+  clearStopIntent(): void
+}
+
+/** Guarda `recovery_version` en la intención NSIS de esa transacción y comprueba la lectura; reintenta unas veces. */
+export function markInstallerRecovery(store: StopIntentStore, transactionId: string, version: string, log: (line: string) => void = () => {}, attempts = 3): boolean {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const intent = store.readStopIntent()
+      if (!intent || intent.reason !== "update" || intent.strategy !== "nsis" || intent.transaction_id !== transactionId) return false
+      store.writeStopIntent(withInstallerFailure(intent, version))
+      if (store.readStopIntent()?.recovery_version === version) return true
+    } catch (error) { log(`[updater] marca de recuperación: ${error instanceof Error ? error.message : String(error)}`) }
+  }
+  return false
+}
+
+/** Borra la intención sólo si sigue siendo la misma que se admitió (mismo source_id y transaction_id): otra pudo guardarse durante la espera. */
+export function clearIntentIfSame(store: StopIntentStore, admitted: { source_id: string; transaction_id?: string }): boolean {
+  const current = store.readStopIntent()
+  if (!current || current.source_id !== admitted.source_id || current.transaction_id !== admitted.transaction_id) return false
+  store.clearStopIntent()
+  return true
+}
