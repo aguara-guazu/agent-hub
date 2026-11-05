@@ -71,11 +71,6 @@ Versión menor sobre 0.15.0.
   de prueba se detectaron 36.
 - La vuelta automática a la versión anterior (rollback) existe solo en macOS. En Windows
   y Linux el instalador reemplaza la app sin rollback.
-- En Windows, antes de lanzar el instalador la app guarda en disco que la versión
-  anterior puede volver a abrir el Hub. Si no puede guardarlo, no lanza el instalador y
-  pospone la actualización. Como el core ya se detuvo para actualizar, el MCP queda
-  cerrado y la parada sigue aplicada; esta versión no tiene una salida automática para
-  ese caso.
 - El rollback sigue usando las rutas `/update-drain/*` anteriores, no la parada
   coordinada.
 - Si la persona cierra la app mientras una actualización está en espera, se pierde el
@@ -85,9 +80,6 @@ Versión menor sobre 0.15.0.
   y hasta unos 5 minutos si el servidor responde con errores 5xx. La parada queda en
   estado incierto: la app conserva la intención y la pospone, y un intento posterior la
   reconcilia o la reintenta. Si eso no alcanza, la parada se resuelve al reiniciar el Hub.
-- Si la marca de reanudada falla justo después de que el core vuelve a abrir el MCP, la
-  parada queda aplicada y bloquea las actualizaciones y los cierres coordinados
-  posteriores hasta un reinicio.
 - Al arrancar, el core espera hasta unos 3 segundos para leer el estado de la parada. Si
   no puede leerlo y no tiene la transacción del lanzador, no empieza a escuchar y el
   escritorio lo reinicia.
@@ -102,3 +94,6 @@ Versión menor sobre 0.15.0.
 - El test de fleet-process que cruza un arranque con el cierre del manager fallaba de
   forma intermitente con la máquina muy cargada. Se le subió el margen de parada de
   50 ms a 500 ms. El cambio es solo del test y no toca el comportamiento del Hub.
+- El test de update-lease que aceptaba un core ya admitido sin repetir la admisión se
+  reemplazó por uno que exige repetirla y recibir su confirmación, porque la app ahora
+  hace eso.
