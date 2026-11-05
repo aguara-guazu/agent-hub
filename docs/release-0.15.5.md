@@ -92,3 +92,6 @@ Versión menor sobre 0.15.0.
 - Pasaron todas las suites corridas sobre la rama de la release: memory y core, gateway,
   daemon y shared, desktop, frontend y sharing, más el build, el typecheck y el lint.
 - Los timeouts de 5 s de los tests ya existían antes de esta release y no se cambiaron.
+- El test de fleet-process que cruza un arranque con el cierre del manager fallaba de
+  forma intermitente con la máquina muy cargada. Se le subió el margen de parada de
+  50 ms a 500 ms. El cambio es solo del test y no toca el comportamiento del Hub.
