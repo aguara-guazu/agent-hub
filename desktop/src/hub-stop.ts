@@ -224,7 +224,8 @@ export class HubStopRun {
   private async run(): Promise<HubStopOutcome> {
     const { client } = this.deps
     const pollMs = this.deps.pollMs ?? 2_000
-    const maxUnreachable = this.deps.maxUnreachable ?? 30
+    // Un cierre de la persona no espera más de unos 35 s a un core inaccesible; una actualización sigue tolerando más.
+    const maxUnreachable = this.deps.maxUnreachable ?? (this.input.reason === "quit" ? 5 : 30)
     let unreachable = 0
     let last: HubStopView | null = null
     let first = await client.request(this.input.sourceId, this.input.reason, this.input.targetVersion)
@@ -495,5 +496,13 @@ export async function runQuitFlow(deps: QuitFlowDeps): Promise<"proceed" | "canc
   } finally {
     clearInterval(watcher)
     deps.onRun?.(null)
+  }
+}
+
+/** La parada de un cierre nunca puede dejar la app sin poder cerrarse: si lanza, se registra y el cierre sigue como si no hubiera nada que esperar. */
+export async function guardedQuitStop(run: () => Promise<"proceed" | "cancelled">, log: (line: string) => void): Promise<"proceed" | "cancelled"> {
+  try { return await run() } catch (error) {
+    log(`[quit] quit_stop_failed: ${error instanceof Error ? error.message : String(error)}; se cierra sin esperar la parada`)
+    return "proceed"
   }
 }

@@ -30,7 +30,7 @@ import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { DRAIN_SECRET_HEADER, DrainClient, type DrainLease } from './update-lease.js'
-import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, reconcileQuitStop, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
+import { formatCountdown, HubStopClient, HubStopRun, guardedQuitStop, quitPhaseOf, reconcileQuitStop, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
 import { clearIntentIfSame, cooldownAfter, cooldownUntilMs, intentFromActiveStop, intentOpensCore, nsisBeforeCommit, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
 import { coreStartTime } from './process-identity.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
@@ -1578,7 +1578,7 @@ async function quit(): Promise<void> {
   if (reconcilePending) await Promise.race([reconcilePending, new Promise<void>(resolve => { setTimeout(resolve, 3_000).unref() })])
   // Un cierre de la persona pasa por la parada coordinada; una actualización ya tiene core detenido por su commit.
   if (!installOnQuit && !relaunchAfterQuit && coreSupervisor.state === 'running') {
-    if (await stopHubForQuit() === 'cancelled') { quitting = false; updaterLog('[quit] cierre cancelado'); refreshTray(); return }
+    if (await guardedQuitStop(stopHubForQuit, updaterLog) === 'cancelled') { quitting = false; updaterLog('[quit] cierre cancelado'); refreshTray(); return }
   }
   silentUpdates.stop()
   updateHints.stop()
