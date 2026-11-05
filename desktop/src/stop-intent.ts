@@ -102,4 +102,3 @@ export function intentFromActiveStop(view: HubStopView | null, runningVersion: s
   if (!strategy) return null
   return parseStopIntent({ schema: 1, source_id: view.sourceId, reason: "update", strategy, transaction_id: view.transactionId, target_version: view.targetVersion, stop_id: view.stopId })
 }
-
