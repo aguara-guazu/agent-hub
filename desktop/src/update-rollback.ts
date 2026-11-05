@@ -20,7 +20,7 @@ export const HEALTH_DEADLINE_MS = HEALTH_STARTUP_MS + HEALTH_STABLE_MS + HEALTH_
 /** Hora de inicio de un proceso (`ps -o lstart=`); junto con el PID identifica al proceso aunque el PID se recicle. */
 export async function processStartTime(pid: number): Promise<string | null> {
   try {
-    const { stdout } = await promisify(execFile)("/bin/ps", ["-o", "lstart=", "-p", String(pid)])
+    const { stdout } = await promisify(execFile)("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 5_000, windowsHide: true })
     return String(stdout).trim() || null
   } catch {
     return null
