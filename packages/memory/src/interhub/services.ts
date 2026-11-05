@@ -149,7 +149,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
     const projectId = packet.genesis.id, sharing = new SharedProjects(store), attempt = await network.beginProjectAttempt(channelId, projectId)
     const leader = (await db.query("SELECT cli_kind,native_cwd FROM chat_sessions WHERE id=$1", [leaderId]))[0]
     const folder = typeof leader?.native_cwd === "string" && leader.native_cwd ? leader.native_cwd : undefined
-    const finish = (pending: { project_id: string | null; reason: string } | null) => attempt ? network.finishProjectAttempt(channelId, attempt, pending) : Promise.resolve(true)
+    const finish = (pending: { project_id: string | null; reason: string } | null) => attempt ? network.finishProjectAttempt(channelId, attempt, pending) : Promise.resolve(false)
     const pending = async (message: string): Promise<ProjectImport> => {
       if (!await finish({ project_id: projectId, reason: message }).catch(() => false)) return { state: "superseded", project_id: projectId }
       events?.emit("change")
