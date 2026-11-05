@@ -76,10 +76,12 @@ function sameFolder(folder: { path: string; dev: number; ino: number }): boolean
 const draftTimers = new Set<string>()
 /** Deletes the draft once its TTL elapses, only if it is still the same file (dev/ino) in the same folder. */
 function expireDraft(file: string, identity: { dev: number; ino: number }, folder: { path: string; dev: number; ino: number }, delayMs: number) {
-  if (draftTimers.has(file)) return
-  draftTimers.add(file)
+  // Keyed by identity too: a draft recreated at the same path is a different file and gets its own timer.
+  const key = `${file}\0${identity.dev}\0${identity.ino}`
+  if (draftTimers.has(key)) return
+  draftTimers.add(key)
   setTimeout(() => {
-    draftTimers.delete(file)
+    draftTimers.delete(key)
     try { const entry = lstatSync(file); if (entry.isFile() && entry.dev === identity.dev && entry.ino === identity.ino && sameFolder(folder)) unlinkSync(file) } catch { /* Already published or removed. */ }
   }, Math.max(0, delayMs)).unref()
 }
@@ -170,5 +172,5 @@ export async function diagnosticReport(sql: Sql, memoryDirectory: string, raw: z
   const bodyFile = writeDraft(memoryDirectory, report.text)
   return { ...report, repository: "aguara-guazu/agent-hub", published: false, ...(bodyFile ? { body_file: bodyFile } : {}),
     local_logs: "core.log, daemon.log and worker.log stay in the Hub logs folder; attach them only if the person reviews and chooses to.",
-    guidance: "Show the person the exact title and body (text) with times in their local zone. If they edit anything, call this tool again with the edited fields and show the new result. Publish only the last returned title and body_file, after their explicit approval; never add content after it. body_file is private and the Hub deletes it within an hour if it is not published (on its next start if it was closed)." }
+    guidance: "Show the person the exact title and body (text) with times in their local zone. If they edit anything, call this tool again with the edited fields and show the new result. Publish only the last returned title and body_file, after their explicit approval; never add content after it. body_file is private and the Hub deletes it within an hour if it is not published (if the Hub was closed, at its original one-hour expiry after the next start)." }
 }
