@@ -36,13 +36,21 @@ describe("DrainClient", () => {
     ])
   })
 
-  it("reconoce el mismo core ya admitido sin repetir el POST", async () => {
-    const call = vi.fn(async () => json({ inflight: 0, draining: false, boot_id: "boot-current", startup_transaction: null, admitted_transaction: "tx-12345678" }))
-    const { drain } = client(call)
+  it("repite el POST aunque el mismo core ya figure admitido y exige su ACK", async () => {
+    const calls: string[] = []
+    const answer = (ack: unknown, status = 200) => vi.fn(async (path: string) => {
+      calls.push(path)
+      return path.endsWith("/status")
+        ? json({ inflight: 0, draining: false, boot_id: "boot-current", startup_transaction: null, admitted_transaction: "tx-12345678" })
+        : json(ack, status)
+    })
+    const acked = answer({ admitted: true })
+    expect(await client(acked).drain.admitStartup("tx-12345678")).toBe(true)
+    expect(calls).toEqual(["/api/internal/update-drain/status", "/api/internal/update-admit"])
+    expect(acked).toHaveBeenLastCalledWith("/api/internal/update-admit", expect.objectContaining({ method: "POST", body: JSON.stringify({ transaction_id: "tx-12345678", boot_id: "boot-current" }) }))
 
-    expect(await drain.admitStartup("tx-12345678")).toBe(true)
-    expect(call).toHaveBeenCalledTimes(1)
-    expect(call).toHaveBeenCalledWith("/api/internal/update-drain/status", expect.objectContaining({ method: "GET" }))
+    expect(await client(answer({ admitted: false }, 200)).drain.admitStartup("tx-12345678")).toBe(false)
+    expect(await client(answer({ error: "resume_failed" }, 500)).drain.admitStartup("tx-12345678")).toBe(false)
   })
 
   it("no admite cuando status o el ack no corresponden", async () => {

@@ -113,8 +113,8 @@ export class DrainClient {
         await status.body?.cancel().catch(() => undefined)
         return false
       }
-      if (current.admitted_transaction === transactionId) return true
-      if (current.startup_transaction !== transactionId) return false
+      // Aun si ya figura admitida, se repite el POST: su rama idempotente reanuda lo aplicado y sólo su ACK da la admisión por hecha.
+      if (current.admitted_transaction !== transactionId && current.startup_transaction !== transactionId) return false
       const response = await this.deps.call("/api/internal/update-admit", {
         method: "POST",
         headers: this.headers(true),
