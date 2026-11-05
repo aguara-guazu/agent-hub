@@ -44,7 +44,6 @@ const hex64 = z.string().regex(/^[a-f0-9]{64}$/)
 const joinShape = { type: z.literal("ih_join"), request: uuid, nonce: z.string().regex(/^[A-Za-z0-9_-]{43}$/), proof: hex64,
   leader: z.object({ id: z.string().min(1).max(200), label: z.string().min(1).max(200) }).strict() }
 const joinFrame = z.object(joinShape).strict()
-const joinFrameV2 = z.object({ ...joinShape, version: z.literal(2) }).strict()
 const joinResultFrame = z.union([
   z.object({ type: z.literal("ih_join_result"), request: uuid, ok: z.literal(false) }).strict(),
   z.object({ type: z.literal("ih_join_result"), request: uuid, ok: z.literal(true), proof: hex64, roster: rosterSchema }).strict(),
@@ -76,10 +75,10 @@ interface PeerState { pulling: Set<string>; announced: Map<string, number>; remo
  * the creator did not speak version 2 and the join fell back to version 1.
  */
 interface JoinResult { channel_id: string; hub_id: string; project_id: string | null; transfer: ProjectTransfer | null; legacy: boolean }
-/** Version 2 is tried first; one lost version 2 request switches the join to version 1 for good. */
+/** Version 2 is tried first with the V1 frame shape; two failed attempts switch the join to version 1. */
 interface PendingJoin {
   topic: string; key: string; caller: { id: string; label: string }; projectId: string | null; attempted: WeakSet<NetworkPeer>; redialedAt: number
-  version: 1 | 2; fellBack: boolean
+  version: 1 | 2; fellBack: boolean; v2Failures: number
   requests: Map<string, { peer: NetworkPeer; transcript: JoinTranscript; sentAt: number; version: 1 | 2 }>; settle: (error: unknown, value?: JoinResult) => void
 }
 export interface ProjectOffer { channel_id: string; project_id: string; policy_hash: string; packet: z.infer<typeof invitationSchema> }
@@ -173,7 +172,7 @@ export class InterhubTransport implements NetworkExtension {
     const type = String(frame.type), limit = frameLimit(type, frame)
     // Unknown or oversized frames are protocol violations: the network layer closes the connection.
     check(limit && bytes <= limit, "Mensaje inter-hub inválido")
-    if (type === "ih_join") return this.onJoin(peer, frame.version === 2 ? parse(joinFrameV2, frame) : parse(joinFrame, frame))
+    if (type === "ih_join") return this.onJoin(peer, parse(joinFrame, frame))
     if (type === "ih_join_result") return this.onJoinResult(peer, frame.version === 2 ? parse(joinResultFrameV2, frame) : parse(joinResultFrame, frame))
     await this.touch(peer)
     if (type === "ih_project_offer") return this.onProjectOffer(peer, parse(projectOfferFrame, frame))
@@ -217,7 +216,7 @@ export class InterhubTransport implements NetworkExtension {
     try {
       return await new Promise<JoinResult>((resolve, reject) => {
         let settled = false
-        const join: PendingJoin = { topic, key: codeKey(code), caller, projectId, attempted: new WeakSet(), requests: new Map(), redialedAt: Date.now(), version: 2, fellBack: false,
+        const join: PendingJoin = { topic, key: codeKey(code), caller, projectId, attempted: new WeakSet(), requests: new Map(), redialedAt: Date.now(), version: 2, fellBack: false, v2Failures: 0,
           settle: (error, value) => { if (settled) return; settled = true; if (error) reject(error); else resolve(value!) } }
         this.joins.set(topic, join)
         timer = setTimeout(() => join.settle(new MemoryError(404, INVALID_CODE)), interhubJoinTimeout())
@@ -245,9 +244,11 @@ export class InterhubTransport implements NetworkExtension {
     void this.shared.redial(join.topic).then(() => this.tryJoins()).catch(() => {})
   }
 
-  /** A version 2 request that was dropped or whose connection closed means the creator may predate version 2: only version 1 is sent from then on. */
+  /** Two failed version 2 attempts are needed before falling back, so one transient disconnect does not lose project transfer. */
   private fallBack(join: PendingJoin, version: 1 | 2) {
-    if (version === 2) { join.version = 1; join.fellBack = true }
+    if (version !== 2 || ++join.v2Failures < 2) return
+    join.version = 1
+    join.fellBack = true
   }
 
   private tryJoins() {
@@ -262,24 +263,29 @@ export class InterhubTransport implements NetworkExtension {
         const version = join.version
         join.requests.set(request, { peer, transcript, sentAt: Date.now(), version })
         const frame = version === 2
-          ? { type: "ih_join", request, nonce, proof: joinProofV2(join.key, "join2", transcript), leader: join.caller, version }
+          ? { type: "ih_join", request, nonce, proof: joinProofV2(join.key, "join2", transcript), leader: join.caller }
           : { type: "ih_join", request, nonce, proof: joinProof(join.key, "join", transcript), leader: join.caller }
         await peer.send(frame).catch(() => join.requests.delete(request))
       }
     })().catch(() => {})
   }
 
-  private async onJoin(peer: NetworkPeer, request: z.infer<typeof joinFrame> | z.infer<typeof joinFrameV2>) {
-    const state = this.state(peer), now = Date.now(), v2 = "version" in request
+  private async onJoin(peer: NetworkPeer, request: z.infer<typeof joinFrame>) {
+    const state = this.state(peer), now = Date.now()
     if (this.attempts.size > 1_000) for (const [id, times] of this.attempts) if (times.every(at => now - at >= 60_000)) this.attempts.delete(id)
     const recent = (this.attempts.get(peer.identity.id) ?? []).filter(at => now - at < 60_000)
     recent.push(now); this.attempts.set(peer.identity.id, recent)
-    const refuse = () => peer.send(v2 ? { type: "ih_join_result", request: request.request, version: 2, ok: false } : { type: "ih_join_result", request: request.request, ok: false })
+    const refuse = () => peer.send({ type: "ih_join_result", request: request.request, ok: false })
     if (++state.joinAttempts > JOIN_ATTEMPTS_PER_CONNECTION || recent.length > JOIN_ATTEMPTS_PER_MINUTE) return refuse()
     const transcript: JoinTranscript = { request: request.request, nonce: request.nonce, joiner: peer.identity.id, creator: await this.local(),
       joiner_noise: peer.remoteNoise, creator_noise: peer.localNoise }
-    const proves = (key: string) => sameProof(v2 ? joinProofV2(key, "join2", transcript) : joinProof(key, "join", transcript), request.proof)
-    const admitted = await this.network.admit(peer.identity, request.leader, proves, v2 ? { protocol: INTERHUB_PROJECT_PROTOCOL } : {}).catch(() => null)
+    // The request keeps the exact V1 frame shape. A new creator recognizes V2 from its domain-separated proof; an old one safely refuses it.
+    let v2 = true
+    let admitted = await this.network.admit(peer.identity, request.leader, key => sameProof(joinProofV2(key, "join2", transcript), request.proof), { protocol: INTERHUB_PROJECT_PROTOCOL }).catch(() => null)
+    if (!admitted) {
+      v2 = false
+      admitted = await this.network.admit(peer.identity, request.leader, key => sameProof(joinProof(key, "join", transcript), request.proof)).catch(() => null)
+    }
     if (!admitted) return refuse()
     if (v2) {
       // Outside the admission transaction: a failure here leaves the membership in place and is reported as unavailable.
@@ -297,7 +303,14 @@ export class InterhubTransport implements NetworkExtension {
       if (!pending || pending.peer !== peer) continue
       join.requests.delete(result.request)
       // A refusal may come from any peer on the rendezvous topic; keep waiting for the creator until the deadline.
-      if (!result.ok) return
+      if (!result.ok) {
+        if (pending.version === 2) {
+          join.attempted.delete(peer)
+          this.fallBack(join, pending.version)
+          this.tryJoins()
+        }
+        return
+      }
       const project = "project" in result ? result.project : null
       if ((project ? 2 : 1) !== pending.version) return
       const expected = project ? joinProofV2(join.key, "accept2", pending.transcript, result.roster, project) : joinProof(join.key, "accept", pending.transcript, result.roster)
@@ -332,10 +345,9 @@ export class InterhubTransport implements NetworkExtension {
       if (!peer) continue
       const offer = await this.network.buildOffer(item.channel_id, item.hub_id).catch(() => null)
       if (!offer) continue
-      const request = randomUUID()
-      this.offerRequests.set(request, { channel_id: offer.channel_id, hub_id: item.hub_id, project_id: offer.project_id, policy_hash: offer.policy_hash, at: now })
-      await peer.send({ type: "ih_project_offer", request, channel_id: offer.channel_id, project_id: offer.project_id, policy_hash: offer.policy_hash, packet: offer.packet })
-        .catch(() => this.offerRequests.delete(request))
+      this.offerRequests.set(offer.request, { channel_id: offer.channel_id, hub_id: item.hub_id, project_id: offer.project_id, policy_hash: offer.policy_hash, at: now })
+      await peer.send({ type: "ih_project_offer", request: offer.request, channel_id: offer.channel_id, project_id: offer.project_id, policy_hash: offer.policy_hash, packet: offer.packet })
+        .catch(() => this.offerRequests.delete(offer.request))
     }
   }
 
@@ -363,8 +375,8 @@ export class InterhubTransport implements NetworkExtension {
     const sent = this.offerRequests.get(result.request)
     if (!sent || sent.hub_id !== peer.identity.id || sent.channel_id !== result.channel_id || sent.project_id !== result.project_id || sent.policy_hash !== result.policy_hash) return
     this.offerRequests.delete(result.request)
-    await this.network.recordOfferResult({ channel_id: result.channel_id, hub_id: peer.identity.id, project_id: result.project_id, policy_hash: result.policy_hash,
-      status: result.status, ...(result.message ? { message: result.message } : {}) })
+    await this.network.recordOfferResult({ request: result.request, channel_id: result.channel_id, hub_id: peer.identity.id, project_id: result.project_id, policy_hash: result.policy_hash,
+      status: result.status })
   }
 
   private async announce(peer: NetworkPeer, only?: string) {

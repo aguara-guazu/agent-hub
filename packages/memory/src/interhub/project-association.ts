@@ -135,7 +135,7 @@ export async function releaseDeletedProject(db: Sql, projectId: string): Promise
 
 /** Forgets the unlink record once the channel has a project again. */
 const clearUnlink = (db: Sql, channelId: string) =>
-  db.query("UPDATE interhub_channels SET project_unlink_reason=NULL,project_unlinked_id=NULL,project_unlinked_at=NULL WHERE channel_id=$1", [channelId])
+  db.query("UPDATE interhub_channels SET project_unlink_reason=NULL,project_unlinked_id=NULL,project_unlinked_at=NULL,project_pending_id=NULL,project_pending_reason=NULL WHERE channel_id=$1", [channelId])
 
 /**
  * Local pass over the associations that already exist: each one whose policy no longer vouches for this hub is
@@ -182,7 +182,7 @@ export async function settleChannelProject(db: Sql, channelId: string, localHubI
   if (!row) return null
   const current = row.project_id ? String(row.project_id) : null
   const state = current ? await storedAssociation(db, current, localHubId) : null
-  if (current && state?.valid) return current
+  if (current && state?.valid) { await clearUnlink(db, channelId); return current }
   const replacement = requested && await sharedProjectUsable(db, requested, [localHubId, creatorHubId]) ? requested : null
   if (current && state && !state.valid) {
     if (replacement) {

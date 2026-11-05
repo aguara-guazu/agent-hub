@@ -238,14 +238,15 @@ export class InterhubNetwork {
       const current = (await sql.query("SELECT code_hash,code_revoked_at,code_role,code_generation FROM interhub_channels WHERE channel_id=$1", [match.channel_id]))[0]
       if (!current || current.code_revoked_at || current.code_hash !== codeHash(match.channel_id, match.code)) return null
       const existing = (await sql.query("SELECT leader_session_id,leader_label,removed_at,join_code_role,join_code_generation FROM interhub_members WHERE channel_id=$1 AND hub_id=$2", [match.channel_id, joiner.id]))[0]
-      // An active member keeps its leader: holding the code again must not swap it.
+      // An active member keeps its leader and can only upgrade the protocol through that same leader.
       const keep = existing && !existing.removed_at
-      const leaderId = keep ? String(existing.leader_session_id ?? leader.id) : leader.id, leaderLabel = keep ? String(existing.leader_label) : label(leader.label)
+      if (keep && existing.leader_session_id !== leader.id) return null
+      const leaderId = keep ? String(existing.leader_session_id) : leader.id, leaderLabel = keep ? String(existing.leader_label) : label(leader.label)
       // The role and generation of the code are copied to a new member; an active member keeps what it joined with.
       if (!keep) await sql.query(`INSERT INTO interhub_members(channel_id,hub_id,peer_identity,leader_session_id,leader_label,join_code_role,join_code_generation,join_protocol_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
         ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL,joined_at=now(),last_seen_at=now(),
         join_code_role=excluded.join_code_role,join_code_generation=excluded.join_code_generation,join_protocol_version=excluded.join_protocol_version,
-        project_offer_project=NULL,project_offer_policy=NULL,project_offer_status=NULL,project_offer_attempts=0,project_offer_at=NULL,project_offer_next_at=NULL,project_offer_message=NULL`,
+        project_offer_request=NULL,project_offer_project=NULL,project_offer_policy=NULL,project_offer_status=NULL,project_offer_attempts=0,project_offer_at=NULL,project_offer_next_at=NULL,project_offer_message=NULL`,
       [match.channel_id, joiner.id, JSON.stringify(publicIdentity(joiner)), leaderId, leaderLabel, String(current.code_role), Number(current.code_generation), protocol])
       else await sql.query("UPDATE interhub_members SET peer_identity=$3,last_seen_at=now(),join_protocol_version=MAX(join_protocol_version,$4) WHERE channel_id=$1 AND hub_id=$2", [match.channel_id, joiner.id, JSON.stringify(publicIdentity(joiner)), protocol])
       if (!keep) await this.append(match.channel_id, "membership", { action: "joined", hub_id: joiner.id, leader_id: leaderId, leader_label: leaderLabel,
@@ -274,15 +275,15 @@ export class InterhubNetwork {
     check(roster.members.some(m => m.hub_id === local.id) && roster.members.some(m => m.hub_id === creator.id), "Respuesta del hub creador inválida", 403)
     const channelId = roster.channel.id, creatorEntry = roster.members.find(m => m.hub_id === creator.id)!
     const existing = (await this.store.db.query("SELECT kind,deleted_at FROM chat_channels WHERE id=$1", [channelId]))[0]
+    const ownMembership = existing ? (await this.store.db.query("SELECT m.leader_session_id,i.creator_hub_id FROM interhub_members m JOIN interhub_channels i ON i.channel_id=m.channel_id WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL", [channelId, local.id]))[0] : null
     let reentered = false
     if (existing) {
       check(existing.kind === "inter-hub", "El identificador del canal ya existe en este hub", 409)
-      if (await this.isMember(channelId, local.id)) {
-        // With `reentry`, joining again is idempotent only for the same hub leader and creator; it never changes either.
+      if (ownMembership) {
+        // Reentry is idempotent for the same hub leader and creator, including a locally deleted channel.
         check(options.reentry, "Tu hub ya es parte de este canal entre hubs", 409)
-        const own = (await this.store.db.query("SELECT m.leader_session_id,i.creator_hub_id FROM interhub_members m JOIN interhub_channels i ON i.channel_id=m.channel_id WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL", [channelId, local.id]))[0]
         const listed = roster.members.find(m => m.hub_id === local.id)
-        check(own?.leader_session_id === caller.id && listed?.leader_session_id === caller.id && own.creator_hub_id === creator.id, "Tu hub ya es parte de este canal entre hubs", 409)
+        check(ownMembership.leader_session_id === caller.id && listed?.leader_session_id === caller.id && ownMembership.creator_hub_id === creator.id, "Tu hub ya es parte de este canal entre hubs", 409)
         reentered = true
       }
     }
@@ -290,6 +291,10 @@ export class InterhubNetwork {
     const placeholder = interhubRemoteSessionId(channelId, creator.id, creatorEntry.leader_session_id ?? "creator")
     let project: string | null = null
     await this.store.db.transaction(async sql => {
+      if (reentered) {
+        const current = (await sql.query("SELECT m.leader_session_id,i.creator_hub_id FROM interhub_members m JOIN interhub_channels i ON i.channel_id=m.channel_id WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL", [channelId, local.id]))[0]
+        check(current?.leader_session_id === caller.id && current.creator_hub_id === creator.id, "Tu hub ya es parte de este canal entre hubs", 409)
+      }
       if (!existing) await sql.query("INSERT INTO chat_channels(id,project_id,scope_key,path,name,kind,leader_id,activated_at,description) VALUES($1,$6,$2,'',$3,'inter-hub',$4,now(),$5)",
         [channelId, `interhub:${channelId}`, roster.channel.name, caller.id, roster.channel.description, null])
       else await sql.query("UPDATE chat_channels SET leader_id=$2,deleted_at=NULL,closed_at=NULL,updated_at=now() WHERE id=$1", [channelId, caller.id])
@@ -397,7 +402,7 @@ export class InterhubNetwork {
   async projectTransfer(channelId: string, joiner: PublicIdentity): Promise<ProjectGrant> {
     try {
       const local = await this.localIdentity()
-      const row = (await this.store.db.query(`SELECT c.project_id,m.join_code_role FROM chat_channels c
+      const row = (await this.store.db.query(`SELECT c.project_id FROM chat_channels c
         JOIN interhub_channels i ON i.channel_id=c.id JOIN interhub_members m ON m.channel_id=c.id AND m.hub_id=$2 AND m.removed_at IS NULL
         WHERE c.id=$1 AND c.kind='inter-hub' AND c.deleted_at IS NULL AND i.creator_hub_id=$3`, [channelId, joiner.id, local.id]))[0]
       if (!row) return { status: "unavailable", message: "El hub ya no es miembro activo del canal." }
@@ -406,13 +411,19 @@ export class InterhubNetwork {
       if (!await sharedProjectUsable(this.store.db, projectId, [local.id])) return { status: "unavailable", message: "El proyecto del canal no es un proyecto compartido activo del hub creador." }
       const projects = new SharedProjects(this.store)
       return await this.serial(`project:${projectId}`, () => this.store.db.transaction(async (): Promise<ProjectGrant> => {
-        // Re-checked after waiting for the lock: the project or its channel may have changed meanwhile, and nothing is signed then.
-        const current = (await this.store.db.query("SELECT project_id FROM chat_channels WHERE id=$1 AND deleted_at IS NULL", [channelId]))[0]?.project_id
-        if (current !== projectId || !await sharedProjectUsable(this.store.db, projectId, [local.id])) return { status: "unavailable", message: "El proyecto del canal ya no es un proyecto compartido activo del hub creador." }
+        // Re-check channel membership, identity, role and project after waiting for the lock; stale admission state grants nothing.
+        const current = (await this.store.db.query(`SELECT c.project_id,m.peer_identity,m.join_code_role FROM chat_channels c
+          JOIN interhub_channels i ON i.channel_id=c.id JOIN interhub_members m ON m.channel_id=c.id AND m.hub_id=$2 AND m.removed_at IS NULL
+          WHERE c.id=$1 AND c.kind='inter-hub' AND c.deleted_at IS NULL AND i.creator_hub_id=$3`, [channelId, joiner.id, local.id]))[0]
+        const currentIdentity = current ? identityOf(current.peer_identity) : null
+        if (!current || current.project_id !== projectId || currentIdentity?.id !== joiner.id || currentIdentity?.signing !== joiner.signing || currentIdentity?.encryption !== joiner.encryption
+          || !await sharedProjectUsable(this.store.db, projectId, [local.id]))
+          return { status: "unavailable", message: "El canal, su proyecto o la membresía del hub cambiaron durante la operación." }
         const member = (await projects.get(projectId)).policy.members.find(candidate => candidate.identity.id === joiner.id)
         if (member?.revoked) return { status: "unavailable", message: "El acceso de este hub al proyecto fue revocado." }
         if (!active(member)) {
-          const role = member ? stronger(member.role, row.join_code_role as CodeRole) : row.join_code_role as CodeRole
+          const joinedRole = current.join_code_role as CodeRole
+          const role = member ? stronger(member.role, joinedRole) : joinedRole
           await projects.changeMember(projectId, joiner, role, role === "owner" || Boolean(member?.invite))
         }
         return { status: "invitation", packet: await projects.invitation(projectId) }
@@ -443,41 +454,39 @@ export class InterhubNetwork {
    * Creator side: the offer for one member hub, rebuilt from the current policy on every call, or null when the member does
    * not qualify (see pendingOffers) or the project cannot be granted now. The attempt is claimed first with one conditional
    * UPDATE that also re-checks the channel, project and member, so concurrent callers cannot both send. `policy_hash`
-   * identifies the policy revision the packet ends at; the packet itself and the request are never stored.
+   * identifies the policy revision the packet ends at; the packet is never stored, while the request id binds its reply.
    */
-  async buildOffer(channelId: string, hubId: string): Promise<{ channel_id: string; project_id: string; policy_hash: string; packet: Extract<ProjectGrant, { status: "invitation" }>["packet"] } | null> {
+  async buildOffer(channelId: string, hubId: string): Promise<{ request: string; channel_id: string; project_id: string; policy_hash: string; packet: Extract<ProjectGrant, { status: "invitation" }>["packet"] } | null> {
     const target = (await this.pendingOffers()).find(offer => offer.channel_id === channelId && offer.hub_id === hubId)
     if (!target) return null
-    const local = (await this.localIdentity()).id, now = new Date()
-    const claimed = await this.store.db.query(`UPDATE interhub_members SET project_offer_project=$3,project_offer_policy=NULL,project_offer_status='sent',
-      project_offer_attempts=project_offer_attempts+1,project_offer_at=$4,project_offer_message=NULL,
-      project_offer_next_at=strftime('%Y-%m-%dT%H:%M:%fZ',$4,'+'||min(15*(1<<min(project_offer_attempts,8)),3600)||' seconds')
-      WHERE channel_id=$1 AND hub_id=$2 AND removed_at IS NULL AND join_protocol_version>=$5 AND (project_offer_next_at IS NULL OR project_offer_next_at<=$4)
-      AND EXISTS(SELECT 1 FROM chat_channels c JOIN interhub_channels i ON i.channel_id=c.id WHERE c.id=$1 AND c.project_id=$3 AND c.deleted_at IS NULL AND i.creator_hub_id=$6)
-      RETURNING peer_identity`, [channelId, hubId, target.project_id, now.toISOString(), INTERHUB_PROJECT_PROTOCOL, local])
+    const local = (await this.localIdentity()).id, now = new Date(), request = randomUUID()
+    const claimed = await this.store.db.query(`UPDATE interhub_members SET project_offer_request=$4,project_offer_project=$3,project_offer_policy=NULL,project_offer_status='sent',
+      project_offer_attempts=project_offer_attempts+1,project_offer_at=$5,project_offer_message=NULL,
+      project_offer_next_at=strftime('%Y-%m-%dT%H:%M:%fZ',$5,'+'||min(15*(1<<min(project_offer_attempts,8)),3600)||' seconds')
+      WHERE channel_id=$1 AND hub_id=$2 AND removed_at IS NULL AND join_protocol_version>=$6 AND (project_offer_next_at IS NULL OR project_offer_next_at<=$5)
+      AND EXISTS(SELECT 1 FROM chat_channels c JOIN interhub_channels i ON i.channel_id=c.id WHERE c.id=$1 AND c.project_id=$3 AND c.deleted_at IS NULL AND i.creator_hub_id=$7)
+      RETURNING peer_identity`, [channelId, hubId, target.project_id, request, now.toISOString(), INTERHUB_PROJECT_PROTOCOL, local])
     if (!claimed.length) return null
     const grant = await this.projectTransfer(channelId, identityOf(claimed[0]!.peer_identity))
     if (grant.status !== "invitation") {
-      if (grant.status === "unavailable") await this.store.db.query("UPDATE interhub_members SET project_offer_status='unavailable',project_offer_message=$3 WHERE channel_id=$1 AND hub_id=$2 AND project_offer_at=$4", [channelId, hubId, grant.message, now.toISOString()])
+      if (grant.status === "unavailable") await this.store.db.query("UPDATE interhub_members SET project_offer_status='unavailable',project_offer_message=$3 WHERE channel_id=$1 AND hub_id=$2 AND project_offer_request=$4 AND project_offer_at=$5", [channelId, hubId, grant.message, request, now.toISOString()])
       return null
     }
     const policyHash = digest(grant.packet.policies[grant.packet.policies.length - 1])
-    const recorded = await this.store.db.query("UPDATE interhub_members SET project_offer_policy=$3 WHERE channel_id=$1 AND hub_id=$2 AND project_offer_at=$4 AND removed_at IS NULL RETURNING hub_id", [channelId, hubId, policyHash, now.toISOString()])
-    return recorded.length ? { channel_id: channelId, project_id: target.project_id, policy_hash: policyHash, packet: grant.packet } : null
+    const recorded = await this.store.db.query("UPDATE interhub_members SET project_offer_policy=$3 WHERE channel_id=$1 AND hub_id=$2 AND project_offer_request=$4 AND project_offer_at=$5 AND removed_at IS NULL RETURNING hub_id", [channelId, hubId, policyHash, request, now.toISOString()])
+    return recorded.length ? { request, channel_id: channelId, project_id: target.project_id, policy_hash: policyHash, packet: grant.packet } : null
   }
 
   /**
-   * Creator side: stores the answer of a member hub to its last offer. Channel, hub, project and policy revision must match
-   * that offer and it must still be awaiting an answer; anything else is ignored. The caller has already checked that the
-   * answer came from the connection the offer was sent on, for the request it sent. `message` is trimmed to 300 characters,
-   * kept for display only and never used for decisions. Returns whether the answer was recorded.
+   * Creator side: stores the answer of a member hub to its last offer. Request, channel, hub, project and policy revision
+   * must match that offer and it must still await an answer; anything else is ignored. Remote free text is never persisted.
    */
-  async recordOfferResult(result: { channel_id: string; hub_id: string; project_id: string; policy_hash: string; status: "accepted" | "pending" | "rejected"; message?: string | undefined }): Promise<boolean> {
-    const updated = await this.store.db.query(`UPDATE interhub_members SET project_offer_status=$5,project_offer_message=$6,
-      project_offer_attempts=CASE WHEN $5='accepted' THEN 0 ELSE project_offer_attempts END,
-      project_offer_next_at=CASE WHEN $5='accepted' THEN NULL WHEN $5='rejected' THEN $7 ELSE project_offer_next_at END
-      WHERE channel_id=$1 AND hub_id=$2 AND removed_at IS NULL AND project_offer_project=$3 AND project_offer_policy=$4 AND project_offer_status='sent' RETURNING hub_id`,
-    [result.channel_id, result.hub_id, result.project_id, result.policy_hash, result.status, result.message ? clean(result.message) : null, new Date(Date.now() + OFFER_BACKOFF_MAX_MS).toISOString()])
+  async recordOfferResult(result: { request: string; channel_id: string; hub_id: string; project_id: string; policy_hash: string; status: "accepted" | "pending" | "rejected" }): Promise<boolean> {
+    const updated = await this.store.db.query(`UPDATE interhub_members SET project_offer_status=$6,project_offer_message=NULL,
+      project_offer_attempts=CASE WHEN $6='accepted' THEN 0 ELSE project_offer_attempts END,
+      project_offer_next_at=CASE WHEN $6='accepted' THEN NULL WHEN $6='rejected' THEN $7 ELSE project_offer_next_at END
+      WHERE channel_id=$1 AND hub_id=$2 AND removed_at IS NULL AND project_offer_request=$3 AND project_offer_project=$4 AND project_offer_policy=$5 AND project_offer_status='sent' RETURNING hub_id`,
+    [result.channel_id, result.hub_id, result.request, result.project_id, result.policy_hash, result.status, new Date(Date.now() + OFFER_BACKOFF_MAX_MS).toISOString()])
     return updated.length > 0
   }
 

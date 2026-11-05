@@ -1006,7 +1006,8 @@ ALTER TABLE interhub_channels ADD COLUMN code_role TEXT NOT NULL DEFAULT 'owner'
 ALTER TABLE interhub_members ADD COLUMN join_code_role TEXT NOT NULL DEFAULT 'owner' CHECK(join_code_role IN ('owner','maintainer','reader'));
 ALTER TABLE interhub_members ADD COLUMN join_code_generation INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE interhub_members ADD COLUMN join_protocol_version INTEGER NOT NULL DEFAULT 1;
--- Per member, creator side: last project offer (project, policy revision, status, attempts, backoff); never the invitation.
+-- Per member, creator side: last project offer (request, project, policy revision, status, attempts, backoff); never the invitation.
+ALTER TABLE interhub_members ADD COLUMN project_offer_request TEXT;
 ALTER TABLE interhub_members ADD COLUMN project_offer_project TEXT;
 ALTER TABLE interhub_members ADD COLUMN project_offer_policy TEXT;
 ALTER TABLE interhub_members ADD COLUMN project_offer_status TEXT;

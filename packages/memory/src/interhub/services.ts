@@ -182,9 +182,12 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   }
   if (transport) transport.projectAcceptor = async (offer, creator) => {
     const local = await localHubId()
-    const leaderId = (await db.query("SELECT leader_session_id FROM interhub_members WHERE channel_id=$1 AND hub_id=$2 AND removed_at IS NULL", [offer.channel_id, local]))[0]?.leader_session_id
+    const channel = (await db.query("SELECT c.project_id,m.leader_session_id FROM chat_channels c JOIN interhub_members m ON m.channel_id=c.id AND m.hub_id=$2 AND m.removed_at IS NULL WHERE c.id=$1", [offer.channel_id, local]))[0]
+    const leaderId = channel?.leader_session_id
     if (!leaderId || creator.id === local) return { status: "rejected", message: "El canal no tiene un líder local que pueda importar el proyecto." }
-    const outcome = await importProject(offer.channel_id, String(leaderId), offer.packet, true)
+    // An explicit different project wins locally; import the creator's project membership but do not keep retrying its channel assignment.
+    const assign = !channel.project_id || channel.project_id === offer.project_id
+    const outcome = await importProject(offer.channel_id, String(leaderId), offer.packet, assign)
     return outcome.state === "accepted" ? { status: "accepted" } : { status: outcome.state === "pending" ? "pending" : "rejected", message: outcome.message }
   }
 
@@ -218,16 +221,24 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       const imported = transfer?.status === "invitation" ? await importProject(joined.channel_id, caller.id, transfer.packet, !explicit) : null
       let notice: string | undefined, pending: string | undefined
       if (imported?.state === "pending" || imported?.state === "failed") { notice = imported.message; pending = imported.project_id }
-      else if (transfer?.status === "unavailable") notice = `El canal se unió, pero el hub creador no pudo compartir el proyecto: ${peerText(transfer.message)}`
+      else if (transfer?.status === "unavailable") notice = "El canal se unió, pero el hub creador no pudo compartir su proyecto. Revisa en el hub creador los permisos, el conflicto o el estado del proyecto; no hace falta generar otro código."
       const extra = () => ({ ...(notice ? { project_notice: notice } : {}), ...(pending ? { pending_project_id: pending } : {}) })
       if (explicit) {
-        // An explicit project must be shared with every active hub of the channel.
+        // An explicit project must be shared with every active hub of the channel. Reentry is idempotent for the same project.
         try { await assignProject(db, await localHubId(), caller.id, joined.channel_id, explicit) } catch (error) {
-          // The join stays visible: the failure is reported as a notice, never thrown.
+          const actual = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1", [joined.channel_id]))[0]?.project_id
+          if (actual === explicit) {
+            await network.setPendingProject(joined.channel_id, null).catch(() => {})
+            events?.emit("change")
+            return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: explicit, ...extra() }
+          }
+          // The join stays visible: report the actual association and never overwrite another project.
           notice = `El canal se unió, pero no se pudo asociar al proyecto indicado: ${error instanceof MemoryError ? peerText(error.message) : "error desconocido."} Asígnalo después con chat_interhub_assign_project.`
-          pending = explicit
-          return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: null, ...extra() }
+          pending = actual ? undefined : explicit
+          if (!actual) await network.setPendingProject(joined.channel_id, { project_id: explicit, reason: notice }).catch(() => {})
+          return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: actual ? String(actual) : null, ...extra() }
         }
+        await network.setPendingProject(joined.channel_id, null).catch(() => {})
         events?.emit("change")
         return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: explicit, ...extra() }
       }
