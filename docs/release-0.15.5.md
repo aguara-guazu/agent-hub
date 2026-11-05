@@ -45,6 +45,8 @@ Versión menor sobre 0.15.0.
   drenar las conexiones. Cada paso del cierre se ejecuta aunque falle uno anterior, y
   una salida de proceso que no se pudo confirmar se informa como error.
 - El core termina si el proceso que lo lanzó ya no existe.
+- En Windows, si el instalador no llega a instalar la versión nueva después de la parada,
+  la versión anterior vuelve a abrir el Hub y la parada se da por terminada.
 
 ## Diagnóstico
 
@@ -69,6 +71,11 @@ Versión menor sobre 0.15.0.
   de prueba se detectaron 36.
 - La vuelta automática a la versión anterior (rollback) existe solo en macOS. En Windows
   y Linux el instalador reemplaza la app sin rollback.
+- En Windows, antes de lanzar el instalador la app guarda en disco que la versión
+  anterior puede volver a abrir el Hub. Si no puede guardarlo, no lanza el instalador y
+  pospone la actualización. Como el core ya se detuvo para actualizar, el MCP queda
+  cerrado y la parada sigue aplicada; esta versión no tiene una salida automática para
+  ese caso.
 - El rollback sigue usando las rutas `/update-drain/*` anteriores, no la parada
   coordinada.
 - Si la persona cierra la app mientras una actualización está en espera, se pierde el
