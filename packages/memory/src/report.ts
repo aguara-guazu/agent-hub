@@ -134,7 +134,8 @@ export function appendLogChunk(activePath: string, chunk: Buffer, fs = { openSyn
       descriptor = fs.openSync(activePath, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
       const opened = fs.fstatSync(descriptor), current = fs.lstatSync(activePath)
       if (!opened.isFile()) return offset
-      if ((opened.dev !== current.dev || opened.ino !== current.ino) && attempt < 2) continue
+      // Never write to an inode that is no longer the active log: after three mismatches the caller gets no progress.
+      if (opened.dev !== current.dev || opened.ino !== current.ino) continue
       while (offset < chunk.length) {
         const written = fs.writeSync(descriptor, chunk, offset, chunk.length - offset)
         if (!written) break
@@ -172,9 +173,14 @@ export class LogFile {
     } catch { return 0 }
   }
   private appendActive(chunk: string) {
+    // Continue from the confirmed offset until the chunk is complete or a round makes no progress; bytes are never rewritten.
     const buffer = Buffer.from(chunk)
-    let written = appendLogChunk(this.activePath, buffer)
-    if (written < buffer.length) written += appendLogChunk(this.activePath, buffer.subarray(written))
+    let written = 0
+    for (let round = 0; round < 4 && written < buffer.length; round++) {
+      const progress = appendLogChunk(this.activePath, buffer.subarray(written))
+      if (!progress) break
+      written += progress
+    }
     return written
   }
   write(text: string, prefix = '') {
