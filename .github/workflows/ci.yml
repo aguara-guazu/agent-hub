@@ -35,6 +35,15 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
           node scripts/smoke-desktop.mjs (Join-Path $installDir 'Agent Hub.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Installed desktop smoke failed' }
+        env:
+          SMOKE_LOGS_DIR: ${{ runner.temp }}/smoke-logs
+      - name: Upload desktop smoke logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-smoke-logs
+          path: ${{ runner.temp }}/smoke-logs
+          if-no-files-found: ignore
   verify:
     runs-on: ubuntu-latest
     strategy:
