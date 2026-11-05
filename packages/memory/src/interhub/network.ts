@@ -490,9 +490,25 @@ export class InterhubNetwork {
     return updated.length > 0
   }
 
-  /** Joiner side: records, without any invitation, why the shared project of the channel could not be accepted yet. Null clears it. */
+  /** Starts a local project-import attempt; only that attempt may publish its pending or accepted result. */
+  async beginProjectAttempt(channelId: string): Promise<string> {
+    const attempt = randomUUID()
+    await this.store.db.query("UPDATE interhub_channels SET project_pending_attempt=$2,updated_at=now() WHERE channel_id=$1", [channelId, attempt])
+    return attempt
+  }
+
+  /** Completes one project-import attempt conditionally, so an older concurrent offer cannot overwrite newer state. */
+  async finishProjectAttempt(channelId: string, attempt: string, pending: { project_id: string | null; reason: string } | null): Promise<boolean> {
+    const updated = await this.store.db.query(`UPDATE interhub_channels SET project_pending_id=$3,project_pending_reason=$4,
+      project_pending_attempt=CASE WHEN $3 IS NULL AND $4 IS NULL THEN NULL ELSE project_pending_attempt END,updated_at=now()
+      WHERE channel_id=$1 AND project_pending_attempt=$2 RETURNING channel_id`,
+    [channelId, attempt, pending?.project_id ?? null, pending ? clean(pending.reason) : null])
+    return updated.length > 0
+  }
+
+  /** Sets or clears pending metadata outside an import attempt and invalidates every older attempt. */
   async setPendingProject(channelId: string, pending: { project_id: string | null; reason: string } | null) {
-    await this.store.db.query("UPDATE interhub_channels SET project_pending_id=$2,project_pending_reason=$3,updated_at=now() WHERE channel_id=$1",
+    await this.store.db.query("UPDATE interhub_channels SET project_pending_id=$2,project_pending_reason=$3,project_pending_attempt=NULL,updated_at=now() WHERE channel_id=$1",
       [channelId, pending?.project_id ?? null, pending ? clean(pending.reason) : null])
   }
   async pendingProject(channelId: string): Promise<{ project_id: string | null; reason: string } | null> {

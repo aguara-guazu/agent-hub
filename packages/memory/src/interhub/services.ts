@@ -145,11 +145,11 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
    * logged, stored or returned.
    */
   const importProject = async (channelId: string, leaderId: string, packet: ProjectPacket, assign: boolean): Promise<ProjectImport> => {
-    const projectId = packet.genesis.id, sharing = new SharedProjects(store)
+    const projectId = packet.genesis.id, sharing = new SharedProjects(store), attempt = await network.beginProjectAttempt(channelId)
     const leader = (await db.query("SELECT cli_kind,native_cwd FROM chat_sessions WHERE id=$1", [leaderId]))[0]
     const folder = typeof leader?.native_cwd === "string" && leader.native_cwd ? leader.native_cwd : undefined
     const pending = async (message: string): Promise<ProjectImport> => {
-      await network.setPendingProject(channelId, { project_id: projectId, reason: message }).catch(() => {})
+      await network.finishProjectAttempt(channelId, attempt, { project_id: projectId, reason: message }).catch(() => false)
       events?.emit("change")
       return { state: "pending", project_id: projectId, message }
     }
@@ -171,12 +171,12 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
         events?.emit("change")
         if (assigned !== projectId) return await pending(ASSIGN_NOTICE)
       }
-      await network.setPendingProject(channelId, null).catch(() => {})
+      await network.finishProjectAttempt(channelId, attempt, null).catch(() => false)
       return { state: "accepted", project_id: projectId }
     } catch (error) {
       const detail = error instanceof MemoryError ? ` (${peerText(error.message)})` : ""
       const message = `${IMPORT_NOTICE}${detail}. Acéptalo con otra carpeta mediante memory_shared_join si el creador te comparte una invitación, o pide al creador que lo vuelva a ofrecer.`
-      await network.setPendingProject(channelId, { project_id: projectId, reason: message }).catch(() => {})
+      await network.finishProjectAttempt(channelId, attempt, { project_id: projectId, reason: message }).catch(() => false)
       return { state: "failed", project_id: projectId, message }
     }
   }
@@ -217,6 +217,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       const explicit = projectId ? await channelProject(caller, projectId) : null
       const joined = await transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code, null)
       const transfer = joined.transfer
+      if (transfer && transfer.status !== "invitation") await network.setPendingProject(joined.channel_id, null).catch(() => {})
       // The channel is joined whatever happens to the project: every failure below only adds a notice. The package stays in this scope.
       const imported = transfer?.status === "invitation" ? await importProject(joined.channel_id, caller.id, transfer.packet, !explicit) : null
       let notice: string | undefined, pending: string | undefined
@@ -229,6 +230,8 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
           const actual = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1", [joined.channel_id]))[0]?.project_id
           if (actual === explicit) {
             await network.setPendingProject(joined.channel_id, null).catch(() => {})
+            notice = undefined
+            pending = undefined
             events?.emit("change")
             return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: explicit, ...extra() }
           }
@@ -239,6 +242,8 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
           return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: actual ? String(actual) : null, ...extra() }
         }
         await network.setPendingProject(joined.channel_id, null).catch(() => {})
+        notice = undefined
+        pending = undefined
         events?.emit("change")
         return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: explicit, ...extra() }
       }

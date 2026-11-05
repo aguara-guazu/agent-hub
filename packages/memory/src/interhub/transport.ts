@@ -75,10 +75,10 @@ interface PeerState { pulling: Set<string>; announced: Map<string, number>; remo
  * the creator did not speak version 2 and the join fell back to version 1.
  */
 interface JoinResult { channel_id: string; hub_id: string; project_id: string | null; transfer: ProjectTransfer | null; legacy: boolean }
-/** Version 2 is tried first with the V1 frame shape; two failed attempts switch the join to version 1. */
+/** Version 2 is tried first with the V1 frame shape; two explicit refusals from one authenticated peer enable V1 for that peer. */
 interface PendingJoin {
   topic: string; key: string; caller: { id: string; label: string }; projectId: string | null; attempted: WeakSet<NetworkPeer>; redialedAt: number
-  version: 1 | 2; fellBack: boolean; v2Failures: number
+  legacyPeers: Set<string>; v2Refusals: Map<string, number>
   requests: Map<string, { peer: NetworkPeer; transcript: JoinTranscript; sentAt: number; version: 1 | 2 }>; settle: (error: unknown, value?: JoinResult) => void
 }
 export interface ProjectOffer { channel_id: string; project_id: string; policy_hash: string; packet: z.infer<typeof invitationSchema> }
@@ -147,7 +147,7 @@ export class InterhubTransport implements NetworkExtension {
   disconnected(peer: NetworkPeer) {
     for (const join of this.joins.values()) {
       let lost = false
-      for (const [request, pending] of join.requests) if (pending.peer === peer) { join.requests.delete(request); lost = true; this.fallBack(join, pending.version) }
+      for (const [request, pending] of join.requests) if (pending.peer === peer) { join.requests.delete(request); lost = true }
       if (lost) this.redialJoin(join)
     }
   }
@@ -216,7 +216,7 @@ export class InterhubTransport implements NetworkExtension {
     try {
       return await new Promise<JoinResult>((resolve, reject) => {
         let settled = false
-        const join: PendingJoin = { topic, key: codeKey(code), caller, projectId, attempted: new WeakSet(), requests: new Map(), redialedAt: Date.now(), version: 2, fellBack: false, v2Failures: 0,
+        const join: PendingJoin = { topic, key: codeKey(code), caller, projectId, attempted: new WeakSet(), requests: new Map(), redialedAt: Date.now(), legacyPeers: new Set(), v2Refusals: new Map(),
           settle: (error, value) => { if (settled) return; settled = true; if (error) reject(error); else resolve(value!) } }
         this.joins.set(topic, join)
         timer = setTimeout(() => join.settle(new MemoryError(404, INVALID_CODE)), interhubJoinTimeout())
@@ -240,15 +240,15 @@ export class InterhubTransport implements NetworkExtension {
     const now = Date.now()
     if (this.joins.get(join.topic) !== join || now - join.redialedAt < JOIN_REDIAL_GAP_MS) return
     join.redialedAt = now
-    for (const [request, pending] of join.requests) if (now - pending.sentAt >= joinAnswerMs(pending.version)) { join.requests.delete(request); join.attempted.delete(pending.peer); this.fallBack(join, pending.version) }
+    for (const [request, pending] of join.requests) if (now - pending.sentAt >= joinAnswerMs(pending.version)) { join.requests.delete(request); join.attempted.delete(pending.peer) }
     void this.shared.redial(join.topic).then(() => this.tryJoins()).catch(() => {})
   }
 
-  /** Two failed version 2 attempts are needed before falling back, so one transient disconnect does not lose project transfer. */
-  private fallBack(join: PendingJoin, version: 1 | 2) {
-    if (version !== 2 || ++join.v2Failures < 2) return
-    join.version = 1
-    join.fellBack = true
+  /** A V1-shaped refusal is compatibility evidence only after the same authenticated peer sends it twice. */
+  private refusedV2(join: PendingJoin, peer: NetworkPeer) {
+    const failures = (join.v2Refusals.get(peer.identity.id) ?? 0) + 1
+    join.v2Refusals.set(peer.identity.id, failures)
+    if (failures >= 2) join.legacyPeers.add(peer.identity.id)
   }
 
   private tryJoins() {
@@ -260,7 +260,7 @@ export class InterhubTransport implements NetworkExtension {
         join.attempted.add(peer)
         const request = randomUUID(), nonce = randomBytes(32).toString("base64url")
         const transcript: JoinTranscript = { request, nonce, joiner: local, creator: peer.identity.id, joiner_noise: peer.localNoise, creator_noise: peer.remoteNoise }
-        const version = join.version
+        const version = join.legacyPeers.has(peer.identity.id) ? 1 : 2
         join.requests.set(request, { peer, transcript, sentAt: Date.now(), version })
         const frame = version === 2
           ? { type: "ih_join", request, nonce, proof: joinProofV2(join.key, "join2", transcript), leader: join.caller }
@@ -306,7 +306,7 @@ export class InterhubTransport implements NetworkExtension {
       if (!result.ok) {
         if (pending.version === 2) {
           join.attempted.delete(peer)
-          this.fallBack(join, pending.version)
+          this.refusedV2(join, peer)
           this.tryJoins()
         }
         return
@@ -322,7 +322,7 @@ export class InterhubTransport implements NetworkExtension {
           await this.network.append(done.channel_id, "membership", { action: "joined", hub_id: identity.id, leader_id: join.caller.id, leader_label: join.caller.label,
             peer_public_key: identity.signing, peer_identity: publicIdentity(identity) })
         }
-        join.settle(null, { channel_id: done.channel_id, hub_id: done.hub_id, project_id: done.project_id, transfer: project, legacy: pending.version === 1 && join.fellBack })
+        join.settle(null, { channel_id: done.channel_id, hub_id: done.hub_id, project_id: done.project_id, transfer: project, legacy: pending.version === 1 })
         this.events?.emit("change")
         this.topicsChanged()
         await this.announce(peer)
