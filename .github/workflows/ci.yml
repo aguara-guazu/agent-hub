@@ -26,6 +26,11 @@ jobs:
         run: npx electron-builder --win nsis --x64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Directory fsync probe
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          node -e 'const fs=require("fs");const fd=fs.openSync(process.env.RUNNER_TEMP,"r");try{fs.fsyncSync(fd);console.log("directory fsync: ok")}catch(e){console.log("directory fsync: "+e.code)}finally{fs.closeSync(fd)}'
       - name: Install and open twice with a fresh profile
         shell: pwsh
         run: |

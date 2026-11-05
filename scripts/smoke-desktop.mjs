@@ -44,15 +44,23 @@ async function diagnoseStuckClose(logs) {
 async function closeWithin(app, logs, attempt) {
   mark(`close ${attempt + 1}: start`)
   let timer
-  const stuck = new Promise(done => { timer = setTimeout(() => done(true), CLOSE_LIMIT_MS) })
-  const result = await Promise.race([app.close().then(() => false), stuck])
-  clearTimeout(timer)
-  if (result) {
-    await diagnoseStuckClose(logs)
-    app.process()?.kill()
-    throw new Error(`Desktop close ${attempt + 1} did not finish within ${CLOSE_LIMIT_MS / 1000}s`)
+  try {
+    const stuck = new Promise(done => { timer = setTimeout(() => done('stuck'), CLOSE_LIMIT_MS) })
+    const result = await Promise.race([app.close().then(() => 'closed', error => ({ error })), stuck])
+    if (result === 'closed') { mark(`close ${attempt + 1}: done`); return }
+    if (result === 'stuck') {
+      await diagnoseStuckClose(logs)
+      throw new Error(`Desktop close ${attempt + 1} did not finish within ${CLOSE_LIMIT_MS / 1000}s`)
+    }
+    throw result.error
+  } catch (error) {
+    // Neither a stuck nor a failed close may leave the test app running after the smoke.
+    const child = app.process()
+    if (child && child.exitCode === null && child.signalCode === null) child.kill()
+    throw error
+  } finally {
+    clearTimeout(timer)
   }
-  mark(`close ${attempt + 1}: done`)
 }
 
 // Run against the installed/unpacked executable, with a fresh profile and no model downloads or external accounts.
