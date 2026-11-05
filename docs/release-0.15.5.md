@@ -7,11 +7,14 @@ Versión menor sobre 0.15.0.
 - Si un agente de un equipo pierde su proceso, o el Hub ya no lo controla después de
   un reinicio, el coordinador recibe un aviso de liveness. Antes el agente quedaba en
   `unknown` durante horas sin que nadie se enterara.
-- Un agente relanzado con `team_control start` o `clear` conserva su canal y sus
-  menciones pendientes. Ya no se crea un canal virtual nuevo en cada arranque.
+- Un agente relanzado con `team_control start` o `clear` conserva su canal y recibe las
+  menciones que la conversación anterior dejó sin atender: las de las últimas 24 horas,
+  hasta 30 mensajes y solo de canales que la sesión nueva puede leer. Ya no se crea un
+  canal virtual nuevo en cada arranque.
 - El reintento de incorporación de un agente que terminó su primer turno sin unirse al
-  equipo valida la invitación y el estado del proceso antes de rotar el token. Solo
-  cuenta como enviado si el agente sigue vivo después del envío.
+  equipo valida la invitación y el estado del proceso antes de rotar el token. El envío
+  solo cuenta como entregado si el recibo no informa el proceso como `failed`, `unknown`
+  o `stopped`.
 - Si una parada no pudo confirmar la salida del proceso, el agente pasa a `stopped` en
   cuanto la salida llega. Así se lo puede volver a lanzar.
 - El ciclo de entrega de menciones ya no se traba si una consulta o un aviso a una CLI
@@ -46,8 +49,9 @@ Versión menor sobre 0.15.0.
 ## Diagnóstico
 
 - `hub.log` guarda la actividad estructurada del Hub (entregas, avisos, procesos de la
-  flota, paradas) en segmentos rotativos, con un tope de 50 MB para toda la carpeta de
-  logs.
+  flota, paradas) en segmentos rotativos. La rotación apunta a un presupuesto de 50 MB
+  para toda la carpeta de logs; es un objetivo, no un tope exacto, y prioriza no perder
+  líneas.
 - La skill `report-hub-issue` arma un issue redactado con versiones, sistema, eventos de
   `hub.log` en una lista cerrada de campos, incidentes de procesos y causas de avisos.
   Solo lo publica después de que la persona aprueba el texto exacto. El cuerpo se guarda
@@ -57,23 +61,34 @@ Versión menor sobre 0.15.0.
 
 ## Límites conocidos
 
-- En macOS, una actualización silenciosa espera a que se cierren las sesiones de
-  agentes iniciadas con una versión anterior del bundle (gateways heredados). Mientras
-  haya alguna, la actualización se pospone sin avisar a los líderes ni parar la flota, y
-  la consola muestra cuántas sesiones faltan cerrar. Cerrar la app no las espera.
+- En macOS, una actualización silenciosa espera a que terminen los procesos de agentes
+  iniciados con una versión anterior del bundle (gateways heredados). Mientras quede
+  alguno, la actualización se pospone sin avisar a los líderes ni parar la flota, y la
+  consola muestra cuántos procesos heredados quedan. Cerrar la app no los espera. La
+  cantidad depende de cada máquina: en la verificación previa de esta release, en la Mac
+  de prueba se detectaron 36.
 - La vuelta automática a la versión anterior (rollback) existe solo en macOS. En Windows
   y Linux el instalador reemplaza la app sin rollback.
 - El rollback sigue usando las rutas `/update-drain/*` anteriores, no la parada
   coordinada.
 - Si la persona cierra la app mientras una actualización está en espera, se pierde el
   tiempo de espera entre intentos de esa actualización.
-- Si el commit de una actualización no se confirma durante más de un minuto por errores
-  de red o del servidor, la parada queda pendiente hasta el próximo reinicio del Hub.
+- Si el commit de una actualización no se confirma por errores de red o del servidor, la
+  app deja de reintentar al cabo de unos 30 ciclos: cerca de un minuto con la red caída,
+  y hasta unos 5 minutos si el servidor responde con errores 5xx. La parada queda en
+  estado incierto: la app conserva la intención y la pospone, y un intento posterior la
+  reconcilia o la reintenta. Si eso no alcanza, la parada se resuelve al reiniciar el Hub.
+- Si la marca de reanudada falla justo después de que el core vuelve a abrir el MCP, la
+  parada queda aplicada y bloquea las actualizaciones y los cierres coordinados
+  posteriores hasta un reinicio.
 - Al arrancar, el core espera hasta unos 3 segundos para leer el estado de la parada. Si
   no puede leerlo y no tiene la transacción del lanzador, no empieza a escuchar y el
   escritorio lo reinicia.
 - En una carrera rara de rotación entre procesos, `hub.log` todavía puede perder o
   cortar alguna línea.
-- Algunos tests tienen tiempos ajustados (timeouts de 5 s y una parada de fleet-process
-  con 100 ms de margen) que pueden fallar con la máquina muy cargada; no cambian el
-  comportamiento del Hub.
+
+## Verificación
+
+- Pasaron todas las suites corridas sobre la rama de la release: memory y core, gateway,
+  daemon y shared, desktop, frontend y sharing, más el build, el typecheck y el lint.
+- Los timeouts de 5 s de los tests ya existían antes de esta release y no se cambiaron.
