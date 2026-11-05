@@ -11,7 +11,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { compareVersions } from "./updater.js"
-import { blocked, isStrictSemver, journalFile, mergeBlacklistSidecars, parseBlacklist, parseTransaction, readTransaction, removeDurable, validateLayout, writeJsonDurable, type BlacklistEntry, type UpdateTransaction } from "./update-transaction.js"
+import { blocked, fsyncPathSync, isStrictSemver, journalFile, mergeBlacklistSidecars, parseBlacklist, parseTransaction, readTransaction, removeDurable, validateLayout, writeJsonDurable, type BlacklistEntry, type UpdateTransaction } from "./update-transaction.js"
 import { parseStopIntent, type StopIntent, type StopIntentRead } from "./stop-intent.js"
 import { parseTrustSet, type TrustSet } from "./update-trust.js"
 
@@ -52,8 +52,7 @@ export function writeJsonAtomic(path: string, value: unknown): void {
     closeSync(fd)
   }
   renameSync(temp, path)
-  const directory = openSync(join(path, ".."), "r")
-  try { fsyncSync(directory) } finally { closeSync(directory) }
+  fsyncPathSync(dirname(path))
 }
 
 export class UpdateStore {

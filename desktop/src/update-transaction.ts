@@ -32,9 +32,15 @@ export const sidecarFile = (dir: string, id: string): string => join(dir, `black
 // ---------------------------------------------------------------------------------------------------------------------
 // Disco durable
 
+/** En Windows, `FlushFileBuffers` sobre el handle de solo lectura de un directorio devuelve acceso denegado (EPERM): no hay forma de sincronizarlo. */
+const DIRECTORY_FSYNC_UNSUPPORTED = new Set(["EPERM", "EINVAL", "EISDIR", "ENOTSUP"])
+
 export function fsyncPathSync(path: string): void {
   const fd = openSync(path, "r")
-  try { fsyncSync(fd) } finally { closeSync(fd) }
+  try { fsyncSync(fd) } catch (error) {
+    // Sólo directorios y sólo en Windows (allí el rename es el punto de durabilidad); un archivo o cualquier otra plataforma sigue lanzando.
+    if (!(process.platform === "win32" && DIRECTORY_FSYNC_UNSUPPORTED.has((error as NodeJS.ErrnoException).code ?? "") && fstatSync(fd).isDirectory())) throw error
+  } finally { closeSync(fd) }
 }
 
 export function writeJsonDurable(path: string, value: unknown): void {
