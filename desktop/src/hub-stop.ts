@@ -277,7 +277,9 @@ export class HubStopRun {
         const start = pid ? await this.deps.startTimeOf(pid) : null
         if (!pid || !start || core.state !== "running") {
           this.deps.log("[hub-stop] core no está corriendo bajo la parada")
-          if (++this.identityFailures < (this.deps.maxIdentityFailures ?? 30)) return null
+          // Un cierre de la persona no puede quedar esperando una identidad que no llega: tras 3 intentos se sigue (y se cancela la parada
+          // con core_identity_unavailable). Una actualización sigue fail-closed: sin identidad no hay commit.
+          if (++this.identityFailures < (this.deps.maxIdentityFailures ?? (this.input.reason === "quit" ? 3 : 30))) return null
           const released = await client.cancel(stopId, "core_identity_unavailable")
           return { kind: "failed", code: "core_identity_unavailable", view, uncertain: released.view?.state !== "cancelled" }
         }
