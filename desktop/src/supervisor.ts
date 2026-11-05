@@ -78,6 +78,8 @@ export class CoreSupervisor extends EventEmitter {
   private restarts = 0
   private windowStart = 0
   private stopping = false
+  private holds = 0
+  private restartPending = false
   private readonly opts: {
     command: string
     args: readonly string[]
@@ -185,7 +187,31 @@ export class CoreSupervisor extends EventEmitter {
     })
   }
 
+  /**
+   * Mientras haya una retención, una caída inesperada no reinicia el proceso por su cuenta: quien la pidió (un lease de
+   * actualización) lo trata como perdido y la libera, y recién entonces se reinicia. Devuelve la función que libera.
+   */
+  hold(): () => void {
+    this.holds++
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.holds--
+      if (this.holds === 0 && this.restartPending) {
+        this.restartPending = false
+        if (!this.stopping) void this.handleUnexpectedExit()
+      }
+    }
+  }
+
   private async handleUnexpectedExit(): Promise<void> {
+    if (this.holds > 0) {
+      this.restartPending = true
+      this.setState('restarting')
+      this.emit('log', '[supervisor] el proceso terminó con una retención activa; no se reinicia hasta liberarla')
+      return
+    }
     const now = Date.now()
     if (now - this.windowStart > this.opts.restartWindowMs) {
       this.windowStart = now

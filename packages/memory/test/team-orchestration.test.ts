@@ -198,7 +198,7 @@ it('limita chat cross-channel al hilo raíz y a miembros vinculados con proceden
   await teams.call('team_join',{session_key:child.key,invitation:token},child.agent)
   const report=await chat.call('chat_send',{session_key:child.key,thread_id:prepared.root_thread_id,text:'Resultado desde hijo',mentions:[master.session.id],request_id:'child-report'},child.agent)
   const reply=await chat.call('chat_send',{session_key:master.key,thread_id:prepared.root_thread_id,text:'Siguiente paso',mentions:[child.session.id],request_id:'master-reply'},master.agent)
-  expect((await chat.call('chat_read',{thread_id:prepared.root_thread_id})).items.map((item:any)=>item.author_id)).toEqual([child.session.id,master.session.id])
+  expect((await chat.call('chat_read',{thread_id:prepared.root_thread_id})).items.map((item:any)=>item.author_id)).toEqual([master.session.id,child.session.id,master.session.id])
   const event=(await db.query("SELECT * FROM chat_team_events WHERE type='chat_message' AND payload->>'message_id'=$1",[report.id]))[0]
   expect(event).toMatchObject({actor_session_id:child.session.id,source_channel_id:child.channel.id,target_thread_id:prepared.root_thread_id})
   expect(reply).toBeTruthy()
@@ -370,7 +370,7 @@ it('restaura planes activos pausados, invalida invitaciones y conserva eventos/p
   const master=await session('master'),catalog=new Catalog(),orca=new Orca(),parent={id:master.workspace,path:dir,repo_id:'repo',head};orca.spaces.set(parent.id,parent)
   const teams=new TeamOrchestration(chat,catalog,orca),prepared=await teams.call('team_prepare',{session_key:master.key,objective:'Backup',base_revision:head,members:members(1)},master.agent)
   await teams.call('team_launch',{session_key:master.key,plan_id:prepared.id,digest:prepared.digest,human_instruction:'Orden explícita'},master.agent)
-  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(23)
+  const backup=JSON.parse(await readBackup(store,(await exportMemory(store)).id));expect(backup.schema_version).toBe(25)
   const target=join(dir,'restore'),restored=new MemoryDatabase(join(target,'memory.sqlite'));await restored.migrate()
   try {await restoreMemory(new MemoryStore(restored,target),backup)
     expect((await restored.query('SELECT state FROM chat_team_plans WHERE id=$1',[prepared.id]))[0].state).toBe('paused')

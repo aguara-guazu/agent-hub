@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import staticPlugin from '@fastify/static'
 import { buildApp } from './app.js'
+import { exitWithParent } from "@agenthub/gateway"
 
 const host = process.env.AGENTHUB_HUB_HOST?.trim() || '127.0.0.1'
 const port = Number.parseInt(process.env.AGENTHUB_HUB_PORT || '8765', 10)
@@ -54,3 +55,8 @@ if (process.env.AGENTHUB_STDIN_LIFELINE === '1') {
   process.stdin.once('end', exitAfterShutdown)
   process.stdin.once('close', exitAfterShutdown)
 }
+exitWithParent(() => {
+  console.error("[core] el proceso padre terminó; apagado ordenado")
+  setTimeout(() => process.exit(1), 10_000).unref()
+  exitAfterShutdown()
+})

@@ -1,3 +1,5 @@
+import { hubLog } from "./report.js"
+import { sweepIssueDrafts } from "./diagnostic-report.js"
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { SharedNetwork } from './sharing/network.js'
 import { UpdateHints } from './sharing/update-hint.js'
@@ -32,6 +34,8 @@ import type { ActionTickResult, AttentionReaders, ScheduleAutomation } from './s
 import './schedule-templates.js'
 import './daily-templates.js'
 import { createFleetRecovery } from './fleet-recovery.js'
+import { HubStopCoordinator } from "./hub-stop.js"
+import { exportMemory } from "./backup.js"
 
 const REPLY_TICK_MS = 60_000
 const ACTION_TICK = 'action_tick', ACTION_TICK_MS = 30_000
@@ -103,11 +107,13 @@ export class MemoryService {
   get admissionGate(): AdmissionGate { return this.admission }
   readonly openCode: OpenCodeRuntime
   readonly cliExtraction: CliExtractionRuntime
-  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; hints: UpdateHints; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: () => AttentionReaders } } | null = null
+  private current: { db: MemoryDatabase; store: MemoryStore; ai: MemoryAI; operations: MemoryOperations; runner: JobRunner; network: SharedNetwork; hints: UpdateHints; stop: HubStopCoordinator; schedules?: { store: ScheduleStore; admin: ScheduleAdmin; runtime: ScheduleRuntime; attention: () => AttentionReaders } } | null = null
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
+  private admissionDb: MemoryDatabase | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true,
-    private automation: ScheduleAutomation = { enabled: () => true }) {
+    private automation: ScheduleAutomation = { enabled: () => true }, private startupTransaction?: string,
+    private legacyGateways?: () => Promise<import("./update-drain.js").LegacyGatewayScan>) {
     this.nativeEmbeddings = new NativeEmbeddingPool(directory)
     this.media = new MediaRuntime(directory)
     this.openCode = new OpenCodeRuntime(directory)
@@ -131,14 +137,23 @@ export class MemoryService {
       throw new MemoryError(503, 'No se pudo abrir la base de memoria local')
     }
     const store = new MemoryStore(db, this.directory)
-    // A gate left published by a core that died while closed would hold back the worker's claims until it expires.
-    if (this.orchestrationOwner) await db.query("DELETE FROM settings WHERE key=$1", [ADMISSION_SETTING]).catch(() => undefined)
+    this.admissionDb = db
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media,
       { catalog: new TeamCatalog(this.cliExtraction), orca: chat => new HubTeamRuntime(chat,this.directory,this.collaborationEnabled,{ admission: this.admission }) }, this.collaborationEnabled)
     operations.admission = this.admission
     operations.chat.usageEnabled=this.usageEnabled
-    if (this.orchestrationOwner) await operations.teams?.initialize()
+    const stop = new HubStopCoordinator({ db, chat: operations.chat,
+      ...(operations.fleet instanceof HubTeamRuntime ? { fleet: operations.fleet } : {}), admission: this.admission,
+      backup: () => exportMemory(store), log: hubLog(this.directory), ...(this.startupTransaction ? { startupTransaction: this.startupTransaction } : {}),
+      ...(this.legacyGateways ? { legacyGateways: this.legacyGateways } : {}) })
+    if (this.orchestrationOwner) {
+      operations.hubStop = stop
+      await stop.initialize()
+      await operations.teams?.initialize()
+      hubLog(this.directory).event("service", "start", { pid: process.pid, node: process.version })
+      sweepIssueDrafts(this.directory)
+    }
     const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
     const network = new SharedNetwork(operations.sharing)
     // Inter-hub channels ride the same P2P network; the tools reach it through these services.
@@ -156,7 +171,7 @@ export class MemoryService {
     if (this.orchestrationOwner) { observeReceipts(store, message => hints.observe(message)); void hints.sweep().catch(() => undefined) }
     // The service is published only after the project backfill settled, so the first read already sees repaired channels.
     await operations.interhub.ready
-    this.current = { db, store, ai, operations, runner, network, hints }
+    this.current = { db, store, ai, operations, runner, network, hints, stop }
     if (this.orchestrationOwner) this.current.schedules = this.createSchedules(db, store, ai, operations)
     return this.current
   }
@@ -268,7 +283,7 @@ export class MemoryService {
   }
   /** Mirrors the gate into `settings` so the worker process refuses claims inside the statement that would take a job. */
   private async publishAdmission(state: { token: string; until: number } | null): Promise<void> {
-    const { db } = await this.get()
+    const db = this.admissionDb ?? (await this.get()).db
     if (state) await db.query("INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [ADMISSION_SETTING, JSON.stringify(state)])
     else await db.query("DELETE FROM settings WHERE key=$1", [ADMISSION_SETTING])
   }
@@ -302,5 +317,35 @@ export class MemoryService {
     const status=member ? await operations.fleet?.status?.(String(member.id)) : undefined
     return !!status && ['starting','busy','idle','waiting_input'].includes(status.state ?? '')
   }
-  async close() { this.defaults.stop(); await this.initializing?.catch(() => {}); await this.current?.schedules?.runtime.close(); await this.media.close(); await this.nativeEmbeddings.close(); await this.cliExtraction.close(); await this.openCode.close(); await this.defaults.idle(); const current = this.current; this.current = null; if (current) { await current.operations.fleet?.close?.(); current.operations.closeInterhub(); await current.network.stop(); await current.db.close() } }
+  async close() {
+    if (this.orchestrationOwner) hubLog(this.directory).event("service", "stop", { pid: process.pid })
+    this.defaults.stop()
+    await this.initializing?.catch(() => {})
+    const failures: unknown[] = []
+    const step = async (action: () => unknown) => { try { await action() } catch (error) { failures.push(error) } }
+    const fleetErrors: unknown[] = []
+    const closeFleet = async (fleet: { close?: () => Promise<unknown> } | undefined) => {
+      const unconfirmed = await fleet?.close?.()
+      if (Array.isArray(unconfirmed) && unconfirmed.length) throw Object.assign(new Error("fleet_stop_unconfirmed"), { member_ids: unconfirmed })
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { await closeFleet(this.current?.operations.fleet); fleetErrors.length = 0; break } catch (error) { fleetErrors.push(error) }
+    }
+    await step(() => this.current?.schedules?.runtime.close())
+    await step(() => this.media.close())
+    await step(() => this.nativeEmbeddings.close())
+    await step(() => this.cliExtraction.close())
+    await step(() => this.openCode.close())
+    await step(() => this.defaults.idle())
+    const current = this.current
+    this.current = null
+    if (current) {
+      try { await closeFleet(current.operations.fleet); fleetErrors.length = 0 } catch (error) { fleetErrors.push(error) }
+      await step(() => current.operations.closeInterhub())
+      await step(() => current.network.stop())
+      await step(() => current.db.close())
+    }
+    if (fleetErrors.length) throw fleetErrors[0]
+    if (failures.length) throw failures[0]
+  }
 }

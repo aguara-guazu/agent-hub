@@ -40,6 +40,28 @@ export interface VersionInfo {
   checkedAt: string
 }
 
+export interface UpdateReason { code: string; count?: number }
+
+/** Estado visible de la actualización automática. */
+export interface UpdateStatusView {
+  enabled: boolean
+  phase: "idle" | "checking" | "available" | "downloading" | "ready" | "postponed" | "applying" | "failed" | "disabled"
+  version?: string
+  trust?: "integrity_only" | "publisher_authenticated"
+  reasons?: UpdateReason[]
+  error?: string
+  /** Avance de la parada coordinada del Hub previa a aplicar la actualización. */
+  stop?: {
+    state: string
+    deadlineAt?: string
+    forceAt?: string
+    graceStartedAt?: string
+    waiting?: { coordinators: number; leadersInTurn: number; members: number }
+    errorCode?: string
+    actions?: string[]
+  }
+}
+
 export interface AgentHubBridge {
   getCoreStatus(): Promise<CoreStatus>
   restartCore(): Promise<void>
@@ -63,6 +85,11 @@ export interface AgentHubBridge {
   getVersionInfo?(): Promise<VersionInfo>
   /** Versión de la app en ejecución, sin consultar la red. Ausente en versiones anteriores del escritorio. */
   getAppVersion?(): Promise<string>
+  /** Interruptor de actualizaciones automáticas (activado por defecto). Ausente en versiones anteriores del escritorio. */
+  getUpdateStatus?(): Promise<UpdateStatusView>
+  getAutoUpdate?(): Promise<boolean>
+  /** Enciende o apaga las actualizaciones automáticas; devuelve el valor vigente. Ausente en versiones anteriores del escritorio. */
+  setAutoUpdate?(enabled: boolean): Promise<boolean>
 }
 
 declare global {

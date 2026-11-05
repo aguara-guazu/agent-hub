@@ -21,8 +21,8 @@ export function Redirect({ to, keepSearch = true }: { to: string | ((params: Rec
 const KEPT = ["channel", "thread", "plan"] as const
 
 /**
- * Ya no hay vista global de colaboración: `/collaboration` y `/memory/collaboration` (enlaces de notificaciones,
- * `approval_url` de los planes de equipo) llevan a la pestaña del proyecto dueño del canal o del plan.
+ * Ya no hay vista global de colaboración: `/collaboration` y `/memory/collaboration` (enlaces de notificaciones y de planes
+ * de equipo) llevan a la pestaña del proyecto dueño del canal o del plan.
  * Sin proyecto resoluble (canal sin proyecto, sin parámetros o error), a `/projects`.
  */
 export function CollaborationRedirect() {

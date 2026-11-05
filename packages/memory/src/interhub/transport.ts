@@ -415,6 +415,7 @@ export class InterhubTransport implements NetworkExtension {
       const threads = await db.query(`SELECT t.id,t.title,t.created_at,s.id AS author_id,COALESCE(s.nickname,s.label) AS author_label,s.cli_kind,c.leader_id
         FROM chat_threads t JOIN chat_sessions s ON s.id=t.created_by JOIN chat_channels c ON c.id=t.channel_id
         WHERE t.channel_id=$1 AND s.cli_kind NOT IN ($2,'hub') AND NOT EXISTS(SELECT 1 FROM interhub_outbox o WHERE o.key='thread:'||t.id)
+        AND EXISTS(SELECT 1 FROM chat_messages fm WHERE fm.thread_id=t.id)
         ORDER BY t.created_at,t.id LIMIT 200`, [channelId, INTERHUB_REMOTE_CLI_KIND])
       for (const t of threads) {
         const author = { id: String(t.author_id), label: String(t.author_label), cli_kind: String(t.cli_kind), role: t.author_id === t.leader_id ? "leader" as const : "member" as const }

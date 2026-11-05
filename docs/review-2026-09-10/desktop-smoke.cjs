@@ -14,6 +14,17 @@ app.setPath('userData', path.join(scratch, 'electron'))
 const evidence = []
 let core
 let window
+async function stopCore() {
+  if (!core || core.exitCode !== null || core.signalCode !== null) return
+  const exited = once(core, 'exit')
+  core.stdin?.end()
+  core.kill('SIGTERM')
+  if (!await Promise.race([exited.then(() => true), delay(5000).then(() => false)])) {
+    if (core.exitCode === null && core.signalCode === null) core.kill('SIGKILL')
+    await exited
+  }
+}
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void stopCore().finally(() => app.quit()) })
 function record(check, values) { const entry = { check, ...values }; evidence.push(entry); console.log(JSON.stringify(entry)) }
 async function until(check) {
   for (let n = 0; n < 150; n++) { if (await check()) return; await delay(100) }
@@ -32,8 +43,9 @@ app.whenReady().then(async () => {
       AGENTHUB_DATABASE_PATH: path.join(scratch, 'hub.db'),
       AGENTHUB_JWT_SECRET: 'desktop-jwt-' + 'y'.repeat(32),
       AGENTHUB_DESKTOP_BOOTSTRAP_TOKEN: bootstrap,
+      AGENTHUB_STDIN_LIFELINE: '1',
       AGENTHUB_CONSOLE_DIST: path.join(process.cwd(), 'frontend/dist') },
-    stdio: ['ignore', 'ignore', 'ignore'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   })
   await until(async () => { try { return (await fetch(base + '/health')).ok } catch { return false } })
   const session = await fetch(base + '/api/auth/desktop-session', { method: 'POST', headers: { Authorization: `Bearer ${bootstrap}` } }).then(r => r.json())
@@ -88,12 +100,7 @@ app.whenReady().then(async () => {
   process.exitCode = 1
 }).finally(async () => {
   if (window && !window.isDestroyed()) window.destroy()
-  if (core && core.exitCode === null) {
-    const exited = once(core, 'exit')
-    core.kill('SIGTERM')
-    if (!await Promise.race([exited.then(() => true), delay(2000).then(() => false)])) core.kill('SIGKILL')
-    await exited
-  }
+  await stopCore()
   fs.writeFileSync(path.join(__dirname, 'desktop-evidence.json'), JSON.stringify(evidence, null, 2) + '\n')
   app.quit()
 })

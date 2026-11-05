@@ -42,6 +42,16 @@ export class AdmissionGate {
     return token
   }
 
+  /** Extends only the current closure and republishes its deadline; stale owners cannot renew another token. */
+  async renewConfirmed(token: symbol): Promise<boolean> {
+    if (this.token !== token) return false
+    clearTimeout(this.expiry)
+    this.expiry = setTimeout(() => this.reopen(token), ADMISSION_MAX_CLOSED_MS)
+    this.expiry.unref()
+    this.publish({ token: token.description!, until: Date.now() + ADMISSION_MAX_CLOSED_MS })
+    try { await this.flush(); return !this.failure && this.token === token } catch { return false }
+  }
+
   /** A token that is not the current one changes nothing and is logged: a stale holder never reopens somebody else's closure. */
   reopen(token: symbol): boolean {
     if (this.token !== token) { console.error("[admission] reopen ignorado: el token no es el vigente"); return false }
@@ -52,6 +62,13 @@ export class AdmissionGate {
   }
 
   isClosed(): boolean { return this.token !== null }
+
+  /** Republishes the open state after a failed delete; never opens a live local closure. */
+  async confirmOpen(): Promise<boolean> {
+    if (this.token) return false
+    this.publish(null)
+    try { await this.flush(); return !this.failure && !this.token } catch { return false }
+  }
 
   /** `false` while closed: the caller postpones (the work stays queued) and does not throw. */
   admit(_kind?: AdmissionKind): boolean { return this.token === null }

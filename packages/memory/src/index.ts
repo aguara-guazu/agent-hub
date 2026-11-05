@@ -4,6 +4,7 @@ export * from './store.js'
 export * from './service.js'
 export * from './operations.js'
 export * from './routes.js'
+export { updateSecretAuthorizer, UPDATE_SECRET_HEADER } from './update-drain.js'
 export * from './config.js'
 export * from './transcript.js'
 export * from './people.js'
@@ -16,6 +17,7 @@ export type { JiraTaskReader } from './tasks.js'
 export { collaborationSkill } from './sharing/skill.js'
 
 export { localCollaborationSkill } from './local-chat-skill.js'
+export { hubIssueSkill } from "./hub-issue-skill.js"
 
 export { responsabilidadSkill } from './responsabilidad-skill.js'
 export * from './project-status.js'

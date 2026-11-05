@@ -9,7 +9,7 @@ import type { SupervisorState } from "./supervisor.js"
  * salen del idioma activo de `i18n.ts`: el main la vuelve a construir al cambiarlo.
  */
 
-export type TrayAction = "show" | "hide" | "toggle-autostart" | "restart-core" | "restart-client" | "quit"
+export type TrayAction = "show" | "hide" | "toggle-autostart" | "restart-core" | "restart-client" | "cancel-quit" | "quit"
 
 export interface TrayItem {
   id?: TrayAction
@@ -26,6 +26,8 @@ export interface TrayViewModel {
   showShortcut?: { label: string; registered: boolean } | null
   /** Hay un cliente de escritorio que sigue con una lista de herramientas vieja. */
   clientRestart?: boolean
+  /** Cierre de la persona en espera de la parada coordinada: texto de estado con la cuenta regresiva. */
+  quitStatus?: string | null
 }
 
 function coreLabel(state: SupervisorState): string {
@@ -49,6 +51,7 @@ function coreLabel(state: SupervisorState): string {
 export function buildTrayTemplate(vm: TrayViewModel): TrayItem[] {
   return [
     { label: coreLabel(vm.coreState), enabled: false },
+    ...(vm.quitStatus ? [{ label: vm.quitStatus, enabled: false }] : []),
     { type: "separator" },
     vm.windowVisible
       ? { id: "hide", label: t("tray.hide"), type: "normal" }
@@ -72,6 +75,7 @@ export function buildTrayTemplate(vm: TrayViewModel): TrayItem[] {
     ...(vm.clientRestart ? [{ id: "restart-client" as const, label: t("tray.restartClient"), type: "normal" as const }] : []),
 
     { type: "separator" },
+    ...(vm.quitStatus ? [{ id: "cancel-quit" as const, label: t("tray.cancelQuit"), type: "normal" as const }] : []),
     { id: "quit", label: t("tray.quit"), type: "normal" },
   ]
 }

@@ -9,6 +9,7 @@ import { hash } from './store.js'
 import { deriveStandingPlan, DERIVED_APPROVAL_SOURCE, type ApprovedItem, type StoredDelegation } from './project-automation.js'
 import type { Sql } from './database.js'
 import { markSessionActivity } from './chat-wrap-up.js'
+import { channelMembership } from "./chat-access.js"
 import type { ExtractionCli } from './cli-extraction.js'
 import type { UsageQuotas } from './usage-quotas.js'
 
@@ -43,6 +44,11 @@ const CONTINUATION_MARK = '--- Continuation after quota ---'
 const LEGACY_CONTINUATION_MARK = '--- Continuación tras cuota ---'
 const CONTINUATION_NOTE = `${CONTINUATION_MARK}\nPrevious conversation stopped on exhausted quota; the Hub could not resume that thread. New conversation, same worktree: check git status, git log, your inbox and last work_update, then continue exactly the task in progress.`
 const TERMINAL_RUNTIME = ['stopped', 'exited', 'failed']
+/** Error a start or clear leaves on the replaced session's unhandled deliveries; the next join carries them over. */
+const REPLACED_DELIVERY = "Conversación del worker reemplazada"
+const CARRY_OVER_MS = 24 * 60 * 60_000
+const CARRY_OVER_LIMIT = 30
+const RESUME_GUIDANCE = " RELAUNCH: you replace an earlier conversation of this member and lost its context. resume lists its last work (status, summary, report_message_id) and the mentions it left unhandled, now delivered to you: read memory_chat_inbox and your work_thread_id first, continue from the last report, and never redo finished work or restart the task from scratch."
 /** A derived plan whose workers may still be running or whose stop was never confirmed keeps its slot and stays visible to later closes, whatever its logical state. */
 const HOLDS_PROCESS = `EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=chat_team_plans.id AND m.launch_handle IS NOT NULL
   AND NOT EXISTS(SELECT 1 FROM process_incidents i WHERE i.subject_kind='fleet_member' AND i.subject_id=m.id AND i.generation=json_extract(m.runtime,'$.generation') AND i.action IN ('terminated','already_exited'))
@@ -93,8 +99,8 @@ const controlInput = z.object({ ...session, plan_id:identifier, member_id:identi
 
 export const teamDefinitions = {
   team_catalog: ['Check readiness before researching the ticket: coordinator identity, Git/virtual workspace, CLIs, models. Returns readiness (blockers, actions), preferred_backend. repository_path: another repo, same session. Listed models: quota/access unverified.', z.object({...session,repository_path:z.string().min(1).max(4000).optional()}).strict()],
-  team_prepare: ['Prepare an immutable plan (no processes, worktrees, or channel creation/activation). task_key labels the task, keeping its channel and coordinator. Needs an active channel from chat_create_channel(task_key,name), created after the person authorizes it. repository_path: workers repo. base_revision: full hash of any local commit, HEAD or not (default HEAD/virtual). Propose the editable plan; confirm the exact plan before launch.', prepareInput],
-  team_launch: ['Launch the exact plan the person chose. Needs plan_id, unchanged digest and human_instruction quoting what the person said. Keeps native permissions; never downgrades model/effort.', launchInput],
+  team_prepare: ['Prepare an immutable plan (no processes, worktrees, or channel creation/activation). task_key labels the task, keeping its channel and coordinator. Needs an active channel from chat_create_channel(task_key,name), created after the person authorizes it. repository_path: workers repo. base_revision: full hash of any local commit, HEAD or not (default HEAD/virtual). Show the person only composition, permissions, channel and base commit, never plan_id, digest or URLs; confirm in conversation before launch.', prepareInput],
+  team_launch: ['Launch the plan the person confirmed in conversation. Needs plan_id and unchanged digest (internal, never shown to the person) and human_instruction quoting what the person said. Keeps native permissions; never downgrades model/effort.', launchInput],
   team_answer: ['Current leader only: answer a pending native question from a Hub worker in the active plan. Needs current generation and question_id; answers maps question IDs to {answers:[text]}. Use available context or ask the person first. Answers are not stored in events or sent elsewhere.',answerInput],
   team_control: ['Control a Hub member of the approved plan: start, stop, interrupt, send, clear, edit (role/task/prompt). Needs current generation. clear: new conversation, same worktree. CLI/model changes need another prepared, confirmed plan. Metadata only; never terminal, logs or transcripts.', controlInput],
   team_status: ['View plan, persisted effects, joins and uncertain outcomes; never exposes invitations or keys.', statusInput],
@@ -113,7 +119,74 @@ export class TeamOrchestration {
   private recovery?:Promise<void>
   private readonly memberOperations=new Map<string,Promise<unknown>>()
   constructor(readonly chat:LocalChat, private readonly catalog:TeamCatalog, private readonly orca:TeamOrca,
-    private readonly usage?:Pick<UsageQuotas,'forCli'>, private readonly collaborationEnabled:()=>boolean=()=>true) {}
+    private readonly usage?:Pick<UsageQuotas,'forCli'>, private readonly collaborationEnabled:()=>boolean=()=>true) {
+    if(orca.provider==="hub")orca.onUnjoinedIdle=(memberId,generation)=>this.retryOnboarding(memberId,generation)
+  }
+  /**
+   * A launched worker that ends its first turn idle without joining gets one more onboarding prompt with a fresh invitation.
+   * A second miss is recorded so team_status shows onboarding: not_joined; the Hub never retries again for that generation.
+   */
+  async retryOnboarding(memberId:string,generation:string) {
+    await this.serial(memberId,async()=>{
+      const load=async()=>(await this.db.query(`SELECT m.*,t.state AS team_state FROM chat_team_members m JOIN chat_team_plans t ON t.id=m.team_id WHERE m.id=$1`,[memberId]))[0]
+      const generationOf=(row:Record<string,any>|undefined)=>(typeof row?.runtime==="string"?JSON.parse(row.runtime):row?.runtime)?.generation
+      let member=await load()
+      if(!member || !activePlan(member.team_state) || member.session_id || member.invitation_used_at || !this.collaborationEnabled()
+        || generationOf(member)!==generation)return
+      if(member.state==="launch_intent") {
+        // The turn ended before the launch receipt was persisted; the launch evaluates it again once the member is accepted.
+        const pending=this.pendingUnjoinedIdle.get(memberId) ?? new Set<string>()
+        pending.add(generation)
+        this.pendingUnjoinedIdle.set(memberId,pending)
+        return
+      }
+      if(member.state!=="accepted" || !member.launch_handle)return
+      const done=(await this.db.query(`SELECT type FROM chat_team_events WHERE member_id=$1 AND type IN ('onboarding_retry','onboarding_retry_failed','onboarding_not_joined')
+        AND json_extract(payload,'$.generation')=$2`,[memberId,generation])).map(row=>String(row.type))
+      if(done.includes("onboarding_not_joined"))return
+      if(done.includes("onboarding_retry")) {
+        await this.event(this.db,member.team_id,member.id,"onboarding_not_joined",null,null,null,{generation})
+        return
+      }
+      check(this.orca.send,"El backend no permite enviar instrucciones",409)
+      // Last validation before rotating: the row and the live runtime are read again, never taken from the event that fired the hook.
+      member=await load()
+      const handle=member?.launch_handle ? String(member.launch_handle) : undefined
+      const observed=handle ? await this.orca.status?.(handle).catch(()=>undefined) : undefined
+      if(!member || !handle || !activePlan(member.team_state) || member.state!=="accepted" || member.session_id || member.invitation_used_at
+        || !member.invitation_hash || !(Date.parse(String(member.invitation_expires_at))>Date.now()) || !this.collaborationEnabled()
+        || generationOf(member)!==generation || observed?.generation!==generation || observed.state!=="idle")return
+      const previousHash=String(member.invitation_hash),previousExpires=String(member.invitation_expires_at)
+      const token=randomBytes(32).toString("base64url"),expires=new Date(Date.now()+30*60_000).toISOString(),nextHash=invitationHash(token)
+      const rotated=await this.db.query(`UPDATE chat_team_members SET invitation_hash=$2,invitation_expires_at=$3,updated_at=now()
+        WHERE id=$1 AND state='accepted' AND session_id IS NULL AND invitation_used_at IS NULL AND invitation_hash=$4 RETURNING id`,[memberId,nextHash,expires,previousHash])
+      if(!rotated.length)return
+      const relaunch=(await this.db.query("SELECT 1 FROM chat_team_events WHERE member_id=$1 AND type='joined' LIMIT 1",[memberId])).length>0
+      try {
+        const receipt=await this.orca.send(handle,this.workerPrompt(token,relaunch).replace("Agent Hub: ","Agent Hub: you have not joined your team yet. "))
+        // A resolved send can still carry a dead runtime: only a live receipt counts as delivery.
+        const state=(receipt as {state?:unknown} | null | undefined)?.state
+        if(state==="failed" || state==="unknown" || state==="stopped")throw new Error(`send_${state}`)
+      } catch(error) {
+        // Nothing confirmed the delivery, so the invitation goes back to the one the worker already holds.
+        await this.db.query(`UPDATE chat_team_members SET invitation_hash=$2,invitation_expires_at=$3,updated_at=now()
+          WHERE id=$1 AND session_id IS NULL AND invitation_used_at IS NULL AND invitation_hash=$4`,[memberId,previousHash,previousExpires,nextHash])
+        const reason=(error instanceof Error ? error.message : String(error)).split(token).join("[redacted]").split(/[\s:]/)[0]!.slice(0,80)
+        const final=done.includes("onboarding_retry_failed")
+        await this.event(this.db,member.team_id,member.id,final?"onboarding_not_joined":"onboarding_retry_failed",null,null,null,{generation,reason})
+        return
+      }
+      await this.event(this.db,member.team_id,member.id,"onboarding_retry",null,null,null,{generation})
+    })
+  }
+  private readonly pendingUnjoinedIdle=new Map<string,Set<string>>()
+  /** Evaluates again the idle turns that ended while the member was still launching, once its launch receipt is persisted. */
+  private resumeUnjoinedIdle(memberId:string) {
+    const pending=this.pendingUnjoinedIdle.get(memberId)
+    if(!pending)return
+    this.pendingUnjoinedIdle.delete(memberId)
+    for(const generation of pending)setImmediate(()=>{void this.retryOnboarding(memberId,generation).catch(()=>undefined)})
+  }
   private get db() { return this.chat.db }
   private derived?: DerivedPorts
   /** Wired once by the service owner; without it launchDerived is unavailable. */
@@ -310,9 +383,22 @@ export class TeamOrchestration {
         await sql.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,effort,role,task,prompt,capabilities,state,work_thread_id)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared',$1)`,[item.id,planId,item.ordinal,item.worktree_name,item.cli,item.model,item.effort ?? null,item.role,item.task,item.prompt,JSON.stringify(item.capabilities ?? null)])
       }
+      await this.seedThreads(sql,who.id,root.id,{objective:input.objective,base:baseRevision,permissions:document.permissions,members})
       await this.event(sql,planId,null,'prepared',who.id,channel.id,root.id,{digest})
       return this.view(planId,who,sql)
     })
+  }
+
+  private async seedThreads(sql:Sql,authorId:string,rootId:string,plan:{objective:string;base:string;permissions:string;
+    members:Array<{id:string;worktree_name:string;role:string;cli:string;model:string;effort?:string|null|undefined;task:string}>}) {
+    const add=async(threadId:string,kind:"proposal"|"fact",text:string)=>{
+      await sql.query("INSERT INTO chat_messages(id,thread_id,author_id,text,request_id,request_hash,kind) VALUES($1,$2,$3,$4,$5,$5,$6)",
+        [randomUUID(),threadId,authorId,text,`team-seed:${threadId}`,kind])
+    }
+    const lines=plan.members.map(item=>`- ${item.role}: ${item.cli} · ${item.model}${item.effort?` · esfuerzo ${item.effort}`:""} (${item.worktree_name})`)
+    await add(rootId,"proposal",["Equipo propuesto.",`Objetivo: ${plan.objective.slice(0,2000)}`,
+      `Base: ${plan.base==="virtual"?"carpeta virtual":`commit ${plan.base.slice(0,8)}`}`,`Permisos: ${plan.permissions}`,"Miembros:",...lines].join("\n"))
+    for(const item of plan.members)await add(item.id,"fact",`${item.role} (${item.worktree_name}): ${item.task}`)
   }
 
   private async resolveBase(parent:TeamWorkspace,base:string) {
@@ -426,10 +512,12 @@ export class TeamOrchestration {
     }
     await this.event(this.db,plan.id,member.id,'launch_receipt',who.id,who.channel_id,plan.root_thread_id,
       {kind:receipt.kind,prompt_outcome:receipt.prompt_outcome,operation_id:receipt.operation_id ?? null})
+    this.resumeUnjoinedIdle(member.id)
     return true
   }
 
   private async unknown(plan:Record<string,any>,member:Record<string,any>,phase:'workspace'|'launch',who:Record<string,any>,cause:unknown) {
+    this.pendingUnjoinedIdle.delete(String(member.id))
     const error=publicError(phase),receipt=this.recoveryReceipt(cause)
     await this.db.query(`UPDATE chat_team_members SET state=CASE WHEN state IN ('joined','closed') THEN state ELSE 'unknown' END,
       error=$2,operation_id=COALESCE($3,operation_id),launch_handle=COALESCE($4,launch_handle),updated_at=now() WHERE id=$1`,
@@ -465,6 +553,8 @@ export class TeamOrchestration {
       if(changed.length) {
         await sql.query(`UPDATE chat_team_members SET state=CASE WHEN state='joined' THEN state ELSE 'closed' END,
           invitation_hash=NULL,invitation_expires_at=NULL,updated_at=now() WHERE team_id=$1`,[plan.id])
+        await sql.query(`UPDATE chat_channels SET closed_at=COALESCE(closed_at,now()),archived_at=COALESCE(archived_at,now()),updated_at=now()
+          WHERE kind='virtual' AND id IN (SELECT channel_id FROM chat_team_members WHERE team_id=$1 AND channel_id IS NOT NULL)`,[plan.id])
         await sql.query(`UPDATE chat_deliveries SET cancelled_at=now(),error='Equipo cerrado por su líder' WHERE handled_at IS NULL AND cancelled_at IS NULL
           AND message_id IN (SELECT m.id FROM chat_messages m JOIN chat_threads h ON h.id=m.thread_id
             WHERE h.id=$1 OR h.team_root_thread_id=$1)`,[plan.root_thread_id])
@@ -721,6 +811,7 @@ export class TeamOrchestration {
           await sql.query(`INSERT INTO chat_team_members(id,team_id,ordinal,worktree_name,cli,model,effort,role,task,prompt,capabilities,state,work_thread_id)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared',$1)`,[item.id,planId,item.ordinal,item.worktree_name,item.cli,item.model,item.effort ?? null,item.role,item.task,item.prompt,JSON.stringify(item.capabilities ?? null)])
         }
+        await this.seedThreads(sql,who.id,root.id,{objective:derived.objective,base:baseRevision,permissions:document.permissions,members})
         await this.event(sql,planId,null,'prepared',who.id,channel.id,root.id,{digest:derived.digest,delegation_version:input.delegation_version,follow_up_ref:followUp.ref})
       })
     } catch(error) {
@@ -847,19 +938,39 @@ export class TeamOrchestration {
           AND child.closed_at IS NULL AND ${this.orca.provider==='hub'?'child.path=m.workspace_path':'child.orca_workspace_id=m.workspace_id'}`,[member.id,digest,who.id]))[0]
         check(current && activePlan(current.team_state) && current.leader_id===member.created_by && !current.leader_closed && !current.leader_removed,
           'El líder master o el equipo ya no están vigentes',409)
+        // A relaunched member keeps the channel of its first conversation; the provisional channel of the new conversation is retired.
+        const provisionalId=String(who.channel_id)
+        let channelId=provisionalId
+        const priorId=(await sql.query("SELECT channel_id FROM chat_team_members WHERE id=$1",[member.id]))[0]?.channel_id ?? null
+        if(priorId && priorId!==provisionalId) {
+          const stable=(await sql.query("SELECT * FROM chat_channels WHERE id=$1",[priorId]))[0]
+          check(stable && stable.kind==="virtual" && !stable.closed_at && !stable.deleted_at
+            && (this.orca.provider==="hub"?stable.path===member.workspace_path:stable.orca_workspace_id===member.workspace_id),
+          "El canal estable de este miembro ya no está disponible o no coincide con su worktree. Consultá team_status y avisale al coordinador; la invitación no se consume.",409)
+          channelId=String(priorId)
+          await sql.query("UPDATE chat_sessions SET channel_id=$2 WHERE id=$1",[who.id,channelId])
+          await sql.query("UPDATE chat_turns SET channel_id=$3 WHERE session_id=$1 AND channel_id=$2",[who.id,provisionalId,channelId])
+          await sql.query("UPDATE chat_status_notices SET channel_id=$2 WHERE channel_id=$1",[provisionalId,channelId])
+          await sql.query("UPDATE usage_quota_notices SET channel_id=$2 WHERE channel_id=$1",[provisionalId,channelId])
+          await sql.query("UPDATE chat_channels SET closed_at=COALESCE(closed_at,now()),leader_id=NULL,updated_at=now() WHERE id=$1 AND kind='virtual' AND activated_at IS NULL",[provisionalId])
+        }
         const used=await sql.query(`UPDATE chat_team_members SET state='joined',invitation_used_at=now(),invitation_hash=NULL,session_id=$2,channel_id=$3,updated_at=now()
-          WHERE id=$1 AND invitation_used_at IS NULL AND invitation_hash=$4 RETURNING *`,[member.id,who.id,who.channel_id,digest])
+          WHERE id=$1 AND invitation_used_at IS NULL AND invitation_hash=$4 RETURNING *`,[member.id,who.id,channelId,digest])
         check(used.length,'La invitación ya fue consumida',409)
         // The approved invitation also authorizes this worker's virtual conversation.
-        await sql.query("UPDATE chat_channels SET activated_at=COALESCE(activated_at,now()),leader_id=COALESCE(leader_id,$2) WHERE id=$1 AND kind='virtual' AND closed_at IS NULL",[who.channel_id,who.id])
-        await this.event(sql,member.team_id,member.id,'joined',who.id,who.channel_id,member.root_thread_id,{})
+        await sql.query(`UPDATE chat_channels SET activated_at=COALESCE(activated_at,now()),
+          leader_id=CASE WHEN leader_id IS NULL OR leader_id IN (SELECT id FROM chat_sessions WHERE closed_at IS NOT NULL) THEN $2 ELSE leader_id END
+          WHERE id=$1 AND kind='virtual' AND closed_at IS NULL`,[channelId,who.id])
+        const resume=await this.carryOver(sql,member,String(who.id))
+        await this.event(sql,member.team_id,member.id,'joined',who.id,channelId,member.root_thread_id,{})
         const plan=(await sql.query('SELECT * FROM chat_team_plans WHERE id=$1',[member.team_id]))[0]!
         const peers=await sql.query('SELECT id,session_id,role,task,cli,model,state,work_thread_id FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal,id',[member.team_id])
         return {team_id:member.team_id,member_id:member.id,root_thread_id:member.root_thread_id,work_thread_id:member.work_thread_id,master_channel_id:member.master_channel_id,
-          master_session_id:member.created_by,session:{id:who.id,channel_id:who.channel_id},state:'joined',
+          master_session_id:member.created_by,session:{id:who.id,channel_id:channelId},state:'joined',
           task:member.task,role:member.role,prompt:member.prompt,peers,
           authorization:{...this.authorization(plan),assignment:plan.plan.members.find((entry:{id:string})=>entry.id===member.id)},source_workspace:plan.parent,
-          guidance:'Master (TL) coordinates from root_thread_id and decides technical matters within approved scope. The attached authorization shows provenance; it grants nothing beyond the plan and lifts no CLI restriction. Never ask the person directly, not even to re-approve an authorized action; ask the master via the Hub, mentioning master_session_id. On missing scope or a real blocker, tell the master the action, exact rule or error, and what is missing. Peers may request in-role subtasks in the team thread: answer them; escalate only conflicts or out-of-scope decisions to the TL. Work and report in work_thread_id (mention master_session_id); root_thread_id is general coordination. Peers may post in your thread and you in theirs. On join, record work and report; if blocked by a PR or other result, record waiting with it. Idle is not done. Write in the language of your task.'}
+          guidance:"Master (TL) coordinates from root_thread_id and decides technical matters within approved scope. The attached authorization shows provenance; it grants nothing beyond the plan and lifts no CLI restriction. Never ask the person directly, not even to re-approve an authorized action; ask the master via the Hub, mentioning master_session_id. On missing scope or a real blocker, tell the master the action, exact rule or error, and what is missing. Peers may request in-role subtasks in the team thread: answer them; escalate only conflicts or out-of-scope decisions to the TL. Each task's closing report goes to your work_thread_id (or to the work's own thread when it is in an inter-hub channel the coordinator can read) mentioning the plan coordinator (master_session_id), also when a peer assigned it; mention that peer too. root_thread_id is general coordination. Peers may post in your thread and you in theirs. On join, record work and report; if blocked by a PR or other result, record waiting with it. Idle is not done. Write in the language of your task."+(resume?RESUME_GUIDANCE:""),
+          ...(resume?{resume}:{})}
       })
       check(this.collaborationEnabled(),'La colaboración está deshabilitada',403)
       await this.orca.bind?.(member.id,who.id)
@@ -867,8 +978,48 @@ export class TeamOrchestration {
     })
   }
 
-  private workerPrompt(token:string) {
+  private workerPrompt(token:string,relaunch=false) {
     return `Agent Hub: pick a nickname; register with memory_chat_join and memory_chat_set_nick, keeping your received identity/session_key. Then memory_team_join with invitation=${token} returns your task and team context. Single-use; expires.`
+      +(relaunch?" This relaunches an existing member: memory_team_join also returns resume (previous work and pending messages); continue from it instead of starting the task over.":"")
+  }
+  /**
+   * A relaunched member resumes its predecessors' state: their unhandled mentions move to the new session and their
+   * inter-hub associations follow while the associating leader still leads that channel. Returns null on a first join.
+   */
+  private async carryOver(sql:Sql,member:Record<string,any>,sessionId:string) {
+    const previous=(await sql.query(`SELECT DISTINCT actor_session_id AS id FROM chat_team_events WHERE team_id=$1 AND member_id=$2 AND type='joined'
+      AND actor_session_id IS NOT NULL AND actor_session_id<>$3`,[member.team_id,member.id,sessionId])).map(row=>String(row.id))
+    if(!previous.length)return null
+    const ids=JSON.stringify(previous)
+    await sql.query(`INSERT OR IGNORE INTO interhub_local_agents(channel_id,session_id,added_by)
+      SELECT a.channel_id,$2,a.added_by FROM interhub_local_agents a JOIN chat_channels c ON c.id=a.channel_id
+      WHERE a.session_id IN (SELECT value FROM json_each($1)) AND a.removed_at IS NULL AND c.kind='inter-hub' AND c.closed_at IS NULL AND c.deleted_at IS NULL
+      AND c.leader_id=a.added_by`,[ids,sessionId])
+    const candidates=await sql.query(`SELECT d.message_id,d.recipient_id,d.response_required,t.channel_id FROM chat_deliveries d
+      JOIN chat_messages m ON m.id=d.message_id JOIN chat_threads t ON t.id=m.thread_id JOIN chat_channels c ON c.id=t.channel_id
+      WHERE d.recipient_id IN (SELECT value FROM json_each($1)) AND d.error=$2 AND d.handled_at IS NULL AND d.response_message_id IS NULL
+      AND m.author_id<>$3 AND m.created_at>$4 AND t.state='open' AND c.closed_at IS NULL AND c.deleted_at IS NULL
+      ORDER BY m.created_at DESC LIMIT $5`,[ids,REPLACED_DELIVERY,sessionId,new Date(Date.now()-CARRY_OVER_MS).toISOString(),CARRY_OVER_LIMIT])
+    // Only what the new session may read: its team channels and the inter-hub channels whose association followed it.
+    const access=new Map<string,boolean>(),moved=[]
+    for(const row of candidates) {
+      const channel=String(row.channel_id)
+      if(!access.has(channel))access.set(channel,await channelMembership(sql,sessionId,channel)!==null)
+      if(access.get(channel))moved.push(row)
+    }
+    for(const row of moved) {
+      await sql.query("INSERT OR IGNORE INTO chat_deliveries(message_id,recipient_id,response_required) VALUES($1,$2,$3)",[row.message_id,sessionId,row.response_required])
+      await sql.query("UPDATE chat_deliveries SET error=$3 WHERE message_id=$1 AND recipient_id=$2",[row.message_id,row.recipient_id,"Transferida a la nueva conversación del worker"])
+    }
+    const work=await sql.query(`SELECT work_id,thread_id,status,waiting_for,summary,report_message_id,updated_at FROM chat_work_state
+      WHERE session_id IN (SELECT value FROM json_each($1)) ORDER BY updated_at DESC LIMIT 3`,[ids])
+    const pending=await sql.query(`SELECT m.id AS message_id,m.thread_id,COALESCE(s.nickname,s.label) AS author,m.created_at,d.response_required,
+      substr(replace(m.text,char(10),' '),1,200) AS excerpt FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id
+      LEFT JOIN chat_sessions s ON s.id=m.author_id WHERE d.recipient_id=$1 AND d.handled_at IS NULL AND d.cancelled_at IS NULL
+      ORDER BY m.created_at LIMIT $2`,[sessionId,CARRY_OVER_LIMIT])
+    const last=(await sql.query(`SELECT m.id AS message_id,m.created_at,COALESCE(s.nickname,s.label) AS author,substr(replace(m.text,char(10),' '),1,200) AS excerpt
+      FROM chat_messages m LEFT JOIN chat_sessions s ON s.id=m.author_id WHERE m.thread_id=$1 ORDER BY m.seq DESC LIMIT 1`,[member.work_thread_id]))[0] ?? null
+    return {previous_work:work,last_message_in_work_thread:last,pending_messages:pending.map(row=>({...row,response_required:Boolean(row.response_required)}))}
   }
   private authorization(plan:Record<string,any>) {
     return {plan_id:plan.id,digest:plan.digest,source:plan.approval_source ?? (plan.human_instruction?'legacy_record':null),
@@ -950,12 +1101,13 @@ export class TeamOrchestration {
         return item
       }
       let item=await load()
-      if(input.action==='edit') {
+      const effectiveAction = input.action === "clear" && this.orca.coordinatedStopping?.() ? "stop" : input.action
+      if(effectiveAction==='edit') {
         await this.db.query('UPDATE chat_team_members SET role=$2,task=$3,prompt=$4,updated_at=now() WHERE id=$1',
           [item.id,input.role ?? item.role,input.task ?? item.task,input.prompt ?? item.prompt])
-      } else if(input.action==='start' || input.action==='clear') {
+      } else if(effectiveAction==='start' || effectiveAction==='clear') {
         check(item.workspace_id && item.workspace_path,'El miembro todavía no tiene worktree confirmado',409)
-        if(input.action==='start')check(!item.runtime || ['stopped','exited','failed','unknown'].includes(item.runtime.state),
+        if(effectiveAction==='start')check(!item.runtime || ['stopped','exited','failed','unknown'].includes(item.runtime.state),
           'El worker ya está activo; usá clear para iniciar otra conversación',409)
         await this.validateMembers([item],who)
         await this.preflight([item],who)
@@ -988,15 +1140,15 @@ export class TeamOrchestration {
           if(item.session_id) {
             await sql.query("UPDATE chat_sessions SET state='offline',closed_at=COALESCE(closed_at,now()),lease_until=NULL WHERE id=$1",[item.session_id])
             await sql.query('UPDATE chat_channels SET leader_id=NULL WHERE id=$1 AND leader_id=$2',[item.channel_id,item.session_id])
-            await sql.query("UPDATE chat_deliveries SET cancelled_at=now(),error='Conversación del worker reemplazada' WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL",[item.session_id])
+            await sql.query("UPDATE chat_deliveries SET cancelled_at=now(),error=$2 WHERE recipient_id=$1 AND handled_at IS NULL AND cancelled_at IS NULL",[item.session_id,REPLACED_DELIVERY])
           }
-          await sql.query(`UPDATE chat_team_members SET state='launch_intent',session_id=NULL,channel_id=NULL,
+          await sql.query(`UPDATE chat_team_members SET state='launch_intent',session_id=NULL,
             invitation_used_at=NULL,invitation_hash=$2,invitation_expires_at=$3,launch_handle=NULL,error=NULL,updated_at=now() WHERE id=$1`,
             [item.id,invitationHash(token),expires])
         })
         // Revalidate authority immediately before the external launch; the per-member lock protects the rotated generation.
         await this.controlAuthority(plan.id,who)
-        const prompt=this.workerPrompt(token)
+        const prompt=this.workerPrompt(token,Boolean(item.runtime))
         try {
           const profile=plan.delegation_project_id?await this.derivedProfile(plan,item):undefined
           const receipt=await this.orca.launch({id:item.workspace_id,path:item.workspace_path,repo_id:item.workspace_repo_id,head:item.workspace_head},
@@ -1016,6 +1168,7 @@ export class TeamOrchestration {
             await this.db.query('UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL WHERE id=$1',[item.id])
             throw error
           }
+          this.resumeUnjoinedIdle(item.id)
         } catch(error) {
           await this.unknown(plan,item,'launch',who,error)
           await this.updateRuntime(item.id,{state:'unknown'})
@@ -1024,10 +1177,20 @@ export class TeamOrchestration {
       } else {
         check(item.launch_handle,'El miembro no tiene un runtime confirmado',409)
         item=await load()
-        if(input.action==='send') {
+        if(effectiveAction==='send') {
           check(this.orca.send,'El backend no permite enviar instrucciones',409)
-          await this.orca.send(item.launch_handle,input.text!)
-        } else if(input.action==='interrupt') {
+          try {await this.orca.send(item.launch_handle,input.text!)} catch(error) {
+            // Protocol codes reach the MCP caller as a generic failure; the coordinator needs a reason it can act on.
+            if(!(error instanceof Error) || !["fleet_not_idle","fleet_process_unavailable"].includes(error.message))throw error
+            const observed=await this.orca.status?.(item.launch_handle).catch(()=>undefined),state=observed?.state
+            check(state && !["busy","waiting_input","starting"].includes(state),!state
+              ?"No se pudo confirmar el estado del worker. Consultá team_status antes de reintentar."
+              :"El worker está en un turno y esta CLI no acepta instrucciones a mitad de turno. Mencionalo en su work_thread_id: el Hub se lo entrega al terminar el turno. Si hay que cortarlo, usá interrupt.",409)
+            // A live idle worker can refuse while another instruction is being submitted: transient, not a lost process.
+            check(state!=="idle","El worker está recibiendo otra instrucción en este momento. Reintentá en unos segundos o mencionalo en su work_thread_id.",409)
+            throw new MemoryError(409,`El Hub no controla un proceso vivo de este worker (estado ${state}). Consultá team_status y, si corresponde, relanzalo con team_control start.`)
+          }
+        } else if(effectiveAction==='interrupt') {
           check(this.orca.interrupt,'El backend no permite interrumpir',409)
           await this.orca.interrupt(item.launch_handle)
         } else {
@@ -1037,7 +1200,8 @@ export class TeamOrchestration {
           await this.db.query('UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL WHERE id=$1',[item.id])
         }
       }
-      await this.event(this.db,plan.id,item.id,'control',who.id,who.channel_id,plan.root_thread_id,{action:input.action})
+      await this.event(this.db,plan.id,item.id,'control',who.id,who.channel_id,plan.root_thread_id,
+        effectiveAction === input.action ? {action:input.action} : {action:effectiveAction,requested_action:input.action})
       return this.view(plan.id,who)
     })
   }
@@ -1054,6 +1218,11 @@ export class TeamOrchestration {
       // Status is a public snapshot, never a writer racing native events in the same generation.
       const activity=item.session_id ? (await sql.query('SELECT output_at FROM chat_sessions WHERE id=$1',[item.session_id]))[0]?.output_at : undefined
       item.runtime=this.publicRuntime(observed?{...item.runtime,...observed}:{...item.runtime,state:'unknown'},observed?.generation ?? item.runtime.generation,activity)
+      if(item.state==="accepted" && !item.session_id) {
+        const onboarding=(await sql.query(`SELECT type FROM chat_team_events WHERE member_id=$1 AND type IN ('onboarding_retry','onboarding_not_joined')
+          AND json_extract(payload,'$.generation')=$2 ORDER BY seq DESC LIMIT 1`,[item.id,item.runtime.generation]))[0]?.type
+        if(onboarding)item.onboarding=onboarding==="onboarding_not_joined"?"not_joined":"retried"
+      }
     }
     return result
   }
@@ -1074,6 +1243,7 @@ export class TeamOrchestration {
       ${this.orca.provider==='hub'?'runtime,':''}launch_handle,launch_kind,operation_id,prompt_outcome,error,invitation_expires_at,invitation_used_at,session_id,channel_id,work_thread_id,created_at,updated_at
       FROM chat_team_members WHERE team_id=$1 ORDER BY ordinal,id`,[planId])
     for(const item of members) {
+      if(!item.session_id)item.channel_id=null
       if(item.runtime)item.runtime=this.publicRuntime(item.runtime)
       const session=item.session_id?(await sql.query('SELECT nickname FROM chat_sessions WHERE id=$1',[item.session_id]))[0]:null
       item.nickname=session?.nickname ?? null
@@ -1089,12 +1259,11 @@ export class TeamOrchestration {
       launch:{started_at:plan.launch_started_at,accepted_at:plan.launched_at,instruction_declared:Boolean(plan.human_instruction)},
       authorization:this.authorization(plan),
       close:{at:plan.closed_at,reason:plan.close_reason},members,
-      progress:{prepared:true,workspaces_created:members.filter(m=>m.workspace_id).length,processes_accepted:members.filter(m=>m.launch_handle && m.prompt_outcome).length,joined:members.filter(m=>m.session_id).length,total:members.length},
-      approval_url:plan.state==='prepared'?`/memory/collaboration?plan=${plan.id}`:null}
+      progress:{prepared:true,workspaces_created:members.filter(m=>m.workspace_id).length,processes_accepted:members.filter(m=>m.launch_handle && m.prompt_outcome).length,joined:members.filter(m=>m.session_id).length,total:members.length}}
   }
 
   private async event(sql:Sql,teamId:string,memberId:string|null,type:string,
-    actor:string,sourceChannel:string,targetThread:string,payload:Record<string,unknown>) {
+    actor:string|null,sourceChannel:string|null,targetThread:string|null,payload:Record<string,unknown>) {
     await sql.query(`INSERT INTO chat_team_events(id,team_id,member_id,type,actor_session_id,source_channel_id,target_thread_id,payload)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[randomUUID(),teamId,memberId,type,actor,sourceChannel,targetThread,JSON.stringify(payload)])
   }

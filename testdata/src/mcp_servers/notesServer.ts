@@ -8,6 +8,7 @@
  */
 
 import { TestServer, ToolError } from './base.js'
+import { fileURLToPath } from "node:url"
 
 export const SERVER_NAME = 'notes'
 export const SERVER_VERSION = '1.0.0'
@@ -55,6 +56,6 @@ export function createNotesServer(): TestServer {
   return server
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
   void createNotesServer().runStdio()
 }

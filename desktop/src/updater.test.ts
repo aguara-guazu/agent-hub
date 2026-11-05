@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { once } from 'node:events'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { readdir, rename, rm } from 'node:fs/promises'
+import { readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -15,7 +15,7 @@ import {
   downloadAsset,
   fetchLatestRelease,
   installAppImage,
-  installDmg,
+  stageDmg,
   installNsis,
   type RunFn,
   type UpdateProgress,
@@ -37,11 +37,11 @@ function fakeResponse(body: string | Buffer, init: { status?: number; headers?: 
   return new Response(typeof body === 'string' ? body : new Uint8Array(body), { status: init.status ?? 200, headers: init.headers ?? {} })
 }
 
-const release = (version: string, assets: string[]) => JSON.stringify({
+const release = (version: string, assets: string[], body: Buffer = Buffer.alloc(2048)) => JSON.stringify({
   tag_name: `v${version}`,
   body: 'notas',
   html_url: `https://github.com/aguara-guazu/agent-hub/releases/tag/v${version}`,
-  assets: assets.map((name) => ({ name, browser_download_url: `https://downloads.example/${name}` })),
+  assets: assets.map((name) => ({ name, browser_download_url: `https://github.com/aguara-guazu/agent-hub/releases/download/v${version}/${name}`, digest: `sha256:${createHash('sha256').update(body).digest('hex')}`, size: body.length })),
 })
 
 describe('versiones y artefactos', () => {
@@ -49,7 +49,7 @@ describe('versiones y artefactos', () => {
     expect(compareVersions('0.3.0', '0.2.0')).toBe(1)
     expect(compareVersions('v0.2.0', '0.2.0')).toBe(0)
     expect(compareVersions('0.2.1', '0.10.0')).toBe(-1)
-    expect(compareVersions('1.0', '0.9.9')).toBe(1)
+    expect(compareVersions('1.0.0', '0.9.9')).toBe(1)
   })
 
   it('elige el artefacto que publica electron-builder para cada plataforma', () => {
@@ -78,7 +78,7 @@ describe('consulta de la última release', () => {
     const seen: string[] = []
     const info = await fetchLatestRelease({ repo: 'o/r', apiBase: 'https://api.example/', fetchFn: async (url) => { seen.push(url); return fakeResponse(release('0.3.0', ['AgentHub-arm64.dmg'])) } })
     expect(seen).toEqual(['https://api.example/repos/o/r/releases/latest'])
-    expect(info).toEqual({ version: '0.3.0', notes: 'notas', page: 'https://github.com/aguara-guazu/agent-hub/releases/tag/v0.3.0', assets: [{ name: 'AgentHub-arm64.dmg', url: 'https://downloads.example/AgentHub-arm64.dmg' }] })
+    expect(info).toEqual({ version: '0.3.0', notes: 'notas', page: 'https://github.com/aguara-guazu/agent-hub/releases/tag/v0.3.0', assets: [{ name: 'AgentHub-arm64.dmg', url: 'https://github.com/aguara-guazu/agent-hub/releases/download/v0.3.0/AgentHub-arm64.dmg', digest: `sha256:${createHash('sha256').update(Buffer.alloc(2048)).digest('hex')}`, size: 2048 }] })
   })
 
   it('distingue ausencia de releases de una consulta fallida', async () => {
@@ -151,7 +151,7 @@ describe('descarga', () => {
 })
 
 describe('instalación', () => {
-  it('macOS: monta, verifica el bundle id, prepara al lado e intercambia con respaldo', async () => {
+  it('macOS: monta, verifica el bundle id y prepara al lado sin tocar la instalación', async () => {
     const root = tmp('agenthub-dmg-')
     const bundle = join(root, 'Applications', 'Agent Hub.app')
     mkdirSync(join(bundle, 'Contents'), { recursive: true })
@@ -170,14 +170,15 @@ describe('instalación', () => {
       }
       if (command === '/bin/ls') return { stdout: 'Agent Hub.app\n.background\n' }
       if (command === 'ditto') { cpSync(args[0]!, args[1]!, { recursive: true }); return { stdout: '' } }
-      if (command === '/bin/mv') { await rename(args[0]!, args[1]!); return { stdout: '' } }
       if (command === '/bin/rm') { await rm(args[1]!, { recursive: true, force: true }); return { stdout: '' } }
+      if (command === '/usr/bin/plutil') return { stdout: JSON.stringify({ CFBundleIdentifier: 'io.craftech.agenthub', CFBundleShortVersionString: '0.3.0', CFBundleExecutable: 'Agent Hub' }) }
+      if (command === '/usr/bin/lipo') return { stdout: 'arm64\n' }
       return { stdout: '' }
     }
-    await installDmg(join(dmgDir, 'AgentHub-arm64.dmg'), bundle, 'io.craftech.agenthub', run)
-    expect(readFileSync(join(bundle, 'Contents', 'Info.plist'), 'utf8')).toContain('0.3.0')
-    expect(existsSync(`${bundle}.incoming`)).toBe(false)
-    expect(existsSync(`${bundle}.previous`)).toBe(true)
+    const stage = `${bundle}.incoming-tx1`
+    await stageDmg(join(dmgDir, 'AgentHub-arm64.dmg'), stage, 'io.craftech.agenthub', { version: '0.3.0', arch: 'arm64' }, run)
+    expect(readFileSync(join(stage, 'Contents', 'Info.plist'), 'utf8')).toContain('0.3.0')
+    expect(readFileSync(join(bundle, 'Contents', 'Info.plist'), 'utf8')).toContain('0.2.0')
     expect(existsSync(dmgDir)).toBe(false)
     expect(commands.some((c) => c.startsWith('hdiutil detach'))).toBe(true)
     expect(commands.some((c) => c.startsWith('xattr -dr com.apple.quarantine'))).toBe(true)
@@ -196,10 +197,12 @@ describe('instalación', () => {
         writeFileSync(join(mount, 'Otra.app', 'Contents', 'Info.plist'), 'com.otra.app')
       }
       if (command === '/bin/ls') return { stdout: 'Otra.app\n' }
-      if (command === '/bin/mv') throw new Error('no debería mover nada')
+      if (command === '/usr/bin/plutil') return { stdout: JSON.stringify({ CFBundleIdentifier: 'com.otra.app', CFBundleShortVersionString: '0.3.0', CFBundleExecutable: 'Otra' }) }
+      if (command === '/bin/rm') { await rm(args[1]!, { recursive: true, force: true }); return { stdout: '' } }
+      if (command === 'ditto') { cpSync(args[0]!, args[1]!, { recursive: true }); return { stdout: '' } }
       return { stdout: '' }
     }
-    await expect(installDmg(join(dmgDir, 'x.dmg'), bundle, 'io.craftech.agenthub', run)).rejects.toThrow(/no contiene esta aplicación/)
+    await expect(stageDmg(join(dmgDir, 'x.dmg'), `${bundle}.incoming-tx2`, 'io.craftech.agenthub', { version: '0.3.0', arch: 'arm64' }, run)).rejects.toThrow(/no es Agent Hub/)
     expect(readFileSync(join(bundle, 'Contents', 'Info.plist'), 'utf8')).toBe('io.craftech.agenthub')
   })
 
@@ -295,7 +298,7 @@ describe('orquestación', () => {
     const requested: string[] = []
     const fetchFn = async (url: string): Promise<Response> => {
       requested.push(url)
-      if (url.includes('/releases/latest')) return fakeResponse(release('0.3.0', ['AgentHub-x64.dmg', 'AgentHub-arm64.dmg']))
+      if (url.includes('/releases/latest')) return fakeResponse(release('0.3.0', ['AgentHub-x64.dmg', 'AgentHub-arm64.dmg'], Buffer.alloc(2048, 7)))
       return fakeResponse(Buffer.alloc(2048, 7), { headers: { 'Content-Length': '2048' } })
     }
     const updater = new AutoUpdater({ ...base, platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, fetchFn, tmpDir: root, minAssetBytes: 1024 })
@@ -304,7 +307,7 @@ describe('orquestación', () => {
     if (status.state !== 'downloaded') return
     expect(status.version).toBe('0.3.0')
     expect(status.strategy).toBe('dmg')
-    expect(requested[1]).toBe('https://downloads.example/AgentHub-arm64.dmg')
+    expect(requested[1]).toBe('https://github.com/aguara-guazu/agent-hub/releases/download/v0.3.0/AgentHub-arm64.dmg')
     expect(statSync(status.path).size).toBe(2048)
 
     const broken = new AutoUpdater({ ...base, platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, tmpDir: root, minAssetBytes: 1024,
