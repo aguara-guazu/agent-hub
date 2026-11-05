@@ -1001,9 +1001,21 @@ CREATE INDEX hub_stop_events_stop ON hub_stop_events(stop_id,seq);
 -- role and generation it joined with. join_protocol_version 2 marks a hub that understands the project transfer frames.
 -- Existing rows stay owner and protocol 1.
 -- Rollback: ALTER TABLE interhub_members DROP COLUMN for join_protocol_version, join_code_generation, join_code_role;
--- ALTER TABLE interhub_channels DROP COLUMN code_role; then delete this version from schema_versions.
+-- ALTER TABLE interhub_channels DROP COLUMN for project_pending_reason, project_pending_id, code_role; also DROP COLUMN project_offer_* of interhub_members; then delete this version from schema_versions.
 ALTER TABLE interhub_channels ADD COLUMN code_role TEXT NOT NULL DEFAULT 'owner' CHECK(code_role IN ('owner','maintainer','reader'));
 ALTER TABLE interhub_members ADD COLUMN join_code_role TEXT NOT NULL DEFAULT 'owner' CHECK(join_code_role IN ('owner','maintainer','reader'));
 ALTER TABLE interhub_members ADD COLUMN join_code_generation INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE interhub_members ADD COLUMN join_protocol_version INTEGER NOT NULL DEFAULT 1;
+-- Per member, creator side: last project offer (request id, project, policy revision, status, attempts, backoff); never the invitation.
+ALTER TABLE interhub_members ADD COLUMN project_offer_request TEXT;
+ALTER TABLE interhub_members ADD COLUMN project_offer_project TEXT;
+ALTER TABLE interhub_members ADD COLUMN project_offer_policy TEXT;
+ALTER TABLE interhub_members ADD COLUMN project_offer_status TEXT;
+ALTER TABLE interhub_members ADD COLUMN project_offer_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE interhub_members ADD COLUMN project_offer_at TEXT;
+ALTER TABLE interhub_members ADD COLUMN project_offer_next_at TEXT;
+ALTER TABLE interhub_members ADD COLUMN project_offer_message TEXT;
+-- Joiner side: shared project of the channel that could not be accepted yet, with a short sanitized reason.
+ALTER TABLE interhub_channels ADD COLUMN project_pending_id TEXT;
+ALTER TABLE interhub_channels ADD COLUMN project_pending_reason TEXT;
 `]
