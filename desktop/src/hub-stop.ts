@@ -78,14 +78,19 @@ export class HubStopClient {
     return { [DRAIN_SECRET_HEADER]: this.deps.secret, ...(json ? { "Content-Type": "application/json" } : {}) }
   }
 
-  private async view(path: string, method: "GET" | "POST", body?: Record<string, unknown>): Promise<{ view: HubStopView | null; status: number | null }> {
+  /** `body`: `view` (una parada válida), `null` (JSON null explícito: no hay parada), `invalid` (200 que no se puede interpretar) o `error` (no es 2xx). */
+  private async view(path: string, method: "GET" | "POST", body?: Record<string, unknown>): Promise<{ view: HubStopView | null; status: number | null; body: "view" | "null" | "invalid" | "error" }> {
     try {
       const response = await this.deps.call(path, { method, headers: this.headers(body !== undefined), ...(body ? { body: JSON.stringify(body) } : {}) })
-      const parsed = await response.json().catch(() => null)
-      return { view: response.ok ? parseStopView(parsed) : null, status: response.status }
+      if (!response.ok) { await response.body?.cancel().catch(() => undefined); return { view: null, status: response.status, body: "error" } }
+      let parsed: unknown
+      try { parsed = JSON.parse(await response.text()) } catch { return { view: null, status: response.status, body: "invalid" } }
+      if (parsed === null) return { view: null, status: response.status, body: "null" }
+      const view = parseStopView(parsed)
+      return view ? { view, status: response.status, body: "view" } : { view: null, status: response.status, body: "invalid" }
     } catch (error) {
       this.deps.log(`[hub-stop] ${path}: ${error instanceof Error ? error.message : String(error)}`)
-      return { view: null, status: null }
+      return { view: null, status: null, body: "error" }
     }
   }
 
@@ -396,7 +401,8 @@ export async function reconcileQuitStop(deps: QuitReconcileDeps): Promise<"clear
       const known = await deps.client.status(deps.intent.stop_id)
       const view = known.view
       // 200 sin parada, o una parada ajena: la de este cierre ya no existe.
-      if (known.status === 404 || (known.status === 200 && (!view || view.reason !== "quit" || view.sourceId !== deps.intent.source_id))) { deps.clearIntent(); return "cleared" }
+      // Sólo la ausencia explícita (404, o JSON null) o una parada ajena permiten borrar; una respuesta 200 que no se puede interpretar se conserva.
+      if (known.status === 404 || known.body === "null" || (view && (view.reason !== "quit" || view.sourceId !== deps.intent.source_id))) { deps.clearIntent(); return "cleared" }
       if (view && isTerminalStop(view)) { deps.clearIntent(); return "cleared" }
       if (view) {
         const cancelled = await deps.client.cancel(view.stopId, "desktop_restarted")
