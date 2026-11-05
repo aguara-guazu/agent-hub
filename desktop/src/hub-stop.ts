@@ -14,7 +14,7 @@ const STATES: readonly HubStopState[] = ["requested", "notifying", "waiting_conf
 
 export interface HubStopView {
   stopId: string
-  sourceId: string | null
+  sourceId: string
   /** Sólo en una actualización aplicada: la transacción que el core nuevo debe admitir. */
   transactionId: string | null
   targetVersion: string | null
@@ -51,12 +51,14 @@ const list = (value: unknown): string[] => Array.isArray(value) ? value.filter((
 export function parseStopView(body: unknown): HubStopView | null {
   const view = body as Record<string, any> | null
   const stopId = text(view?.stop_id)
-  if (!view || !stopId || (view.reason !== "update" && view.reason !== "quit") || !STATES.includes(view.state)) return null
+  const sourceId = text(view?.source_id)
+  // El contrato del backend siempre trae source_id: una vista sin él (o vacío, o de otro tipo) no se puede interpretar.
+  if (!view || !stopId || !sourceId || (view.reason !== "update" && view.reason !== "quit") || !STATES.includes(view.state)) return null
   const waiting = view.waiting_for ?? {}
   const error = view.error && typeof view.error === "object" ? view.error as Record<string, any> : null
   const actions = list(error?.actions).filter((action): action is HubStopAction => action === "retry" || action === "cancel" || action === "commit")
   return {
-    stopId, sourceId: text(view.source_id), transactionId: text(view.transaction_id), targetVersion: text(view.target_version), reason: view.reason, state: view.state,
+    stopId, sourceId, transactionId: text(view.transaction_id), targetVersion: text(view.target_version), reason: view.reason, state: view.state,
     deadlineAt: text(view.deadline_at), forceAt: text(view.force_at), graceStartedAt: text(view.grace_started_at), retryNotBefore: text(view.retry_not_before),
     ready: view.ready === true, forced: view.forced === true,
     waitingFor: {
