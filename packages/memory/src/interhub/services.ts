@@ -24,7 +24,8 @@ const peerText = (value: string) => value.normalize("NFKC").replace(/[\p{Cc}\p{C
 
 type ProjectPacket = z.infer<typeof invitationSchema>
 /** Outcome of importing the project package of a channel; `message` never contains the package. */
-type ProjectImport = { state: "accepted"; project_id: string } | { state: "pending"; project_id: string; message: string } | { state: "failed"; project_id: string; message: string }
+type ProjectImport = { state: "accepted"; project_id: string } | { state: "pending"; project_id: string; message: string }
+  | { state: "failed"; project_id: string; message: string } | { state: "superseded"; project_id: string }
 
 const peerName = (value: unknown) => {
   try {
@@ -145,11 +146,12 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
    * logged, stored or returned.
    */
   const importProject = async (channelId: string, leaderId: string, packet: ProjectPacket, assign: boolean): Promise<ProjectImport> => {
-    const projectId = packet.genesis.id, sharing = new SharedProjects(store), attempt = await network.beginProjectAttempt(channelId)
+    const projectId = packet.genesis.id, sharing = new SharedProjects(store), attempt = await network.beginProjectAttempt(channelId, projectId)
     const leader = (await db.query("SELECT cli_kind,native_cwd FROM chat_sessions WHERE id=$1", [leaderId]))[0]
     const folder = typeof leader?.native_cwd === "string" && leader.native_cwd ? leader.native_cwd : undefined
+    const finish = (pending: { project_id: string | null; reason: string } | null) => attempt ? network.finishProjectAttempt(channelId, attempt, pending) : Promise.resolve(true)
     const pending = async (message: string): Promise<ProjectImport> => {
-      await network.finishProjectAttempt(channelId, attempt, { project_id: projectId, reason: message }).catch(() => false)
+      if (!await finish({ project_id: projectId, reason: message }).catch(() => false)) return { state: "superseded", project_id: projectId }
       events?.emit("change")
       return { state: "pending", project_id: projectId, message }
     }
@@ -171,12 +173,12 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
         events?.emit("change")
         if (assigned !== projectId) return await pending(ASSIGN_NOTICE)
       }
-      await network.finishProjectAttempt(channelId, attempt, null).catch(() => false)
+      if (!await finish(null).catch(() => false)) return { state: "superseded", project_id: projectId }
       return { state: "accepted", project_id: projectId }
     } catch (error) {
       const detail = error instanceof MemoryError ? ` (${peerText(error.message)})` : ""
       const message = `${IMPORT_NOTICE}${detail}. Acéptalo con otra carpeta mediante memory_shared_join si el creador te comparte una invitación, o pide al creador que lo vuelva a ofrecer.`
-      await network.finishProjectAttempt(channelId, attempt, { project_id: projectId, reason: message }).catch(() => false)
+      if (!await finish({ project_id: projectId, reason: message }).catch(() => false)) return { state: "superseded", project_id: projectId }
       return { state: "failed", project_id: projectId, message }
     }
   }
@@ -188,6 +190,10 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
     // An explicit different project wins locally; import the creator's project membership but do not keep retrying its channel assignment.
     const assign = !channel.project_id || channel.project_id === offer.project_id
     const outcome = await importProject(offer.channel_id, String(leaderId), offer.packet, assign)
+    if (outcome.state === "superseded") {
+      const imported = await sharedProjectUsable(db, offer.project_id, [local, creator.id])
+      return imported ? { status: "accepted" } : { status: "pending", message: "Otra operación cambió la asociación local; se reintentará." }
+    }
     return outcome.state === "accepted" ? { status: "accepted" } : { status: outcome.state === "pending" ? "pending" : "rejected", message: outcome.message }
   }
 
@@ -222,7 +228,10 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       const imported = transfer?.status === "invitation" ? await importProject(joined.channel_id, caller.id, transfer.packet, !explicit) : null
       let notice: string | undefined, pending: string | undefined
       if (imported?.state === "pending" || imported?.state === "failed") { notice = imported.message; pending = imported.project_id }
-      else if (transfer?.status === "unavailable") notice = "El canal se unió, pero el hub creador no pudo compartir su proyecto. Revisa en el hub creador los permisos, el conflicto o el estado del proyecto; no hace falta generar otro código."
+      else if (imported?.state === "superseded") {
+        const current = await network.pendingProject(joined.channel_id)
+        if (current) { notice = current.reason; pending = current.project_id ?? undefined }
+      } else if (transfer?.status === "unavailable") notice = "El canal se unió, pero el hub creador no pudo compartir su proyecto. Revisa en el hub creador los permisos, el conflicto o el estado del proyecto; no hace falta generar otro código."
       const extra = () => ({ ...(notice ? { project_notice: notice } : {}), ...(pending ? { pending_project_id: pending } : {}) })
       if (explicit) {
         // An explicit project must be shared with every active hub of the channel. Reentry is idempotent for the same project.
@@ -250,7 +259,8 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       const { resolved } = imported?.state === "accepted" ? { resolved: [{ project_id: imported.project_id }] } : await backfill(joined.channel_id)
       const resolvedId = resolved[0]?.project_id ?? null
       if (!resolvedId && !notice && joined.legacy) notice = LEGACY_NOTICE
-      const result: InterhubJoinResult = { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: resolvedId ?? joined.project_id, ...extra() }
+      const actual = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1", [joined.channel_id]))[0]?.project_id
+      const result: InterhubJoinResult = { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: resolvedId ?? (actual ? String(actual) : joined.project_id), ...extra() }
       return result
     },
     async listOrphans() { await backfilled; return listOrphans(db, localHubId) },

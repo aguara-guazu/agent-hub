@@ -304,7 +304,7 @@ export class InterhubTransport implements NetworkExtension {
       join.requests.delete(result.request)
       // A refusal may come from any peer on the rendezvous topic; keep waiting for the creator until the deadline.
       if (!result.ok) {
-        if (pending.version === 2) {
+        if (pending.version === 2 && !("version" in result)) {
           join.attempted.delete(peer)
           this.refusedV2(join, peer)
           this.tryJoins()

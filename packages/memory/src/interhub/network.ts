@@ -490,11 +490,12 @@ export class InterhubNetwork {
     return updated.length > 0
   }
 
-  /** Starts a local project-import attempt; only that attempt may publish its pending or accepted result. */
-  async beginProjectAttempt(channelId: string): Promise<string> {
+  /** Starts a local project-import attempt while the channel is unassigned or already uses that project. */
+  async beginProjectAttempt(channelId: string, projectId: string): Promise<string | null> {
     const attempt = randomUUID()
-    await this.store.db.query("UPDATE interhub_channels SET project_pending_attempt=$2,updated_at=now() WHERE channel_id=$1", [channelId, attempt])
-    return attempt
+    const updated = await this.store.db.query(`UPDATE interhub_channels SET project_pending_attempt=$2,project_pending_id=NULL,project_pending_reason=NULL,updated_at=now() WHERE channel_id=$1
+      AND EXISTS(SELECT 1 FROM chat_channels WHERE id=$1 AND (project_id IS NULL OR project_id=$3)) RETURNING channel_id`, [channelId, attempt, projectId])
+    return updated.length ? attempt : null
   }
 
   /** Completes one project-import attempt conditionally, so an older concurrent offer cannot overwrite newer state. */
