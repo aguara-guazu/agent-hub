@@ -16,6 +16,8 @@ export interface StopIntent {
   transaction_id?: string
   target_version?: string
   stop_id?: string
+  /** Sólo NSIS: el instalador falló tras el commit y se relanzó esta versión, que puede admitir la transacción de la parada aplicada. */
+  recovery_version?: string
   /** La parada terminó sin commit: el próximo intento usa otro `source_id` y no empieza antes de esta hora (ISO 8601). */
   cooldown_until?: string
 }
@@ -25,7 +27,7 @@ export const STOP_COOLDOWN_MS = 30 * 60_000
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SAFE_ID = /^[A-Za-z0-9._-]{1,100}$/
-const KEYS = new Set(["schema", "source_id", "reason", "strategy", "transaction_id", "target_version", "stop_id", "cooldown_until"])
+const KEYS = new Set(["schema", "source_id", "reason", "strategy", "transaction_id", "target_version", "stop_id", "cooldown_until", "recovery_version"])
 
 const isoOrNull = (value: unknown): string | null => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null
 
@@ -40,8 +42,9 @@ export function parseStopIntent(value: unknown): StopIntent | null {
   for (const key of ["transaction_id", "stop_id"] as const) if (raw[key] !== undefined && (typeof raw[key] !== "string" || !SAFE_ID.test(raw[key] as string))) return null
   if (raw.target_version !== undefined && (typeof raw.target_version !== "string" || !SAFE_ID.test(raw.target_version))) return null
   if (raw.cooldown_until !== undefined && isoOrNull(raw.cooldown_until) === null) return null
+  if (raw.recovery_version !== undefined && (typeof raw.recovery_version !== "string" || !SAFE_ID.test(raw.recovery_version) || raw.reason !== "update" || raw.strategy !== "nsis")) return null
   if (raw.reason === "update" && (!raw.transaction_id || !raw.target_version || !raw.strategy)) return null
-  if (raw.reason === "quit" && (raw.transaction_id !== undefined || raw.target_version !== undefined || raw.cooldown_until !== undefined)) return null
+  if (raw.reason === "quit" && (raw.transaction_id !== undefined || raw.target_version !== undefined || raw.cooldown_until !== undefined || raw.recovery_version !== undefined)) return null
   return raw as unknown as StopIntent
 }
 
@@ -67,18 +70,24 @@ export function cooldownAfter(outcome: Exclude<HubStopOutcome, { kind: "committe
   return new Date(Number.isFinite(at) && at > now ? at : now + STOP_COOLDOWN_MS).toISOString()
 }
 
-/**
- * Transacción que el core recién arrancado debe admitir. Sin intención (una actualización iniciada por una versión anterior)
- * manda el journal. Con ella: sólo una actualización cuya versión destino es la que corre; en macOS además tiene que
- * coincidir con el journal.
- */
-export function startupTransactionFor(intent: StopIntent | null, journalId: string, runningVersion: string): string {
-  if (!intent) return journalId
-  if (intent.reason !== "update" || intent.target_version !== runningVersion || !intent.transaction_id) return ""
-  if (intent.strategy === "dmg") return journalId === intent.transaction_id ? journalId : ""
-  return intent.transaction_id
+/** ¿Esta versión puede abrir el core de la actualización aplicada? La destino siempre; en NSIS también la que quedó tras un instalador fallido. */
+export function intentOpensCore(intent: StopIntent, runningVersion: string): boolean {
+  return intent.reason === "update" && Boolean(intent.transaction_id)
+    && (intent.target_version === runningVersion || (intent.strategy === "nsis" && intent.recovery_version === runningVersion))
 }
 
+/** Marca de forma estricta que el instalador NSIS falló y que `currentVersion` debe poder admitir la transacción ya aplicada. */
+export function withInstallerFailure(intent: StopIntent, currentVersion: string): StopIntent {
+  return intent.reason === "update" && intent.strategy === "nsis" ? { ...intent, recovery_version: currentVersion } : intent
+}
+
+/** Transacción que el core recién arrancado debe admitir; sin intención manda el journal, con ella sólo una versión que pueda abrirlo (en macOS, además, la del journal). */
+export function startupTransactionFor(intent: StopIntent | null, journalId: string, runningVersion: string): string {
+  if (!intent) return journalId
+  if (!intentOpensCore(intent, runningVersion)) return ""
+  if (intent.strategy === "dmg") return journalId === intent.transaction_id ? journalId : ""
+  return intent.transaction_id!
+}
 /** Resultado de leer la intención: ausente y dañada se distinguen, porque ninguna de las dos puede abrir un core de actualización. */
 export type StopIntentRead = { kind: "ok"; intent: StopIntent } | { kind: "missing" } | { kind: "corrupt" }
 
@@ -93,3 +102,4 @@ export function intentFromActiveStop(view: HubStopView | null, runningVersion: s
   if (!strategy) return null
   return parseStopIntent({ schema: 1, source_id: view.sourceId, reason: "update", strategy, transaction_id: view.transactionId, target_version: view.targetVersion, stop_id: view.stopId })
 }
+

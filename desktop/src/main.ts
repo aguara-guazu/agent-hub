@@ -31,7 +31,7 @@ import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { DRAIN_SECRET_HEADER, DrainClient, type DrainLease } from './update-lease.js'
 import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
-import { cooldownAfter, cooldownUntilMs, intentFromActiveStop, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
+import { cooldownAfter, cooldownUntilMs, intentFromActiveStop, intentOpensCore, sameAttempt, startupTransactionFor, withInstallerFailure, type StopIntent, type StopStrategy } from './stop-intent.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
@@ -1018,7 +1018,7 @@ async function startUpdateBookkeeping(): Promise<void> {
     // Windows y Linux: no hay journal de intercambio; el core nuevo nació cerrado y lo abre la intención de la parada.
     // Si falta o está dañada, el core sigue cerrado (el backend recupera la actualización aplicada): se reconstruye desde la parada activa.
     const pendingStop = await recoverStopIntent()
-    if (pendingStop?.reason === 'update' && pendingStop.strategy !== 'dmg' && pendingStop.target_version === app.getVersion() && pendingStop.transaction_id) {
+    if (pendingStop && pendingStop.strategy !== 'dmg' && intentOpensCore(pendingStop, app.getVersion()) && pendingStop.transaction_id) {
       if (!await drainClient.admitStartup(pendingStop.transaction_id)) return false
       updateStore.clearStopIntent()
     }
@@ -1614,6 +1614,11 @@ async function quit(): Promise<void> {
       } catch (error) {
         // The installed version stays; reopen it instead of leaving the person without the hub.
         updaterLog(`[updater] no se pudo iniciar el instalador: ${error instanceof Error ? error.message : String(error)}`)
+        // La parada ya está aplicada y core salió: esta versión (la vieja) tiene que poder admitir esa transacción al relanzarse.
+        try {
+          const intent = updateStore.readStopIntent()
+          if (intent) updateStore.writeStopIntent(withInstallerFailure(intent, app.getVersion()))
+        } catch (writeError) { updaterLog(`[updater] no se pudo marcar el fallo del instalador: ${writeError instanceof Error ? writeError.message : String(writeError)}`) }
         relaunchAfterQuit = true
       }
     }
