@@ -22,8 +22,16 @@ export const channelTopic = (channelId: string) => digest({ protocol: "agenthub-
 
 /** Binds a join proof to both authenticated hello identities and both Noise keys of one connection, so it cannot be relayed. */
 export interface JoinTranscript { request: string; nonce: string; joiner: string; creator: string; joiner_noise: string; creator_noise: string }
-export function joinProof(key: string, purpose: "join" | "accept", transcript: JoinTranscript, roster?: InterHubSignedRoster) {
-  return createHmac("sha256", Buffer.from(key, "hex")).update(canonical({ purpose, transcript, roster: roster ? digest(roster) : null })).digest("hex")
+export type JoinProofPurpose = "join" | "accept" | "join2" | "accept2"
+/**
+ * HMAC over the transcript. Purposes "join" and "accept" are the version 1 proofs, byte for byte unchanged. "join2" and
+ * "accept2" are the version 2 proofs: separate purposes, and "accept2" also binds the project block of the answer.
+ */
+export function joinProof(key: string, purpose: JoinProofPurpose, transcript: JoinTranscript, roster?: InterHubSignedRoster, project?: unknown) {
+  const body = purpose === "accept2"
+    ? { purpose, transcript, roster: roster ? digest(roster) : null, project: digest(project ?? null) }
+    : { purpose, transcript, roster: roster ? digest(roster) : null }
+  return createHmac("sha256", Buffer.from(key, "hex")).update(canonical(body)).digest("hex")
 }
 export const sameProof = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"))
 export const codeKey = (value: string) => proofKey(value)
