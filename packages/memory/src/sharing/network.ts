@@ -43,7 +43,7 @@ export interface NetworkExtension {
   unanswered?(topics: string[]): void
 }
 export const networkSettingsSchema = z.object({ enabled: z.boolean().optional().transform(() => true), bootstrap: z.array(z.string().min(1).max(300)).max(20), bind_host: z.ipv4().default('0.0.0.0') }).strict()
-const MAX_FRAME = 55_000_000
+export const MAX_FRAME = 55_000_000
 /**
  * Both sides send hello as their first frame as soon as the connection opens. Hyperswarm can report a client
  * connection as open that the remote never accepted, so no hello ever arrives; closing it at this deadline lets
