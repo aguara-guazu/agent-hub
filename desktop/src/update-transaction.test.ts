@@ -123,7 +123,7 @@ describe("transacción del updater", () => {
     expect(readTransaction(dir)).toMatchObject({ kind: "ok", tx: { phase: "admitted", new_app: { pid: 202, start: "replacement-start" } } })
   })
 
-  it("distingue una transacción aplicada cuyo watchdog murió", async () => {
+  it.runIf(process.platform === "darwin")("distingue una transacción aplicada cuyo watchdog murió", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenthub-update-watchdog-loss-"))
     paths.push(dir)
     const tx = { ...transaction(dir), phase: "launched" as const, new_app: { pid: 102, start: "new-start" } }
@@ -143,7 +143,7 @@ describe("transacción del updater", () => {
     expect(await recoverTransaction({ ...base, isAlive: () => true })).toBe("monitor")
   })
 
-  it.each(["healthy", "done"] as const)("recupera la fase %s si el respaldo ya fue descartado", async phase => {
+  it.runIf(process.platform === "darwin").each(["healthy", "done"] as const)("recupera la fase %s si el respaldo ya fue descartado", async phase => {
     const dir = await mkdtemp(join(tmpdir(), "agenthub-update-cleanup-"))
     paths.push(dir)
     const tx = { ...transaction(dir), phase }

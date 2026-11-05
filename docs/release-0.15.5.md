@@ -97,6 +97,8 @@ Versión menor sobre 0.15.0.
 - El test de update-lease que aceptaba un core ya admitido sin repetir la admisión se
   reemplazó por uno que exige repetirla y recibir su confirmación, porque la app ahora
   hace eso.
+- Los tests de recuperación del bundle de macOS corren solo en macOS, porque leen la
+  versión del bundle con `/usr/bin/plutil`.
 - El test de local-chat «pagina sin perder menciones y separa leído/atendido» falla de
   forma intermitente. La bandeja ordena por fecha de creación y desempata por un id
   aleatorio, así que dos mensajes del mismo milisegundo pueden salir en otro orden. Ya
