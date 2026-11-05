@@ -1,13 +1,14 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { z } from "zod"
 import { CHAT_CHANNEL_DESCRIPTION_MAX, type InterHubEnvelope, type InterHubEventKind, type InterHubSignedRoster, type InterhubChatPayload } from "@agenthub/shared"
-import { check, parse } from "../contracts.js"
+import { check, MemoryError, parse } from "../contracts.js"
 import { Vault } from "../config.js"
 import type { MemoryStore } from "../store.js"
 import { SharedProjects } from "../sharing/projects.js"
+import { active, type Member } from "../sharing/schema.js"
 import { canonical, digest, publicIdentity, publicIdentitySchema, signature, validSignature, validateIdentity, type Identity, type PublicIdentity } from "../sharing/crypto.js"
 import { INTERHUB_REMOTE_CLI_KIND, interhubChatPayloadSchema, interhubRemoteSessionId } from "./chat.js"
-import { settleChannelProject } from "./project-association.js"
+import { settleChannelProject, sharedProjectUsable } from "./project-association.js"
 
 /** Upper bound of one envelope on the wire; the largest legitimate payload is a 16 000 character message. */
 export const MAX_ENVELOPE_BYTES = 96_000
@@ -26,6 +27,22 @@ export function joinProof(key: string, purpose: "join" | "accept", transcript: J
 }
 export const sameProof = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"))
 export const codeKey = (value: string) => proofKey(value)
+
+/** Role a join code grants in the shared project of the channel; bound to the generation of the code. */
+export type CodeRole = Member["role"]
+const ROLE_RANK: Record<CodeRole, number> = { reader: 0, maintainer: 1, owner: 2 }
+const stronger = (a: CodeRole, b: CodeRole) => ROLE_RANK[a] >= ROLE_RANK[b] ? a : b
+/** Highest join protocol: 2 understands the project transfer carried by the join handshake and the project offer frames. */
+export const INTERHUB_PROJECT_PROTOCOL = 2
+
+/**
+ * Outcome of preparing the shared project of a channel for a hub that was admitted. `packet` is an in-memory invitation
+ * for the authenticated P2P connection only; it is never stored, logged or returned by a tool.
+ */
+export type ProjectGrant =
+  | { status: "none" }
+  | { status: "invitation"; packet: Awaited<ReturnType<SharedProjects["invitation"]>> }
+  | { status: "unavailable"; message: string }
 
 const uuid = z.string().uuid()
 const hubId = z.string().regex(/^[a-f0-9]{64}$/)
@@ -68,6 +85,16 @@ export class InterhubNetwork {
    */
   afterMembership: ((channelId: string) => Promise<void>) | undefined
 
+  private readonly grantChains = new Map<string, Promise<unknown>>()
+  /** Runs `task` after every earlier task with the same key; a failure of one does not block the next. */
+  private serial<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const run = (this.grantChains.get(key) ?? Promise.resolve()).then(task)
+    const tail = run.then(() => undefined, () => undefined)
+    this.grantChains.set(key, tail)
+    void tail.then(() => { if (this.grantChains.get(key) === tail) this.grantChains.delete(key) })
+    return run
+  }
+
   private secretKey(channelId: string) { return `interhub-channel-code-${channelId}` }
   async localIdentity(): Promise<Identity> { return new SharedProjects(this.store).identity() }
   private async assertCreator(channelId: string, sessionId: string) {
@@ -79,15 +106,15 @@ export class InterhubNetwork {
     return row
   }
 
-  async createChannel(caller: { id: string }, input: { name: string; projectId?: string | null }) {
-    const channelId = randomUUID(), value = code(), identity = await this.localIdentity()
+  async createChannel(caller: { id: string }, input: { name: string; projectId?: string | null; role?: CodeRole }) {
+    const channelId = randomUUID(), value = code(), identity = await this.localIdentity(), role = input.role ?? "owner"
     await this.store.db.transaction(async sql => {
       await sql.query("INSERT INTO chat_channels(id,project_id,scope_key,path,name,kind,leader_id,activated_at) VALUES($1,$2,$3,'',$4,'inter-hub',$5,now())", [channelId, input.projectId ?? null, `interhub:${channelId}`, input.name, caller.id])
-      await sql.query("INSERT INTO interhub_channels(channel_id,creator_hub_id,creator_session_id,code_hash,code_generation) VALUES($1,$2,$3,$4,1)", [channelId, identity.id, caller.id, codeHash(channelId, value)])
+      await sql.query("INSERT INTO interhub_channels(channel_id,creator_hub_id,creator_session_id,code_hash,code_generation,code_role) VALUES($1,$2,$3,$4,1,$5)", [channelId, identity.id, caller.id, codeHash(channelId, value), role])
       await sql.query("INSERT INTO interhub_members(channel_id,hub_id,peer_identity,leader_session_id,leader_label) SELECT $1,$2,$3,$4,COALESCE(nickname,label) FROM chat_sessions WHERE id=$4", [channelId, identity.id, JSON.stringify(publicIdentity(identity)), caller.id])
     })
     this.vault.save(this.secretKey(channelId), { code: value })
-    return { channel_id: channelId, code: value }
+    return { channel_id: channelId, code: value, role }
   }
 
   /** A code of a channel this hub created: joining it from here would only swap the local leader, so it is refused before any network lookup. */
@@ -108,7 +135,8 @@ export class InterhubNetwork {
     return result
   }
 
-  async rotateCode(caller: { id: string }, channelId: string, action: "regenerate" | "revoke") {
+  /** `role` applies to regenerate only: the new generation grants it to every hub that joins with the new code. */
+  async rotateCode(caller: { id: string }, channelId: string, action: "regenerate" | "revoke", role: CodeRole = "owner") {
     await this.assertCreator(channelId, caller.id)
     if (action === "revoke") {
       await this.store.db.query("UPDATE interhub_channels SET code_revoked_at=now(),updated_at=now() WHERE channel_id=$1", [channelId])
@@ -118,8 +146,8 @@ export class InterhubNetwork {
     const value = code()
     // The vault is written first: a crash in between leaves a code that does not match the hash, which activeCodes ignores.
     this.vault.save(this.secretKey(channelId), { code: value })
-    await this.store.db.query("UPDATE interhub_channels SET code_hash=$2,code_generation=code_generation+1,code_revoked_at=NULL,updated_at=now() WHERE channel_id=$1", [channelId, codeHash(channelId, value)])
-    return { code: value, generation: await this.generation(channelId) }
+    await this.store.db.query("UPDATE interhub_channels SET code_hash=$2,code_generation=code_generation+1,code_role=$3,code_revoked_at=NULL,updated_at=now() WHERE channel_id=$1", [channelId, codeHash(channelId, value), role])
+    return { code: value, generation: await this.generation(channelId), role }
   }
   private async generation(channelId: string) {
     return Number((await this.store.db.query("SELECT code_generation FROM interhub_channels WHERE channel_id=$1", [channelId]))[0]?.code_generation ?? 0)
@@ -184,31 +212,31 @@ export class InterhubNetwork {
    * Creator side of a join. `proves` checks the joiner's proof against one candidate key; the joiner identity is the
    * authenticated P2P peer. Returns null for any failure so a wrong, revoked or unknown code is indistinguishable.
    */
-  async admit(joiner: PublicIdentity, leader: { id: string; label: string }, proves: (key: string) => boolean) {
+  async admit(joiner: PublicIdentity, leader: { id: string; label: string }, proves: (key: string) => boolean, protocol = 1) {
     const local = await this.localIdentity()
     if (joiner.id === local.id) return null
     const match = (await this.activeCodes()).find(candidate => proves(codeKey(candidate.code)))
     if (!match) return null
     const key = codeKey(match.code)
-    let added = false
     const admitted = await this.store.db.transaction(async sql => {
       // Re-read inside the transaction: a revoke or regenerate committed meanwhile wins.
-      const current = (await sql.query("SELECT code_hash,code_revoked_at FROM interhub_channels WHERE channel_id=$1", [match.channel_id]))[0]
+      const current = (await sql.query("SELECT code_hash,code_revoked_at,code_role,code_generation FROM interhub_channels WHERE channel_id=$1", [match.channel_id]))[0]
       if (!current || current.code_revoked_at || current.code_hash !== codeHash(match.channel_id, match.code)) return null
       const existing = (await sql.query("SELECT leader_session_id,leader_label,removed_at FROM interhub_members WHERE channel_id=$1 AND hub_id=$2", [match.channel_id, joiner.id]))[0]
       // An active member keeps its leader: holding the code again must not swap it.
       const keep = existing && !existing.removed_at
       const leaderId = keep ? String(existing.leader_session_id ?? leader.id) : leader.id, leaderLabel = keep ? String(existing.leader_label) : label(leader.label)
-      if (!keep) await sql.query(`INSERT INTO interhub_members(channel_id,hub_id,peer_identity,leader_session_id,leader_label) VALUES($1,$2,$3,$4,$5)
-        ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL,joined_at=now(),last_seen_at=now()`,
-      [match.channel_id, joiner.id, JSON.stringify(publicIdentity(joiner)), leaderId, leaderLabel])
-      else await sql.query("UPDATE interhub_members SET peer_identity=$3,last_seen_at=now() WHERE channel_id=$1 AND hub_id=$2", [match.channel_id, joiner.id, JSON.stringify(publicIdentity(joiner))])
+      // The role and generation of the code are copied to a new member; an active member keeps what it joined with.
+      if (!keep) await sql.query(`INSERT INTO interhub_members(channel_id,hub_id,peer_identity,leader_session_id,leader_label,join_code_role,join_code_generation,join_protocol_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+        ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL,joined_at=now(),last_seen_at=now(),
+        join_code_role=excluded.join_code_role,join_code_generation=excluded.join_code_generation,join_protocol_version=excluded.join_protocol_version`,
+      [match.channel_id, joiner.id, JSON.stringify(publicIdentity(joiner)), leaderId, leaderLabel, String(current.code_role), Number(current.code_generation), protocol])
+      else await sql.query("UPDATE interhub_members SET peer_identity=$3,last_seen_at=now(),join_protocol_version=MAX(join_protocol_version,$4) WHERE channel_id=$1 AND hub_id=$2", [match.channel_id, joiner.id, JSON.stringify(publicIdentity(joiner)), protocol])
       if (!keep) await this.append(match.channel_id, "membership", { action: "joined", hub_id: joiner.id, leader_id: leaderId, leader_label: leaderLabel,
         peer_public_key: joiner.signing, peer_identity: publicIdentity(joiner) })
-      added = !keep
-      return { channel_id: match.channel_id, key, roster: await this.signedRoster(match.channel_id) }
+      return { channel_id: match.channel_id, key, roster: await this.signedRoster(match.channel_id), added: !keep }
     })
-    if (admitted && added) await this.afterMembership?.(admitted.channel_id)
+    if (admitted?.added) await this.afterMembership?.(admitted.channel_id)
     return admitted
   }
 
@@ -229,9 +257,16 @@ export class InterhubNetwork {
     check(roster.members.some(m => m.hub_id === local.id) && roster.members.some(m => m.hub_id === creator.id), "Respuesta del hub creador inválida", 403)
     const channelId = roster.channel.id, creatorEntry = roster.members.find(m => m.hub_id === creator.id)!
     const existing = (await this.store.db.query("SELECT kind,deleted_at FROM chat_channels WHERE id=$1", [channelId]))[0]
+    let rejoined = false
     if (existing) {
       check(existing.kind === "inter-hub", "El identificador del canal ya existe en este hub", 409)
-      check(!await this.isMember(channelId, local.id), "Tu hub ya es parte de este canal entre hubs", 409)
+      if (await this.isMember(channelId, local.id)) {
+        // Joining again with the same code is idempotent only for the same hub leader and creator; it never changes either.
+        const own = (await this.store.db.query("SELECT m.leader_session_id,i.creator_hub_id FROM interhub_members m JOIN interhub_channels i ON i.channel_id=m.channel_id WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL", [channelId, local.id]))[0]
+        const listed = roster.members.find(m => m.hub_id === local.id)
+        check(own?.leader_session_id === caller.id && listed?.leader_session_id === caller.id && own.creator_hub_id === creator.id, "Tu hub ya es parte de este canal entre hubs", 409)
+        rejoined = true
+      }
     }
     // Same placeholder the chat model derives for this author, so the creator's leader has a single local stand-in.
     const placeholder = interhubRemoteSessionId(channelId, creator.id, creatorEntry.leader_session_id ?? "creator")
@@ -254,7 +289,7 @@ export class InterhubNetwork {
       project = await settleChannelProject(sql, channelId, local.id, creator.id, projectId)
     })
     const recorded = roster.members.find(m => m.hub_id === local.id)!
-    return { channel_id: channelId, hub_id: local.id, project_id: project, leader_changed: recorded.leader_session_id !== caller.id }
+    return { channel_id: channelId, hub_id: local.id, project_id: project, leader_changed: recorded.leader_session_id !== caller.id, rejoined }
   }
 
   /**
@@ -332,6 +367,56 @@ export class InterhubNetwork {
     const envelope = await this.append(channelId, "project", { project_id: String(row.project_id) })
     await this.store.db.query("UPDATE interhub_channels SET shared_project_hint=$2,shared_project_hint_at=$3,shared_project_hint_event=$4 WHERE channel_id=$1", [channelId, String(row.project_id), envelope.occurred_at, envelope.id])
     return true
+  }
+
+  /**
+   * Creator side: prepares the shared project of the channel for an active member hub, after its channel membership is
+   * committed and outside any transaction of the caller. A hub that is already an active member of the policy is never
+   * changed (no role downgrade, renewal or invite change); a revoked one is not restored. A hub that is not active gets
+   * the role bound to the code it joined with, or its previous role when that is higher. The result carries an
+   * invitation only in memory; callers send it over the authenticated P2P connection and nowhere else.
+   */
+  async grantProject(channelId: string, joinerId: string): Promise<ProjectGrant> {
+    const local = await this.localIdentity()
+    const row = (await this.store.db.query(`SELECT c.project_id,m.peer_identity,m.join_code_role FROM chat_channels c
+      JOIN interhub_channels i ON i.channel_id=c.id JOIN interhub_members m ON m.channel_id=c.id AND m.hub_id=$2 AND m.removed_at IS NULL
+      WHERE c.id=$1 AND c.kind='inter-hub' AND c.deleted_at IS NULL AND i.creator_hub_id=$3`, [channelId, joinerId, local.id]))[0]
+    if (!row) return { status: "unavailable", message: "El hub ya no es miembro activo del canal." }
+    if (!row.project_id) return { status: "none" }
+    const projectId = String(row.project_id), joiner = identityOf(row.peer_identity)
+    if (!await sharedProjectUsable(this.store.db, projectId, [local.id])) return { status: "unavailable", message: "El proyecto del canal no es un proyecto compartido activo del hub creador." }
+    const projects = new SharedProjects(this.store)
+    try {
+      return await this.serial(`project:${projectId}`, () => this.store.db.transaction(async (): Promise<ProjectGrant> => {
+        const member = (await projects.get(projectId)).policy.members.find(candidate => candidate.identity.id === joiner.id)
+        if (member?.revoked) return { status: "unavailable", message: "El acceso de este hub al proyecto fue revocado." }
+        if (!active(member)) {
+          const role = member ? stronger(member.role, row.join_code_role as CodeRole) : row.join_code_role as CodeRole
+          await projects.changeMember(projectId, joiner, role, role === "owner" || Boolean(member?.invite))
+        }
+        return { status: "invitation", packet: await projects.invitation(projectId) }
+      }))
+    } catch (error) {
+      return { status: "unavailable", message: error instanceof MemoryError ? error.message : "No se pudo preparar el proyecto compartido." }
+    }
+  }
+
+  /** Creator side: active remote members of the channel that completed the join with the project transfer protocol. */
+  async offerTargets(channelId: string): Promise<string[]> {
+    const local = await this.localIdentity()
+    return (await this.store.db.query(`SELECT m.hub_id FROM interhub_members m JOIN interhub_channels i ON i.channel_id=m.channel_id
+      WHERE m.channel_id=$1 AND m.removed_at IS NULL AND m.hub_id<>$2 AND m.join_protocol_version>=$3 AND i.creator_hub_id=$2 ORDER BY m.joined_at,m.hub_id`,
+    [channelId, local.id, INTERHUB_PROJECT_PROTOCOL])).map(row => String(row.hub_id))
+  }
+
+  /**
+   * Creator side: the project offer for one member hub, or null when this hub is not the creator, the member is not active
+   * or did not register the project transfer protocol. The grant is rebuilt from the current policy on every call.
+   */
+  async projectOffer(channelId: string, hubId: string): Promise<{ project_id: string | null; grant: ProjectGrant } | null> {
+    if (!(await this.offerTargets(channelId)).includes(hubId)) return null
+    const project = (await this.store.db.query("SELECT project_id FROM chat_channels WHERE id=$1 AND deleted_at IS NULL", [channelId]))[0]?.project_id
+    return { project_id: project ? String(project) : null, grant: await this.grantProject(channelId, hubId) }
   }
 
   /** Applies membership, code and project events; chat events are materialized by InterhubChat. */

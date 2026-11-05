@@ -996,4 +996,14 @@ CREATE TABLE hub_stop_events (
  actor_session_id TEXT REFERENCES chat_sessions(id), payload JSON NOT NULL DEFAULT '{}', created_at TIMESTAMP NOT NULL DEFAULT ${NOW}
 );
 CREATE INDEX hub_stop_events_stop ON hub_stop_events(stop_id,seq);
+`, String.raw`
+-- Role granted by joining an inter-hub channel with its code. The creator binds it to the code generation; a member row keeps the
+-- role and generation it joined with. join_protocol_version 2 marks a hub that understands the project transfer frames.
+-- Existing rows stay owner and protocol 1.
+-- Rollback: ALTER TABLE interhub_members DROP COLUMN for join_protocol_version, join_code_generation, join_code_role;
+-- ALTER TABLE interhub_channels DROP COLUMN code_role; then delete this version from schema_versions.
+ALTER TABLE interhub_channels ADD COLUMN code_role TEXT NOT NULL DEFAULT 'owner' CHECK(code_role IN ('owner','maintainer','reader'));
+ALTER TABLE interhub_members ADD COLUMN join_code_role TEXT NOT NULL DEFAULT 'owner' CHECK(join_code_role IN ('owner','maintainer','reader'));
+ALTER TABLE interhub_members ADD COLUMN join_code_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE interhub_members ADD COLUMN join_protocol_version INTEGER NOT NULL DEFAULT 1;
 `]
