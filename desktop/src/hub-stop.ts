@@ -369,6 +369,50 @@ export function formatCountdown(ms: number | null): string {
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`
 }
 
+/** Un estado del que la parada ya no sale sola: se puede dar por resuelta. */
+export function isTerminalStop(view: HubStopView | null | undefined): boolean {
+  return Boolean(view && ["applied", "resumed", "postponed", "cancelled"].includes(view.state))
+}
+
+export interface QuitReconcileDeps {
+  client: HubStopClient
+  intent: { source_id: string; stop_id?: string }
+  coreRunning: () => boolean
+  clearIntent: () => void
+  log: (line: string) => void
+  attempts?: number
+  sleep?: (ms: number) => Promise<void>
+}
+
+/**
+ * Cierra una parada de cierre que quedó de una vida anterior de la app: se cancela, y la intención sólo se borra al observar un
+ * estado terminal (un 409 del cancel es ambiguo) o al comprobar que el backend ya no tiene esa parada activa. Si sigue activa o
+ * el estado es incierto, se conserva y se reintenta.
+ */
+export async function reconcileQuitStop(deps: QuitReconcileDeps): Promise<"cleared" | "kept"> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  for (let attempt = 0; attempt < (deps.attempts ?? 10); attempt++) {
+    if (deps.coreRunning()) {
+      const known = await deps.client.status(deps.intent.stop_id)
+      const view = known.view
+      // 200 sin parada, o una parada ajena: la de este cierre ya no existe.
+      if (known.status === 404 || (known.status === 200 && (!view || view.reason !== "quit" || view.sourceId !== deps.intent.source_id))) { deps.clearIntent(); return "cleared" }
+      if (view && isTerminalStop(view)) { deps.clearIntent(); return "cleared" }
+      if (view) {
+        const cancelled = await deps.client.cancel(view.stopId, "desktop_restarted")
+        if (isTerminalStop(cancelled.view) || isTerminalStop((await deps.client.status(view.stopId)).view)) {
+          deps.clearIntent()
+          deps.log("[quit] se canceló la parada de un cierre anterior")
+          return "cleared"
+        }
+      }
+    }
+    await sleep(3_000)
+  }
+  deps.log("[quit] la parada de un cierre anterior sigue sin resolverse; la intención se conserva")
+  return "kept"
+}
+
 export interface QuitFlowDeps {
   /** Parada de update en curso, si la hay: se cancela antes de pedir la del cierre. */
   activeUpdate: HubStopRun | null
@@ -419,12 +463,11 @@ export async function runQuitFlow(deps: QuitFlowDeps): Promise<"proceed" | "canc
     const stopId = (result.kind === "failed" ? result.view?.stopId : null) ?? run.currentStopId
     // El 409 del cancel es ambiguo (la parada ya es terminal, o la reapertura no se confirmó y sigue activa): sólo un estado terminal
     // observado, en la vista del cancel o en un status posterior, permite borrar la intención.
-    const terminal = (view: HubStopView | null | undefined): boolean => Boolean(view && ["applied", "resumed", "postponed", "cancelled"].includes(view.state))
     let settled = false
     if (stopId) {
       const outcome = await Promise.race([deps.client.cancel(stopId, "desktop_quit_failed"), timer(null)])
-      settled = terminal(outcome?.view)
-      if (!settled) settled = terminal((await Promise.race([deps.client.status(stopId), timer(null)]))?.view)
+      settled = isTerminalStop(outcome?.view)
+      if (!settled) settled = isTerminalStop((await Promise.race([deps.client.status(stopId), timer(null)]))?.view)
     }
     if (settled) deps.clearIntent()
     else deps.log("[quit] no se confirmó la cancelación de la parada; se reintenta al próximo arranque")

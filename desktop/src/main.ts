@@ -30,7 +30,7 @@ import { recoverTransaction } from './update-recovery.js'
 import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { DRAIN_SECRET_HEADER, DrainClient, type DrainLease } from './update-lease.js'
-import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
+import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, reconcileQuitStop, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
 import { cooldownAfter, cooldownUntilMs, intentFromActiveStop, intentOpensCore, sameAttempt, startupTransactionFor, withInstallerFailure, type StopIntent, type StopStrategy } from './stop-intent.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
@@ -907,25 +907,13 @@ async function reconcileQuitIntent(): Promise<void> {
   const intent = updateStore.readStopIntent()
   if (intent?.reason !== 'quit') return
   // Sólo se borra la intención de ESTE cierre anterior: un cierre nuevo puede haber guardado la suya.
-  const clearMine = (): void => { if (updateStore.readStopIntent()?.source_id === intent.source_id) updateStore.clearStopIntent() }
-  for (let attempt = 0; attempt < 10; attempt++) {
-    if (coreSupervisor.state === 'running') {
-      const known = intent.stop_id ? await hubStopClient.status(intent.stop_id) : await hubStopClient.status()
-      const view = known.view
-      if (known.status === 404 || (view && view.sourceId === intent.source_id && ['cancelled', 'resumed', 'postponed', 'applied'].includes(view.state)) || (view && view.reason !== 'quit')) {
-        clearMine()
-        return
-      }
-      if (view && view.sourceId === intent.source_id) {
-        const cancelled = await hubStopClient.cancel(view.stopId, 'desktop_restarted')
-        if (cancelled.view || cancelled.status === 409) { clearMine(); updaterLog('[quit] se canceló la parada de un cierre anterior'); return }
-      } else if (view || known.status !== null) {
-        clearMine()
-        return
-      }
-    }
-    await new Promise<void>(resolve => setTimeout(resolve, 3_000))
-  }
+  await reconcileQuitStop({
+    client: hubStopClient,
+    intent: { source_id: intent.source_id, ...(intent.stop_id ? { stop_id: intent.stop_id } : {}) },
+    coreRunning: () => coreSupervisor.state === 'running',
+    clearIntent: () => { if (updateStore.readStopIntent()?.source_id === intent.source_id) updateStore.clearStopIntent() },
+    log: updaterLog,
+  })
 }
 
 let stopIntentRecovered = false
