@@ -2,7 +2,7 @@ import type { EventEmitter } from "node:events"
 import type { InterhubChatPayload, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import { INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
 import { ACTIVE_TEAM_STATES, channelProjectId, sessionProjectId } from "../chat-access.js"
-import { check } from "../contracts.js"
+import { check, MemoryError } from "../contracts.js"
 import { sessionStatus } from "../local-chat.js"
 import type { MemoryStore } from "../store.js"
 import type { SharedNetwork } from "../sharing/network.js"
@@ -11,7 +11,21 @@ import { INTERHUB_REMOTE_CLI_KIND, InterhubChat, localChannelAgents } from "./ch
 import { InterhubNetwork, chatKind } from "./network.js"
 import { InterhubTransport } from "./transport.js"
 import { assignProject, backfillProjects, isLocalHubLeader, listOrphans, nextLocalExpiry, projectReconcilers, sharedProjectUsable, unlinkInvalidProjects } from "./project-association.js"
-import type { InterhubCaller, InterhubPendingEscalation, InterhubServices } from "./tools.js"
+import type { InterhubCaller, InterhubJoinResult, InterhubPendingEscalation, InterhubServices } from "./tools.js"
+import type { z } from "zod"
+import type { invitationSchema } from "../sharing/schema.js"
+
+const FOLDER_NOTICE = "El canal se unió, pero la carpeta registrada de esta sesión no pudo usarse para el proyecto compartido (falta, no existe o ya pertenece a otro proyecto). Corrige la carpeta registrada de esta sesión o su asociación; el Hub reintentará automáticamente. También puedes repetir memory_chat_interhub_join con el mismo código desde esta sesión; no hace falta un código nuevo."
+const ASSIGN_NOTICE = "El canal se unió y el proyecto compartido se importó, pero el canal no pudo asignarse a él (ya pertenece a otro proyecto o el proyecto aún no es válido para ambos hubs). El Hub reintentará; también puedes usar chat_interhub_assign_project."
+const IMPORT_NOTICE = "El canal se unió, pero el proyecto compartido no se pudo importar"
+const LEGACY_NOTICE = "El canal se unió, pero el hub creador no confirmó la copia automática del proyecto (versión anterior o sin respuesta). Si el canal pertenece a un proyecto compartido, pide al creador que lo comparta con tu hub y asígnalo con chat_interhub_assign_project."
+/** Text received from another hub, reduced to a short plain sentence before it reaches an agent. */
+const peerText = (value: string) => value.normalize("NFKC").replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 300)
+
+type ProjectPacket = z.infer<typeof invitationSchema>
+/** Outcome of importing the project package of a channel; `message` never contains the package. */
+type ProjectImport = { state: "accepted"; project_id: string } | { state: "pending"; project_id: string; message: string }
+  | { state: "failed"; project_id: string; message: string } | { state: "superseded"; project_id: string }
 
 const peerName = (value: unknown) => {
   try {
@@ -125,6 +139,63 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   }
   projectReconcilers.set(store, reconcileProjects)
   const isHubLeader = async (channelId: string, caller: InterhubCaller) => isLocalHubLeader(db, channelId, await localHubId(), caller.id)
+  /**
+   * Imports the project package received from the creator hub with the registered working folder of `leaderId`, then
+   * assigns the channel to it. The folder is only required while the project has none here; a folder that cannot be used
+   * leaves the import pending, any other failure is reported without detail beyond the error text. The package is never
+   * logged, stored or returned.
+   */
+  const importProject = async (channelId: string, leaderId: string, packet: ProjectPacket, assign: boolean): Promise<ProjectImport> => {
+    const projectId = packet.genesis.id, sharing = new SharedProjects(store), attempt = await network.beginProjectAttempt(channelId, projectId)
+    const leader = (await db.query("SELECT cli_kind,native_cwd FROM chat_sessions WHERE id=$1", [leaderId]))[0]
+    const folder = typeof leader?.native_cwd === "string" && leader.native_cwd ? leader.native_cwd : undefined
+    const finish = (pending: { project_id: string | null; reason: string } | null) => attempt ? network.finishProjectAttempt(channelId, attempt, pending) : Promise.resolve(false)
+    const pending = async (message: string): Promise<ProjectImport> => {
+      if (!await finish({ project_id: projectId, reason: message }).catch(() => false)) return { state: "superseded", project_id: projectId }
+      events?.emit("change")
+      return { state: "pending", project_id: projectId, message }
+    }
+    try {
+      const needsFolder = await sharing.needsLocalFolder(projectId)
+      if (needsFolder) {
+        if (!folder) return await pending(FOLDER_NOTICE)
+        try { await sharing.prepareLocalFolder(projectId, folder) } catch (error) {
+          if (error instanceof MemoryError && (error.statusCode === 409 || error.statusCode === 422)) return await pending(FOLDER_NOTICE)
+          throw error
+        }
+      }
+      await sharing.acceptInvitation(packet, needsFolder ? folder : undefined, undefined, `agent:${String(leader?.cli_kind || "mcp")}:${leaderId.slice(0, 8)}`)
+      await transport?.shared.refresh().catch(() => {})
+      if (assign) {
+        // A conflict because the reconciliation already assigned this very project is a success; anything else keeps the project pending.
+        await assignProject(db, await localHubId(), leaderId, channelId, projectId).catch(() => {})
+        const assigned = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1", [channelId]))[0]?.project_id
+        events?.emit("change")
+        if (assigned !== projectId) return await pending(ASSIGN_NOTICE)
+      }
+      if (!await finish(null).catch(() => false)) return { state: "superseded", project_id: projectId }
+      return { state: "accepted", project_id: projectId }
+    } catch (error) {
+      const detail = error instanceof MemoryError ? ` (${peerText(error.message)})` : ""
+      const message = `${IMPORT_NOTICE}${detail}. Acéptalo con otra carpeta mediante memory_shared_join si el creador te comparte una invitación, o pide al creador que lo vuelva a ofrecer.`
+      if (!await finish({ project_id: projectId, reason: message }).catch(() => false)) return { state: "superseded", project_id: projectId }
+      return { state: "failed", project_id: projectId, message }
+    }
+  }
+  if (transport) transport.projectAcceptor = async (offer, creator) => {
+    const local = await localHubId()
+    const channel = (await db.query("SELECT c.project_id,m.leader_session_id FROM chat_channels c JOIN interhub_members m ON m.channel_id=c.id AND m.hub_id=$2 AND m.removed_at IS NULL WHERE c.id=$1", [offer.channel_id, local]))[0]
+    const leaderId = channel?.leader_session_id
+    if (!leaderId || creator.id === local) return { status: "rejected", message: "El canal no tiene un líder local que pueda importar el proyecto." }
+    // An explicit different project wins locally; import the creator's project membership but do not keep retrying its channel assignment.
+    const assign = !channel.project_id || channel.project_id === offer.project_id
+    const outcome = await importProject(offer.channel_id, String(leaderId), offer.packet, assign)
+    if (outcome.state === "superseded") {
+      const imported = await sharedProjectUsable(db, offer.project_id, [local, creator.id])
+      return imported ? { status: "accepted" } : { status: "pending", message: "Otra operación cambió la asociación local; se reintentará." }
+    }
+    return outcome.state === "accepted" ? { status: "accepted" } : { status: outcome.state === "pending" ? "pending" : "rejected", message: outcome.message }
+  }
 
   return {
     /** Settles once the startup backfill has run; it never rejects. */
@@ -138,7 +209,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       // inferred from the caller's context only starts the channel without project.
       check(!input.projectId || usable, "El proyecto indicado no es un proyecto compartido activo de este hub. Compártelo y reintenta, o crea el canal sin proyecto.", 422)
       const projectId = usable ? requested : null
-      const created = await network.createChannel(caller, { name: input.name, projectId })
+      const created = await network.createChannel(caller, { name: input.name, projectId, ...(input.role ? { role: input.role } : {}) })
       transport?.topicsChanged()
       return { ...created, project_id: projectId, ...(requested && !projectId ? { project_notice: "El proyecto indicado no es un proyecto compartido activo de este hub; el canal quedó sin proyecto hasta que se asigne uno compartido." } : {}) }
     },
@@ -151,16 +222,46 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       // only evidence once the creator hub is a member, so the project is decided after the join and never from local context.
       const explicit = projectId ? await channelProject(caller, projectId) : null
       const joined = await transport.join({ id: caller.id, label: String(caller.nickname ?? caller.label) }, code, null)
+      const transfer = joined.transfer
+      if (transfer && transfer.status !== "invitation") await network.setPendingProject(joined.channel_id, null).catch(() => {})
+      // The channel is joined whatever happens to the project: every failure below only adds a notice. The package stays in this scope.
+      const imported = transfer?.status === "invitation" ? await importProject(joined.channel_id, caller.id, transfer.packet, !explicit) : null
+      let notice: string | undefined, pending: string | undefined
+      if (imported?.state === "pending" || imported?.state === "failed") { notice = imported.message; pending = imported.project_id }
+      else if (imported?.state === "superseded") {
+        const current = await network.pendingProject(joined.channel_id)
+        if (current) { notice = current.reason; pending = current.project_id ?? undefined }
+      } else if (transfer?.status === "unavailable") notice = "El canal se unió, pero el hub creador no pudo compartir su proyecto. Revisa en el hub creador los permisos, el conflicto o el estado del proyecto; no hace falta generar otro código."
+      const extra = () => ({ ...(notice ? { project_notice: notice } : {}), ...(pending ? { pending_project_id: pending } : {}) })
       if (explicit) {
-        // An explicit project must be shared with every active hub of the channel.
+        // An explicit project must be shared with every active hub of the channel. Reentry is idempotent for the same project.
         try { await assignProject(db, await localHubId(), caller.id, joined.channel_id, explicit) } catch (error) {
-          check(false, `Tu hub se unió al canal ${joined.channel_id}, pero no se pudo asociar al proyecto indicado: ${error instanceof Error ? error.message : "error desconocido"} Asígnalo después con chat_interhub_assign_project.`, 422)
+          const actual = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1", [joined.channel_id]))[0]?.project_id
+          if (actual === explicit) {
+            await network.setPendingProject(joined.channel_id, null).catch(() => {})
+            notice = undefined
+            pending = undefined
+            events?.emit("change")
+            return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: explicit, ...extra() }
+          }
+          // The join stays visible: report the actual association and never overwrite another project.
+          notice = `El canal se unió, pero no se pudo asociar al proyecto indicado: ${error instanceof MemoryError ? peerText(error.message) : "error desconocido."} Asígnalo después con chat_interhub_assign_project.`
+          pending = actual ? undefined : explicit
+          if (!actual) await network.setPendingProject(joined.channel_id, { project_id: explicit, reason: notice }).catch(() => {})
+          return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: actual ? String(actual) : null, ...extra() }
         }
+        await network.setPendingProject(joined.channel_id, null).catch(() => {})
+        notice = undefined
+        pending = undefined
         events?.emit("change")
-        return { ...joined, project_id: explicit }
+        return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: explicit, ...extra() }
       }
-      const { resolved } = await backfill(joined.channel_id)
-      return resolved.length ? { ...joined, project_id: resolved[0]!.project_id } : joined
+      const { resolved } = imported?.state === "accepted" ? { resolved: [{ project_id: imported.project_id }] } : await backfill(joined.channel_id)
+      const resolvedId = resolved[0]?.project_id ?? null
+      if (!resolvedId && !notice && joined.legacy) notice = LEGACY_NOTICE
+      const actual = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1", [joined.channel_id]))[0]?.project_id
+      const result: InterhubJoinResult = { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: resolvedId ?? (actual ? String(actual) : joined.project_id), ...extra() }
+      return result
     },
     async listOrphans() { await backfilled; return listOrphans(db, localHubId) },
     async assignProject(caller, channelId, projectId) {
@@ -199,12 +300,12 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       events?.emit("change")
       return result
     },
-    async rotateCode(caller, channelId, action) {
-      const result = await network.rotateCode(caller, channelId, action)
+    async rotateCode(caller, channelId, action, role) {
+      const result = await network.rotateCode(caller, channelId, action, action === "regenerate" ? role ?? "owner" : undefined)
       const change = action === "revoke" ? "revoked" as const : "regenerated" as const
       if (transport) await transport.codeChanged(channelId, change, result.generation)
       else await network.append(channelId, "code", { action: change, generation: result.generation })
-      return "code" in result ? { code: result.code } : { revoked: true }
+      return "code" in result ? { code: result.code, role: result.role ?? role ?? "owner" } : { revoked: true }
     },
     /**
      * Local hub: its leader in the channel, sessions of the channel and joined members of active teams mastered there.
