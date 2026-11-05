@@ -4,6 +4,10 @@ import { z } from "zod"
 import { check, parse } from "./contracts.js"
 import { UPDATE_LEASE_TTL_MS } from "./admission-gate.js"
 import type { MemoryService } from "./service.js"
+import { hubLog } from "./report.js"
+
+/** Delays before each read of the stop state at startup: the first is immediate, then 250 ms, 1 s and 2 s. */
+const STARTUP_STATE_RETRY_MS = [0, 250, 1_000, 2_000]
 
 /** The MCP upstream used by every gateway; the only HTTP admission refused by the hook itself. */
 const MCP_PATH = "/api/memory/mcp"
@@ -544,11 +548,24 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
   })
   drain.configureCommittedStop(() => stopCore(drain), async (reason, reopened) => { await (await service.get()).stop.recoverAbandonedCommit(reason, reopened) })
   app.addHook("onReady", async () => {
-    // A service that cannot be read here falls back to the launcher's transaction instead of keeping the core from listening.
-    const durable = await service.get().then(current => current.stop?.appliedTransaction?.() ?? null).catch((error: unknown) => {
-      console.error(`[update-drain] no se pudo leer la transacción aplicada: ${error instanceof Error ? error.message : String(error)}`)
-      return null
-    })
+    // An applied update read here must close MCP before listening, so a service that cannot be read is retried. Without that
+    // state and without the launcher's transaction the core refuses to listen (fail-closed) and its supervisor restarts it.
+    let durable: string | null = null, failure: unknown
+    for (const delayMs of STARTUP_STATE_RETRY_MS) {
+      if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs))
+      try {
+        const current = await service.get()
+        durable = (await current.stop?.appliedTransaction?.()) ?? null
+        failure = undefined
+        break
+      } catch (error) { failure = error }
+    }
+    if (failure !== undefined) {
+      const detail = failure instanceof Error ? failure.message : String(failure)
+      try { hubLog(service.directory).event("update_drain", "startup_state_unavailable", { cause: "startup_state_unavailable", fallback: Boolean(options.startupTransaction) }) } catch { /* The decision below does not depend on the log. */ }
+      console.error(`[update-drain] no se pudo leer el estado de la parada al arrancar: ${detail}`)
+      if (!options.startupTransaction) throw failure
+    }
     const transaction = durable ?? options.startupTransaction
     if (transaction) drain.beginStartup(transaction)
   })
