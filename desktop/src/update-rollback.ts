@@ -17,25 +17,10 @@ export const HEALTH_MARGIN_MS = 75_000
 /** Plazo que tiene la versión nueva para confirmar salud antes de volver a la anterior: arranque + ventana estable + sonda + holgura (180 s). */
 export const HEALTH_DEADLINE_MS = HEALTH_STARTUP_MS + HEALTH_STABLE_MS + HEALTH_PROBE_TIMEOUT_MS + HEALTH_MARGIN_MS
 
-export type ProcessRunner = (file: string, args: string[], options: { timeout: number; windowsHide: boolean }) => Promise<{ stdout: unknown }>
-
-/** Tope de la consulta a PowerShell: un cierre no puede depender de que responda. */
-export const WINDOWS_START_TIME_TIMEOUT_MS = 3_000
-
-/**
- * Hora de inicio de un proceso; junto con el PID identifica al proceso aunque el PID se recicle. En macOS y Linux sale de
- * `ps -o lstart=`; en Windows, de `Win32_Process.CreationDate` (CIM) en UTC, ISO 8601. `null` sólo si la consulta falla de verdad.
- */
-export async function processStartTime(pid: number, platform: NodeJS.Platform = process.platform, run: ProcessRunner = promisify(execFile) as ProcessRunner): Promise<string | null> {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return null
+/** Hora de inicio de un proceso (`ps -o lstart=`); junto con el PID identifica al proceso aunque el PID se recicle. */
+export async function processStartTime(pid: number): Promise<string | null> {
   try {
-    if (platform === "win32") {
-      const script = `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CreationDate.ToUniversalTime().ToString('o')`
-      const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: WINDOWS_START_TIME_TIMEOUT_MS, windowsHide: true })
-      const text = String(stdout).trim()
-      return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(text) ? text : null
-    }
-    const { stdout } = await run("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 5_000, windowsHide: true })
+    const { stdout } = await promisify(execFile)("/bin/ps", ["-o", "lstart=", "-p", String(pid)])
     return String(stdout).trim() || null
   } catch {
     return null

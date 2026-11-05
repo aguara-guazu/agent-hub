@@ -32,6 +32,7 @@ import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths,
 import { DRAIN_SECRET_HEADER, DrainClient, type DrainLease } from './update-lease.js'
 import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, reconcileQuitStop, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
 import { clearIntentIfSame, cooldownAfter, cooldownUntilMs, intentFromActiveStop, intentOpensCore, nsisBeforeCommit, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
+import { coreStartTime } from './process-identity.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
@@ -575,7 +576,7 @@ function startHubStop(intent: StopIntent, onView: (view: HubStopView) => void, b
   const run = new HubStopRun({
     client: hubStopClient,
     core: { get pid() { return coreSupervisor.pid }, get state() { return coreSupervisor.state } },
-    startTimeOf: processStartTime,
+    startTimeOf: coreStartTime,
     log: updaterLog,
     holdCore: () => coreSupervisor.hold(),
   }, {

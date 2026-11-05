@@ -141,7 +141,8 @@ export type HubStopOutcome =
 export interface HubStopRunDeps {
   client: HubStopClient
   core: { readonly pid: number | undefined; readonly state: string }
-  startTimeOf: (pid: number) => Promise<string | null>
+  /** `string`: vive con esa hora de inicio; `null`: se comprobó que no existe; `undefined`: no se pudo inspeccionar (no prueba nada). */
+  startTimeOf: (pid: number) => Promise<string | null | undefined>
   log: (line: string) => void
   now?: () => number
   sleep?: (ms: number) => Promise<void>
@@ -317,11 +318,20 @@ export class HubStopRun {
       return null
     }
     this.input.onView?.(result.view)
-    const exited = async (): Promise<boolean> => await this.deps.startTimeOf(pid) !== start
-    const limit = this.deps.exitWaitMs ?? CORE_EXIT_WAIT_MS
-    for (let waited = 0; waited < limit && !await exited(); waited += 250) await this.sleep(250)
-    // Nunca se mata a core: si no salió solo, se informa y no se intercambia nada.
-    if (!await exited()) throw new CoreDidNotExit()
+    // Salió si el supervisor ya no lo da por corriendo, si la inspección prueba que no existe (null) o si el PID ahora es otro proceso
+    // (otra hora de inicio). Una inspección que no se pudo hacer (undefined) no prueba nada. El plazo es de reloj, no una suma de esperas.
+    const clock = this.deps.now ?? Date.now
+    const deadlineAt = clock() + (this.deps.exitWaitMs ?? CORE_EXIT_WAIT_MS)
+    const exited = async (): Promise<boolean> => {
+      if (core.state !== "running") return true
+      const live = await this.deps.startTimeOf(pid)
+      return live === null || (typeof live === "string" && live !== start)
+    }
+    while (!await exited()) {
+      // Nunca se mata a core: si no salió solo, se informa y no se intercambia nada.
+      if (clock() >= deadlineAt) throw new CoreDidNotExit()
+      await this.sleep(250)
+    }
     return { kind: "committed", stopId, pid, start }
   }
 }
