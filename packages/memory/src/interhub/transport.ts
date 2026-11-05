@@ -60,7 +60,7 @@ const joinResultFrameV2 = z.union([
   z.object({ type: z.literal("ih_join_result"), request: uuid, version: z.literal(2), ok: z.literal(false) }).strict(),
   z.object({ type: z.literal("ih_join_result"), request: uuid, version: z.literal(2), ok: z.literal(true), proof: hex64, roster: rosterSchema, project: projectTransferSchema }).strict(),
 ])
-const policyHash = z.string().min(1).max(200)
+const policyHash = hex64
 const projectOfferFrame = z.object({ type: z.literal("ih_project_offer"), request: uuid, channel_id: uuid, project_id: uuid, policy_hash: policyHash, packet: invitationSchema }).strict()
 const projectResultFrame = z.object({ type: z.literal("ih_project_result"), request: uuid, channel_id: uuid, project_id: uuid, policy_hash: policyHash,
   status: z.enum(["accepted", "pending", "rejected"]), message: z.string().max(500).optional() }).strict()

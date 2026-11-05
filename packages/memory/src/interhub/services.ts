@@ -16,6 +16,7 @@ import type { z } from "zod"
 import type { invitationSchema } from "../sharing/schema.js"
 
 const FOLDER_NOTICE = "El canal se unió, pero la carpeta registrada de esta sesión no pudo usarse para el proyecto compartido (falta, no existe o ya pertenece a otro proyecto). Corrige la carpeta registrada de esta sesión o su asociación; el Hub reintentará automáticamente. También puedes repetir memory_chat_interhub_join con el mismo código desde esta sesión; no hace falta un código nuevo."
+const ASSIGN_NOTICE = "El canal se unió y el proyecto compartido se importó, pero el canal no pudo asignarse a él (ya pertenece a otro proyecto o el proyecto aún no es válido para ambos hubs). El Hub reintentará; también puedes usar chat_interhub_assign_project."
 const IMPORT_NOTICE = "El canal se unió, pero el proyecto compartido no se pudo importar"
 const LEGACY_NOTICE = "El canal se unió, pero el hub creador no confirmó la copia automática del proyecto (versión anterior o sin respuesta). Si el canal pertenece a un proyecto compartido, pide al creador que lo comparta con tu hub y asígnalo con chat_interhub_assign_project."
 /** Text received from another hub, reduced to a short plain sentence before it reaches an agent. */
@@ -156,13 +157,19 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       const needsFolder = await sharing.needsLocalFolder(projectId)
       if (needsFolder) {
         if (!folder) return await pending(FOLDER_NOTICE)
-        try { await sharing.prepareLocalFolder(projectId, folder) } catch { return await pending(FOLDER_NOTICE) }
+        try { await sharing.prepareLocalFolder(projectId, folder) } catch (error) {
+          if (error instanceof MemoryError && (error.statusCode === 409 || error.statusCode === 422)) return await pending(FOLDER_NOTICE)
+          throw error
+        }
       }
       await sharing.acceptInvitation(packet, needsFolder ? folder : undefined, undefined, `agent:${String(leader?.cli_kind || "mcp")}:${leaderId.slice(0, 8)}`)
       await transport?.shared.refresh().catch(() => {})
       if (assign) {
+        // A conflict because the reconciliation already assigned this very project is a success; anything else keeps the project pending.
         await assignProject(db, await localHubId(), leaderId, channelId, projectId).catch(() => {})
+        const assigned = (await db.query("SELECT project_id FROM chat_channels WHERE id=$1", [channelId]))[0]?.project_id
         events?.emit("change")
+        if (assigned !== projectId) return await pending(ASSIGN_NOTICE)
       }
       await network.setPendingProject(channelId, null).catch(() => {})
       return { state: "accepted", project_id: projectId }
@@ -216,7 +223,10 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
       if (explicit) {
         // An explicit project must be shared with every active hub of the channel.
         try { await assignProject(db, await localHubId(), caller.id, joined.channel_id, explicit) } catch (error) {
-          check(false, `Tu hub se unió al canal ${joined.channel_id}, pero no se pudo asociar al proyecto indicado: ${error instanceof Error ? error.message : "error desconocido"} Asígnalo después con chat_interhub_assign_project.`, 422)
+          // The join stays visible: the failure is reported as a notice, never thrown.
+          notice = `El canal se unió, pero no se pudo asociar al proyecto indicado: ${error instanceof MemoryError ? peerText(error.message) : "error desconocido."} Asígnalo después con chat_interhub_assign_project.`
+          pending = explicit
+          return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: null, ...extra() }
         }
         events?.emit("change")
         return { channel_id: joined.channel_id, hub_id: joined.hub_id, project_id: explicit, ...extra() }
