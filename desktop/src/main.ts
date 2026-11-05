@@ -31,7 +31,7 @@ import { parseTrustSet } from './update-trust.js'
 import { collectRuntimes, ensureGatewayRuntime, runtimeBundlePath, runtimePaths, swapHelperPath } from './gateway-runtime.js'
 import { DRAIN_SECRET_HEADER, DrainClient, type DrainLease } from './update-lease.js'
 import { formatCountdown, HubStopClient, HubStopRun, quitPhaseOf, reconcileQuitStop, runQuitFlow, stopReasons, stopReportOf, type HubStopReason, type HubStopView } from './hub-stop.js'
-import { clearIntentIfSame, cooldownAfter, cooldownUntilMs, intentFromActiveStop, intentOpensCore, markInstallerRecovery, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
+import { clearIntentIfSame, cooldownAfter, cooldownUntilMs, intentFromActiveStop, intentOpensCore, nsisBeforeCommit, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
 import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
@@ -631,7 +631,10 @@ async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downl
   const intent = stopAttempt({ reason: 'update', strategy, transactionId, targetVersion: update.version })
   const run = startHubStop(intent, view => {
     setUpdateReport({ phase: 'postponed', version: update.version, reasons: stopReasons(view), stop: stopReportOf(view), ...(update.trust ? { trust: update.trust } : {}) })
-  }, strategy === 'dmg' ? undefined : () => revalidateArtifact(update.path, update.sha256, update.size))
+  }, strategy === 'dmg' ? undefined : strategy === 'nsis'
+    // La marca de recuperación va antes del commit irreversible: si no se confirma, no hay commit ni instalador y se libera todo.
+    ? () => nsisBeforeCommit({ revalidate: () => revalidateArtifact(update.path, update.sha256, update.size), store: updateStore, transactionId, version: app.getVersion(), log: updaterLog })
+    : () => revalidateArtifact(update.path, update.sha256, update.size))
   const outcome = await run.done
   if (outcome.kind !== 'committed') {
     // Un resultado incierto (la parada puede seguir viva) ni inicia enfriamiento ni abandona el source_id: el próximo intento reconcilia la misma.
@@ -653,13 +656,6 @@ async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downl
     advancePhase(updateStore.dir, transactionId, 'swap_intent')
     await exitForUpdate()
     return true
-  }
-  // La parada ya está aplicada y core salió: si el instalador NSIS no llega a instalar (falla, sale sin instalar, o el cierre vence y
-  // se relanza), esta versión tiene que poder admitir esa transacción. Se marca de forma durable ANTES de cualquier camino que lance
-  // el instalador o relance; si no se pudo confirmar, no se lanza.
-  if (strategy === 'nsis' && !markInstallerRecovery(updateStore, transactionId, app.getVersion(), updaterLog)) {
-    updaterLog(`[updater] v${update.version}: no se pudo marcar la recuperación del instalador; no se lanza`)
-    return postpone(update.version, [{ code: 'recovery_not_marked' }])
   }
   installOnQuit = update
   await quit()

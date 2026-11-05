@@ -130,3 +130,12 @@ export function clearIntentIfSame(store: StopIntentStore, admitted: { source_id:
   store.clearStopIntent()
   return true
 }
+
+/**
+ * Paso previo al commit de una actualización NSIS: el instalador se revalida y se deja marcada la recuperación de esta versión
+ * mientras todavía se puede cancelar. Si algo falla lanza, y la parada se cancela sin commit ni instalador.
+ */
+export async function nsisBeforeCommit(deps: { revalidate: () => Promise<unknown>; store: StopIntentStore; transactionId: string; version: string; log?: (line: string) => void }): Promise<void> {
+  await deps.revalidate()
+  if (!markInstallerRecovery(deps.store, deps.transactionId, deps.version, deps.log)) throw new Error("recovery_not_marked")
+}
