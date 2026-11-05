@@ -544,7 +544,11 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
   })
   drain.configureCommittedStop(() => stopCore(drain), async (reason, reopened) => { await (await service.get()).stop.recoverAbandonedCommit(reason, reopened) })
   app.addHook("onReady", async () => {
-    const durable = await (await service.get()).stop.appliedTransaction()
+    // A service that cannot be read here falls back to the launcher's transaction instead of keeping the core from listening.
+    const durable = await service.get().then(current => current.stop?.appliedTransaction?.() ?? null).catch((error: unknown) => {
+      console.error(`[update-drain] no se pudo leer la transacción aplicada: ${error instanceof Error ? error.message : String(error)}`)
+      return null
+    })
     const transaction = durable ?? options.startupTransaction
     if (transaction) drain.beginStartup(transaction)
   })
