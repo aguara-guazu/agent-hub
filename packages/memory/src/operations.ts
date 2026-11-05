@@ -1,3 +1,4 @@
+import { diagnosticReport, diagnosticReportInput } from "./diagnostic-report.js"
 import { isCollaborationTool } from './collaboration.js'
 import { renderMemoryToolReference } from './skill.js'
 import { interhubReference, localCollaborationSkill, localOrchestrationReference } from './local-chat-skill.js'
@@ -39,11 +40,14 @@ import { listProjectSuggestions, projectSuggestionReview, reviewProjectSuggestio
 import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput, saveProjectCompany, saveProjectCompanyInput } from './project-assistance.js'
 
 import { mergeProjects, mergeProjectsInput } from "./project-merge.js"
+import type { HubStopCoordinator } from "./hub-stop.js"
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
 const definitions = {
   skill_reference: ['Only when needed: collaboration guides or the full tool reference. Runs nothing; grants no permissions.', z.object({section:z.enum(['memory-tools','local-collaboration','team-orchestration','inter-hub'])}).strict()],
   usage_status: ['Native quotas and team notices: windows, resets, source, freshness. Unknown does not mean available; quota guarantees neither access nor completion. No inference or provider refresh.', z.object({session_key:z.string().min(32).max(200).optional(),cli:z.enum(CLI_KINDS).optional(),model:z.string().max(300).optional()}).strict()],
+  hub_stop_confirm: ["Confirm a requested coordinated stop only after telling every member to reach a safe point, report and stop. Current notified coordinator only; idempotent; does not stop processes.",
+    z.object({ session_key: z.string().min(32).max(200), stop_id: id }).strict()],
   ...chatDefinitions,
   ...interhubDefinitions,
   ...teamDefinitions,
@@ -75,6 +79,7 @@ const definitions = {
   manage_memory: ['Archive/restore/pin an agent memory with reason and history. Archived: out of active recall, originals and citations kept. Needs current expected_updated_at.', manageMemoryInput],
   tidy_memory: ['Queue local worker maintenance: explicit expirations, exact-duplicate merge, embedding-related pairs, prune regenerable old vectors. Keeps originals, citations. No repeat within 24 h unless force.', tidyInput],
   health: ['Last maintenance, related-memory hints, and whether another worker review is due.', maintenanceStatusInput],
+  diagnostic_report: ["Only when the person reports a problem with Agent Hub itself (skill report-hub-issue): redacted issue draft (title, body, prefilled URL and a private body_file deleted within an hour) with versions, OS, CLIs, the window's log lines, process incidents and notice causes. Publishes nothing.", diagnosticReportInput],
   import_file: ['Store a file (absolute local path) or base64, max 25 MB: screenshot, image, audio, video, PDF, other. Add description, annotations (offset_ms, end_offset_ms, page, region). Original kept, never sent to providers. OCR, transcription, A/V indexing run locally if enabled in «Ajustes».', importFileInput],
   get_file: ['File of a version: metadata, download link; page returns a PDF page as image. include_content returns up to 5 MB, as image/audio if the client supports it.', getFileInput],
   import_source: ['Import a source (original + utterances). Stable external IDs dedupe.', importInput],
@@ -132,7 +137,7 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...interhubReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...interhubReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','diagnostic_report','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
   readonly usage: UsageQuotas
@@ -152,6 +157,8 @@ export class MemoryOperations {
   setSharedPaused: ((projectId: string, paused: boolean) => Promise<{ paused: boolean }>) | undefined
   /** Set by the service: backups run inside it so a stop never cuts one. */
   admission: AdmissionGate | undefined
+  /** Set by the core service; absent in worker-only memory processes. */
+  hubStop: HubStopCoordinator | undefined
   readonly projectAutomation: ProjectAutomationService
   get sharing() { return new SharedPublications(this.store) }
   constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
@@ -193,7 +200,7 @@ export class MemoryOperations {
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
     // Cleanup remains allowed and deletion keeps its original lifecycle lock ordering.
     if (!READ_OPERATIONS.has(operation) && !["delete_entity", "unlink_entities"].includes(operation)) await assertWritableEntityTargets(this.store.db, raw)
-    if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
+    if (isCollaborationTool(operation) || operation === "hub_stop_confirm" || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
       check(this.collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
     if (isInterhubOperation(operation)) {
       check(actor !== 'mcp' || agent, 'La colaboración por MCP requiere la identidad de agente que agrega el gateway.', 403)
@@ -226,6 +233,10 @@ export class MemoryOperations {
     const author = agent ? `agent:${agent.cli_kind || 'mcp'}:${agent.session_id.slice(0, 8)}` : actor
     switch (operation) {
       case 'skill_reference': return {section:input.section,text:input.section==='memory-tools'?renderMemoryToolReference():input.section==='local-collaboration'?localCollaborationSkill.body:input.section==='inter-hub'?interhubReference:localOrchestrationReference}
+      case "hub_stop_confirm": {
+        check(agent && this.hubStop, "La parada coordinada requiere una sesión de agente registrada en el core.", 403)
+        return this.hubStop.confirm(agent, input.session_key, input.stop_id)
+      }
 
       case 'usage_status': {
         const who=agent && input.session_key && this.collaborationEnabled() ? await this.chat.identity(agent,input.session_key) : undefined
@@ -333,6 +344,7 @@ export class MemoryOperations {
       case 'manage_memory': return manageMemory(store, input, author)
       case 'tidy_memory': return requestTidy(store, input, author)
       case 'health': return maintenanceStatus(store, input.project_id)
+      case 'diagnostic_report': return diagnosticReport(store.db, store.directory, input)
       case 'process_files': return queueMedia(store, input, false, this.media)
       case 'import_file': return importFile(store, input, author)
       case 'get_file': return getFile(store, input, signal)

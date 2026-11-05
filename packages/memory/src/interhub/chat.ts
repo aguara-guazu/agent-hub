@@ -164,13 +164,20 @@ export class InterhubChat {
     const author = await this.remoteAuthor(sql, envelope, member, thread.author)
     const existing = (await sql.query("SELECT channel_id FROM chat_threads WHERE id=$1", [thread.id]))[0]
     check(!existing || existing.channel_id === envelope.channel_id, "El hilo inter-hub ya pertenece a otro canal", 409)
-    if (!existing) await sql.query("INSERT INTO chat_threads(id,channel_id,title,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$5)", [thread.id, envelope.channel_id, thread.title, author.id, thread.created_at])
+    if (!existing) {
+      const staged = (await sql.query("SELECT channel_id FROM interhub_thread_staging WHERE thread_id=$1", [thread.id]))[0]
+      check(!staged || staged.channel_id === envelope.channel_id, "El hilo inter-hub ya pertenece a otro canal", 409)
+      if (!staged) await sql.query(`INSERT INTO interhub_thread_staging(thread_id,channel_id,title,author_session_id,origin_hub_id,envelope_id,thread_created_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7)`, [thread.id, envelope.channel_id, thread.title, author.id, envelope.origin_hub_id, envelope.id, thread.created_at])
+    }
     return { duplicate: false as const, kind: "thread" as const }
   }
 
   private async receiveMessage(sql: Sql, envelope: VerifiedInterhubChatEnvelope, channel: Record<string, any>, member: Record<string, any>, message: Extract<InterhubChatPayload, { type: "message" }>["message"]) {
     const thread = (await sql.query("SELECT id FROM chat_threads WHERE id=$1 AND channel_id=$2", [message.thread_id, envelope.channel_id]))[0]
-    check(thread, "El mensaje inter-hub refiere a un hilo inexistente", 409)
+    // A remote thread exists locally only once its first message arrives; until then its metadata waits in staging.
+    const staged = thread ? undefined : (await sql.query("SELECT * FROM interhub_thread_staging WHERE thread_id=$1 AND channel_id=$2", [message.thread_id, envelope.channel_id]))[0]
+    check(thread || staged, "El mensaje inter-hub refiere a un hilo inexistente", 409)
     const author = await this.remoteAuthor(sql, envelope, member, message.author)
     // A colliding id never gains a remote origin: only the same remote message re-sent in another envelope is a no-op.
     if ((await sql.query("SELECT 1 FROM chat_messages WHERE id=$1", [message.id])).length) {
@@ -181,6 +188,11 @@ export class InterhubChat {
     }
     const replied = message.reply_to ? (await sql.query(`SELECT m.id,m.author_id,o.message_id AS remote FROM chat_messages m LEFT JOIN interhub_message_origins o ON o.message_id=m.id
       WHERE m.id=$1 AND m.thread_id=$2`, [message.reply_to, message.thread_id]))[0] : undefined
+    if (staged) {
+      await sql.query("INSERT INTO chat_threads(id,channel_id,title,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$5)",
+        [staged.thread_id, staged.channel_id, staged.title, staged.author_session_id, staged.thread_created_at])
+      await sql.query("UPDATE interhub_thread_staging SET materialized_at=now() WHERE thread_id=$1", [staged.thread_id])
+    }
     await sql.query("INSERT INTO chat_messages(id,thread_id,author_id,text,reply_to,request_id,request_hash,kind,created_at) VALUES($1,$2,$3,$4,$5,$6,$6,$7,$8)",
       [message.id, message.thread_id, author.id, message.text, replied ? replied.id : null, envelope.id, message.kind, message.created_at])
     await sql.query("INSERT INTO interhub_message_origins(message_id,envelope_id,hub_id,hub_name,peer_id,author_role) VALUES($1,$2,$3,$4,$5,$6)",

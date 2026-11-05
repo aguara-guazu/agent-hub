@@ -156,6 +156,10 @@ export class FleetProcessManager {
       this.fail(s, 'fleet_event_delivery_failed')
     })
   }
+  /** A stop whose exit was unconfirmed published 'unknown'; a later close confirms it. */
+  private settleLateExit(s: Session) {
+    if (s.stopping && s.status.state === 'unknown' && this.sessions.get(s.status.id) === s) this.publish(s, 'stopped')
+  }
   private live(s: Session) {
     return this.sessions.get(s.status.id) === s && !s.exited && !s.stopping && !['failed', 'stopped'].includes(s.status.state)
   }
@@ -533,6 +537,7 @@ export class FleetProcessManager {
     })
     child.once('close', () => {
       s.exited = true; buffer = ''; closed()
+      this.settleLateExit(s)
       if (!s.stopping && s.status.state !== 'failed') this.fail(s, 'fleet_process_exited')
       this.rejectPending(s, 'fleet_process_exited')
     })
@@ -721,14 +726,35 @@ export class FleetProcessManager {
     const s = this.sessions.get(id)
     if (!s) throw new Error('fleet_unknown_id')
     await this.terminate(s)
+    // terminate() is memoized, so a repeated stop never signals again; it only waits again for an exit still unconfirmed.
+    if (!s.exited && s.status.state === 'unknown') await this.waitForExit(s)
     this.clearQuestions(s)
     delete s.status.turn_id
     this.publish(s, s.exited ? 'stopped' : 'unknown', s.exited ? undefined : 'fleet_shutdown_timeout')
     await s.eventQueue
     return this.snapshot(s.status)
   }
-  async close(): Promise<void> {
+  private async waitForExit(s: Session): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([s.closed, new Promise<void>(resolve => { timer = setTimeout(resolve, this.options.shutdownTimeoutMs ?? 1_000) })])
+    } finally { clearTimeout(timer) }
+  }
+  /** Repeats the bounded TERM/KILL sequence only for a child whose previous stop remained unconfirmed. */
+  async retryStop(id: string): Promise<FleetStatus> {
+    const s = this.sessions.get(id)
+    if (!s) throw new Error("fleet_unknown_id")
+    if (!s.exited && s.status.state === "unknown" && s.cleanup) {
+      s.cleanup = undefined
+      s.stopping = false
+    }
+    return this.stop(id)
+  }
+
+  /** Resolves with the ids whose exit is still unconfirmed (empty when all stopped); calling it again waits again without signaling. */
+  async close(): Promise<string[]> {
     this.closing = true
-    await Promise.all([...this.sessions.keys()].map(id => this.stop(id)))
+    const stopped = await Promise.all([...this.sessions.keys()].map(id => this.stop(id)))
+    return stopped.filter(status => status.state === 'unknown').map(status => status.id)
   }
 }

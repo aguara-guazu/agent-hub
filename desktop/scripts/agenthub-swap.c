@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -48,8 +49,23 @@ static int expected_pair(const char *installed, const char *incoming) {
   return valid_transaction_id(incoming + base + sizeof(marker) - 1);
 }
 
+static int inherited_lock_fd(void) {
+  const char *value = getenv("AGENTHUB_SWAP_LOCK_FD");
+  const char *path = getenv("AGENTHUB_SWAP_LOCK_PATH");
+  if (!value || !*value || !path || path[0] != '/') return -1;
+  char *end = NULL;
+  long fd = strtol(value, &end, 10);
+  if (!end || *end || fd < 3 || fd > INT_MAX) return -1;
+  struct stat held, expected;
+  if (fstat((int)fd, &held) != 0 || lstat(path, &expected) != 0 || !S_ISREG(held.st_mode) || S_ISLNK(expected.st_mode)
+      || held.st_dev != expected.st_dev || held.st_ino != expected.st_ino) return -1;
+  if (flock((int)fd, LOCK_EX | LOCK_NB) != 0) return -1;
+  return (int)fd;
+}
+
 int main(int argc, char **argv) {
   if (argc != 3) return reject("expected exactly two paths: <installed.app> <installed.app.incoming-id>");
+  if (inherited_lock_fd() < 0) return reject("missing inherited swap lock");
   struct stat installed, incoming;
   if (!real_directory(argv[1], &installed) || !real_directory(argv[2], &incoming)) return reject("paths must be absolute, existing directories and not symlinks");
   if (installed.st_dev != incoming.st_dev) return reject("paths must be on the same device");

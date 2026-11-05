@@ -1,12 +1,13 @@
 /* global window, document, fetch */
 import { createRequire } from 'node:module'
 const { _electron: electron } = createRequire(new URL('../frontend/package.json', import.meta.url))('playwright')
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { URL, fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { exec } from 'node:child_process'
+import { clearTimeout, setTimeout } from 'node:timers'
 import { setTimeout as delay } from 'node:timers/promises'
 import assert from 'node:assert/strict'
 
@@ -23,6 +24,43 @@ async function managedFile(path, ready) {
     await delay(100)
   } while (Date.now() < deadline)
   throw new Error(`Managed client file did not become ready: ${path}`)
+}
+
+const started = Date.now()
+const mark = step => console.log(`[smoke] +${((Date.now() - started) / 1000).toFixed(1)}s ${step}`)
+const CLOSE_LIMIT_MS = 120_000
+
+// A close that does not finish is diagnosed here instead of at the job timeout: tail of the app logs and its processes.
+async function diagnoseStuckClose(logs) {
+  for (const name of ['core.log', 'hub.log', 'daemon.log']) {
+    const text = await readFile(join(logs, name), 'utf8').catch(error => `(${error.code ?? error.message})`)
+    console.log(`----- ${name} (últimas 80 líneas) -----\n${text.split('\n').slice(-80).join('\n')}`)
+  }
+  const list = process.platform === 'win32' ? 'tasklist /V /FI "IMAGENAME eq Agent Hub.exe"' : 'ps -eo pid,ppid,etime,command | grep -i "agent hub" | grep -v grep'
+  const processes = await new Promise(done => exec(list, { windowsHide: true, timeout: 15_000 }, (error, stdout) => done(stdout || String(error?.message ?? ''))))
+  console.log(`----- procesos Agent Hub -----\n${processes}`)
+}
+
+async function closeWithin(app, logs, attempt) {
+  mark(`close ${attempt + 1}: start`)
+  let timer
+  try {
+    const stuck = new Promise(done => { timer = setTimeout(() => done('stuck'), CLOSE_LIMIT_MS) })
+    const result = await Promise.race([app.close().then(() => 'closed', error => ({ error })), stuck])
+    if (result === 'closed') { mark(`close ${attempt + 1}: done`); return }
+    if (result === 'stuck') {
+      await diagnoseStuckClose(logs)
+      throw new Error(`Desktop close ${attempt + 1} did not finish within ${CLOSE_LIMIT_MS / 1000}s`)
+    }
+    throw result.error
+  } catch (error) {
+    // Neither a stuck nor a failed close may leave the test app running after the smoke.
+    const child = app.process()
+    if (child && child.exitCode === null && child.signalCode === null) child.kill()
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // Run against the installed/unpacked executable, with a fresh profile and no model downloads or external accounts.
@@ -42,9 +80,11 @@ delete env.ELECTRON_RUN_AS_NODE
 let app
 try {
   for (let attempt = 0; attempt < 2; attempt++) {
+    mark(`launch ${attempt + 1}: start`)
     app = await electron.launch({ ...(process.argv[2] ? { executablePath: resolve(process.argv[2]), args: [] } : { args: [root] }), env, timeout: 60_000 })
     const page = await app.firstWindow({ timeout: 60_000 })
     await page.waitForLoadState('domcontentloaded')
+    mark(`launch ${attempt + 1}: window ready`)
     // También se ejecuta en Windows CI: evita que el atajo quede restringido a macOS.
     // En Wayland confirma la solicitud; la autorización final depende del portal.
     assert.equal(await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Control+Alt+H')), true,
@@ -90,9 +130,12 @@ try {
     await panel.getByText('Sin confirmar', { exact: true }).waitFor()
     await panel.getByText('Abrí Antigravity CLI para recibir su uso; /usage actualiza la lectura.', { exact: true }).waitFor()
     console.log(`Desktop smoke ${attempt + 1}: global shortcut, renderer, session, memory and Antigravity integration ready; ${process.platform}/${process.arch}`)
-    await app.close(); app = undefined
+    const closing = app; app = undefined
+    await closeWithin(closing, join(directory, 'state/logs'), attempt)
   }
 } finally {
   if (app) await app.close().catch(() => {})
+  // CI uploads the app logs of this temporary profile as an artifact, also when the smoke fails.
+  if (process.env.SMOKE_LOGS_DIR) await cp(join(directory, 'state/logs'), process.env.SMOKE_LOGS_DIR, { recursive: true }).catch(error => console.log(`[smoke] logs not copied: ${error.message}`))
   await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 }

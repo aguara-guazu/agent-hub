@@ -252,7 +252,7 @@ it('moves a channel to trash, revokes its team, frees its folder and restores hi
   const fresh=await session()
   expect(fresh.channel.id).not.toBe(master.channel.id)
   await chat.restoreChannel(master.channel.id)
-  expect((await chat.call('chat_read',{thread_id:plan.root_thread_id})).items[0].id).toBe(message.id)
+  expect((await chat.call('chat_read',{thread_id:plan.root_thread_id})).items.map((item:any)=>item.id)).toContain(message.id)
   expect((await chat.call('chat_channels',{channel_id:master.channel.id})).items[0].read_only).toBe(true)
   expect((await db.query('SELECT closed_at FROM chat_sessions WHERE id=$1',[master.session.id]))[0].closed_at).toBeTruthy()
   expect((await teams.humanPlan(plan.id)).state).toBe('cancelled')

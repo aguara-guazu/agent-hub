@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { once } from "node:events"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
+import { setTimeout as delay } from "node:timers/promises"
 import { join, resolve } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -14,11 +16,19 @@ import { DaemonApp, loadConfig } from '@agenthub/daemon'
 const children: ChildProcess[] = []
 const roots: string[] = []
 
-afterEach(async () => {
-  for (const child of children.splice(0)) {
-    if (child.exitCode === null) child.kill('SIGTERM')
+async function stop(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const exited = once(child, "exit")
+  child.stdin?.end()
+  child.kill("SIGTERM")
+  if (!await Promise.race([exited.then(() => true), delay(5000).then(() => false)])) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+    await exited
   }
-  await new Promise((resolveDone) => setTimeout(resolveDone, 50))
+}
+
+afterEach(async () => {
+  for (const child of children.splice(0)) await stop(child)
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -41,8 +51,8 @@ async function waitFor(url: string): Promise<void> {
   throw new Error(`timeout esperando ${url}`)
 }
 
-function run(command: string, args: string[], env: NodeJS.ProcessEnv): ChildProcess {
-  const child = spawn(command, args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] })
+function run(command: string, args: string[], env: NodeJS.ProcessEnv, lifeline = false): ChildProcess {
+  const child = spawn(command, args, { cwd: ROOT, env: lifeline ? { ...env, AGENTHUB_STDIN_LIFELINE: "1" } : env, stdio: lifeline ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"] })
   children.push(child)
   return child
 }
@@ -78,7 +88,7 @@ describe('hub local TypeScript completo', () => {
       AGENTHUB_JWT_SECRET: 'jwt-e2e-' + 'y'.repeat(32),
       AGENTHUB_DESKTOP_BOOTSTRAP_TOKEN: bootstrap,
     }
-    const core = run(process.execPath, [CORE], env)
+    const core = run(process.execPath, [CORE], env, true)
     await waitFor(`${base}/health`)
 
     const rejected = await fetch(`${base}/api/auth/desktop-session`, {

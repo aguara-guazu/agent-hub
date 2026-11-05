@@ -623,7 +623,7 @@ describe('FleetProcessManager', () => {
     expect(manager.status('one')?.error_code).toBe('fleet_event_delivery_failed')
   })
   it('prevents simultaneous starts and a start racing manager close', async () => {
-    const { manager, input } = await setup('silent')
+    const { manager, input } = await setup('silent', { shutdownTimeoutMs: 500 })
     const starting = manager.start(input)
     await expect(manager.start(input)).rejects.toThrow('fleet_already_running')
     await manager.close()

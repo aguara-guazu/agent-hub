@@ -1,11 +1,17 @@
 import { CHECK_INTERVAL_MS, type UpdateStatus } from './updater.js'
 
+const TRIGGER_MIN_INTERVAL_MS = 60_000
+/** La compuerta de core se reevalúa cada 15 s mientras la actualización está pospuesta. */
+const GATE_RETRY_MS = 15_000
+
 type Downloaded = Extract<UpdateStatus, { state: 'downloaded' }>
 interface Dependencies {
   check(): Promise<UpdateStatus>
   /** false means installation must wait for active client connections. */
   apply(update: Downloaded): Promise<boolean>
   log(message: string): void
+  /** Interruptor de Ajustes; apagado, no se consulta ni se aplica nada. */
+  enabled?(): boolean
 }
 
 /** No UI dependency: background updates never ask for input or activate a window. */
@@ -15,9 +21,21 @@ export class SilentUpdates {
   private pending: Downloaded | null = null
   private stopped = false
   private failures = 0
+  private lastTrigger = 0
   constructor(private readonly deps: Dependencies) {}
   start() { void this.run() }
   stop() { this.stopped = true; clearTimeout(this.timer) }
+  /**
+   * Adelanta una verificación (por ejemplo, un par con una versión más nueva). Sólo adelanta: la
+   * descarga se valida contra GitHub como siempre. Máximo una por minuto.
+   */
+  trigger(reason: string): void {
+    const now = Date.now()
+    if (this.stopped || this.running || now - this.lastTrigger < TRIGGER_MIN_INTERVAL_MS) return
+    this.lastTrigger = now
+    this.deps.log(`verificación anticipada (${reason})`)
+    void this.run()
+  }
   run(): Promise<void> {
     if (this.running) return this.running
     if (this.stopped) return Promise.resolve()
@@ -32,6 +50,7 @@ export class SilentUpdates {
   }
   private async update() {
     try {
+      if (this.deps.enabled && !this.deps.enabled()) { this.pending = null; return }
       if (!this.pending) {
         const status = await this.deps.check()
         if (this.stopped) return
@@ -45,7 +64,7 @@ export class SilentUpdates {
       }
       if (this.stopped) return
       // Keep the download while waiting for Windows MCP bridges to finish.
-      if (!await this.deps.apply(this.pending)) { this.schedule(30_000); return }
+      if (!await this.deps.apply(this.pending)) { this.schedule(GATE_RETRY_MS); return }
       this.pending = null; this.failures = 0
     } catch (error) {
       this.pending = null

@@ -128,7 +128,7 @@ export async function sweepChannelArchive(sql: Sql, now = Date.now(), archive = 
     if (await cancelProposal(sql, String(channel.id), "activity", {}, { activity_at: channel.last_activity_at })) result.proposals_cancelled.push(String(channel.id))
   }
   const archived = await sql.query(`SELECT c.id,c.archived_at,${channelActivitySql("CASE WHEN c.archive_cause='proposed' THEN c.archive_proposed_by END")} AS last_activity_at
-    FROM chat_channels c WHERE c.archived_at IS NOT NULL AND c.deleted_at IS NULL`)
+    FROM chat_channels c WHERE c.archived_at IS NOT NULL AND c.deleted_at IS NULL AND c.closed_at IS NULL`)
   for (const channel of archived) {
     if (!(String(channel.last_activity_at) > String(channel.archived_at))) continue
     if (await unarchive(sql, String(channel.id), "activity", {}, { activity_at: channel.last_activity_at })) result.unarchived.push(String(channel.id))
