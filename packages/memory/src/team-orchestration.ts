@@ -1101,12 +1101,13 @@ export class TeamOrchestration {
         return item
       }
       let item=await load()
-      if(input.action==='edit') {
+      const effectiveAction = input.action === "clear" && this.orca.coordinatedStopping?.() ? "stop" : input.action
+      if(effectiveAction==='edit') {
         await this.db.query('UPDATE chat_team_members SET role=$2,task=$3,prompt=$4,updated_at=now() WHERE id=$1',
           [item.id,input.role ?? item.role,input.task ?? item.task,input.prompt ?? item.prompt])
-      } else if(input.action==='start' || input.action==='clear') {
+      } else if(effectiveAction==='start' || effectiveAction==='clear') {
         check(item.workspace_id && item.workspace_path,'El miembro todavía no tiene worktree confirmado',409)
-        if(input.action==='start')check(!item.runtime || ['stopped','exited','failed','unknown'].includes(item.runtime.state),
+        if(effectiveAction==='start')check(!item.runtime || ['stopped','exited','failed','unknown'].includes(item.runtime.state),
           'El worker ya está activo; usá clear para iniciar otra conversación',409)
         await this.validateMembers([item],who)
         await this.preflight([item],who)
@@ -1176,7 +1177,7 @@ export class TeamOrchestration {
       } else {
         check(item.launch_handle,'El miembro no tiene un runtime confirmado',409)
         item=await load()
-        if(input.action==='send') {
+        if(effectiveAction==='send') {
           check(this.orca.send,'El backend no permite enviar instrucciones',409)
           try {await this.orca.send(item.launch_handle,input.text!)} catch(error) {
             // Protocol codes reach the MCP caller as a generic failure; the coordinator needs a reason it can act on.
@@ -1189,7 +1190,7 @@ export class TeamOrchestration {
             check(state!=="idle","El worker está recibiendo otra instrucción en este momento. Reintentá en unos segundos o mencionalo en su work_thread_id.",409)
             throw new MemoryError(409,`El Hub no controla un proceso vivo de este worker (estado ${state}). Consultá team_status y, si corresponde, relanzalo con team_control start.`)
           }
-        } else if(input.action==='interrupt') {
+        } else if(effectiveAction==='interrupt') {
           check(this.orca.interrupt,'El backend no permite interrumpir',409)
           await this.orca.interrupt(item.launch_handle)
         } else {
@@ -1199,7 +1200,8 @@ export class TeamOrchestration {
           await this.db.query('UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL WHERE id=$1',[item.id])
         }
       }
-      await this.event(this.db,plan.id,item.id,'control',who.id,who.channel_id,plan.root_thread_id,{action:input.action})
+      await this.event(this.db,plan.id,item.id,'control',who.id,who.channel_id,plan.root_thread_id,
+        effectiveAction === input.action ? {action:input.action} : {action:effectiveAction,requested_action:input.action})
       return this.view(plan.id,who)
     })
   }

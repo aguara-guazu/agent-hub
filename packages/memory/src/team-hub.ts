@@ -605,7 +605,9 @@ export class HubTeamRuntime implements TeamOrca {
     this.requireNotStopping()
     return this.manager.answer(handle, questionId, answers)
   }
-  async interrupt(handle: string): Promise<FleetStatus> { this.requireEnabled(); this.requireNotStopping(); return this.manager.interrupt(handle) }
+  coordinatedStopping(): boolean { return this.coordinatedStopId !== null }
+
+  async interrupt(handle: string): Promise<FleetStatus> { this.requireEnabled(); return this.manager.interrupt(handle) }
 
   /** Owned-process evidence for a coordinated stop. Persisted runtime alone never proves a process is gone. */
   async coordinatedSnapshot(planIds?: string[]): Promise<CoordinatedFleetSnapshot> {

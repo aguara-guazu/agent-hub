@@ -66,7 +66,7 @@ export interface MemoryRouteOptions {
 }
 export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions) {
   const service = new MemoryService(options.directory, `${options.baseUrl}/api/memory/google/callback`, fetch, options.jiraMcp, true, options.collaborationEnabled,
-    { enabled: options.automationsEnabled ?? (() => true), ...(options.scheduleEffects ? { effects: options.scheduleEffects } : {}) }, options.updateTransaction)
+    { enabled: options.automationsEnabled ?? (() => true), ...(options.scheduleEffects ? { effects: options.scheduleEffects } : {}) }, options.updateTransaction, options.legacyGateways)
   const collaborationEnabled = options.collaborationEnabled ?? (() => true)
   const requireCollaboration = () => check(collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)

@@ -25,6 +25,7 @@ export interface TeamOrca {
   answer?(handle: string, questionId: string, answers: TeamQuestionAnswers): Promise<unknown>
   send?(handle: string, text: string): Promise<unknown>
   interrupt?(handle: string): Promise<unknown>
+  coordinatedStopping?(): boolean
   stop?(handle: string): Promise<unknown>
   bind?(memberId: string, sessionId: string): Promise<unknown>
   /** Set by the orchestration: a launched member of this generation ended a turn idle without having joined. */

@@ -30,6 +30,7 @@ export interface HubStopView {
   reason: HubStopReason
   state: HubStopState
   target_version: string | null
+  transaction_id: string | null
   requested_at: string
   deadline_at: string
   force_at: string | null
@@ -63,6 +64,7 @@ export class HubStopCoordinator {
     backup(): Promise<BackupReceipt>
     log: HubLog
     startupTransaction?: string
+    legacyGateways?(): Promise<import("./update-drain.js").LegacyGatewayScan>
     now?: () => number
   }) {}
 
@@ -122,10 +124,12 @@ export class HubStopCoordinator {
       }
       if (stop.state === "applied") {
         if (stop.reason === "quit" && stop.apply_boot_id !== this.bootId) await this.resume(stop)
-        else if (stop.reason === "update" && (!this.deps.startupTransaction || this.deps.startupTransaction !== stop.apply_transaction_id)) {
-          const code = this.deps.startupTransaction ? "resume_transaction_mismatch" : "resume_transaction_missing"
-          await this.deps.db.query("UPDATE hub_stops SET last_error_code=$2,last_error_detail='La actualización aplicada no coincide con la transacción de arranque; se conserva la evidencia.',updated_at=now() WHERE id=$1", [stop.id, code])
-          this.log(stop.id, "blocked", { error_code: code, startup_transaction: this.deps.startupTransaction ?? null })
+        else if (stop.reason === "update" && this.deps.startupTransaction && this.deps.startupTransaction !== stop.apply_transaction_id) {
+          await this.deps.db.query("UPDATE hub_stops SET last_error_code='resume_transaction_mismatch',last_error_detail='La actualización aplicada no coincide con la transacción de arranque; se conserva la evidencia.',updated_at=now() WHERE id=$1", [stop.id])
+          this.log(stop.id, "blocked", { error_code: "resume_transaction_mismatch", startup_transaction: this.deps.startupTransaction })
+        } else if (stop.reason === "update" && !this.deps.startupTransaction) {
+          await this.deps.db.transaction(sql => this.event(sql, stop.id, "startup_tx_from_stop", { transaction_id: stop.apply_transaction_id }))
+          this.log(stop.id, "startup_tx_from_stop", { transaction_id: stop.apply_transaction_id })
         }
         return
       }
@@ -245,6 +249,8 @@ export class HubStopCoordinator {
       check(!["applied", "resumed", "postponed", "cancelled"].includes(stop.state), "La parada ya no se puede cancelar.", 409)
       if (stop.gate_owner === "drain") await this.releaseDrain(stop)
       await this.terminal(await this.requireStop(stopId), "cancelled", reason)
+      const result = await this.requireStop(stopId)
+      check(result.state === "cancelled", "La reapertura no quedó confirmada; la parada sigue activa.", 409)
       return this.view(stopId)
     })
   }
@@ -275,10 +281,16 @@ export class HubStopCoordinator {
     })
   }
 
+  async appliedTransaction(): Promise<string | null> {
+    const stop = await this.active()
+    return stop?.state === "applied" && stop.reason === "update" && typeof stop.apply_transaction_id === "string" ? stop.apply_transaction_id : null
+  }
+
   async assertStartupTransaction(transactionId: string): Promise<void> {
     const stop = await this.active()
     if (!stop || stop.state !== "applied") return
-    check(stop.reason === "update" && stop.apply_transaction_id === transactionId && this.deps.startupTransaction === transactionId,
+    check(stop.reason === "update" && stop.apply_transaction_id === transactionId
+      && (!this.deps.startupTransaction || this.deps.startupTransaction === transactionId),
       "La transacción de arranque no coincide con la parada aplicada; el Hub conserva el bloqueo.", 409)
   }
 
@@ -286,7 +298,8 @@ export class HubStopCoordinator {
     return this.exclusive(async () => {
       const stop = await this.active()
       if (!stop || stop.state !== "applied") return null
-      check(stop.reason === "update" && stop.apply_transaction_id === transactionId && this.deps.startupTransaction === transactionId,
+      check(stop.reason === "update" && stop.apply_transaction_id === transactionId
+      && (!this.deps.startupTransaction || this.deps.startupTransaction === transactionId),
         "La admisión pertenece a otra transacción de actualización.", 409)
       await this.resume(stop)
       return this.view(stop.id)
@@ -308,7 +321,7 @@ export class HubStopCoordinator {
         this.gateToken = null
         await this.deps.db.query("UPDATE hub_stops SET gate_owner='drain',updated_at=now() WHERE id=$1 AND state='ready'", [stopId])
       }
-      const result = await drain.acquire()
+      const result = await drain.acquire(stop.reason)
       if (result.ok) {
         await this.deps.db.transaction(async sql => {
           await sql.query("UPDATE hub_stops SET drain_boot_id=$2,drain_generation=$3,drain_lease=$4,last_error_code=NULL,last_error_detail=NULL,updated_at=now() WHERE id=$1 AND state='ready'",
@@ -321,8 +334,11 @@ export class HubStopCoordinator {
       }
       const converging = result.reasons.every(item => item.code === "jobs_nonresumable" || item.code === "mcp_inflight")
       if (!converging) {
-        await this.deps.db.query("UPDATE hub_stops SET state='waiting_members',gate_owner=NULL,last_error_code='drain_not_ready',last_error_detail=$2,updated_at=now() WHERE id=$1 AND state='ready'",
-          [stopId, JSON.stringify(result.reasons)])
+        const legacy = result.reasons.find(reason => reason.code === "legacy_gateways")
+        const code = legacy ? "legacy_gateways" : "drain_not_ready"
+        const detail = legacy ? JSON.stringify({ count: legacy.count ?? 0 }) : JSON.stringify(result.reasons)
+        await this.deps.db.query("UPDATE hub_stops SET state='waiting_members',gate_owner=NULL,last_error_code=$2,last_error_detail=$3,updated_at=now() WHERE id=$1 AND state='ready'",
+          [stopId, code, detail])
         this.log(stopId, "drain_refused", { reasons: result.reasons.map(item => item.code).join(",") })
       }
       this.arm(await this.requireStop(stopId))
@@ -422,6 +438,21 @@ export class HubStopCoordinator {
   }
 
   private async prepare(stop: StopRow): Promise<void> {
+    if (stop.reason === "update" && this.deps.legacyGateways) {
+      try {
+        const legacy = await this.deps.legacyGateways()
+        if (legacy.error === undefined && legacy.count > 0) {
+          const detail = JSON.stringify({ count: legacy.count })
+          await this.deps.db.transaction(async sql => {
+            await sql.query("UPDATE hub_stops SET last_error_code='legacy_gateways',last_error_detail=$2,updated_at=now() WHERE id=$1", [stop.id, detail])
+            await this.event(sql, stop.id, "legacy_gateways", { count: legacy.count })
+          })
+          this.log(stop.id, "legacy_gateways", { count: legacy.count })
+          await this.terminal(await this.requireStop(stop.id), "postponed", "legacy_gateways")
+          return
+        }
+      } catch { /* UpdateDrain repeats the fail-closed scan before granting a lease. */ }
+    }
     if (!stop.backup_id) {
       try {
         const backup = await this.deps.backup()
@@ -545,7 +576,7 @@ export class HubStopCoordinator {
       : cause === "stop_grace"
         ? `El cierre ${stop.id} entró en los 15 minutos finales de gracia. Ordená la parada de los miembros pendientes; al vencer se hará un cierre forzado ordenado.`
         : required
-          ? `Agent Hub necesita ${stop.reason === "update" ? "reiniciarse para una actualización" : "cerrarse"}. Pedí a cada agente que llegue a un punto seguro, reporte y pare; después confirmá con memory_hub_stop_confirm(session_key, stop_id=${stop.id}). MCP seguirá disponible hasta que todos estén parados.`
+          ? `Agent Hub necesita ${stop.reason === "update" ? "reiniciarse para una actualización" : "cerrarse"}. Pedí a cada agente que llegue a un punto seguro, reporte y pare; podés usar memory_team_control action=interrupt o action=stop para reducir trabajo. Después confirmá con memory_hub_stop_confirm(session_key, stop_id=${stop.id}). MCP seguirá disponible hasta que todos estén parados.`
           : `Agent Hub prepara ${stop.reason === "update" ? "un reinicio por actualización" : "un cierre"}. Esta sesión TUI recibe el aviso pero no bloquea ni necesita confirmar.`
     const turn = `${cause}:${stop.id}:${target.session_id}:${noticeKey}`
     const payload = JSON.stringify({ stop_id: stop.id, reason: stop.reason, state: payloadState, deadline_at: stop.deadline_at, force_at: stop.force_at, required })
@@ -834,6 +865,7 @@ export class HubStopCoordinator {
     const receipts = await this.deps.db.query("SELECT member_id,generation,attempt,outcome,observed_at FROM hub_stop_member_receipts WHERE stop_id=$1 ORDER BY attempt,observed_at,member_id", [stopId])
     return {
       stop_id: stop.id, source_id: String(stop.source_id), reason: stop.reason, state: stop.state, target_version: stop.target_version ?? null,
+      transaction_id: stop.apply_transaction_id ?? null,
       requested_at: String(stop.requested_at), deadline_at: String(stop.deadline_at), force_at: stop.force_at ? String(stop.force_at) : null,
       grace_started_at: stop.grace_started_at ? String(stop.grace_started_at) : null, backup_id: stop.backup_id ?? null,
       retry_not_before: stop.retry_not_before ? String(stop.retry_not_before) : null,
@@ -845,7 +877,8 @@ export class HubStopCoordinator {
       },
       receipts: receipts.map(row => ({ member_id: String(row.member_id), generation: String(row.generation), attempt: Number(row.attempt), outcome: String(row.outcome), observed_at: String(row.observed_at) })),
       error: stop.last_error_code ? { code: String(stop.last_error_code), detail: stop.last_error_detail ? String(stop.last_error_detail) : null,
-        actions: stop.state === "applied" ? [] : stop.last_error_code === "commit_persistence_pending" ? ["commit"] : ["retry", "cancel"] } : null,
+        actions: stop.state === "applied" || TERMINAL_STATES.includes(stop.state as typeof TERMINAL_STATES[number]) ? []
+          : stop.last_error_code === "commit_persistence_pending" ? ["commit"] : ["retry", "cancel"] } : null,
       drain: { owner: stop.gate_owner ?? null, boot_id: stop.drain_boot_id ?? null, generation: stop.drain_generation === null || stop.drain_generation === undefined ? null : Number(stop.drain_generation), lease: stop.drain_lease ?? null },
     }
   }

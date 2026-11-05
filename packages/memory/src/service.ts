@@ -112,7 +112,8 @@ export class MemoryService {
   private admissionDb: MemoryDatabase | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
     private jiraMcp?: import('./tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true,
-    private automation: ScheduleAutomation = { enabled: () => true }, private startupTransaction?: string) {
+    private automation: ScheduleAutomation = { enabled: () => true }, private startupTransaction?: string,
+    private legacyGateways?: () => Promise<import("./update-drain.js").LegacyGatewayScan>) {
     this.nativeEmbeddings = new NativeEmbeddingPool(directory)
     this.media = new MediaRuntime(directory)
     this.openCode = new OpenCodeRuntime(directory)
@@ -144,7 +145,8 @@ export class MemoryService {
     operations.chat.usageEnabled=this.usageEnabled
     const stop = new HubStopCoordinator({ db, chat: operations.chat,
       ...(operations.fleet instanceof HubTeamRuntime ? { fleet: operations.fleet } : {}), admission: this.admission,
-      backup: () => exportMemory(store), log: hubLog(this.directory), ...(this.startupTransaction ? { startupTransaction: this.startupTransaction } : {}) })
+      backup: () => exportMemory(store), log: hubLog(this.directory), ...(this.startupTransaction ? { startupTransaction: this.startupTransaction } : {}),
+      ...(this.legacyGateways ? { legacyGateways: this.legacyGateways } : {}) })
     if (this.orchestrationOwner) {
       operations.hubStop = stop
       await stop.initialize()
