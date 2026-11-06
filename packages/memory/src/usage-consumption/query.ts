@@ -40,12 +40,12 @@ const RANGE_MS: Record<Exclude<ConsumptionRange, "1y" | "3y">, number> = {
 
 /** Start of the range as the ISO instant hourly buckets are stored with. */
 export function rangeStart(range: ConsumptionRange, now: Date = new Date()): string {
-  if (range === "1y" || range === "3y") {
-    const start = new Date(now)
-    start.setUTCFullYear(start.getUTCFullYear() - (range === "1y" ? 1 : 3))
-    return start.toISOString()
-  }
-  return new Date(now.getTime() - RANGE_MS[range]).toISOString()
+  const start = new Date(now)
+  if (range === "1y" || range === "3y") start.setUTCFullYear(start.getUTCFullYear() - (range === "1y" ? 1 : 3))
+  else start.setTime(now.getTime() - RANGE_MS[range])
+  // Rounded down to the hour, so the hour where the range begins is part of it.
+  start.setUTCMinutes(0, 0, 0)
+  return start.toISOString()
 }
 
 /** Positional parameters for the SQL below; each `add` returns the placeholder to put in the statement. */
