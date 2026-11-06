@@ -60,6 +60,8 @@ export interface FleetProcessOptions {
   onEvent?: (event: FleetEvent) => void | Promise<void>
   requestTimeoutMs?: number
   shutdownTimeoutMs?: number
+  /** Side observer of a Kiro session's `session_info_update` during a turn. It must never throw into the protocol. */
+  onKiroSessionInfo?: (info: { id: string; native_id: string; model: string; update: Packet; seq: number; at: string }) => void
   /** Closed during a silent update: launches and resumes are refused at the outer edge (HubTeamRuntime). */
   admission?: AdmissionGate
 }
@@ -96,6 +98,7 @@ type Session = {
   cleanup: Promise<void> | undefined
   /** v3 Kiro sessions leave tool trust to the client: the fleet answers its own session's prompts as --trust-all-tools would. */
   kiroTrustAll?: boolean
+  kiroInfoSeq?: number
 }
 
 /** Owns only children launched by this manager. Nothing is written to directory or to a log. */
@@ -299,6 +302,10 @@ export class FleetProcessManager {
   private observeAcp(s: Session, update: Packet | undefined) {
     const turn = s.status.turn_id
     if (!turn || !update) return
+    if (update.sessionUpdate === 'session_info_update' && s.status.native_id) {
+      // An observer must never break or settle a conversation.
+      try { this.options.onKiroSessionInfo?.({ id: s.status.id, native_id: s.status.native_id, model: s.status.model, update, seq: s.kiroInfoSeq = (s.kiroInfoSeq ?? 0) + 1, at: new Date().toISOString() }) } catch { /* telemetry is optional */ }
+    }
     if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
       s.activity.stream(`kiro:${turn}:text:${s.acpSegment}`, 'assistant', update.content.text)
     }
@@ -629,7 +636,8 @@ export class FleetProcessManager {
     this.setTurn(s, turn)
     s.acpSegment = 0
     s.activity.add('user', text)
-    const reply = this.request(s, 'session/prompt', { sessionId: s.status.native_id, prompt: [{ type: 'text', text }] }, 0)
+    const reply = this.request(s, 'session/prompt',
+      { sessionId: s.status.native_id, prompt: [{ type: 'text', text }], ...(s.kiroTrustAll ? { _meta: { kiro: { contextBreakdown: 'summary' } } } : {}) }, 0)
     this.publish(s, 'busy')
     reply.then(result => {
       if (!this.live(s) || s.status.turn_id !== turn) return

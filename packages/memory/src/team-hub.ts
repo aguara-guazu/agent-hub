@@ -15,6 +15,8 @@ import { sessionStatus, virtualFolder, type LocalChat } from './local-chat.js'
 import type { TeamOrca, TeamWorkspace, TeamLaunchReceipt, TeamLaunchMember } from './team-orca.js'
 import { FleetProcessManager, type FleetEvent, type FleetProcessOptions, type FleetStatus, type FleetPendingQuestion, type FleetQuestionAnswers } from './fleet-process.js'
 import { recordLink } from "./usage-consumption/links.js"
+import { ConsumptionStore } from "./usage-consumption/store.js"
+import { parseKiroSessionInfo } from "@agenthub/shared"
 
 const exec = promisify(execFile)
 type RunOptions = { cwd?: string; env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; windowsHide: boolean }
@@ -106,6 +108,11 @@ export class HubTeamRuntime implements TeamOrca {
     this.env = this.cleanEnv(process.env)
     this.manager = new FleetProcessManager(directory, {
       ...options,
+      onKiroSessionInfo: info => {
+        // Queued behind the member's runtime events so the session link written there exists before the first event.
+        void this.enqueue(info.id, () => this.recordKiroConsumption(info)).catch(() => undefined)
+        options.onKiroSessionInfo?.(info)
+      },
       launcher: (command, args, launchOptions) => {
         const configured = { ...launchOptions, env: this.cleanEnv(launchOptions.env ?? this.env) }
         return options.launcher ? options.launcher(command, args, configured) : spawn(command, args, { ...configured, stdio: 'pipe' })
@@ -123,6 +130,26 @@ export class HubTeamRuntime implements TeamOrca {
         await options.onEvent?.(event)
       }),
     })
+  }
+  private readonly kiroContextPct = new Map<string, number | null>()
+  private readonly kiroConsumptionWarned = new Set<string>()
+  private async recordKiroConsumption(info: { id: string; native_id: string; model: string; update: Record<string, any>; seq: number; at: string }) {
+    const warn = (reason: string) => {
+      if (this.kiroConsumptionWarned.has(info.id)) return
+      this.kiroConsumptionWarned.add(info.id)
+      hubLog(this.directory).event("fleet", "consumption_unavailable", { member_id: info.id, reason })
+    }
+    try {
+      const member = (await this.chat.db.query("SELECT session_id FROM chat_team_members WHERE id=$1", [info.id]))[0]
+      if (!member?.session_id) return
+      const parsed = parseKiroSessionInfo(info.update, { hub_session_id: String(member.session_id), native_session_id: info.native_id, seq: info.seq, at: info.at,
+        lastContextPct: this.kiroContextPct.get(info.id) ?? null })
+      if (!parsed) return warn("format_mismatch")
+      if (parsed.contextPct !== undefined) this.kiroContextPct.set(info.id, parsed.contextPct)
+      if (parsed.event) await new ConsumptionStore(this.chat.db).ingest([{ ...parsed.event, model: info.model || null }])
+    } catch (error) {
+      warn(error instanceof MemoryError ? `rejected_${error.statusCode}` : "ingest_failed")
+    }
   }
   /** Children alive plus launches still preparing (worktree, preflight): both would be lost by a stop. */
   liveCount(): number { return new Set([...this.manager.liveIds(), ...this.launching]).size }
