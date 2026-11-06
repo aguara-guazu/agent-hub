@@ -9,9 +9,10 @@ import { useAuth } from "../../lib/auth"
 import { useMemoryQuery } from "../../lib/memory-view"
 import { ACTIVE_STATES, type ProcessingStatus } from "../../lib/activity"
 import CallsTab from "./CallsTab"
+import ConsumptionTab from "./ConsumptionTab"
 import ProcessingTab from "./ProcessingTab"
 
-type Tab = "llamadas" | "procesamiento"
+type Tab = "llamadas" | "procesamiento" | "consumo"
 
 /** Actividad · plantilla A con panel. Cada pestaña arma su propio `.split` para poner el panel al lado de la lista;
  *  el encabezado y las pestañas llegan armados desde acá. */
@@ -21,7 +22,8 @@ export default function ActivityPage() {
   const toast = useToast()
   const { isAdmin } = useAuth()
   const [params, setParams] = useSearchParams()
-  const tab: Tab = params.get("tab") === "procesamiento" ? "procesamiento" : "llamadas"
+  const requested = params.get("tab")
+  const tab: Tab = requested === "procesamiento" || requested === "consumo" ? requested : "llamadas"
   const [verifyForbidden, setVerifyForbidden] = useState(false)
 
   const status = useMemoryQuery<ProcessingStatus>("processing_status")
@@ -29,7 +31,7 @@ export default function ActivityPage() {
 
   const setTab = useCallback((next: Tab) => {
     // Los filtros de una pestaña no aplican a la otra: cambiar de pestaña limpia la consulta.
-    setParams(next === "procesamiento" ? { tab: next } : {}, { replace: true })
+    setParams(next === "llamadas" ? {} : { tab: next }, { replace: true })
   }, [setParams])
 
   const verify = useMutation({
@@ -62,10 +64,12 @@ export default function ActivityPage() {
       tabs={[
         { value: "llamadas", label: t("tabs.calls") },
         { value: "procesamiento", label: t("tabs.processing"), count: running > 0 ? running : undefined },
+        { value: "consumo", label: t("tabs.consumption") },
       ]}
     />
   </>
 
+  if (tab === "consumo") return <ConsumptionTab header={header} />
   return tab === "procesamiento"
     ? <ProcessingTab header={header} counts={status.data?.states} />
     : <CallsTab header={header} />
