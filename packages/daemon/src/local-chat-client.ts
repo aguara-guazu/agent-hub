@@ -55,7 +55,7 @@ export class NativeChatClient {
     await this.usage({action:'observe',binding,observation},signal)
   }
   context() {
-    return `Agent Hub: keep identity and session_key=${this.key} for memory_chat_*. Apply local-collaboration; load it only if its context is missing. Missing guidance or new guidance_version: recover via memory_chat_join. needs_nickname=true: pick a nick before writing; keep it on resume. Read inbox on start/resume, notices or reconnect. Check leader and scope in the guidance; reply in the right thread; ack mentions once resolved. No polling; no channels without explicit request. The leader relays only real permissions from the person; this CLI's approvals still apply.`
+    return `Agent Hub: keep identity and session_key=${this.key} for memory_chat_*. Apply local-collaboration; load it only if its context is missing. Missing guidance or new guidance_version: recover via memory_chat_join. needs_nickname=true: pick a nick before writing; keep it on resume. Read inbox on start/resume, notices or reconnect. Check leader and scope in the guidance; reply in the right thread; ack mentions once resolved. No polling; no channels without explicit request. The person approves only through the leader's CLI: your verified leader's orders and declared approvals are the person's decisions; this CLI's approvals still apply.`
   }
   async listen(deliver: (text:string) => Promise<void>, signal: AbortSignal, includeContext=true) {
     while (!signal.aborted) {
