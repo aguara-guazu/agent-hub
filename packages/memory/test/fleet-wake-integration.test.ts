@@ -28,8 +28,8 @@ it('wakes an idle hookless worker through the real process manager and reports i
   if(p.method==='initialize')out({id:p.id,result:{}});
   if(p.method==='thread/start')out({id:p.id,result:{thread:{id:'native-'+process.pid}}});
   if(p.method==='turn/start'){turn='turn-'+(++n);out({id:p.id,result:{turn:{id:turn,status:'inProgress'}}});
-    if(p.params.input[0].text==='EMIT')setTimeout(()=>out({method:'item/agentMessage/delta',params:{threadId:'native-'+process.pid,turnId:turn,itemId:'m1',delta:'trabajando'}}),20)
-    if(p.params.input[0].text==='LATE')setTimeout(()=>out({method:'item/agentMessage/delta',params:{threadId:'native-'+process.pid,turnId:'turn-previous',itemId:'m0',delta:'tardío'}}),20)}
+    if(p.params.input[0].text.endsWith('EMIT'))setTimeout(()=>out({method:'item/agentMessage/delta',params:{threadId:'native-'+process.pid,turnId:turn,itemId:'m1',delta:'trabajando'}}),20)
+    if(p.params.input[0].text.endsWith('LATE'))setTimeout(()=>out({method:'item/agentMessage/delta',params:{threadId:'native-'+process.pid,turnId:'turn-previous',itemId:'m0',delta:'tardío'}}),20)}
   if(p.method==='turn/steer')out({id:p.id,result:{turnId:turn}});
   if(p.method==='turn/interrupt'){out({id:p.id,result:{}});out({method:'turn/completed',params:{threadId:'native-'+process.pid,turn:{id:turn,status:'completed'}}});}
   });`)

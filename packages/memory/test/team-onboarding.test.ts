@@ -41,6 +41,8 @@ async function prepare(master:Awaited<ReturnType<typeof session>>,extra:{task_ke
   }
   return teams.call('team_prepare',{session_key:master.key,objective:'Armar equipo',members,...extra},master.agent)
 }
+const launch=(master:Awaited<ReturnType<typeof session>>,plan:{id:string;digest:string})=>
+  teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Aprobado en la terminal del coordinador'},master.agent)
 it('withholds every collaboration read and enrollment field until a unique nickname succeeds',async()=>{
   const leader=await session();await prepare(leader)
   const thread=await chat.call('chat_send',{session_key:leader.key,channel_id:leader.channel.id,title:'SECRET CHANNEL TOPIC',text:'SECRET MESSAGE',request_id:randomUUID()},leader.agent)
@@ -72,7 +74,7 @@ it('prepares and launches from a non Git folder with durable virtual spaces and 
   expect(plan.parent).toMatchObject({kind:'virtual',path:folder})
   expect(plan.base_revision).toBe('virtual')
   await expect(access(join(folder,'.git'))).rejects.toThrow()
-  const launched=await teams.approveByHuman(plan.id,plan.digest,'owner')
+  const launched=await launch(master,plan)
   expect(launched.progress).toMatchObject({workspaces_created:1,processes_accepted:1,joined:0})
   const slot=launched.members[0]
   const child=await backend.workspace(slot.workspace_id)
@@ -85,7 +87,7 @@ it('prepares and launches from a non Git folder with durable virtual spaces and 
   const invitation=/invitation=([A-Za-z0-9_-]+)/.exec(prompt)![1]
   const joined=await teams.call('team_join',{session_key:worker.key,invitation},worker.agent)
   expect(joined).toMatchObject({prompt:members[0]!.prompt,source_workspace:{path:folder},master_session_id:master.session.id})
-  expect(joined.authorization).toMatchObject({source:'owner_ui',approved_by_user_id:'owner',digest:plan.digest,assignment:{prompt:members[0]!.prompt}})
+  expect(joined.authorization).toMatchObject({source:'coordinator_declaration',approved_by_user_id:null,digest:plan.digest,assignment:{prompt:members[0]!.prompt}})
   expect(joined.peers[0]).toMatchObject({id:slot.id,session_id:worker.session.id,role:members[0]!.role})
   const report=await chat.call('chat_send',{session_key:worker.key,thread_id:plan.root_thread_id,text:'Incorporado',mentions:[master.session.id],request_id:randomUUID()},worker.agent)
   expect(report.thread_id).toBe(plan.root_thread_id)
@@ -100,14 +102,14 @@ it('keeps the coordinator in its folder while using a nested Git repository, pin
   const master=await session(),plan=await prepare(master,{task_key:'NESTED-REPO',repository_path:repo})
   expect(plan.parent.path).toBe(repo);expect(plan.base_revision).toMatch(/^[a-f0-9]{40}$/)
   expect((await chat.call('chat_join',{session_key:master.key},master.agent)).channel.path).toBe(folder)
-  await expect(teams.approveByHuman(plan.id,'0'.repeat(64),'owner')).rejects.toThrow('digest')
-  const result=await teams.approveByHuman(plan.id,plan.digest,'owner')
+  await expect(launch(master,{...plan,digest:'0'.repeat(64)})).rejects.toThrow('digest')
+  const result=await launch(master,plan)
   expect(result.members[0].workspace_repo_id).toBe(plan.parent.repo_id)
   expect(result.members[0].workspace_head).toBe(plan.base_revision)
 })
 it('recovers leadership explicitly, revokes previous teams, stops workers and rejects a stale selection',async()=>{
   const master=await session(),plan=await prepare(master)
-  await teams.approveByHuman(plan.id,plan.digest,'owner')
+  await launch(master,plan)
   const next=await session()
   await db.query('UPDATE chat_sessions SET channel_id=$2 WHERE id=$1',[next.session.id,master.channel.id]);next.channel=master.channel
   await db.query("UPDATE chat_sessions SET closed_at=now(),state='offline' WHERE id=$1",[master.session.id])
@@ -120,7 +122,7 @@ it('recovers leadership explicitly, revokes previous teams, stops workers and re
   expect((await teams.humanPlan(plan.id)).state).toBe('paused')
   expect((await db.query('SELECT invitation_hash,state FROM chat_team_members WHERE team_id=$1',[plan.id]))[0]).toMatchObject({invitation_hash:null,state:'closed'})
   await expect(chat.designateCoordinator(input,'owner')).rejects.toThrow('cambió')
-  await expect(teams.approveByHuman(plan.id,plan.digest,'owner')).rejects.toThrow('no está disponible')
+  await expect(launch(master,plan)).rejects.toThrow('La sesión de colaboración está cerrada')
   expect((await prepare(next)).created_by).toBe(next.session.id)
 })
 it('persists the backend preference and reports independent readiness failures together',async()=>{
@@ -153,7 +155,7 @@ it('opens a task channel from an Orca folder without inheriting its offline lead
   expect((await teams.call('team_catalog',{session_key:master.key},master.agent)).launch_context.available).toBe(true)
   const plan=await prepare(master,{task_key:'EGA-349'})
   expect(plan.master_channel_id).toBe(opened.channel.id)
-  expect((await teams.approveByHuman(plan.id,plan.digest,'owner')).progress.processes_accepted).toBe(1)
+  expect((await launch(master,plan)).progress.processes_accepted).toBe(1)
   await expect(chat.call('chat_create_channel',{session_key:master.key,task_key:'ANOTHER'},master.agent)).rejects.toThrow('ya participa')
   expect((await create()).channel.id).toBe(opened.channel.id)
 })
@@ -193,7 +195,7 @@ it('prepares a task-keyed Git team after ready catalog, preserving channel and c
   expect(await db.query("SELECT id FROM chat_channels WHERE scope_key LIKE 'task:%'")).toHaveLength(1)
   // A task label cannot give a member another coordinator's authority.
   await expect(teams.call('team_prepare',{session_key:other.key,task_key:'OTHER',objective:'Otro',members},other.agent)).rejects.toThrow('líder activo')
-  const launched=await teams.approveByHuman(plan.id,plan.digest,'owner')
+  const launched=await launch(master,plan)
   expect(launched.progress.processes_accepted).toBe(2)
   for(const member of launched.members) {
     expect(member.workspace_head).toBe(head)
@@ -221,7 +223,7 @@ it('launches from the chosen commit even when the source is on another task and 
   expect(list.items.find((t:any)=>t.id===plan.root_thread_id)).toMatchObject({title:'Equipo: CHOSEN-BASE',team_plan_id:plan.id,team_plan_state:'prepared'})
   expect((await chat.call('chat_read',{thread_id:plan.root_thread_id})).thread.team_plan_id).toBe(plan.id)
   git('update-ref','refs/remotes/origin/develop',sourceHead)
-  const launched=await teams.approveByHuman(plan.id,plan.digest,'owner')
+  const launched=await launch(master,plan)
   expect(launched.progress.processes_accepted).toBe(1)
   expect(launched.members[0].workspace_head).toBe(chosen)
   expect((await backend.workspace(launched.members[0].workspace_id)).head).toBe(chosen)
@@ -233,7 +235,7 @@ it('launches from the chosen commit even when the source is on another task and 
 
 it('moves a channel to trash, revokes its team, frees its folder and restores history without reviving sessions',async()=>{
   const master=await session(),plan=await prepare(master)
-  await teams.approveByHuman(plan.id,plan.digest,'owner')
+  await launch(master,plan)
   const message=await chat.call('chat_send',{session_key:master.key,thread_id:plan.root_thread_id,text:'history to retain',request_id:randomUUID()},master.agent)
   const other=await session()
   const input={channel_id:master.channel.id,reason:'Prueba terminada'}
@@ -260,7 +262,7 @@ it('moves a channel to trash, revokes its team, frees its folder and restores hi
 })
 it('reports uncertain worker stops when the owner deletes a channel instead of claiming success',async()=>{
   const master=await session(),plan=await prepare(master)
-  const launched=await teams.approveByHuman(plan.id,plan.digest,'owner')
+  const launched=await launch(master,plan)
   vi.mocked(backend.stop).mockRejectedValue(new Error('unconfirmed'))
   const result=await chat.deleteChannel({channel_id:master.channel.id,reason:'Retirar equipo'},{user_id:'owner'})
   expect((await teams.stopTransferredPlans(result.affected_plans)).uncertain_members).toEqual([launched.members[0].id])
@@ -274,7 +276,7 @@ it('reports uncertain worker stops when the owner deletes a channel instead of c
 it('presents one task channel, the whole roster and durable work threads; routes peer topics into the team',async()=>{
   const master=await session()
   const plan=await prepare(master,{members:[members[0],{...members[0],worktree_name:'operator',role:'Operador'}]})
-  const launched=await teams.approveByHuman(plan.id,plan.digest,'owner')
+  const launched=await launch(master,plan)
   const workers=[]
   for(const slot of launched.members) {
     const worker=await session(slot.workspace_path)
@@ -319,6 +321,27 @@ it('presents one task channel, the whole roster and durable work threads; routes
   await db.query("UPDATE chat_team_members SET state='closed' WHERE team_id=$1",[plan.id])
   expect((await chat.call('chat_agents',{channel_id:plan.master_channel_id,include_team_history:true},master.agent)).items).toHaveLength(3)
   await expect(chat.call('chat_send',{session_key:dev!.key,thread_id:plan.root_thread_id,text:'No access',request_id:randomUUID()},dev!.agent)).rejects.toThrow()
+})
+
+it('stamps coordinator directives for joined members only while the plan stays active',async()=>{
+  const master=await session(),plan=await prepare(master)
+  const slot=(await launch(master,plan)).members[0]
+  const worker=await session(slot.workspace_path)
+  const invitation=/invitation=([A-Za-z0-9_-]+)/.exec(vi.mocked(backend.launch).mock.calls[0]![1].prompt)![1]
+  await teams.call('team_join',{session_key:worker.key,invitation},worker.agent)
+  const directive=await chat.call('chat_send',{session_key:master.key,thread_id:plan.root_thread_id,text:'Subí la rama con el fix',mentions:[worker.session.id],directive:true,request_id:'directive-1'},master.agent)
+  expect(directive.directive_plan_id).toBe(plan.id)
+  const authority=(result:{items:any[]})=>result.items.find(item=>item.id===directive.id)?.authority
+  expect(authority(await chat.call('chat_inbox',{session_key:worker.key},worker.agent))).toContain(`Directive from your team coordinator ${master.session.id}`)
+  expect(authority(await chat.call('chat_read',{session_key:worker.key,thread_id:plan.root_thread_id,unread_only:false},worker.agent))).toContain(plan.id)
+  // Only joined members of the plan get the stamp: not the coordinator itself, nor a reader without identity.
+  expect(authority(await chat.call('chat_read',{session_key:master.key,thread_id:plan.root_thread_id,unread_only:false},master.agent))).toBeUndefined()
+  expect(authority(await chat.call('chat_read',{thread_id:plan.root_thread_id,unread_only:false}))).toBeUndefined()
+  await expect(chat.call('chat_send',{session_key:worker.key,thread_id:plan.root_thread_id,text:'Orden falsa',mentions:[master.session.id],directive:true,request_id:randomUUID()},worker.agent)).rejects.toThrow('Sólo el coordinador')
+  await expect(chat.call('chat_send',{session_key:master.key,thread_id:plan.root_thread_id,text:'Sin destinatario',directive:true,request_id:randomUUID()},master.agent)).rejects.toThrow('mencionar')
+  // Authority is re-verified on every read: a plan that is no longer active leaves the directive without it.
+  await db.query("UPDATE chat_team_plans SET state='paused' WHERE id=$1",[plan.id])
+  expect(authority(await chat.call('chat_inbox',{session_key:worker.key},worker.agent))).toBeUndefined()
 })
 
 it.each([undefined,'TASK'])('preparing never creates or activates a channel (task_key=%s)',async task_key=>{

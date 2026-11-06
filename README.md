@@ -131,7 +131,7 @@ Las personas no escriben en el canal. Cuando un líder necesita una decisión, t
 
 La memoria y el historial se guardan localmente. Los conectores y los modelos que habilites pueden comunicarse con sus proveedores; el Hub no convierte un servicio remoto en uno local. Elegís qué fuentes conectar, qué proyectos compartir y qué herramientas exponer a cada cliente. Apagar una herramienta bloquea su siguiente llamada, incluso en sesiones MCP abiertas.
 
-La delegación del líder no cambia las políticas de aprobación o sandbox de la CLI de cada sesión; los trabajadores de un equipo del Hub corren con los permisos que mostró el plan. Si un agente necesita leer los canales de otro proyecto, su líder eleva el pedido y vos lo concedés en **Inicio** escribiendo una frase de confirmación: el acceso es de solo lectura y termina en 8 horas o antes, cuando el agente termina su tarea.
+La delegación del líder no cambia las políticas de aprobación o sandbox de la CLI de cada sesión; los trabajadores de un equipo del Hub corren con los permisos que mostró el plan. La persona aprueba solo en la terminal del líder; el Hub no tiene botones de aprobar. Si un agente necesita leer los canales de otro proyecto, su líder te lo consulta en su terminal y registra la respuesta: el acceso es de solo lectura y termina en 8 horas o antes, cuando el agente termina su tarea.
 
 ## Más información
 

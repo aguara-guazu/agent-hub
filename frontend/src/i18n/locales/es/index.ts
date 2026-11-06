@@ -13,7 +13,6 @@ import activity from "./activity"
 import settings from "./settings"
 import errors from "./errors"
 import status from "./status"
-import access from "./access"
 
 /** Diccionario completo del idioma, un objeto por namespace. */
 const resources = {
@@ -32,7 +31,6 @@ const resources = {
   settings,
   errors,
   status,
-  access,
 }
 
 export default resources

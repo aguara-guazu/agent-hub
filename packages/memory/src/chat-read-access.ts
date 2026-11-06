@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
-import { check, id, MemoryError } from "./contracts.js"
+import { check, id } from "./contracts.js"
 import type { Sql } from "./database.js"
 import { ACTIVE_TEAM_STATES, channelMembership, channelProjectId, interhubAgentChannelIds, recordAuthorityEvent, sessionProjectId, teamChannelIds } from "./chat-access.js"
 
@@ -8,9 +8,9 @@ import { ACTIVE_TEAM_STATES, channelMembership, channelProjectId, interhubAgentC
 export const READ_GRANT_MAX_TTL_MS = 8 * 60 * 60 * 1000
 /** A grant ends once the Hub has not renewed the session lease for this long (lease_until is renewed every few seconds while connected). */
 export const READ_GRANT_LIVENESS_GRACE_MS = 5 * 60 * 1000
-/** An unanswered request is cancelled after this, so a stale elevation cannot be confirmed days later. */
+/** An unanswered request is cancelled after this, so a stale request cannot be decided days later. */
 export const READ_REQUEST_PENDING_TTL_MS = 24 * 60 * 60 * 1000
-export const READ_PHRASE_MAX = 500
+export const READ_DECISION_MAX = 1000
 /** read_interest only informs the leader; these bounds keep it from flooding the audit and the leader's notices. */
 export const READ_INTEREST_WINDOW_MS = 10 * 60_000
 export const READ_INTEREST_PER_CHANNEL = 3
@@ -22,10 +22,14 @@ const key = z.string().min(32).max(200).optional()
 export const readAccessDefinitions = {
   chat_read_interest: ["Tell your leader you want to follow another channel of your own project. You can already read it (memory_chat_threads/memory_chat_read); reading never lets you write, mention or take part there. Leaders need not call this.",
     z.object({ session_key: key, channel_id: id, reason: z.string().trim().min(1).max(READ_INTEREST_REASON_MAX) }).strict()],
-  chat_read_request: ["Ask to read the channels of another project. Your leader must elevate it with memory_chat_read_elevate and only the person grants it, in the Hub UI. A grant is read-only, temporary and ends when your work completes, your session closes or goes offline. Never claim the person approved: the Hub records it.",
+  chat_read_request: ["Ask to read the channels of another project. Your leader asks the person in its CLI and records the decision with memory_chat_read_decide. A grant is read-only, temporary and ends when your work completes, your session closes or goes offline. Never claim a grant yourself: the Hub records it.",
     z.object({ session_key: key, project_id: id, reason: z.string().trim().min(1).max(1000) }).strict()],
-  chat_read_elevate: ["Leader only: forward a pending cross-project read request of your channel or team member to the person. It stays pending until the person confirms it in the Hub UI; you cannot grant it.",
-    z.object({ session_key: key, request_id: id, note: z.string().trim().min(1).max(1000).optional() }).strict()],
+  chat_read_decide: ["Leader only: record the decision on a pending cross-project read request of your channel or team member. Ask the person in your CLI first; person_instruction quotes their answer and is audited as your declaration. decision='grant' gives read-only, temporary access (ends when that agent's work completes, its session closes or goes offline, or after 8 h); 'reject' declines it, with or without asking the person.",
+    z.object({ session_key: key, request_id: id, decision: z.enum(["grant", "reject"]), person_instruction: z.string().trim().min(1).max(READ_DECISION_MAX).optional(),
+      reason: z.string().trim().min(1).max(READ_DECISION_MAX).optional() }).strict()
+      .refine(value => value.decision !== "grant" || Boolean(value.person_instruction), { message: "grant requires person_instruction", path: ["person_instruction"] })],
+  chat_read_revoke: ["Leader only: end an active cross-project read grant of your channel or team member, on the person's request or when the task no longer needs it.",
+    z.object({ session_key: key, grant_id: id, reason: z.string().trim().min(1).max(READ_DECISION_MAX) }).strict()],
 } satisfies Record<string, [string, z.ZodType]>
 
 const graceCutoff = (now = Date.now()) => new Date(now - READ_GRANT_LIVENESS_GRACE_MS).toISOString()
@@ -59,7 +63,7 @@ export async function canReadChannel(sql: Sql, sessionId: string, channelId: str
   return Boolean(project && value.projects.includes(project))
 }
 
-export const readDenied = "No tenés acceso de lectura a este canal: es de otro proyecto. Pedí acceso con memory_chat_read_request; tu líder lo eleva y solo la persona lo otorga desde el Hub."
+export const readDenied = "No tenés acceso de lectura a este canal: es de otro proyecto. Pedí acceso con memory_chat_read_request; tu líder se lo consulta a la persona en su CLI y registra la decisión."
 
 /** The coordinator who decides for this session: the linked team master, else the leader of its own channel. */
 async function requesterLeader(sql: Sql, session: Record<string, any>) {
@@ -129,61 +133,72 @@ export async function readRequest(sql: Sql, who: Record<string, any>, input: { p
   const open = (await sql.query("SELECT * FROM chat_read_requests WHERE requester_session_id=$1 AND target_project_id=$2 AND state IN ('pending_leader','pending_person')", [who.id, target.id]))[0]
   if (open) return { request_id: open.id, state: open.state, project_id: target.id, notified: false }
   const leader = await requesterLeader(sql, who)
-  check(leader, "Tu canal no tiene un líder reconocido que pueda elevar el pedido. Pedile a la persona que designe uno.", 409)
+  check(leader, "Tu canal no tiene un líder reconocido que pueda decidir el pedido.", 409)
   const requestId = randomUUID()
   await sql.query(`INSERT INTO chat_read_requests(id,requester_session_id,requester_channel_id,requester_project_id,target_project_id,leader_session_id,team_id,reason,state)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending_leader')`, [requestId, who.id, who.channel_id, own, target.id, leader.id, leader.team_id, input.reason])
   await recordAuthorityEvent(sql, { kind: "read_request", reason: input.reason, channel_id: who.channel_id, project_id: target.id, actor_session_id: who.id,
     target_session_id: leader.id, evidence: { request_id: requestId, requester_project_id: own } })
   const notified = leader.id !== who.id && await notify(sql, { source: who, recipient: leader.id, cause: "read_request", turn: `read_request:${requestId}`, team_id: leader.team_id,
-    text: `${who.label} asks to read the channels of project «${target.title}». Reason: ${input.reason}\nIf the task needs it, forward it to the person with memory_chat_read_elevate request_id=${requestId}; only the person can grant it in the Hub. Otherwise tell the agent why not.` })
+    text: `${who.label} asks to read the channels of project «${target.title}». Reason: ${input.reason}\nIf the task needs it, ask the person in your CLI and record the answer with memory_chat_read_decide request_id=${requestId} (decision grant or reject, person_instruction quoting the person). Otherwise reject it with the reason.` })
   return { request_id: requestId, state: "pending_leader", project_id: target.id, leader_id: leader.id, notified, ...(notified || leader.id === who.id ? {} : { next_action: notNotified }) }
 }
 
-export async function readElevate(sql: Sql, who: Record<string, any>, input: { request_id: string; note?: string | undefined }) {
-  const request = (await sql.query("SELECT * FROM chat_read_requests WHERE id=$1", [input.request_id]))[0]
-  check(request, "Pedido inexistente.", 404)
-  check(request.state === "pending_leader", request.state === "pending_person" ? "El pedido ya está esperando a la persona." : "El pedido ya no está pendiente.", 409)
-  const requester = (await sql.query("SELECT * FROM chat_sessions WHERE id=$1", [request.requester_session_id]))[0]
-  check(requester && !requester.closed_at && !requester.removed_at, "La sesión que pidió acceso ya no está activa.", 409)
-  // Recomputed now: a leader replaced since the request (takeover, designation) cannot elevate it.
-  check((await requesterLeader(sql, requester))?.id === who.id, "Sólo el líder actual del canal o equipo de quien pidió puede elevar este pedido.", 403)
-  await sql.query("UPDATE chat_read_requests SET state='pending_person',elevated_at=now(),elevated_by=$2,elevation_note=$3 WHERE id=$1 AND state='pending_leader'", [request.id, who.id, input.note ?? null])
-  await recordAuthorityEvent(sql, { kind: "read_elevated", reason: input.note ?? "Elevado a la persona", channel_id: request.requester_channel_id, project_id: request.target_project_id,
-    actor_session_id: who.id, target_session_id: requester.id, evidence: { request_id: request.id } })
-  await sql.query("UPDATE chat_status_notices SET handled_at=COALESCE(handled_at,now()) WHERE turn_id=$1 AND recipient_id=$2", [`read_request:${request.id}`, who.id])
-  return { request_id: request.id, state: "pending_person" }
+/** The leader the Hub recomputes now: one replaced since the request (takeover, designation) cannot decide or revoke for that session. */
+async function assertRequesterLeader(sql: Sql, who: Record<string, any>, requesterId: string, message: string) {
+  const requester = (await sql.query("SELECT * FROM chat_sessions WHERE id=$1", [requesterId]))[0]
+  check(requester, "La sesión que pidió acceso no existe.", 404)
+  check((await requesterLeader(sql, requester))?.id === who.id, message, 403)
+  return requester
 }
-
-const normalize = (value: string) => value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
-  .replace(/[«»"“”'‘’`´.,;:!¡¿?()[\]]/g, " ").replace(/\s+/g, " ").trim()
-const PHRASES = [
-  /^confirmo que (.+?) (?:puede|pueda) (?:ver|leer) (?:los|todos los) canales (?:del proyecto|de proyecto|del|de) (.+)$/,
-  /^i confirm that (.+?) (?:can|may) (?:see|read) (?:the|all the|all) channels (?:of the project|of project|of) (.+)$/,
-]
 
 /**
- * The person's single-message confirmation. Structure plus names: the target project exactly, and the requester by nickname
- * or by its project. Only reachable from the authenticated owner route; an agent claiming approval never gets here.
+ * Records the leader's decision on a cross-project read request. The person decides in the leader's CLI, the only
+ * approval path; the Hub audits person_instruction as the leader's declaration.
  */
-export function validateGrantPhrase(phrase: string, names: { target: string; nickname: string | null; requesterProject: string | null }) {
-  const text = normalize(phrase)
-  const match = PHRASES.map(pattern => text.match(pattern)).find(Boolean)
-  if (!match) return { ok: false as const, code: "structure" }
-  const target = normalize(names.target)
-  if (!target || match[2] !== target) return { ok: false as const, code: "target" }
-  const subject = ` ${match[1]} `
-  const named = (value: string | null) => Boolean(value && normalize(value) && subject.includes(` ${normalize(value)} `))
-  // A requester project titled like the target would let the target name stand in for the requester.
-  const byProject = names.requesterProject && normalize(names.requesterProject) !== target && named(names.requesterProject)
-  if (!named(names.nickname) && !byProject) return { ok: false as const, code: "requester" }
-  return { ok: true as const }
+export async function readDecide(sql: Sql, who: Record<string, any>, input: { request_id: string; decision: "grant" | "reject"; person_instruction?: string | undefined; reason?: string | undefined }, now = Date.now()) {
+  const request = (await sql.query(`SELECT r.*,dst.title AS target_title FROM chat_read_requests r JOIN entities dst ON dst.id=r.target_project_id WHERE r.id=$1`, [input.request_id]))[0]
+  check(request, "Pedido inexistente.", 404)
+  check(request.state === "pending_leader", "El pedido ya fue resuelto.", 409)
+  const requester = await assertRequesterLeader(sql, who, request.requester_session_id, "Sólo el líder actual del canal o equipo de quien pidió puede decidir este pedido.")
+  // A team member leads its own virtual channel but has no person in its CLI: its own request needs its coordinator.
+  if (requester.id === who.id) check(who.capability !== "hub_fleet" && !(await sql.query("SELECT 1 FROM chat_team_members WHERE session_id=$1 LIMIT 1", [who.id])).length,
+    "Un miembro de equipo no decide su propio pedido de lectura: lo decide su coordinador.", 403)
+  const instruction = input.person_instruction ?? null
+  await sql.query("UPDATE chat_status_notices SET handled_at=COALESCE(handled_at,now()) WHERE turn_id=$1 AND recipient_id=$2", [`read_request:${request.id}`, who.id])
+  if (input.decision === "reject") {
+    check((await sql.query(`UPDATE chat_read_requests SET state='rejected',decided_at=now(),decided_by_session=$2,person_instruction=$3,decision_note=$4
+      WHERE id=$1 AND state='pending_leader' RETURNING id`, [request.id, who.id, instruction, input.reason ?? null])).length, "El pedido ya fue resuelto.", 409)
+    await recordAuthorityEvent(sql, { kind: "read_rejected", reason: input.reason ?? instruction ?? "Rechazado por el líder", channel_id: request.requester_channel_id,
+      project_id: request.target_project_id, actor_session_id: who.id, target_session_id: requester.id,
+      evidence: { request_id: request.id, approval_source: "coordinator_declaration", person_instruction: instruction } })
+    if (!requester.closed_at && !requester.removed_at) await notify(sql, { source: requester, recipient: requester.id, cause: "read_decision", turn: `read_decision:${request.id}`, team_id: null,
+      text: `Your leader declined your request to read the channels of project «${request.target_title}».${input.reason ? ` Reason: ${input.reason}` : ""}` })
+    return { request_id: request.id, state: "rejected" }
+  }
+  check(!requester.closed_at && !requester.removed_at, "La sesión que pidió acceso ya no está activa; el pedido no puede otorgarse.", 409)
+  check((await sql.query(`UPDATE chat_read_requests SET state='granted',decided_at=now(),decided_by_session=$2,person_instruction=$3
+    WHERE id=$1 AND state='pending_leader' RETURNING id`, [request.id, who.id, instruction])).length, "El pedido ya fue resuelto.", 409)
+  const grantId = randomUUID(), expiresAt = new Date(now + READ_GRANT_MAX_TTL_MS).toISOString()
+  await sql.query("INSERT INTO chat_read_grants(id,request_id,session_id,project_id,granted_by_session,granted_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+    [grantId, request.id, requester.id, request.target_project_id, who.id, new Date(now).toISOString(), expiresAt])
+  await recordAuthorityEvent(sql, { kind: "read_granted", reason: instruction!, channel_id: request.requester_channel_id, project_id: request.target_project_id,
+    actor_session_id: who.id, target_session_id: requester.id,
+    evidence: { request_id: request.id, grant_id: grantId, expires_at: expiresAt, max_ttl_ms: READ_GRANT_MAX_TTL_MS, approval_source: "coordinator_declaration" } })
+  await notify(sql, { source: requester, recipient: requester.id, cause: "read_decision", turn: `read_decision:${request.id}`, team_id: null,
+    text: `Your leader granted you, with the person's approval, read-only access to the channels of project «${request.target_title}» until ${expiresAt}. It ends when your work completes or your session closes or goes offline. You still cannot write there.` })
+  return { request_id: request.id, state: "granted", grant: { id: grantId, project_id: request.target_project_id, session_id: requester.id, expires_at: expiresAt } }
 }
 
-const phraseErrors: Record<string, string> = {
-  structure: "La frase debe decir «confirmo que el agente … del proyecto … puede ver los canales del proyecto …».",
-  target: "La frase debe nombrar exactamente el proyecto de destino.",
-  requester: "La frase debe nombrar al agente que pidió acceso o a su proyecto.",
+export async function readRevoke(sql: Sql, who: Record<string, any>, input: { grant_id: string; reason: string }) {
+  const grant = (await sql.query(`SELECT g.*,p.title AS project_title FROM chat_read_grants g JOIN entities p ON p.id=g.project_id WHERE g.id=$1`, [input.grant_id]))[0]
+  check(grant, "El permiso no existe.", 404)
+  check(!grant.revoked_at, "El permiso ya terminó.", 409)
+  const requester = await assertRequesterLeader(sql, who, grant.session_id, "Sólo el líder actual del canal o equipo de quien tiene el permiso puede revocarlo.")
+  check(await revokeReadGrant(sql, grant.id, input.reason, { session_id: who.id }), "El permiso ya terminó.", 409)
+  if (!requester.closed_at && !requester.removed_at) await notify(sql, { source: requester, recipient: requester.id, cause: "read_decision", turn: `read_revoked:${grant.id}`, team_id: null,
+    text: `Your leader ended your read-only access to the channels of project «${grant.project_title}». Reason: ${input.reason}` })
+  return { grant_id: grant.id, revoked: true }
 }
 
 export async function personReadRequests(sql: Sql, filter: { state?: string | undefined; project_id?: string | undefined; limit: number; offset: number }) {
@@ -191,13 +206,14 @@ export async function personReadRequests(sql: Sql, filter: { state?: string | un
   const args = [filter.state ?? null, filter.project_id ?? null]
   const total = Number((await sql.query(`SELECT count(*) AS n FROM chat_read_requests r WHERE ${where}`, args))[0]!.n)
   const items = await sql.query(`SELECT r.id,r.state,r.reason,r.created_at,r.elevated_at,r.elevation_note,r.decided_at,r.decision_note,
+      r.decided_by_session,d.label AS decided_by_label,r.person_instruction,
       r.requester_session_id,s.nickname AS requester_nickname,s.label AS requester_label,s.cli_kind AS requester_cli,
       r.requester_project_id,src.title AS requester_project_title,r.target_project_id,dst.title AS target_project_title,
       r.leader_session_id,l.label AS leader_label,r.elevated_by,e.label AS elevated_by_label,
       g.id AS grant_id,g.expires_at AS grant_expires_at,g.revoked_at AS grant_revoked_at
     FROM chat_read_requests r JOIN chat_sessions s ON s.id=r.requester_session_id JOIN entities dst ON dst.id=r.target_project_id
     LEFT JOIN entities src ON src.id=r.requester_project_id LEFT JOIN chat_sessions l ON l.id=r.leader_session_id
-    LEFT JOIN chat_sessions e ON e.id=r.elevated_by LEFT JOIN chat_read_grants g ON g.request_id=r.id
+    LEFT JOIN chat_sessions e ON e.id=r.elevated_by LEFT JOIN chat_sessions d ON d.id=r.decided_by_session LEFT JOIN chat_read_grants g ON g.request_id=r.id
     WHERE ${where} ORDER BY r.created_at DESC,r.id LIMIT $3 OFFSET $4`, [...args, filter.limit, filter.offset])
   return { items, total, limit: filter.limit, offset: filter.offset }
 }
@@ -206,56 +222,19 @@ export async function personReadGrants(sql: Sql, filter: { active: boolean; proj
   const where = `($1=0 OR g.revoked_at IS NULL) AND ($2 IS NULL OR g.project_id=$2)`
   const args = [filter.active ? 1 : 0, filter.project_id ?? null]
   const total = Number((await sql.query(`SELECT count(*) AS n FROM chat_read_grants g WHERE ${where}`, args))[0]!.n)
-  const items = await sql.query(`SELECT g.*,s.label AS session_label,p.title AS project_title,r.reason,r.confirmation_phrase
+  const items = await sql.query(`SELECT g.*,s.label AS session_label,p.title AS project_title,r.reason,r.confirmation_phrase,r.person_instruction,l.label AS granted_by_label
     FROM chat_read_grants g JOIN chat_sessions s ON s.id=g.session_id JOIN entities p ON p.id=g.project_id JOIN chat_read_requests r ON r.id=g.request_id
+    LEFT JOIN chat_sessions l ON l.id=g.granted_by_session
     WHERE ${where} ORDER BY g.granted_at DESC,g.id LIMIT $3 OFFSET $4`, [...args, filter.limit, filter.offset])
   return { items, total, limit: filter.limit, offset: filter.offset }
 }
 
-async function pendingForPerson(sql: Sql, requestId: string) {
-  const request = (await sql.query(`SELECT r.*,s.nickname,s.label,s.closed_at,s.removed_at,dst.title AS target_title,src.title AS requester_title
-    FROM chat_read_requests r JOIN chat_sessions s ON s.id=r.requester_session_id JOIN entities dst ON dst.id=r.target_project_id
-    LEFT JOIN entities src ON src.id=r.requester_project_id WHERE r.id=$1`, [requestId]))[0]
-  check(request, "Pedido inexistente.", 404)
-  if (request.state !== "pending_person") throw new MemoryError(409, request.state === "pending_leader" ? "El líder todavía no elevó este pedido." : "El pedido ya fue resuelto.", false, "request_not_pending")
-  return request
-}
-
-export async function confirmReadRequest(sql: Sql, requestId: string, phrase: string, userId: string, now = Date.now()) {
-  const request = await pendingForPerson(sql, requestId)
-  if (request.closed_at || request.removed_at) throw new MemoryError(409, "La sesión que pidió acceso ya no está activa; el pedido no puede otorgarse.", false, "requester_inactive")
-  const verdict = validateGrantPhrase(phrase, { target: request.target_title, nickname: request.nickname, requesterProject: request.requester_title })
-  if (!verdict.ok) throw new MemoryError(400, phraseErrors[verdict.code]!, false, `phrase_${verdict.code}`)
-  const decided = await sql.query("UPDATE chat_read_requests SET state='granted',decided_at=now(),decided_by_user=$2,confirmation_phrase=$3 WHERE id=$1 AND state='pending_person' RETURNING id", [request.id, userId, phrase.trim()])
-  if (!decided.length) throw new MemoryError(409, "El pedido ya fue resuelto.", false, "request_not_pending")
-  const grantId = randomUUID(), expiresAt = new Date(now + READ_GRANT_MAX_TTL_MS).toISOString()
-  await sql.query("INSERT INTO chat_read_grants(id,request_id,session_id,project_id,granted_by_user,granted_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
-    [grantId, request.id, request.requester_session_id, request.target_project_id, userId, new Date(now).toISOString(), expiresAt])
-  await recordAuthorityEvent(sql, { kind: "read_granted", reason: phrase.trim(), channel_id: request.requester_channel_id, project_id: request.target_project_id,
-    actor_user_id: userId, target_session_id: request.requester_session_id, evidence: { request_id: request.id, grant_id: grantId, expires_at: expiresAt, max_ttl_ms: READ_GRANT_MAX_TTL_MS } })
-  const requester = (await sql.query("SELECT * FROM chat_sessions WHERE id=$1", [request.requester_session_id]))[0]!
-  await notify(sql, { source: requester, recipient: requester.id, cause: "read_decision", turn: `read_decision:${request.id}`, team_id: null,
-    text: `The person granted you read-only access to the channels of project «${request.target_title}» until ${expiresAt}. It ends when your work completes or your session closes or goes offline. You still cannot write there.` })
-  return { request_id: request.id, state: "granted", grant: { id: grantId, project_id: request.target_project_id, session_id: request.requester_session_id, expires_at: expiresAt } }
-}
-
-export async function rejectReadRequest(sql: Sql, requestId: string, userId: string, note?: string) {
-  const request = await pendingForPerson(sql, requestId)
-  check((await sql.query("UPDATE chat_read_requests SET state='rejected',decided_at=now(),decided_by_user=$2,decision_note=$3 WHERE id=$1 AND state='pending_person' RETURNING id", [request.id, userId, note ?? null])).length, "El pedido ya fue resuelto.", 409)
-  await recordAuthorityEvent(sql, { kind: "read_rejected", reason: note ?? "Rechazado por la persona", channel_id: request.requester_channel_id, project_id: request.target_project_id,
-    actor_user_id: userId, target_session_id: request.requester_session_id, evidence: { request_id: request.id } })
-  const requester = (await sql.query("SELECT * FROM chat_sessions WHERE id=$1 AND closed_at IS NULL AND removed_at IS NULL", [request.requester_session_id]))[0]
-  if (requester) await notify(sql, { source: requester, recipient: requester.id, cause: "read_decision", turn: `read_decision:${request.id}`, team_id: null,
-    text: `The person declined your request to read the channels of project «${request.target_title}».` })
-  return { request_id: request.id, state: "rejected" }
-}
-
-export async function revokeReadGrant(sql: Sql, grantId: string, reason: string, actor: { user_id: string } | null, evidence: Record<string, unknown> = {}) {
+export async function revokeReadGrant(sql: Sql, grantId: string, reason: string, actor: { session_id: string } | null, evidence: Record<string, unknown> = {}) {
   const grant = (await sql.query("UPDATE chat_read_grants SET revoked_at=now(),revoke_reason=$2 WHERE id=$1 AND revoked_at IS NULL RETURNING *", [grantId, reason]))[0]
   if (!grant) return null
   const request = (await sql.query("SELECT requester_channel_id FROM chat_read_requests WHERE id=$1", [grant.request_id]))[0]
   await recordAuthorityEvent(sql, { kind: "read_revoked", reason, channel_id: request?.requester_channel_id ?? null, project_id: grant.project_id,
-    actor_user_id: actor?.user_id ?? null, target_session_id: grant.session_id, evidence: { grant_id: grant.id, request_id: grant.request_id, ...evidence } })
+    actor_session_id: actor?.session_id ?? null, target_session_id: grant.session_id, evidence: { grant_id: grant.id, request_id: grant.request_id, ...evidence } })
   return grant
 }
 
