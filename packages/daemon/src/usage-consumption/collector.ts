@@ -45,10 +45,10 @@ async function collectAgent(state: DaemonState, home: string, agentId: string, c
   const lease = join(state.root, "usage-consumption", `${agentId}.lock`)
   if (!acquireLease(lease)) return
   try {
-    for (const link of await client.links(cli)) {
+    for (const link of await client.links()) {
       // Only hook-captured sessions are read from disk. Fleet runtime links have no file reader,
       // and kiro_env links wait for the Kiro disk reader.
-      if (link.source !== "hook") continue
+      if (link.cli_kind !== cli || link.source !== "hook") continue
       const result = await reader(link, home).catch(() => null)
       if (!result) continue
       const cursor = {
