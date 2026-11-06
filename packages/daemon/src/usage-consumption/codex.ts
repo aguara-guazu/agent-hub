@@ -1,8 +1,8 @@
-import { readdir } from 'node:fs/promises'
-import { join } from 'node:path'
-import { classifyTool, type ConsumptionEvent, type ConsumptionOrigin, type LinkCursor } from '@agenthub/shared'
-import { num, parseLine, readFrom, textLength, type SessionReadResult } from './files.js'
-import { cloneOriginState, distribute, type OriginState } from './origins.js'
+import { readdir } from "node:fs/promises"
+import { join } from "node:path"
+import { classifyTool, type ConsumptionEvent, type ConsumptionOrigin, type LinkCursor } from "@agenthub/shared"
+import { num, parseLine, readFrom, textLength, type SessionReadResult } from "./files.js"
+import { cloneOriginState, distribute, type OriginState } from "./origins.js"
 
 /** Reader state kept in the cursor: the origin characters plus values carried from earlier records. */
 export interface CodexScanState extends OriginState {
@@ -33,7 +33,7 @@ async function findRollout(directory: string, nativeId: string, depth = 0): Prom
     return null
   }
   for (const entry of entries) {
-    if (!entry.isDirectory() && entry.name.startsWith('rollout-') && entry.name.endsWith(`-${nativeId}.jsonl`)) return join(directory, entry.name)
+    if (!entry.isDirectory() && entry.name.startsWith("rollout-") && entry.name.endsWith(`-${nativeId}.jsonl`)) return join(directory, entry.name)
   }
   if (depth >= 3) return null
   for (const entry of entries) {
@@ -45,34 +45,34 @@ async function findRollout(directory: string, nativeId: string, depth = 0): Prom
 }
 
 function outputLength(value: unknown): number {
-  if (typeof value === 'string') return value.length
+  if (typeof value === "string") return value.length
   if (Array.isArray(value)) return textLength(value)
   return value === undefined ? 0 : JSON.stringify(value).length
 }
 
 function scanLines(text: string, state: CodexScanState, pending: Map<string, Pending>, nativeId: string): void {
-  for (const line of text.split('\n')) {
+  for (const line of text.split("\n")) {
     if (!line) continue
     const row = parseLine(line)
     if (!row) continue
     const payload = (row.payload ?? {}) as Record<string, any>
     switch (row.type) {
-      case 'turn_context':
-        if (typeof payload.model === 'string') state.model = payload.model
+      case "turn_context":
+        if (typeof payload.model === "string") state.model = payload.model
         break
-      case 'event_msg':
-        if (payload.type === 'token_count' && payload.info && typeof payload.info === 'object') {
-          if (typeof payload.info.last_usage_includes_reasoning === 'boolean') state.reasoning_included = payload.info.last_usage_includes_reasoning
-          if (typeof payload.info.model_context_window === 'number') state.context_window = payload.info.model_context_window
+      case "event_msg":
+        if (payload.type === "token_count" && payload.info && typeof payload.info === "object") {
+          if (typeof payload.info.last_usage_includes_reasoning === "boolean") state.reasoning_included = payload.info.last_usage_includes_reasoning
+          if (typeof payload.info.model_context_window === "number") state.context_window = payload.info.model_context_window
         }
         break
-      case 'compacted':
+      case "compacted":
         state.chars = { compaction: JSON.stringify(payload).length }
         state.pending_compaction = true
         break
-      case 'token_usage_record': {
+      case "token_usage_record": {
         const usage = (payload.usage ?? {}) as Record<string, any>
-        const key = typeof payload.response_id === 'string' && payload.response_id ? `cx:${payload.response_id}` : `cx:${nativeId}:${String(row.ordinal ?? pending.size)}`
+        const key = typeof payload.response_id === "string" && payload.response_id ? `cx:${payload.response_id}` : `cx:${nativeId}:${String(row.ordinal ?? pending.size)}`
         const existing = pending.get(key)
         if (existing) {
           existing.usage = usage
@@ -84,7 +84,7 @@ function scanLines(text: string, state: CodexScanState, pending: Map<string, Pen
         pending.set(key, {
           id: key,
           model: state.model,
-          occurred_at: typeof row.timestamp === 'string' && !Number.isNaN(Date.parse(row.timestamp)) ? new Date(row.timestamp).toISOString() : new Date().toISOString(),
+          occurred_at: typeof row.timestamp === "string" && !Number.isNaN(Date.parse(row.timestamp)) ? new Date(row.timestamp).toISOString() : new Date().toISOString(),
           usage,
           reasoning_included: state.reasoning_included,
           context_window: state.context_window,
@@ -93,7 +93,7 @@ function scanLines(text: string, state: CodexScanState, pending: Map<string, Pen
         })
         break
       }
-      case 'response_item':
+      case "response_item":
         scanResponseItem(payload, state)
         break
     }
@@ -102,29 +102,29 @@ function scanLines(text: string, state: CodexScanState, pending: Map<string, Pen
 
 function scanResponseItem(payload: Record<string, any>, state: CodexScanState): void {
   switch (payload.type) {
-    case 'message': {
-      const origin: ConsumptionOrigin = payload.role === 'user' ? 'person' : payload.role === 'assistant' ? 'model' : 'fixed'
+    case "message": {
+      const origin: ConsumptionOrigin = payload.role === "user" ? "person" : payload.role === "assistant" ? "model" : "fixed"
       state.chars[origin] = (state.chars[origin] ?? 0) + textLength(payload.content)
       break
     }
-    case 'reasoning':
+    case "reasoning":
       state.chars.model = (state.chars.model ?? 0) + textLength(payload.summary)
       break
-    case 'function_call':
-    case 'custom_tool_call': {
-      const name = typeof payload.name === 'string' ? payload.name : ''
-      const origin = classifyTool('codex_cli', name)
+    case "function_call":
+    case "custom_tool_call": {
+      const name = typeof payload.name === "string" ? payload.name : ""
+      const origin = classifyTool("codex_cli", name)
       const args = payload.arguments ?? payload.input
       state.chars[origin] = (state.chars[origin] ?? 0) + outputLength(args)
-      if (typeof payload.call_id === 'string') state.tools[payload.call_id] = name
+      if (typeof payload.call_id === "string") state.tools[payload.call_id] = name
       break
     }
-    case 'function_call_output':
-    case 'custom_tool_call_output': {
-      const name = (typeof payload.call_id === 'string' && state.tools[payload.call_id]) || ''
-      const origin = classifyTool('codex_cli', name)
+    case "function_call_output":
+    case "custom_tool_call_output": {
+      const name = (typeof payload.call_id === "string" && state.tools[payload.call_id]) || ""
+      const origin = classifyTool("codex_cli", name)
       state.chars[origin] = (state.chars[origin] ?? 0) + outputLength(payload.output)
-      if (typeof payload.call_id === 'string') delete state.tools[payload.call_id]
+      if (typeof payload.call_id === "string") delete state.tools[payload.call_id]
       break
     }
   }
@@ -144,10 +144,10 @@ function toEvents(pending: Map<string, Pending>, hubId: string, nativeId: string
       dedupe_key: entry.id,
       hub_session_id: hubId,
       native_session_id: nativeId,
-      cli_kind: 'codex_cli',
+      cli_kind: "codex_cli",
       model: entry.model,
       occurred_at: entry.occurred_at,
-      unit: 'tokens',
+      unit: "tokens",
       input,
       output,
       cache_write: cacheWrite,
@@ -160,27 +160,27 @@ function toEvents(pending: Map<string, Pending>, hubId: string, nativeId: string
       compaction: entry.compaction,
       model_calls: 1,
       breakdown: distribute(entry.snapshot, context, output),
-      source: 'file',
+      source: "file",
     })
   }
   return events
 }
 
 function priorState(raw: unknown): CodexScanState {
-  const value = (raw && typeof raw === 'object' ? raw : {}) as Partial<CodexScanState>
+  const value = (raw && typeof raw === "object" ? raw : {}) as Partial<CodexScanState>
   return {
-    chars: value.chars && typeof value.chars === 'object' ? { ...value.chars } : {},
-    tools: value.tools && typeof value.tools === 'object' ? { ...value.tools } : {},
-    model: typeof value.model === 'string' ? value.model : null,
-    reasoning_included: typeof value.reasoning_included === 'boolean' ? value.reasoning_included : null,
-    context_window: typeof value.context_window === 'number' ? value.context_window : null,
+    chars: value.chars && typeof value.chars === "object" ? { ...value.chars } : {},
+    tools: value.tools && typeof value.tools === "object" ? { ...value.tools } : {},
+    model: typeof value.model === "string" ? value.model : null,
+    reasoning_included: typeof value.reasoning_included === "boolean" ? value.reasoning_included : null,
+    context_window: typeof value.context_window === "number" ? value.context_window : null,
     pending_compaction: value.pending_compaction === true,
   }
 }
 
 /** Reads new records of a Codex rollout. Returns null when the session file does not exist. */
 export async function readCodexSession(link: LinkCursor, home: string): Promise<SessionReadResult | null> {
-  const path = link.file_path ?? (await findRollout(join(process.env.CODEX_HOME || join(home, '.codex'), 'sessions'), link.native_session_id))
+  const path = link.file_path ?? (await findRollout(join(process.env.CODEX_HOME || join(home, ".codex"), "sessions"), link.native_session_id))
   if (!path) return null
   const state = priorState(link.scan_state)
   const read = await readFrom(path, link.file_path ? link.file_offset : 0).catch(() => null)

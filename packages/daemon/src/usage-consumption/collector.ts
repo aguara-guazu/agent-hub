@@ -1,11 +1,11 @@
-import { mkdirSync, rmSync, statSync } from 'node:fs'
-import { join } from 'node:path'
-import type { ConsumptionCli, LinkCursor } from '@agenthub/shared'
-import type { DaemonState } from '../state.js'
-import { ConsumptionClient } from './client.js'
-import { readClaudeSession } from './claude.js'
-import { readCodexSession } from './codex.js'
-import type { SessionReadResult } from './files.js'
+import { mkdirSync, rmSync, statSync } from "node:fs"
+import { join } from "node:path"
+import type { ConsumptionCli, LinkCursor } from "@agenthub/shared"
+import type { DaemonState } from "../state.js"
+import { ConsumptionClient } from "./client.js"
+import { readClaudeSession } from "./claude.js"
+import { readCodexSession } from "./codex.js"
+import type { SessionReadResult } from "./files.js"
 
 const CYCLE_MS = 60_000
 /** Longer than a cycle, so an import of a large first pass does not lose its lease. A crashed run frees it after this. */
@@ -42,13 +42,13 @@ function acquireLease(directory: string): boolean {
 async function collectAgent(state: DaemonState, home: string, agentId: string, cli: ConsumptionCli, reader: Reader): Promise<void> {
   const client = new ConsumptionClient(state, agentId)
   if (!client.usageEnabled()) return
-  const lease = join(state.root, 'usage-consumption', `${agentId}.lock`)
+  const lease = join(state.root, "usage-consumption", `${agentId}.lock`)
   if (!acquireLease(lease)) return
   try {
     for (const link of await client.links(cli)) {
       // Only hook-captured sessions are read from disk. Fleet runtime links have no file reader,
       // and kiro_env links wait for the Kiro disk reader.
-      if (link.source !== 'hook') continue
+      if (link.source !== "hook") continue
       const result = await reader(link, home).catch(() => null)
       if (!result) continue
       const cursor = {
@@ -84,7 +84,7 @@ export function startConsumptionCollectors(state: DaemonState, home: string): { 
     running = true
     try {
       for (const [agentId, snapshot] of Object.entries(state.allSnapshots())) {
-        const cli = String(snapshot['cli_kind']) as ConsumptionCli
+        const cli = String(snapshot["cli_kind"]) as ConsumptionCli
         const reader = READERS[cli]
         if (!reader) continue
         // A failure in one agent must not stop the others; the next cycle retries from the stored cursor.

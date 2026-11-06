@@ -1,4 +1,4 @@
-import type { ConsumptionOrigin } from '@agenthub/shared'
+import type { ConsumptionOrigin } from "@agenthub/shared"
 
 /** Characters seen per origin since the session start (or since the last compaction). Text is never stored. */
 export interface OriginState {
