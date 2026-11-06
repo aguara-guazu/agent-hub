@@ -197,36 +197,55 @@ export function granularityFor(range: ConsumptionRange): SeriesGranularity {
   return range === "1y" ? "week" : "month"
 }
 
+/**
+ * Start instant (UTC ISO) of the bucket that holds `hourIso`. Day, week (Monday) and month buckets follow the local
+ * zone `tzOffsetMinutes` minutes ahead of UTC; hour buckets are the hour itself.
+ */
+export function bucketStart(hourIso: string, granularity: SeriesGranularity, tzOffsetMinutes = 0): string {
+  const instant = Date.parse(hourIso)
+  if (granularity === "hour") return new Date(instant).toISOString()
+  const local = new Date(instant + tzOffsetMinutes * 60_000)
+  const year = local.getUTCFullYear(), month = local.getUTCMonth(), day = local.getUTCDate()
+  const startLocal = granularity === "day" ? Date.UTC(year, month, day)
+    : granularity === "week" ? Date.UTC(year, month, day - ((local.getUTCDay() + 6) % 7))
+      : Date.UTC(year, month, 1)
+  return new Date(startLocal - tzOffsetMinutes * 60_000).toISOString()
+}
+
 export async function series(
   sql: Sql,
-  input: ScopeInput & { cli?: ConsumptionCli },
+  input: ScopeInput & { cli?: ConsumptionCli; tzOffsetMinutes?: number | undefined },
 ): Promise<{ bucket: string; unit: "tokens" | "credits"; total: number; cost_usd: number | null }[]> {
   if (input.sessionIds?.length === 0) return []
   const start = rangeStart(input.range, input.now)
-  const bucket = {
-    hour: "h.hour",
-    day: "substr(h.hour,1,10)",
-    week: "strftime('%Y-W%W', h.hour)",
-    month: "substr(h.hour,1,7)",
-  }[granularityFor(input.range)]
+  const granularity = granularityFor(input.range)
   const args = new Args()
   const from = args.add(start)
   const clauses = sessionScope(args, input, "s.id")
   if (input.cli) clauses.push(`h.cli_kind=${args.add(input.cli)}`)
+  // Aggregated per hour first; the buckets are formed here so the zone offset applies to day, week and month.
   const rows = await sql.query(
-    `SELECT ${bucket} AS bucket, h.unit AS unit,
+    `SELECT h.hour AS hour, h.unit AS unit,
        SUM(CASE WHEN h.unit='credits' THEN h.credits ELSE h.input+h.output+h.cache_write+h.cache_read END) AS total,
-       CASE WHEN SUM(CASE WHEN h.unit='tokens' THEN h.events-h.unpriced_events ELSE 0 END)=0 THEN NULL ELSE SUM(h.cost_usd) END AS cost
+       SUM(CASE WHEN h.unit='tokens' THEN h.events-h.unpriced_events ELSE 0 END) AS priced, SUM(h.cost_usd) AS cost
      FROM usage_consumption_hourly h JOIN chat_sessions s ON s.id=h.hub_session_id
-     WHERE h.hour>=${from}${where(clauses)} GROUP BY bucket, h.unit ORDER BY bucket, h.unit`,
+     WHERE h.hour>=${from}${where(clauses)} GROUP BY h.hour, h.unit`,
     args.values,
   )
-  return rows.map(row => ({
-    bucket: String(row.bucket),
-    unit: row.unit === "credits" ? "credits" : "tokens",
-    total: num(row.total),
-    cost_usd: nullableNum(row.cost),
-  }))
+  const buckets = new Map<string, { bucket: string; unit: "tokens" | "credits"; total: number; priced: number; cost: number }>()
+  for (const row of rows) {
+    const bucket = bucketStart(String(row.hour), granularity, input.tzOffsetMinutes ?? 0)
+    const unit = row.unit === "credits" ? "credits" as const : "tokens" as const
+    const key = `${bucket}|${unit}`
+    const entry = buckets.get(key) ?? { bucket, unit, total: 0, priced: 0, cost: 0 }
+    entry.total += num(row.total)
+    entry.priced += num(row.priced)
+    entry.cost += num(row.cost)
+    buckets.set(key, entry)
+  }
+  return [...buckets.values()]
+    .sort((a, b) => a.bucket.localeCompare(b.bucket) || a.unit.localeCompare(b.unit))
+    .map(entry => ({ bucket: entry.bucket, unit: entry.unit, total: entry.total, cost_usd: entry.unit === "tokens" && entry.priced > 0 ? entry.cost : null }))
 }
 
 export const CURVE_POINTS = 300
@@ -331,32 +350,25 @@ export async function agentFacts(sql: Sql, hubSessionId: string, range: Consumpt
   }
 }
 
-/** Week number as SQLite's strftime('%W'): Monday-based, days before the first Monday belong to week 00. */
-function weekKey(date: Date): string {
-  const yearStart = Date.UTC(date.getUTCFullYear(), 0, 1)
-  const dayOfYear = Math.floor((Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - yearStart) / 86_400_000)
-  const week = Math.floor((dayOfYear + 7 - ((date.getUTCDay() + 6) % 7)) / 7)
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
-
-/** Every bucket key of the range, in the same format `series` stores, oldest first. */
-export function bucketKeys(range: ConsumptionRange, now: Date = new Date()): string[] {
+/** Every bucket start of the range, as `series` returns them, oldest first. */
+export function bucketKeys(range: ConsumptionRange, now: Date = new Date(), tzOffsetMinutes = 0): string[] {
   const granularity = granularityFor(range)
-  const first = new Date(rangeStart(range, now))
-  const hour = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate(), first.getUTCHours()))
-  if (hour.getTime() < first.getTime()) hour.setUTCHours(hour.getUTCHours() + 1)
   const keys = new Set<string>()
-  for (const cursor = new Date(hour); cursor.getTime() <= now.getTime(); cursor.setUTCHours(cursor.getUTCHours() + 1)) {
-    const iso = cursor.toISOString()
-    keys.add(granularity === "hour" ? iso : granularity === "day" ? iso.slice(0, 10) : granularity === "month" ? iso.slice(0, 7) : weekKey(cursor))
+  for (const cursor = new Date(rangeStart(range, now)); cursor.getTime() <= now.getTime(); cursor.setUTCHours(cursor.getUTCHours() + 1)) {
+    keys.add(bucketStart(cursor.toISOString(), granularity, tzOffsetMinutes))
   }
-  return [...keys]
+  return [...keys].sort()
 }
 
 /** Completes a sparse series with zero for the buckets without consumption. Buckets outside the range are kept. */
-export function fillSeries<T extends { bucket: string; total: number | null }>(range: ConsumptionRange, points: readonly T[], now?: Date): { bucket: string; total: number | null }[] {
+export function fillSeries<T extends { bucket: string; total: number | null }>(
+  range: ConsumptionRange,
+  points: readonly T[],
+  now?: Date,
+  tzOffsetMinutes = 0,
+): { bucket: string; total: number | null }[] {
   const byBucket = new Map(points.map(point => [point.bucket, point.total]))
-  const keys = bucketKeys(range, now)
+  const keys = bucketKeys(range, now, tzOffsetMinutes)
   const known = new Set(keys)
   const extra = points.map(point => point.bucket).filter(bucket => !known.has(bucket))
   return [...keys, ...extra].sort().map(bucket => ({ bucket, total: byBucket.has(bucket) ? byBucket.get(bucket)! : 0 }))
