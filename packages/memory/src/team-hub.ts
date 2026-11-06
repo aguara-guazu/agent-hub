@@ -14,6 +14,7 @@ import { projectForPath } from './agents.js'
 import { sessionStatus, virtualFolder, type LocalChat } from './local-chat.js'
 import type { TeamOrca, TeamWorkspace, TeamLaunchReceipt, TeamLaunchMember } from './team-orca.js'
 import { FleetProcessManager, type FleetEvent, type FleetProcessOptions, type FleetStatus, type FleetPendingQuestion, type FleetQuestionAnswers } from './fleet-process.js'
+import { recordLink } from "./usage-consumption/links.js"
 
 const exec = promisify(execFile)
 type RunOptions = { cwd?: string; env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; windowsHide: boolean }
@@ -461,6 +462,10 @@ export class HubTeamRuntime implements TeamOrca {
     const turn = event.turn_id ?? (previous?.generation === generation ? previous.turn_id : undefined)
     const runtime: HubTeamStatus = { ...event, ...(turn ? { turn_id: turn } : {}), provider: 'hub', generation, updated_at: new Date().toISOString() }
     await this.chat.db.query('UPDATE chat_team_members SET runtime=$1 WHERE id=$2', [JSON.stringify(runtime), event.id])
+    if (runtime.native_id && runtime.native_id !== previous?.native_id && member.session_id) {
+      const session = (await this.chat.db.query('SELECT cli_kind FROM chat_sessions WHERE id=$1', [member.session_id]))[0]
+      await recordLink(this.chat.db, { hub_session_id: String(member.session_id), cli_kind: session?.cli_kind, native_session_id: runtime.native_id, source: 'fleet_runtime' })
+    }
     if (previous?.state !== runtime.state || previous?.generation !== generation) hubLog(this.directory).event("fleet", "runtime", { member_id: event.id, generation, state: runtime.state,
       from: previous?.generation === generation ? previous.state : null, error_code: runtime.error_code, cli: runtime.cli, native_id: runtime.native_id })
     if (runtime.questions) await (this.chat as ManagedChat).managedQuestions(event.id, runtime.questions, generation)

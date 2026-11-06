@@ -36,6 +36,7 @@ import './daily-templates.js'
 import { createFleetRecovery } from './fleet-recovery.js'
 import { HubStopCoordinator } from "./hub-stop.js"
 import { exportMemory } from "./backup.js"
+import { backfillLinks } from "./usage-consumption/links.js"
 
 const REPLY_TICK_MS = 60_000
 const ACTION_TICK = 'action_tick', ACTION_TICK_MS = 30_000
@@ -136,6 +137,7 @@ export class MemoryService {
       await db.close().catch(() => undefined)
       throw new MemoryError(503, 'No se pudo abrir la base de memoria local')
     }
+    await backfillLinks(db)
     const store = new MemoryStore(db, this.directory)
     this.admissionDb = db
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)

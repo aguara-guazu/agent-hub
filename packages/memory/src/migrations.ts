@@ -1019,4 +1019,32 @@ ALTER TABLE interhub_members ADD COLUMN project_offer_message TEXT;
 ALTER TABLE interhub_channels ADD COLUMN project_pending_id TEXT;
 ALTER TABLE interhub_channels ADD COLUMN project_pending_reason TEXT;
 ALTER TABLE interhub_channels ADD COLUMN project_pending_attempt TEXT;
+`, String.raw`
+-- Consumption measurement: links from a hub session to its native CLI session, deduplicated events and hourly totals.
+-- Tables carry no project_id, so project merges leave them untouched; scope is resolved through the sessions at query time.
+-- Rollback: DROP TABLE usage_consumption_hourly_origin; DROP TABLE usage_consumption_hourly; DROP TABLE usage_consumption_events;
+-- DROP TABLE usage_session_links; then delete this version from schema_versions.
+CREATE TABLE usage_session_links (
+ hub_session_id TEXT NOT NULL REFERENCES chat_sessions(id), cli_kind TEXT NOT NULL, native_session_id TEXT NOT NULL,
+ source TEXT NOT NULL CHECK(source IN ('hook','fleet_runtime','kiro_env')), captured_at TIMESTAMP NOT NULL DEFAULT ${NOW},
+ file_path TEXT, file_offset INTEGER NOT NULL DEFAULT 0, scan_state JSON, PRIMARY KEY(hub_session_id,native_session_id));
+CREATE UNIQUE INDEX usage_session_links_native ON usage_session_links(cli_kind,native_session_id);
+CREATE TABLE usage_consumption_events (
+ dedupe_key TEXT PRIMARY KEY, hub_session_id TEXT NOT NULL, native_session_id TEXT NOT NULL, cli_kind TEXT NOT NULL, model TEXT,
+ occurred_at TIMESTAMP NOT NULL, unit TEXT NOT NULL CHECK(unit IN ('tokens','credits')),
+ input REAL NOT NULL DEFAULT 0, output REAL NOT NULL DEFAULT 0, cache_write REAL NOT NULL DEFAULT 0, cache_write_1h REAL NOT NULL DEFAULT 0,
+ cache_read REAL NOT NULL DEFAULT 0, credits REAL NOT NULL DEFAULT 0, cost_usd REAL, price_ref TEXT,
+ context_tokens INTEGER, context_window INTEGER, context_pct REAL, compaction BOOLEAN NOT NULL DEFAULT 0, model_calls INTEGER NOT NULL DEFAULT 1,
+ breakdown JSON NOT NULL DEFAULT '{}', source TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT ${NOW});
+CREATE INDEX usage_consumption_events_session ON usage_consumption_events(hub_session_id,occurred_at);
+CREATE INDEX usage_consumption_events_time ON usage_consumption_events(occurred_at);
+CREATE TABLE usage_consumption_hourly (
+ hour TEXT NOT NULL, hub_session_id TEXT NOT NULL, native_session_id TEXT NOT NULL, cli_kind TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
+ unit TEXT NOT NULL, input REAL NOT NULL DEFAULT 0, output REAL NOT NULL DEFAULT 0, cache_write REAL NOT NULL DEFAULT 0, cache_read REAL NOT NULL DEFAULT 0,
+ credits REAL NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, unpriced_events INTEGER NOT NULL DEFAULT 0, events INTEGER NOT NULL DEFAULT 0,
+ model_calls INTEGER NOT NULL DEFAULT 0, compactions INTEGER NOT NULL DEFAULT 0, context_peak_tokens INTEGER, context_peak_pct REAL,
+ PRIMARY KEY(hour,hub_session_id,native_session_id,model));
+CREATE TABLE usage_consumption_hourly_origin (
+ hour TEXT NOT NULL, hub_session_id TEXT NOT NULL, native_session_id TEXT NOT NULL, origin TEXT NOT NULL, unit TEXT NOT NULL,
+ amount REAL NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, PRIMARY KEY(hour,hub_session_id,native_session_id,origin));
 `]
