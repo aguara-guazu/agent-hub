@@ -168,7 +168,8 @@ async function originSummary(sql: Sql, input: ScopeInput, start: string): Promis
   const from = args.add(start)
   const clauses = sessionScope(args, input, "s.id")
   const rows = await sql.query(
-    `SELECT o.origin AS key, o.unit AS unit, SUM(o.amount) AS amount, SUM(o.cost_usd) AS cost
+    `SELECT o.origin AS key, o.unit AS unit, SUM(o.amount) AS amount, SUM(o.cost_usd) AS cost,
+       SUM(o.events-o.unpriced_events) AS priced, SUM(o.unpriced_events) AS unpriced
      FROM usage_consumption_hourly_origin o JOIN chat_sessions s ON s.id=o.hub_session_id
      WHERE o.hour>=${from}${where(clauses)} GROUP BY o.origin, o.unit ORDER BY amount DESC`,
     args.values,
@@ -178,7 +179,8 @@ async function originSummary(sql: Sql, input: ScopeInput, start: string): Promis
     const amount = num(row.amount)
     return {
       key: String(row.key), label: String(row.key), cli_kind: null, unit, total: amount, input: 0, output: 0, cache_write: 0, cache_read: 0,
-      credits: unit === "credits" ? amount : 0, cost_usd: unit === "tokens" ? num(row.cost) : null, unpriced: false,
+      credits: unit === "credits" ? amount : 0, cost_usd: unit === "tokens" && num(row.priced) > 0 ? num(row.cost) : null,
+      unpriced: num(row.unpriced) > 0,
       context_peak_pct: null, context_peak_tokens: null, compactions: 0, project_title: null, channel_name: null, top_origins: [],
     }
   })
@@ -235,13 +237,13 @@ export async function agentDetail(sql: Sql, hubSessionId: string, range: Consump
   const start = rangeStart(range, now)
   const [row] = await summary(sql, { range, sessionIds: [hubSessionId], group: "agent", now })
   const breakdownRows = await sql.query(
-    `SELECT o.origin AS origin, o.unit AS unit, SUM(o.amount) AS amount, SUM(o.cost_usd) AS cost
+    `SELECT o.origin AS origin, o.unit AS unit, SUM(o.amount) AS amount, SUM(o.cost_usd) AS cost, SUM(o.events-o.unpriced_events) AS priced
      FROM usage_consumption_hourly_origin o WHERE o.hub_session_id=$1 AND o.hour>=$2 GROUP BY o.origin, o.unit ORDER BY amount DESC`,
     [hubSessionId, start],
   )
   const breakdown = breakdownRows.map(item => {
     const unit = item.unit === "credits" ? "credits" as const : "tokens" as const
-    return { origin: item.origin as ConsumptionOrigin, unit, amount: num(item.amount), cost_usd: unit === "tokens" ? num(item.cost) : null }
+    return { origin: item.origin as ConsumptionOrigin, unit, amount: num(item.amount), cost_usd: unit === "tokens" && num(item.priced) > 0 ? num(item.cost) : null }
   })
   const detailed = range !== "1y" && range !== "3y"
   const contextRows = detailed

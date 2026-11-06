@@ -1046,5 +1046,6 @@ CREATE TABLE usage_consumption_hourly (
  PRIMARY KEY(hour,hub_session_id,native_session_id,model));
 CREATE TABLE usage_consumption_hourly_origin (
  hour TEXT NOT NULL, hub_session_id TEXT NOT NULL, native_session_id TEXT NOT NULL, origin TEXT NOT NULL, unit TEXT NOT NULL,
- amount REAL NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, PRIMARY KEY(hour,hub_session_id,native_session_id,origin));
+ amount REAL NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, events INTEGER NOT NULL DEFAULT 0, unpriced_events INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(hour,hub_session_id,native_session_id,origin));
 `]

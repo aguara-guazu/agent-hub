@@ -127,10 +127,12 @@ export class ConsumptionStore {
     for (const [origin, amount] of entries) {
       const share = total > 0 && cost !== null ? (cost * amount) / total : 0
       await sql.query(
-        `INSERT INTO usage_consumption_hourly_origin(hour,hub_session_id,native_session_id,origin,unit,amount,cost_usd) VALUES($1,$2,$3,$4,$5,$6,$7)
+        `INSERT INTO usage_consumption_hourly_origin(hour,hub_session_id,native_session_id,origin,unit,amount,cost_usd,events,unpriced_events)
+         VALUES($1,$2,$3,$4,$5,$6,$7,1,$8)
          ON CONFLICT(hour,hub_session_id,native_session_id,origin) DO UPDATE SET
-           amount=usage_consumption_hourly_origin.amount+excluded.amount, cost_usd=usage_consumption_hourly_origin.cost_usd+excluded.cost_usd`,
-        [hour, event.hub_session_id, event.native_session_id, origin, event.unit, amount, share],
+           amount=usage_consumption_hourly_origin.amount+excluded.amount, cost_usd=usage_consumption_hourly_origin.cost_usd+excluded.cost_usd,
+           events=usage_consumption_hourly_origin.events+1, unpriced_events=usage_consumption_hourly_origin.unpriced_events+excluded.unpriced_events`,
+        [hour, event.hub_session_id, event.native_session_id, origin, event.unit, amount, share, unpriced],
       )
     }
   }
