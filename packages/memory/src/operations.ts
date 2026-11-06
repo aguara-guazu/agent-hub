@@ -5,6 +5,7 @@ import { interhubReference, localCollaborationSkill, localOrchestrationReference
 import { CLI_KINDS } from '@agenthub/shared'
 import { UsageQuotas } from './usage-quotas.js'
 import { UsageNotices } from './usage-notices.js'
+import { callConsumptionTool, consumptionDefinitions } from './usage-consumption/tools.js'
 import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
 import { createInterhubServices } from './interhub/services.js'
 import { InterhubTools, interhubDefinitions, interhubReadOperations, isInterhubOperation, type InterhubServices } from './interhub/tools.js'
@@ -53,6 +54,7 @@ const definitions = {
   ...teamDefinitions,
   ...scheduleDefinitions,
   ...projectAutomationDefinitions,
+  ...consumptionDefinitions,
   shared_status: ['Shared project members, permissions, identity, versions. Work on it per skill hub-collaboration.', z.object({ project_id: id }).strict()],
   shared_join: ["Join a shared project only when the person asks. The invitation is the one-line ahinv1. code or the legacy agenthub-invitation-v1 JSON. Requires an existing local folder and never accepts a recovery phrase.", z.object({ invitation: z.unknown(), folder: workFolder }).strict()],
   shared_pause: ["Pause or resume synchronization of a shared project on this hub, only when the person asks. Resuming reconsiders unassigned inter-hub channels.", z.object({ project_id: id, paused: z.boolean() }).strict()],
@@ -137,7 +139,7 @@ const definitions = {
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
 export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
-export const READ_OPERATIONS = new Set(['skill_reference','usage_status',...chatReadOperations,...interhubReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','diagnostic_report','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
+export const READ_OPERATIONS = new Set(['skill_reference','usage_status','usage_self','usage_team',...chatReadOperations,...interhubReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','diagnostic_report','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
   readonly usage: UsageQuotas
@@ -245,6 +247,7 @@ export class MemoryOperations {
         return {generated_at:new Date().toISOString(),clis,notices:who ? await this.usageNotices.pending(who.id,true) : [],
           guidance:'Shared quotas do not multiply per agent. Report window percentages and resets even if the aggregate state is unknown; tell unverified specific scope apart from no reading. Unknown or stale data does not prove availability. Keep progress; agree composition changes within current authorization.'}
       }
+      case 'usage_self': case 'usage_team': return callConsumptionTool(operation, input, agent, { chat: this.chat, db: this.store.db })
       case 'suggest_projects': return suggestProjects(store, this.ai, input)
       case 'draft_profile': return draftProfile(store, this.ai, input, signal)
       case 'save_project_company': return saveProjectCompany(store, input, author)
