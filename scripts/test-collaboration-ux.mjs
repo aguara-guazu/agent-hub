@@ -45,7 +45,7 @@ const plan=await teams.call('team_prepare',{session_key:master.key,task_key:'UX-
  {worktree_name:'browser',role:'Operación de herramientas',task:'Recorrer el navegador y reportar evidencia directamente a implementación.'},
  {worktree_name:'revision',role:'Revisión',task:'Esperar el cambio de implementación antes de revisar.'},
 ].map(m=>({...m,cli:'claude_code',model:'fixture-model',prompt:'Escenario controlado de UX; no ejecutar comandos externos.'}))},master.agent)
-const launched=await teams.approveByHuman(plan.id,plan.digest,'fixture-owner'),workers=[]
+const launched=await teams.call('team_launch',{session_key:master.key,plan_id:plan.id,digest:plan.digest,human_instruction:'Aprobado en la terminal del coordinador'},master.agent),workers=[]
 for(const [i,slot] of launched.members.entries()) {
  const worker=await session(slot.workspace_path,['Implementación de prueba','Operación de prueba','Revisión de prueba'][i])
  const invitation=/invitation=([A-Za-z0-9_-]+)/.exec(prompts.get(slot.id))[1]

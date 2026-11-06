@@ -1019,4 +1019,28 @@ ALTER TABLE interhub_members ADD COLUMN project_offer_message TEXT;
 ALTER TABLE interhub_channels ADD COLUMN project_pending_id TEXT;
 ALTER TABLE interhub_channels ADD COLUMN project_pending_reason TEXT;
 ALTER TABLE interhub_channels ADD COLUMN project_pending_attempt TEXT;
+`, String.raw`
+-- The person approves only in the leader's CLI: cross-project reads are decided and revoked by the requester's leader, which
+-- declares the person's answer. The person's UI decision columns stay for older rows. SQLite cannot drop NOT NULL on
+-- granted_by_user, so chat_read_grants is rebuilt with its rows and index.
+ALTER TABLE chat_read_requests ADD COLUMN decided_by_session TEXT;
+ALTER TABLE chat_read_requests ADD COLUMN person_instruction TEXT;
+-- Requests elevated to the person waited for a UI decision that no longer exists; the agent asks again and its leader decides.
+UPDATE chat_read_requests SET state='cancelled',decided_at=${NOW},decision_note='La UI ya no decide pedidos de lectura; pedilo de nuevo a tu líder.' WHERE state='pending_person';
+DROP INDEX chat_read_grants_session;
+ALTER TABLE chat_read_grants RENAME TO chat_read_grants_previous;
+CREATE TABLE chat_read_grants (
+ id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE REFERENCES chat_read_requests(id) ON DELETE CASCADE,
+ session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+ granted_by_user TEXT, granted_by_session TEXT, granted_at TIMESTAMP NOT NULL DEFAULT ${NOW}, expires_at TIMESTAMP NOT NULL,
+ revoked_at TIMESTAMP, revoke_reason TEXT,
+ CHECK(granted_by_user IS NOT NULL OR granted_by_session IS NOT NULL)
+);
+INSERT INTO chat_read_grants(id,request_id,session_id,project_id,granted_by_user,granted_at,expires_at,revoked_at,revoke_reason)
+  SELECT id,request_id,session_id,project_id,granted_by_user,granted_at,expires_at,revoked_at,revoke_reason FROM chat_read_grants_previous;
+DROP TABLE chat_read_grants_previous;
+CREATE INDEX chat_read_grants_session ON chat_read_grants(session_id,revoked_at);
+-- Team coordinator directive: the plan it was sent under. Readers get the Hub's authority stamp only while that plan is
+-- active and still coordinated by the message author.
+ALTER TABLE chat_messages ADD COLUMN directive_plan_id TEXT;
 `]

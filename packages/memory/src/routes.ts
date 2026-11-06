@@ -167,29 +167,13 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const {channel_id}=parse(z.object({channel_id:id}).strict(),request.body),{operations}=await service.get()
     return operations.chat.restoreChannel(channel_id)
   })
-  // Read-access decisions belong to the authenticated person only. These routes are never MCP operations.
+  // Read-only views of cross-project read access. Decisions and revocations are leader MCP operations after asking the person in its CLI.
   const page = { limit: z.coerce.number().int().min(1).max(100).default(50), offset: z.coerce.number().int().min(0).default(0) }
   app.get('/api/memory/chat/read-requests', {preHandler:auth}, async (request, reply) => {
-    const filter=parse(z.object({ state:z.enum(['pending_leader','pending_person','granted','rejected','cancelled','all']).default('pending_person'), project_id:id.optional(), ...page }).strict(),request.query)
+    const filter=parse(z.object({ state:z.enum(['pending_leader','pending_person','granted','rejected','cancelled','all']).default('all'), project_id:id.optional(), ...page }).strict(),request.query)
     const {operations}=await service.get()
     reply.header('Cache-Control','no-store')
     return operations.chat.readRequests({...filter,state:filter.state==='all'?undefined:filter.state})
-  })
-  app.post('/api/memory/chat/read-requests/:requestId/confirm', {bodyLimit:4096}, async request=>{
-    const user=await options.authorize(request)
-    requireCollaboration()
-    const {requestId}=parse(z.object({requestId:id}),request.params)
-    const {phrase}=parse(z.object({phrase:z.string().trim().min(1).max(500)}).strict(),request.body)
-    const {operations}=await service.get()
-    return operations.chat.confirmReadRequest(requestId,phrase,user.id)
-  })
-  app.post('/api/memory/chat/read-requests/:requestId/reject', {bodyLimit:4096}, async request=>{
-    const user=await options.authorize(request)
-    requireCollaboration()
-    const {requestId}=parse(z.object({requestId:id}),request.params)
-    const {note}=parse(z.object({note:z.string().trim().min(1).max(1000).optional()}).strict(),request.body ?? {})
-    const {operations}=await service.get()
-    return operations.chat.rejectReadRequest(requestId,user.id,note)
   })
   interhubRoutes(app, service, options.authorize, requireCollaboration)
   app.get('/api/memory/chat/read-grants', {preHandler:auth}, async (request, reply) => {
@@ -197,14 +181,6 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const {operations}=await service.get()
     reply.header('Cache-Control','no-store')
     return operations.chat.readGrants(filter)
-  })
-  app.post('/api/memory/chat/read-grants/:grantId/revoke', {bodyLimit:4096}, async request=>{
-    const user=await options.authorize(request)
-    requireCollaboration()
-    const {grantId}=parse(z.object({grantId:id}),request.params)
-    const {reason}=parse(z.object({reason:z.string().trim().min(1).max(1000).optional()}).strict(),request.body ?? {})
-    const {operations}=await service.get()
-    return operations.chat.revokeReadGrant(grantId,user.id,reason)
   })
   app.get('/api/memory/chat/authority-events', {preHandler:auth}, async (request, reply) => {
     const raw=request.query as Record<string,unknown>
@@ -229,15 +205,6 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     const {operations}=await service.get()
     check(operations.teams,'La flota no está disponible.',503)
     return operations.teams.humanPlan(planId)
-  })
-  app.post('/api/memory/teams/:planId/approve', {bodyLimit:4096}, async request=>{
-    const user=await options.authorize(request)
-    requireCollaboration()
-    const {planId}=parse(z.object({planId:id}),request.params)
-    const {digest}=parse(z.object({digest:z.string().regex(/^[a-f0-9]{64}$/)}).strict(),request.body)
-    const {operations}=await service.get()
-    check(operations.teams,'La flota no está disponible.',503)
-    return operations.teams.approveByHuman(planId,digest,user.id)
   })
   app.addHook('onListen', async () => { void runtime().catch(() => {}) })
   app.addHook('onListen', async () => { void service.startSchedules().catch(() => {}) })

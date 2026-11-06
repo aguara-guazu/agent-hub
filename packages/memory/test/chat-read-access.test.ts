@@ -10,11 +10,11 @@ import { MemoryStore } from "../src/store.js"
 import { MemoryOperations } from "../src/operations.js"
 import { MemoryAI } from "../src/ai.js"
 import { Vault, defaultAI } from "../src/config.js"
-import { chatDefinitions, chatFolder } from "../src/local-chat.js"
+import { chatFolder } from "../src/local-chat.js"
 import { LocalChatRuntime } from "../src/local-chat-runtime.js"
 import { SESSION_LEASE_MS } from "../src/channel-authority.js"
 import { canReadChannel, READ_GRANT_LIVENESS_GRACE_MS, READ_GRANT_MAX_TTL_MS, READ_INTEREST_PER_CHANNEL, READ_INTEREST_PER_SESSION, READ_INTEREST_REASON_MAX, READ_INTEREST_WINDOW_MS,
-  READ_REQUEST_PENDING_TTL_MS, validateGrantPhrase } from "../src/chat-read-access.js"
+  READ_REQUEST_PENDING_TTL_MS } from "../src/chat-read-access.js"
 import { registerMemory } from "../src/routes.js"
 import type { AgentContext } from "../src/agents.js"
 import { existingChannel } from "./helpers/chat-channel.js"
@@ -60,7 +60,7 @@ const thread = async (who: Agent, title = "Tema") =>
   (await call(who, "chat_send", { channel_id: who.channel.id, title, text: `mensaje de ${who.name}`, mentions: [], request_id: randomUUID() })).thread_id as string
 const reply = (who: Agent, threadId: string) => call(who, "chat_send", { thread_id: threadId, text: "respuesta", mentions: [], request_id: randomUUID() })
 const events = (kind: string) => db.query("SELECT * FROM chat_authority_events WHERE kind=$1 ORDER BY seq", [kind])
-const phrase = "Confirmo que nick-member puede ver los canales del proyecto Beta"
+const instruction = "Sí, que nick-member lea los canales de Beta"
 
 /** Alpha: channel of `leader` with `member`, plus a side channel; Beta: channel of `outsider`. Each channel has one thread. */
 async function world() {
@@ -70,8 +70,7 @@ async function world() {
 }
 async function granted(w: Awaited<ReturnType<typeof world>>) {
   const request = await call(w.member, "chat_read_request", { project_id: beta, reason: "Necesito ver la API de Beta" })
-  await call(w.leader, "chat_read_elevate", { request_id: request.request_id })
-  const result = await ops.chat.confirmReadRequest(request.request_id, phrase, "owner")
+  const result = await call(w.leader, "chat_read_decide", { request_id: request.request_id, decision: "grant", person_instruction: instruction })
   return { requestId: request.request_id as string, grantId: result.grant.id as string }
 }
 
@@ -129,79 +128,44 @@ describe("lectura dentro del proyecto", () => {
 })
 
 describe("permiso entre proyectos", () => {
-  it("pedido, elevación por el líder, confirmación de la persona y lectura sin escritura", async () => {
+  it("pedido, decisión del líder con la instrucción de la persona y lectura sin escritura", async () => {
     const w = await world()
     const request = await call(w.member, "chat_read_request", { project_id: beta, reason: "Necesito ver la API de Beta" })
     expect(request).toMatchObject({ state: "pending_leader", leader_id: w.leader.session.id, notified: true })
     expect((await db.query("SELECT 1 FROM chat_status_notices WHERE recipient_id=$1 AND cause='read_request'", [w.leader.session.id])).length).toBe(1)
-    await rejected(ops.chat.confirmReadRequest(request.request_id, phrase, "owner"), 409, "request_not_pending")
-    await rejected(call(w.member, "chat_read_elevate", { request_id: request.request_id }), 403)
-    await rejected(call(w.outsider, "chat_read_elevate", { request_id: request.request_id }), 403)
-    expect(await call(w.leader, "chat_read_elevate", { request_id: request.request_id, note: "Lo necesita" })).toMatchObject({ state: "pending_person" })
-    await rejected(call(w.leader, "chat_read_elevate", { request_id: request.request_id }), 409)
-    const result = await ops.chat.confirmReadRequest(request.request_id, phrase, "owner")
+    await rejected(call(w.member, "chat_read_decide", { request_id: request.request_id, decision: "grant", person_instruction: instruction }), 403)
+    await rejected(call(w.outsider, "chat_read_decide", { request_id: request.request_id, decision: "grant", person_instruction: instruction }), 403)
+    const result = await call(w.leader, "chat_read_decide", { request_id: request.request_id, decision: "grant", person_instruction: instruction })
     expect(result.grant).toMatchObject({ project_id: beta, session_id: w.member.session.id })
     expect(Date.parse(result.grant.expires_at) - Date.now()).toBeLessThanOrEqual(READ_GRANT_MAX_TTL_MS)
-    expect((await events("read_granted"))[0]).toMatchObject({ actor_user_id: "owner", actor_session_id: null, target_session_id: w.member.session.id, reason: phrase })
+    expect((await events("read_granted"))[0]).toMatchObject({ actor_user_id: null, actor_session_id: w.leader.session.id, target_session_id: w.member.session.id, reason: instruction })
     expect((await call(w.member, "chat_read", { thread_id: w.betaThread, unread_only: false })).items).toHaveLength(1)
     expect((await call(w.member, "chat_threads")).items.map((t: any) => t.id)).toContain(w.betaThread)
     await rejected(reply(w.member, w.betaThread), 403)
-    await rejected(ops.chat.confirmReadRequest(request.request_id, phrase, "owner"), 409, "request_not_pending")
+    await rejected(call(w.leader, "chat_read_decide", { request_id: request.request_id, decision: "grant", person_instruction: instruction }), 409)
     expect(await db.query("SELECT * FROM chat_read_grants")).toHaveLength(1)
   })
 
-  it("valida la frase: estructura, proyecto de destino y solicitante", async () => {
+  it("el líder rechaza y el agente sigue sin leer", async () => {
     const w = await world()
     const request = await call(w.member, "chat_read_request", { project_id: beta, reason: "x" })
-    await call(w.leader, "chat_read_elevate", { request_id: request.request_id })
-    await rejected(ops.chat.confirmReadRequest(request.request_id, "sí, dale", "owner"), 400, "phrase_structure")
-    await rejected(ops.chat.confirmReadRequest(request.request_id, "Confirmo que nick-member puede ver los canales del proyecto Alpha", "owner"), 400, "phrase_target")
-    await rejected(ops.chat.confirmReadRequest(request.request_id, "Confirmo que nick-leader puede ver los canales del proyecto Beta", "owner"), 400, "phrase_requester")
-    expect(await db.query("SELECT * FROM chat_read_grants")).toHaveLength(0)
-    expect(await ops.chat.confirmReadRequest(request.request_id, "Confirmo que el agente del proyecto «Alpha» puede ver los canales del proyecto «Beta».", "owner"))
-      .toMatchObject({ state: "granted" })
-  })
-
-  it("normaliza la frase sin aceptar que el proyecto de destino sustituya al solicitante", () => {
-    expect(validateGrantPhrase("CONFIRMO QUE «nick-member» puede leer los canales de proyecto «Beta»!", { target: "Beta", nickname: "nick-member", requesterProject: "Alpha" }).ok).toBe(true)
-    expect(validateGrantPhrase("I confirm that nick-member can read the channels of project Beta", { target: "Beta", nickname: "nick-member", requesterProject: "Alpha" }).ok).toBe(true)
-    expect(validateGrantPhrase("Confirmo que el agente de Beta puede ver los canales del proyecto Beta", { target: "Beta", nickname: "nick-member", requesterProject: "Beta" }))
-      .toMatchObject({ ok: false, code: "requester" })
-    expect(validateGrantPhrase("Confirmo que nick-memberx puede ver los canales del proyecto Beta", { target: "Beta", nickname: "nick-member", requesterProject: null }))
-      .toMatchObject({ ok: false, code: "requester" })
-  })
-
-  it("la persona rechaza y el agente sigue sin leer", async () => {
-    const w = await world()
-    const request = await call(w.member, "chat_read_request", { project_id: beta, reason: "x" })
-    await call(w.leader, "chat_read_elevate", { request_id: request.request_id })
-    expect(await ops.chat.rejectReadRequest(request.request_id, "owner", "No hace falta")).toMatchObject({ state: "rejected" })
-    expect((await events("read_rejected"))[0]).toMatchObject({ actor_user_id: "owner" })
+    expect(await call(w.leader, "chat_read_decide", { request_id: request.request_id, decision: "reject", reason: "No hace falta" })).toMatchObject({ state: "rejected" })
+    expect((await events("read_rejected"))[0]).toMatchObject({ actor_session_id: w.leader.session.id })
     await rejected(call(w.member, "chat_read", { thread_id: w.betaThread, unread_only: false }), 403)
-    await rejected(ops.chat.confirmReadRequest(request.request_id, phrase, "owner"), 409, "request_not_pending")
+    await rejected(call(w.leader, "chat_read_decide", { request_id: request.request_id, decision: "grant", person_instruction: instruction }), 409)
   })
 
-  it("un líder reemplazado después del pedido ya no puede elevarlo", async () => {
+  it("un líder reemplazado después del pedido ya no puede decidirlo", async () => {
     const w = await world()
     const request = await call(w.member, "chat_read_request", { project_id: beta, reason: "x" })
     const at = Date.now() - 30 * 60_000
     await db.query("UPDATE chat_sessions SET last_seen_at=$2,lease_until=$3 WHERE id=$1", [w.leader.session.id, iso(at), iso(at + SESSION_LEASE_MS)])
     const third = await register("third")
     await call(third, "chat_take_leadership", { channel_id: w.leader.channel.id, expected_leader_id: w.leader.session.id, reason: "silencio" })
-    await rejected(call(w.leader, "chat_read_elevate", { request_id: request.request_id }), 403)
-    expect(await call(third, "chat_read_elevate", { request_id: request.request_id })).toMatchObject({ state: "pending_person" })
+    await rejected(call(w.leader, "chat_read_decide", { request_id: request.request_id, decision: "grant", person_instruction: instruction }), 403)
+    expect(await call(third, "chat_read_decide", { request_id: request.request_id, decision: "grant", person_instruction: instruction })).toMatchObject({ state: "granted" })
   })
 
-  it("ninguna herramienta MCP confirma, rechaza ni revoca permisos", async () => {
-    const w = await world()
-    const names = Object.keys(chatDefinitions)
-    expect(names.filter(name => /confirm|grant|reject|revoke|designate/.test(name))).toEqual([])
-    const request = await call(w.member, "chat_read_request", { project_id: beta, reason: "x" })
-    await call(w.leader, "chat_read_elevate", { request_id: request.request_id })
-    for (const operation of ["chat_read_confirm", "chat_read_grant", "confirm_read_request"])
-      await expect(call(w.leader, operation, { request_id: request.request_id, phrase })).rejects.toBeTruthy()
-    expect(await db.query("SELECT * FROM chat_read_grants")).toHaveLength(0)
-  })
 })
 
 describe("caducidad y revocación", () => {
@@ -285,12 +249,12 @@ describe("caducidad y revocación", () => {
     expect(await canReadChannel(db, w.member.session.id, w.outsider.channel.id)).toBe(false)
   })
 
-  it("la persona revoca y queda auditado", async () => {
+  it("el líder revoca y queda auditado", async () => {
     const w = await world(), { grantId } = await granted(w)
-    expect(await ops.chat.revokeReadGrant(grantId, "owner", "Ya no")).toMatchObject({ revoked: true })
+    expect(await call(w.leader, "chat_read_revoke", { grant_id: grantId, reason: "Ya no" })).toMatchObject({ revoked: true })
     await rejected(call(w.member, "chat_read", { thread_id: w.betaThread, unread_only: false }), 403)
-    expect((await events("read_revoked"))[0]).toMatchObject({ actor_user_id: "owner", reason: "Ya no" })
-    await rejected(ops.chat.revokeReadGrant(grantId, "owner"), 404)
+    expect((await events("read_revoked"))[0]).toMatchObject({ actor_session_id: w.leader.session.id, reason: "Ya no" })
+    await rejected(call(w.leader, "chat_read_revoke", { grant_id: grantId, reason: "Ya no" }), 409)
   })
 
   it("cancela pedidos sin respuesta pasado su plazo", async () => {
@@ -303,22 +267,17 @@ describe("caducidad y revocación", () => {
 })
 
 describe("rutas de la persona", () => {
-  it("confirmar, rechazar, revocar y listar exigen la autorización de la persona", async () => {
+  it("listar exige la autorización de la persona", async () => {
     const directory = await mkdtemp(join(tmpdir(), "hub-read-routes-"))
     const app = Fastify()
     const { service } = registerMemory(app, { directory, baseUrl: "http://localhost", worker: false, authorize: async request => {
       if (request.headers.authorization !== "Bearer owner") throw Object.assign(new Error("Owner required"), { statusCode: 401 })
       return { id: "owner" }
     } })
-    const confirm = vi.fn(async () => ({ state: "granted" })), reject = vi.fn(async () => ({ state: "rejected" }))
-    const revoke = vi.fn(async () => ({ revoked: true })), list = vi.fn(async () => ({ items: [] }))
+    const list = vi.fn(async () => ({ items: [] }))
     const personCall = vi.fn(async () => ({ items: [] }))
-    vi.spyOn(service, "get").mockResolvedValue({ operations: { call: personCall, chat: { confirmReadRequest: confirm, rejectReadRequest: reject, revokeReadGrant: revoke, readRequests: list, readGrants: list } } } as any)
-    const id = "11111111-1111-4111-8111-111111111111"
+    vi.spyOn(service, "get").mockResolvedValue({ operations: { call: personCall, chat: { readRequests: list, readGrants: list } } } as any)
     const routes = [
-      { method: "POST" as const, url: `/api/memory/chat/read-requests/${id}/confirm`, payload: { phrase } },
-      { method: "POST" as const, url: `/api/memory/chat/read-requests/${id}/reject`, payload: {} },
-      { method: "POST" as const, url: `/api/memory/chat/read-grants/${id}/revoke`, payload: {} },
       { method: "GET" as const, url: "/api/memory/chat/read-requests" },
       { method: "GET" as const, url: "/api/memory/chat/read-grants" },
     ]
@@ -329,31 +288,12 @@ describe("rutas de la persona", () => {
           expect(response.statusCode).toBe(401)
         }
       }
-      expect(confirm).not.toHaveBeenCalled(); expect(reject).not.toHaveBeenCalled(); expect(revoke).not.toHaveBeenCalled(); expect(list).not.toHaveBeenCalled()
+      expect(list).not.toHaveBeenCalled()
       const accepted = await app.inject({ ...routes[0]!, headers: { authorization: "Bearer owner" } })
       expect(accepted.statusCode).toBe(200)
-      expect(confirm).toHaveBeenCalledWith(id, phrase, "owner")
-      const tooLong = await app.inject({ ...routes[0]!, payload: { phrase: "x".repeat(501) }, headers: { authorization: "Bearer owner" } })
-      expect(tooLong.statusCode).toBe(422)
       const read = await app.inject({ method: "POST", url: "/api/memory/call", payload: { operation: "chat_threads", input: {} }, headers: { authorization: "Bearer owner" } })
       expect(read.statusCode).toBe(200)
       expect(personCall).toHaveBeenCalledWith("chat_threads", {}, "owner", undefined, expect.anything())
-    } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
-  })
-
-  it("con la colaboración apagada confirmar, rechazar y revocar responden 403", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "hub-read-routes-off-"))
-    const app = Fastify()
-    const { service } = registerMemory(app, { directory, baseUrl: "http://localhost", worker: false, collaborationEnabled: () => false, authorize: async () => ({ id: "owner" }) })
-    const decide = vi.fn(async () => ({}))
-    vi.spyOn(service, "get").mockResolvedValue({ operations: { chat: { confirmReadRequest: decide, rejectReadRequest: decide, revokeReadGrant: decide } } } as any)
-    const id = "11111111-1111-4111-8111-111111111111"
-    try {
-      for (const [url, payload] of [[`/api/memory/chat/read-requests/${id}/confirm`, { phrase }], [`/api/memory/chat/read-requests/${id}/reject`, {}], [`/api/memory/chat/read-grants/${id}/revoke`, {}]] as const) {
-        const response = await app.inject({ method: "POST", url, payload, headers: { authorization: "Bearer owner" } })
-        expect(response.statusCode).toBe(403)
-      }
-      expect(decide).not.toHaveBeenCalled()
     } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
   })
 })
