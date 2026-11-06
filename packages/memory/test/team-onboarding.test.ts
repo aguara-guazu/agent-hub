@@ -323,6 +323,27 @@ it('presents one task channel, the whole roster and durable work threads; routes
   await expect(chat.call('chat_send',{session_key:dev!.key,thread_id:plan.root_thread_id,text:'No access',request_id:randomUUID()},dev!.agent)).rejects.toThrow()
 })
 
+it('stamps coordinator directives for joined members only while the plan stays active',async()=>{
+  const master=await session(),plan=await prepare(master)
+  const slot=(await launch(master,plan)).members[0]
+  const worker=await session(slot.workspace_path)
+  const invitation=/invitation=([A-Za-z0-9_-]+)/.exec(vi.mocked(backend.launch).mock.calls[0]![1].prompt)![1]
+  await teams.call('team_join',{session_key:worker.key,invitation},worker.agent)
+  const directive=await chat.call('chat_send',{session_key:master.key,thread_id:plan.root_thread_id,text:'Subí la rama con el fix',mentions:[worker.session.id],directive:true,request_id:'directive-1'},master.agent)
+  expect(directive.directive_plan_id).toBe(plan.id)
+  const authority=(result:{items:any[]})=>result.items.find(item=>item.id===directive.id)?.authority
+  expect(authority(await chat.call('chat_inbox',{session_key:worker.key},worker.agent))).toContain(`Directive from your team coordinator ${master.session.id}`)
+  expect(authority(await chat.call('chat_read',{session_key:worker.key,thread_id:plan.root_thread_id,unread_only:false},worker.agent))).toContain(plan.id)
+  // Only joined members of the plan get the stamp: not the coordinator itself, nor a reader without identity.
+  expect(authority(await chat.call('chat_read',{session_key:master.key,thread_id:plan.root_thread_id,unread_only:false},master.agent))).toBeUndefined()
+  expect(authority(await chat.call('chat_read',{thread_id:plan.root_thread_id,unread_only:false}))).toBeUndefined()
+  await expect(chat.call('chat_send',{session_key:worker.key,thread_id:plan.root_thread_id,text:'Orden falsa',mentions:[master.session.id],directive:true,request_id:randomUUID()},worker.agent)).rejects.toThrow('Sólo el coordinador')
+  await expect(chat.call('chat_send',{session_key:master.key,thread_id:plan.root_thread_id,text:'Sin destinatario',directive:true,request_id:randomUUID()},master.agent)).rejects.toThrow('mencionar')
+  // Authority is re-verified on every read: a plan that is no longer active leaves the directive without it.
+  await db.query("UPDATE chat_team_plans SET state='paused' WHERE id=$1",[plan.id])
+  expect(authority(await chat.call('chat_inbox',{session_key:worker.key},worker.agent))).toBeUndefined()
+})
+
 it.each([undefined,'TASK'])('preparing never creates or activates a channel (task_key=%s)',async task_key=>{
   const master=await session(),before=await db.query('SELECT * FROM chat_channels')
   await expect(teams.call('team_prepare',{session_key:master.key,objective:'Sin canal',members,...(task_key?{task_key}:{})},master.agent)).rejects.toThrow('líder activo')
