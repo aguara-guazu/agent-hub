@@ -226,10 +226,32 @@ export async function series(
   }))
 }
 
+export const CURVE_POINTS = 300
+
+export interface ContextPoint { at: string; pct: number | null; tokens: number | null; compaction: boolean }
+
 export interface AgentDetail {
   row: SummaryRow | null
   breakdown: { origin: ConsumptionOrigin; unit: "tokens" | "credits"; amount: number; cost_usd: number | null }[]
-  context: { at: string; pct: number | null; tokens: number | null; compaction: boolean }[]
+  /** Latest context percentage in the range, from the full data before the curve is capped. */
+  context_last_pct: number | null
+  context: ContextPoint[]
+}
+
+/** Keeps the peak of each equal slice of the range, so at most `max` points remain. Compaction flags survive. */
+function capCurve(points: ContextPoint[], start: string, end: Date, max: number): ContextPoint[] {
+  if (points.length <= max) return points
+  const from = Date.parse(start)
+  const width = (end.getTime() - from) / max
+  const slots = new Map<number, ContextPoint>()
+  for (const point of points) {
+    const index = Math.min(max - 1, Math.max(0, Math.floor((Date.parse(point.at) - from) / width)))
+    const current = slots.get(index)
+    if (!current) { slots.set(index, point); continue }
+    const winner = (point.pct ?? -1) > (current.pct ?? -1) ? point : current
+    slots.set(index, { ...winner, compaction: current.compaction || point.compaction })
+  }
+  return [...slots.entries()].sort((a, b) => a[0] - b[0]).map(([, point]) => point)
 }
 
 /** Detail of one session. The context curve uses event rows up to 90 days, and hourly peaks beyond that. */
@@ -245,7 +267,8 @@ export async function agentDetail(sql: Sql, hubSessionId: string, range: Consump
     const unit = item.unit === "credits" ? "credits" as const : "tokens" as const
     return { origin: item.origin as ConsumptionOrigin, unit, amount: num(item.amount), cost_usd: unit === "tokens" && num(item.priced) > 0 ? num(item.cost) : null }
   })
-  const detailed = range !== "1y" && range !== "3y"
+  // Up to 48 h the curve comes from event rows; longer ranges use hourly peaks.
+  const detailed = range === "1h" || range === "12h" || range === "24h" || range === "48h"
   const contextRows = detailed
     ? await sql.query(
       `SELECT occurred_at AS at, context_pct AS pct, context_tokens AS tokens, compaction AS compaction
@@ -257,15 +280,18 @@ export async function agentDetail(sql: Sql, hubSessionId: string, range: Consump
        FROM usage_consumption_hourly WHERE hub_session_id=$1 AND hour>=$2 GROUP BY hour ORDER BY hour`,
       [hubSessionId, start],
     )
+  const points: ContextPoint[] = contextRows.map(item => ({
+    at: String(item.at),
+    pct: nullableNum(item.pct),
+    tokens: nullableNum(item.tokens),
+    compaction: Number(item.compaction) === 1,
+  }))
+  const latest = [...points].reverse().find(point => point.pct !== null)
   return {
     row: row ?? null,
     breakdown,
-    context: contextRows.map(item => ({
-      at: String(item.at),
-      pct: nullableNum(item.pct),
-      tokens: nullableNum(item.tokens),
-      compaction: Number(item.compaction) === 1,
-    })),
+    context_last_pct: latest?.pct ?? null,
+    context: capCurve(points, start, now ?? new Date(), CURVE_POINTS),
   }
 }
 

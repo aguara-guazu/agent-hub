@@ -55,7 +55,15 @@ export async function callConsumptionTool(
   if (input.detail === "breakdown") {
     const target = operation === "usage_self" ? sessionIds[0]! : input.agent
     check(target, "Indica agent para ver el desglose del equipo.", 400)
-    return { range: selectedRange, ...(await agentDetail(deps.db, target, selectedRange)) }
+    const detail = await agentDetail(deps.db, target, selectedRange)
+    return {
+      range: selectedRange,
+      row: detail.row,
+      breakdown: detail.breakdown,
+      context_peak_pct: detail.row?.context_peak_pct ?? null,
+      context_last_pct: detail.context_last_pct,
+      compactions: detail.row?.compactions ?? 0,
+    }
   }
   if (input.detail === "series") {
     return { range: selectedRange, items: await series(deps.db, { range: selectedRange, sessionIds }) }
