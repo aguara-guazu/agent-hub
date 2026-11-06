@@ -1,6 +1,7 @@
-import { open, readdir, stat } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { classifyTool, type ConsumptionEvent, type ConsumptionOrigin, type LinkCursor } from '@agenthub/shared'
+import { blocks, num, parseLine, readFrom, textLength } from './files.js'
 import { cloneOriginState, distribute, type OriginState } from './origins.js'
 
 /** Reader state kept in the cursor. Offsets of subagent files live in `offsets`, keyed by path. */
@@ -15,25 +16,13 @@ export interface ClaudeReadResult {
   cursor: { file_path: string; file_offset: number; scan_state: ClaudeScanState }
 }
 
-type Block = { type?: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown }
-type Row = {
-  type?: string
-  timestamp?: string
-  isCompactSummary?: boolean
-  message?: { id?: string; model?: string; usage?: Record<string, any>; content?: unknown }
-}
-interface Pending { id: string; model: string | null; occurred_at: string; usage: Record<string, any>; compaction: boolean; snapshot: OriginState }
-
-const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0)
-
-function blocks(content: unknown): Block[] {
-  return Array.isArray(content) ? (content as Block[]) : []
-}
-
-/** Characters of tool output or a user message, counting only the text, never storing it. */
-function textLength(content: unknown): number {
-  if (typeof content === 'string') return content.length
-  return blocks(content).reduce((total, block) => total + (typeof block.text === 'string' ? block.text.length : 0), 0)
+interface Pending {
+  id: string
+  model: string | null
+  occurred_at: string
+  usage: Record<string, any>
+  compaction: boolean
+  snapshot: OriginState
 }
 
 export function claudeConfigDir(home: string): string {
@@ -68,76 +57,38 @@ async function subagentFiles(mainPath: string, nativeId: string): Promise<string
   }
 }
 
-/**
- * Reads complete lines from `offset`. A file smaller than the offset was truncated or replaced,
- * so the read restarts at zero. The returned offset never points inside a line.
- */
-async function readFrom(path: string, offset: number): Promise<{ text: string; offset: number; restarted: boolean } | null> {
-  const handle = await open(path, 'r')
-  try {
-    const { size } = await handle.stat()
-    const restarted = size < offset
-    const start = restarted ? 0 : offset
-    const length = size - start
-    const buffer = Buffer.alloc(length)
-    let filled = 0
-    while (filled < length) {
-      const { bytesRead } = await handle.read(buffer, filled, length - filled, start + filled)
-      if (bytesRead === 0) break
-      filled += bytesRead
-    }
-    const end = buffer.subarray(0, filled).lastIndexOf(0x0a)
-    if (end < 0) return { text: '', offset: start, restarted }
-    return { text: buffer.subarray(0, end).toString('utf8'), offset: start + end + 1, restarted }
-  } finally {
-    await handle.close()
-  }
-}
-
-function parseLine(line: string): Row | null {
-  try {
-    const row = JSON.parse(line) as unknown
-    return row && typeof row === 'object' ? (row as Row) : null
-  } catch {
-    return null
-  }
-}
-
 /** Walks one file's lines. Counts characters per origin and keeps the last usage seen for each message id. */
 function scanLines(text: string, state: ClaudeScanState, pending: Map<string, Pending>, keyPrefix: string): void {
   for (const line of text.split('\n')) {
     if (!line) continue
     const row = parseLine(line)
     if (!row) continue
+    const message = row.message as Record<string, any> | undefined
     if (row.isCompactSummary === true) {
-      const message = row.message ?? {}
-      state.chars = { compaction: textLength(message.content) }
+      state.chars = { compaction: textLength(message?.content) }
       state.pending_compaction = true
       continue
     }
-    const message = row.message
     if (!message) continue
     if (row.type === 'assistant' && typeof message.id === 'string') {
       for (const block of blocks(message.content)) {
         if (block.type === 'text' || block.type === 'thinking') {
-          const length = (block.text ?? block.thinking ?? '').length
-          state.chars.model = (state.chars.model ?? 0) + length
+          state.chars.model = (state.chars.model ?? 0) + (block.text ?? block.thinking ?? '').length
         } else if (block.type === 'tool_use') {
           state.chars.model = (state.chars.model ?? 0) + JSON.stringify(block.input ?? {}).length
           if (block.id && block.name) state.tools[block.id] = block.name
         }
       }
       if (message.usage && typeof message.usage === 'object') {
-        const id = message.id
-        const existing = pending.get(id)
+        const existing = pending.get(message.id)
         if (existing) {
           existing.usage = message.usage
           existing.snapshot = cloneOriginState(state)
         } else {
           const compaction = state.pending_compaction
           state.pending_compaction = false
-          pending.set(id, {
-            id: `${keyPrefix}${id}`,
+          pending.set(message.id, {
+            id: `${keyPrefix}${message.id}`,
             model: typeof message.model === 'string' ? message.model : null,
             occurred_at: row.timestamp && !Number.isNaN(Date.parse(row.timestamp)) ? new Date(row.timestamp).toISOString() : new Date().toISOString(),
             usage: message.usage,
@@ -165,7 +116,7 @@ function scanLines(text: string, state: ClaudeScanState, pending: Map<string, Pe
   }
 }
 
-function toEvents(pending: Map<string, Pending>, hubId: string, nativeId: string, cli: 'claude_code'): ConsumptionEvent[] {
+function toEvents(pending: Map<string, Pending>, hubId: string, nativeId: string): ConsumptionEvent[] {
   const events: ConsumptionEvent[] = []
   for (const entry of pending.values()) {
     const usage = entry.usage
@@ -179,7 +130,7 @@ function toEvents(pending: Map<string, Pending>, hubId: string, nativeId: string
       dedupe_key: entry.id,
       hub_session_id: hubId,
       native_session_id: nativeId,
-      cli_kind: cli,
+      cli_kind: 'claude_code',
       model: entry.model,
       occurred_at: entry.occurred_at,
       unit: 'tokens',
@@ -216,8 +167,7 @@ export async function readClaudeSession(link: LinkCursor, home: string): Promise
   const mainPath = link.file_path ?? (await findMainFile(link.native_session_id, home))
   if (!mainPath) return null
   const state = priorState(link.scan_state)
-  const mainOffset = link.file_path ? link.file_offset : 0
-  const main = await readFrom(mainPath, mainOffset)
+  const main = await readFrom(mainPath, link.file_path ? link.file_offset : 0).catch(() => null)
   if (!main) return null
   if (main.restarted) {
     state.chars = {}
@@ -233,7 +183,7 @@ export async function readClaudeSession(link: LinkCursor, home: string): Promise
     scanLines(read.text, state, pending, `ccs:${basename(path, '.jsonl')}:`)
   }
   return {
-    events: toEvents(pending, link.hub_session_id, link.native_session_id, 'claude_code'),
+    events: toEvents(pending, link.hub_session_id, link.native_session_id),
     cursor: { file_path: mainPath, file_offset: main.offset, scan_state: state },
   }
 }

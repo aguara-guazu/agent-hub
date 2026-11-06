@@ -23,12 +23,14 @@ export function distribute(state: OriginState, inputSide: number, output: number
     }
   }
   const scale = sum > 0 && sum >= inputSide ? inputSide / sum : 1
-  const fixed = sum > 0 && sum >= inputSide ? 0 : inputSide - sum
+  const remainder = Math.max(0, inputSide - sum)
   const result: Partial<Record<ConsumptionOrigin, number>> = {}
   for (const [origin, value] of Object.entries(estimated) as [ConsumptionOrigin, number][]) {
     result[origin] = value * scale
   }
-  result.fixed = fixed
+  // The unexplained part of the input is fixed overhead. It adds to any fixed estimate
+  // already present, so the total always equals inputSide + output.
+  result.fixed = (result.fixed ?? 0) + remainder
   result.model = (result.model ?? 0) + output
   return result
 }
