@@ -47,6 +47,7 @@ Toda vista de Agent Hub usa **una** de cuatro plantillas y llena sus zonas. Si u
 | 1 · Encabezado | Título + 1 primaria + «…» | |
 | (aviso) | Un `.banner` si algo necesita atención | Máximo uno |
 | 2 · Barra | `.seg` de estado/tipo + `.search` + hasta 2 selectores | Se envuelve en ventanas angostas |
+| (gráficos) | `.chart` en una fila entre la barra y la lista | Solo en Actividad › Consumo; uno por serie |
 | 3 · Lista | `.list` de `.row` | Cabecera de columnas si hay más de 2 metadatos |
 | 4 · Panel | Ver y editar el elemento seleccionado | Se abre al hacer click en la fila |
 
