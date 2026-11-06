@@ -76,9 +76,10 @@ export default function ConsumptionTab({ header }: { header: ReactNode }) {
       {rows.map(row => {
         const origins = row.top_origins.map(item => labels.origin(item.origin)).join(", ")
         const title = view === "total" ? labels.origin(row.key as Parameters<typeof labels.origin>[0]) : view === "cli" ? labels.cli(row.key) : row.label
+        const place = [row.project_title, row.channel_name].filter(Boolean).join(" · ")
         const sub = view === "total"
           ? <Tag>{t("consumption.estimated")}</Tag>
-          : view === "agent" && origins ? t("consumption.topOrigins", { origins }) : undefined
+          : view === "agent" ? place || (origins ? t("consumption.topOrigins", { origins }) : undefined) : undefined
         return (
           <Row
             key={rowKey(row)}

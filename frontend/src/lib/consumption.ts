@@ -26,6 +26,9 @@ export interface SummaryRow {
   context_peak_pct: number | null
   context_peak_tokens: number | null
   compactions: number
+  /** Solo en el resumen por agente. */
+  project_title: string | null
+  channel_name: string | null
   top_origins: { origin: ConsumptionOrigin; amount: number }[]
 }
 
@@ -36,6 +39,11 @@ export interface SeriesItem {
 }
 
 export interface AgentDetail {
+  cli_kind: string | null
+  model: string | null
+  turns: number
+  model_calls: number
+  source: "file" | "acp" | null
   row: SummaryRow | null
   breakdown: { origin: ConsumptionOrigin; unit: ConsumptionUnit; amount: number; cost_usd: number | null }[]
   context: { at: string; pct: number | null; tokens: number | null; compaction: boolean }[]

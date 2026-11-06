@@ -32,9 +32,15 @@ export function ConsumptionPanel({ id, fallback, range, onClose }: Props) {
   })()
 
   const items: DlItem[] = row ? [
-    { label: t("consumption.panel.cli"), value: labels.cli(row.cli_kind) },
+    { label: t("consumption.panel.cliModel"), value: detail?.model ? <>{labels.cli(row.cli_kind)} · <span className="mono xs">{detail.model}</span></> : labels.cli(row.cli_kind) },
     { label: t("consumption.panel.usage"), value: row.unit === null ? t("consumption.noData") : labels.usage(row) },
   ] : []
+  if (row && row.unit !== null && detail) {
+    items.push(
+      { label: t("consumption.panel.turns"), value: labels.exact(detail.turns) },
+      { label: t("consumption.panel.modelCalls"), value: labels.exact(detail.model_calls) },
+    )
+  }
   if (row && row.unit === "tokens") {
     items.push(
       { label: t("consumption.panel.input"), value: labels.exact(row.input) },
@@ -50,6 +56,9 @@ export function ConsumptionPanel({ id, fallback, range, onClose }: Props) {
     )
   }
   if (row) items.push({ label: t("consumption.panel.contextPeak"), value: row.context_peak_pct === null ? t("consumption.noData") : labels.percent(row.context_peak_pct) })
+  if (row && row.unit !== null && detail?.source) {
+    items.push({ label: t("consumption.panel.source"), value: detail.source === "acp" ? t("consumption.panel.sourceAcp") : t("consumption.panel.sourceFile") })
+  }
 
   const breakdown = detail?.breakdown ?? []
   const breakdownTotal = breakdown.reduce((sum, item) => sum + item.amount, 0)
