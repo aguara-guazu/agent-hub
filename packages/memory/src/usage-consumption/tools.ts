@@ -33,6 +33,7 @@ export async function callConsumptionTool(
   agent: AgentContext | undefined,
   deps: ConsumptionToolDeps,
 ): Promise<unknown> {
+  check(agent, "Estas herramientas son para agentes; la persona ve el consumo en Actividad › Consumo.", 403)
   const who = await deps.chat.identity(agent, input.session_key)
   check(!who.removed_at, "Esta sesión fue expulsada del canal", 410)
   const selectedRange: ConsumptionRange = input.range ?? "24h"
