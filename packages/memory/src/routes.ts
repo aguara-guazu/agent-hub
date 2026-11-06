@@ -72,7 +72,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const requireCollaboration = () => check(collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
   registerUsageRoutes(app,service,options)
-  const consumption = registerConsumptionRoutes(app, service, request => options.authorize(request))
+  const consumption = registerConsumptionRoutes(app, service, options.authorizeUsageAgent)
   const updateDrain = registerUpdateDrain(app, service, { authorize: options.authorizeUpdate ?? updateSecretAuthorizer(undefined),
     beforeStartupAdmit: transactionId => service.get().then(({ stop }) => stop.assertStartupTransaction(transactionId)),
     startupAdmitted: async transactionId => { await (await service.get()).stop.resumeApplied(transactionId) },
