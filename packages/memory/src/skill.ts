@@ -12,7 +12,7 @@ export const MEMORY_SKILL_DESCRIPTION = 'Primary agent memory in Agent Hub. Use 
 const groups: [string, string[]][] = [
   ['Durable memories and maintenance', ['remember', 'list_memories', 'manage_memory', 'tidy_memory', 'health']],
   ['Work context, tasks and agent notes', ['context', 'list_notes', 'write_note', 'finish_notes', 'list_tasks', 'get_task', 'save_task', 'sync_tasks', 'task_stats']],
-  ['Explore and read', ['list_entities', 'get_entity', 'search', 'transcript', 'get_evidence', 'get_file', 'list_versions', 'timeline', 'review']],
+  ['Explore and read', ['list_entities', 'get_entity', 'search', 'transcript', 'get_evidence', 'get_file', 'list_versions', 'timeline', 'review', 'usage_self', 'usage_team']],
   ["Write and link", ["create_entity", "merge_projects", "update_entity", "import_source", "import_file", "link_entities", "unlink_entities", "assign_fragment"]],
   ['Collections and tracking rules', ['add_record', 'update_record', 'list_records', 'create_rule', 'list_rules', 'update_rule']],
   ['People and identities', ['merge_people', 'infer_identities', 'list_identity_proposals', 'review_identity', 'dedupe_people', 'list_duplicate_proposals', 'review_duplicate']],

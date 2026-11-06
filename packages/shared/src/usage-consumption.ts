@@ -1,12 +1,12 @@
-import { z } from 'zod'
+import { z } from "zod"
 
-export const CONSUMPTION_CLIS = ['claude_code', 'codex_cli', 'kiro'] as const
+export const CONSUMPTION_CLIS = ["claude_code", "codex_cli", "kiro"] as const
 export type ConsumptionCli = (typeof CONSUMPTION_CLIS)[number]
 
-export const CONSUMPTION_ORIGINS = ['model', 'person', 'cli_tools', 'mcp_tools', 'hub_tools', 'fixed', 'compaction', 'unknown'] as const
+export const CONSUMPTION_ORIGINS = ["model", "person", "cli_tools", "mcp_tools", "hub_tools", "fixed", "compaction", "unknown"] as const
 export type ConsumptionOrigin = (typeof CONSUMPTION_ORIGINS)[number]
 
-export const LINK_SOURCES = ['hook', 'fleet_runtime', 'kiro_env'] as const
+export const LINK_SOURCES = ["hook", "fleet_runtime", "kiro_env"] as const
 export type LinkSource = (typeof LINK_SOURCES)[number]
 
 export interface ConsumptionEvent {
@@ -17,7 +17,7 @@ export interface ConsumptionEvent {
   model: string | null
   occurred_at: string
   /** Kiro reports credits; Claude Code and Codex report tokens. */
-  unit: 'tokens' | 'credits'
+  unit: "tokens" | "credits"
   /** Excludes cache reads and writes, in every unit. */
   input: number
   output: number
@@ -33,7 +33,7 @@ export interface ConsumptionEvent {
   model_calls: number
   /** Amount per origin, in the event's unit. */
   breakdown: Partial<Record<ConsumptionOrigin, number>>
-  source: 'file' | 'acp'
+  source: "file" | "acp"
 }
 
 export interface LinkCursor {
@@ -56,7 +56,7 @@ export const consumptionEventSchema = z
     cli_kind: z.enum(CONSUMPTION_CLIS),
     model: z.string().max(200).nullable(),
     occurred_at: z.iso.datetime(),
-    unit: z.enum(['tokens', 'credits']),
+    unit: z.enum(["tokens", "credits"]),
     input: nonNegative,
     output: nonNegative,
     cache_write: nonNegative,
@@ -68,8 +68,8 @@ export const consumptionEventSchema = z
     context_pct: nonNegative.nullable(),
     compaction: z.boolean(),
     model_calls: z.number().int().nonnegative(),
-    breakdown: z.record(z.enum(CONSUMPTION_ORIGINS), nonNegative),
-    source: z.enum(['file', 'acp']),
+    breakdown: z.partialRecord(z.enum(CONSUMPTION_ORIGINS), nonNegative),
+    source: z.enum(["file", "acp"]),
   })
   .strict() as z.ZodType<ConsumptionEvent>
 
