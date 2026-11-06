@@ -77,10 +77,10 @@ export const consumptionEventSchema = z
  * Origin of a tool result. Claude Code names Hub tools `mcp__hub__*`, Codex `mcp__hub.*`;
  * any other MCP tool counts as `mcp_tools`, and built-in CLI tools as `cli_tools`.
  */
-export function classifyTool(cli: ConsumptionCli, name: string, server?: string): 'cli_tools' | 'mcp_tools' | 'hub_tools' {
-  if (server === 'hub' || name.startsWith('mcp__hub__') || name.startsWith('mcp__hub.')) return 'hub_tools'
-  if (server || name.startsWith('mcp__')) return 'mcp_tools'
-  return 'cli_tools'
+export function classifyTool(name: string, server?: string): "cli_tools" | "mcp_tools" | "hub_tools" {
+  if (server === "hub" || name.startsWith("mcp__hub__") || name.startsWith("mcp__hub.")) return "hub_tools"
+  if (server || name.startsWith("mcp__")) return "mcp_tools"
+  return "cli_tools"
 }
 
 const kiroCategory = z.looseObject({ chars: z.number().finite().nonnegative().optional() })
@@ -93,6 +93,8 @@ const kiroTurnCompletion = z.looseObject({
     usedTools: z.array(z.string()).optional(),
   })),
   requestIds: z.array(z.string()).optional(),
+  turnId: z.string().min(1).optional(),
+  executionId: z.string().min(1).optional(),
   contextBreakdown: z.looseObject({
     modelCalls: z.number().finite().nonnegative().optional(),
     window: z.looseObject({
@@ -174,7 +176,7 @@ export function parseKiroSessionInfo(update: unknown, ctx: KiroSessionInfoContex
     if (!completion) return {}
     const parsed = kiroTurnCompletion.safeParse(meta)
     if (!parsed.success) return null
-    const { promptTurnSummaries, requestIds, contextBreakdown } = parsed.data
+    const { promptTurnSummaries, requestIds, turnId, executionId, contextBreakdown } = parsed.data
 
     const metered = promptTurnSummaries.filter(item => item.usage !== undefined)
     if (metered.length === 0) return {}
@@ -199,7 +201,7 @@ export function parseKiroSessionInfo(update: unknown, ctx: KiroSessionInfoContex
         unknown: chars(categories.other),
       }
       const counts: Record<"cli_tools" | "mcp_tools" | "hub_tools", number> = { cli_tools: 0, mcp_tools: 0, hub_tools: 0 }
-      for (const item of creditItems) for (const name of item.usedTools ?? []) counts[classifyTool("kiro", name)]++
+      for (const item of creditItems) for (const name of item.usedTools ?? []) counts[classifyTool(name)]++
       const used = counts.cli_tools + counts.mcp_tools + counts.hub_tools
       if (used === 0) weights.cli_tools = toolIO
       else for (const origin of ["cli_tools", "mcp_tools", "hub_tools"] as const) weights[origin] = toolIO * counts[origin] / used
@@ -211,8 +213,11 @@ export function parseKiroSessionInfo(update: unknown, ctx: KiroSessionInfoContex
       }
     }
 
+    // Without a context breakdown the credits stay in the total under the unknown origin.
+    if (Object.keys(breakdown).length === 0 && credits > 0) breakdown.unknown = credits
+
     const event: ConsumptionEvent = {
-      dedupe_key: `kr:${ctx.native_session_id}:${requestIds && requestIds.length > 0 ? requestIds.join(",") : ctx.seq}`.slice(0, 300),
+      dedupe_key: `kr:${ctx.native_session_id}:${requestIds && requestIds.length > 0 ? requestIds.join(",") : (turnId ?? executionId ?? ctx.seq)}`.slice(0, 300),
       hub_session_id: ctx.hub_session_id,
       native_session_id: ctx.native_session_id,
       cli_kind: "kiro",

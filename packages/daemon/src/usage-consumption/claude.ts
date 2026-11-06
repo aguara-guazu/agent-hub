@@ -107,7 +107,7 @@ function scanLines(text: string, state: ClaudeScanState, pending: Map<string, Pe
           state.chars.person = (state.chars.person ?? 0) + (block.text ?? "").length
         } else if (block.type === "tool_result") {
           const name = (block.tool_use_id && state.tools[block.tool_use_id]) || ""
-          const origin: ConsumptionOrigin = classifyTool("claude_code", name)
+          const origin: ConsumptionOrigin = classifyTool(name)
           state.chars[origin] = (state.chars[origin] ?? 0) + textLength(block.content)
           if (block.tool_use_id) delete state.tools[block.tool_use_id]
         }

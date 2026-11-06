@@ -113,7 +113,7 @@ function scanResponseItem(payload: Record<string, any>, state: CodexScanState): 
     case "function_call":
     case "custom_tool_call": {
       const name = typeof payload.name === "string" ? payload.name : ""
-      const origin = classifyTool("codex_cli", name)
+      const origin = classifyTool(name)
       const args = payload.arguments ?? payload.input
       state.chars[origin] = (state.chars[origin] ?? 0) + outputLength(args)
       if (typeof payload.call_id === "string") state.tools[payload.call_id] = name
@@ -122,7 +122,7 @@ function scanResponseItem(payload: Record<string, any>, state: CodexScanState): 
     case "function_call_output":
     case "custom_tool_call_output": {
       const name = (typeof payload.call_id === "string" && state.tools[payload.call_id]) || ""
-      const origin = classifyTool("codex_cli", name)
+      const origin = classifyTool(name)
       state.chars[origin] = (state.chars[origin] ?? 0) + outputLength(payload.output)
       if (typeof payload.call_id === "string") delete state.tools[payload.call_id]
       break
