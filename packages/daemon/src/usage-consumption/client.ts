@@ -1,4 +1,4 @@
-import type { ConsumptionCli, ConsumptionEvent, LinkCursor } from "@agenthub/shared"
+import type { ConsumptionEvent, LinkCursor } from "@agenthub/shared"
 import type { DaemonState } from "../state.js"
 
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
