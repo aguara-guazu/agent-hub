@@ -26,7 +26,7 @@ it('runs an approved isolated fleet through join, completion, private notice, wa
   createInterface({input:process.stdin}).on('line',line=>{const p=JSON.parse(line);
   if(p.method==='initialize')out({id:p.id,result:{}});
   if(p.method==='thread/start')out({id:p.id,result:{thread:{id:'native-'+process.pid}}});
-  if(p.method==='turn/start'){turn='turn-'+(++n);out({id:p.id,result:{turn:{id:turn,status:'inProgress'}}});if(p.params.input[0].text==='ASK')setTimeout(()=>out({id:900+n,method:'item/tool/requestUserInput',params:{threadId:'native-'+process.pid,turnId:turn,questions:[{id:'env',header:'Entorno',question:'¿Dónde probar?',options:[{label:'dev',description:'Entorno de pruebas'}]}]}}),20);}
+  if(p.method==='turn/start'){turn='turn-'+(++n);out({id:p.id,result:{turn:{id:turn,status:'inProgress'}}});if(p.params.input[0].text.endsWith('ASK'))setTimeout(()=>out({id:900+n,method:'item/tool/requestUserInput',params:{threadId:'native-'+process.pid,turnId:turn,questions:[{id:'env',header:'Entorno',question:'¿Dónde probar?',options:[{label:'dev',description:'Entorno de pruebas'}]}]}}),20);}
   if(p.method==='turn/steer')out({id:p.id,result:{turnId:turn}});
   if(p.method==='turn/interrupt'){out({id:p.id,result:{}});out({method:'turn/completed',params:{threadId:'native-'+process.pid,turn:{id:turn,status:'completed'}}});}
   });`)
