@@ -37,14 +37,14 @@ export interface PlanPanelProps {
   onClose: () => void
 }
 
-type Approval = "ownerUi" | "coordinator" | "legacy" | "none"
-const APPROVAL_TONE: Record<Approval, ChipTone> = { ownerUi: "ok", coordinator: "ok", legacy: "off", none: "off" }
+type Approval = "coordinator" | "legacy" | "none"
+const APPROVAL_TONE: Record<Approval, ChipTone> = { coordinator: "ok", legacy: "off", none: "off" }
 
+/** La persona aprueba solo en la terminal del coordinador; `owner_ui` queda en planes anteriores a ese modelo. */
 function approvalOf(plan: Plan): Approval {
   const source = plan.authorization?.source
-  if (source === "owner_ui") return "ownerUi"
   if (source === "coordinator_declaration") return "coordinator"
-  if (source === "legacy_record") return "legacy"
+  if (source === "legacy_record" || source === "owner_ui") return "legacy"
   return "none"
 }
 

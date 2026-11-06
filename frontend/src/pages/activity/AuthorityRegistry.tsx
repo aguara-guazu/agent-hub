@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import {
-  Chip, ConfirmDialog, Dl, Empty, EmptyFiltered, ErrorState, List, MoreMenu, Panel, PanelBody, PanelHeader, Row, RowHead, Seg, Select,
-  SkeletonRows, TabPanel, useToast, type ChipTone,
+  Chip, Dl, Empty, EmptyFiltered, ErrorState, List, Panel, PanelBody, PanelHeader, Row, RowHead, Seg, Select,
+  SkeletonRows, TabPanel, type ChipTone,
 } from "../../components/ui"
-import { errorKey, useFormat, useT } from "../../i18n"
+import { useFormat, useT } from "../../i18n"
 import { redact } from "../../lib/activity"
 import { useAllProjects } from "../../lib/projects"
 import {
-  AUTHORITY_KINDS, isAuthorityKind, useAuthorityEvents, useReadGrants, useRevokeReadGrant,
+  AUTHORITY_KINDS, isAuthorityKind, useAuthorityEvents, useReadGrants,
   type AuthorityEventRow, type AuthorityKind, type ReadGrantRow,
 } from "../../lib/read-grants"
 import { Bar, CodeBox, Col, useListTime } from "./shared"
@@ -227,34 +227,24 @@ function GrantList({ query, items, filtered, selected, onSelect, onClear }: List
 
 function GrantPanel({ grant, onClose }: { grant: ReadGrantRow; onClose: () => void }) {
   const { t } = useT("activity")
-  const errors = useT("errors").t
   const format = useFormat()
-  const toast = useToast()
   const reason = useReasonText()
-  const revoke = useRevokeReadGrant()
-  const [confirming, setConfirming] = useState(false)
   const state = grantState(grant)
   const name = t("authority.grantTitle", { agent: grant.session_label, project: grant.project_title })
-
-  function submit() {
-    revoke.mutate({ id: grant.id }, {
-      onSuccess: () => { setConfirming(false); toast.success(t("authority.toast.revoked", { agent: grant.session_label })) },
-      onError: error => { setConfirming(false); toast.error(t("authority.toast.revokeFailed"), errors(errorKey(error))) },
-    })
-  }
 
   return (
     <Panel label={t("authority.panel.grantLabel")} onClose={onClose}>
       <PanelHeader
         title={name}
         status={<Chip tone={GRANT_TONE[state]}>{t(`authority.grantState.${state}`)}</Chip>}
-        actions={state === "active" ? <MoreMenu small ghost items={[{ label: t("authority.actions.revoke"), danger: true, onSelect: () => setConfirming(true) }]} /> : undefined}
       />
       <PanelBody>
         <Dl items={[
           { label: t("authority.panel.agent"), value: grant.session_label },
           { label: t("authority.panel.project"), value: grant.project_title },
           { label: t("authority.panel.reason"), value: grant.reason ? <span style={{ overflowWrap: "anywhere" }}>{grant.reason}</span> : null },
+          { label: t("authority.panel.grantedBy"), value: grant.granted_by_label },
+          { label: t("authority.panel.instruction"), value: grant.person_instruction ? <span style={{ overflowWrap: "anywhere" }}>{grant.person_instruction}</span> : null },
           { label: t("authority.panel.granted"), value: format.date(grant.granted_at, "datetime") },
           { label: t("authority.panel.expires"), value: format.date(grant.expires_at, "datetime") },
           { label: t("authority.panel.revoked"), value: grant.revoked_at ? format.date(grant.revoked_at, "datetime") : null },
@@ -267,15 +257,6 @@ function GrantPanel({ grant, onClose }: { grant: ReadGrantRow; onClose: () => vo
           </div>
         )}
       </PanelBody>
-      <ConfirmDialog
-        open={confirming}
-        title={t("authority.confirm.title", { agent: grant.session_label, project: grant.project_title })}
-        message={t("authority.confirm.message")}
-        confirmLabel={t("authority.actions.revoke")}
-        busy={revoke.isPending}
-        onConfirm={submit}
-        onClose={() => setConfirming(false)}
-      />
     </Panel>
   )
 }

@@ -56,8 +56,7 @@ const collaboration = {
     unknown: "No status",
   },
   approval: {
-    ownerUi: "Approved in the app",
-    coordinator: "Declared by the coordinator",
+    coordinator: "Approved in the coordinator's terminal",
     legacy: "Earlier record",
     none: "Not approved",
   },
