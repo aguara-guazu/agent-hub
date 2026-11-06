@@ -15,11 +15,15 @@ export interface LongContextRates {
   input: number
   output: number
   cache_read: number
+  cache_write_5m: number | null
+  cache_write_1h: number | null
 }
 
-// USD per million tokens. A null rate means the provider bills that item differently
-// (OpenAI prices cache writes by retention window, not by the 5 min / 1 h split), so
-// events that use it are reported as unpriced instead of being charged zero.
+// USD per million tokens. cache_write_5m is the short-retention write rate (Anthropic 5 min,
+// OpenAI 30 min) and cache_write_1h the long one (Anthropic 1 h, OpenAI 12 h). Codex reports
+// writes without their retention, so they are priced at the short rate. A null rate marks the
+// event as unpriced instead of charging zero. valid_from is the release date when known, or
+// the date the price was read.
 export interface PriceEntry {
   provider: PriceProvider
   model: string
@@ -58,12 +62,25 @@ export const PRICES: PriceEntry[] = [
     valid_from: "2026-09-03",
     input: 10,
     output: 50,
-    cache_write_5m: null,
-    cache_write_1h: null,
+    cache_write_5m: 12.5,
+    cache_write_1h: 25,
     cache_read: 1,
     context_window: 1_050_000,
-    long_context: { above_tokens: 272_000, input: 20, output: 75, cache_read: 2 },
+    long_context: { above_tokens: 272_000, input: 20, output: 75, cache_read: 2, cache_write_5m: 25, cache_write_1h: 50 },
     source_url: OPENAI_PRICING_URL,
+  },
+  {
+    provider: "anthropic",
+    model: "claude-haiku-5-5",
+    valid_from: "2026-11-06",
+    input: 0.1,
+    output: 0.5,
+    cache_write_5m: 0.125,
+    cache_write_1h: 0.2,
+    cache_read: 0.01,
+    context_window: 1_000_000,
+    long_context: { above_tokens: 100_000, input: 0.5, output: 2.5, cache_read: 0.05, cache_write_5m: 0.625, cache_write_1h: 1 },
+    source_url: ANTHROPIC_PRICING_URL,
   },
 ]
 
@@ -85,17 +102,19 @@ function costUsd(entry: PriceEntry, usage: PriceUsage): number | null {
   const input = longRates?.input ?? entry.input
   const output = longRates?.output ?? entry.output
   const cacheRead = longRates?.cache_read ?? entry.cache_read
+  const write5mRate = longRates ? longRates.cache_write_5m : entry.cache_write_5m
+  const write1hRate = longRates ? longRates.cache_write_1h : entry.cache_write_1h
 
   const writes1h = usage.cache_write_1h
   const writes5m = Math.max(0, usage.cache_write - writes1h)
   let writeCost = 0
   if (writes5m > 0) {
-    if (entry.cache_write_5m === null) return null
-    writeCost += writes5m * entry.cache_write_5m
+    if (write5mRate === null) return null
+    writeCost += writes5m * write5mRate
   }
   if (writes1h > 0) {
-    if (entry.cache_write_1h === null) return null
-    writeCost += writes1h * entry.cache_write_1h
+    if (write1hRate === null) return null
+    writeCost += writes1h * write1hRate
   }
 
   const total =
