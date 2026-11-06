@@ -54,8 +54,10 @@ export class ConsumptionStore {
         const occurredAt = new Date(event.occurred_at).toISOString()
         const window = event.context_window ?? (event.model ? contextWindowFor(event.model) : null)
         const pct = event.context_pct ?? (window && event.context_tokens !== null ? (event.context_tokens / window) * 100 : null)
-        const price = event.unit === "tokens" && event.model ? priceFor(event.model, occurredAt) : null
-        const cost = price ? price.usd(event) : null
+        // An event without tokens (for example a synthetic placeholder model) costs nothing and is not unpriced.
+        const noTokens = event.unit === "tokens" && event.input + event.output + event.cache_write + event.cache_read === 0
+        const price = event.unit === "tokens" && event.model && !noTokens ? priceFor(event.model, occurredAt) : null
+        const cost = noTokens ? 0 : price ? price.usd(event) : null
         const priceRef = price && cost !== null ? price.ref : null
 
         const row = await sql.query(
