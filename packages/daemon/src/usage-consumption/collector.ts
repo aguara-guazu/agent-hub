@@ -39,16 +39,17 @@ function acquireLease(directory: string): boolean {
   return false
 }
 
-async function collectAgent(state: DaemonState, home: string, agentId: string, cli: ConsumptionCli, reader: Reader): Promise<void> {
+async function collectAgent(state: DaemonState, home: string, agentId: string): Promise<void> {
   const client = new ConsumptionClient(state, agentId)
   if (!client.usageEnabled()) return
   const lease = join(state.root, "usage-consumption", `${agentId}.lock`)
   if (!acquireLease(lease)) return
   try {
     for (const link of await client.links()) {
-      // Only hook-captured sessions are read from disk. Fleet runtime links have no file reader,
-      // and kiro_env links wait for the Kiro disk reader.
-      if (link.cli_kind !== cli || link.source !== "hook") continue
+      // Hub team members get only fleet_runtime links: their hooks skip hub_fleet sessions.
+      // kiro_env links wait for the Kiro disk reader.
+      const reader = READERS[link.cli_kind]
+      if (!reader || (link.source !== "hook" && link.source !== "fleet_runtime")) continue
       const result = await reader(link, home).catch(() => null)
       if (!result) continue
       const cursor = {
@@ -85,10 +86,9 @@ export function startConsumptionCollectors(state: DaemonState, home: string): { 
     try {
       for (const [agentId, snapshot] of Object.entries(state.allSnapshots())) {
         const cli = String(snapshot["cli_kind"]) as ConsumptionCli
-        const reader = READERS[cli]
-        if (!reader) continue
+        if (!READERS[cli]) continue
         // A failure in one agent must not stop the others; the next cycle retries from the stored cursor.
-        await collectAgent(state, home, agentId, cli, reader).catch(() => undefined)
+        await collectAgent(state, home, agentId).catch(() => undefined)
       }
     } finally {
       running = false
