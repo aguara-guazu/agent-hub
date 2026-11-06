@@ -100,6 +100,18 @@ function scanLines(text: string, state: CodexScanState, pending: Map<string, Pen
   }
 }
 
+/**
+ * Origin of a tool call's output. Codex 0.166 calls MCP tools from inside `exec`, so an exec
+ * is classified by the MCP tool names its code invokes. Only the names are inspected; the text is never kept.
+ */
+function callOrigin(name: string, args: unknown): string {
+  if (name !== "exec") return classifyTool(name)
+  const code = typeof args === "string" ? args : JSON.stringify(args ?? "")
+  if (/mcp__hub[.__]/.test(code)) return "hub_tools"
+  if (/mcp__/.test(code)) return "mcp_tools"
+  return "cli_tools"
+}
+
 function scanResponseItem(payload: Record<string, any>, state: CodexScanState): void {
   switch (payload.type) {
     case "message": {
@@ -113,17 +125,17 @@ function scanResponseItem(payload: Record<string, any>, state: CodexScanState): 
     case "function_call":
     case "custom_tool_call": {
       const name = typeof payload.name === "string" ? payload.name : ""
-      const origin = classifyTool(name)
       const args = payload.arguments ?? payload.input
+      const origin = classifyTool(name)
       state.chars[origin] = (state.chars[origin] ?? 0) + outputLength(args)
-      if (typeof payload.call_id === "string") state.tools[payload.call_id] = name
+      // The output of this call is classified by the call itself, so it is remembered by origin, not by text.
+      if (typeof payload.call_id === "string") state.tools[payload.call_id] = callOrigin(name, args)
       break
     }
     case "function_call_output":
     case "custom_tool_call_output": {
-      const name = (typeof payload.call_id === "string" && state.tools[payload.call_id]) || ""
-      const origin = classifyTool(name)
-      state.chars[origin] = (state.chars[origin] ?? 0) + outputLength(payload.output)
+      const origin = (typeof payload.call_id === "string" && state.tools[payload.call_id]) || "cli_tools"
+      state.chars[origin as ConsumptionOrigin] = (state.chars[origin as ConsumptionOrigin] ?? 0) + outputLength(payload.output)
       if (typeof payload.call_id === "string") delete state.tools[payload.call_id]
       break
     }

@@ -1,4 +1,4 @@
-import type { ConsumptionCli, ConsumptionEvent, LinkCursor } from "@agenthub/shared"
+import type { ConsumptionEvent, LinkCursor } from "@agenthub/shared"
 import type { DaemonState } from "../state.js"
 
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
@@ -20,11 +20,11 @@ export class ConsumptionClient {
     return { url, token: credentials.token }
   }
 
-  async links(cli?: ConsumptionCli): Promise<LinkCursor[]> {
+  /** The route derives the CLI from agent_id and rejects extra query parameters. */
+  async links(): Promise<LinkCursor[]> {
     if (!this.usageEnabled()) throw new Error("usage_disabled")
     const { url, token } = this.localUrl("/api/memory/usage/consumption/links")
     url.searchParams.set("agent_id", this.agentId)
-    if (cli) url.searchParams.set("cli", cli)
     const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) })
     if (!response.ok) throw new Error(`usage_http_${response.status}`)
     const body = (await response.json()) as { items?: LinkCursor[] }

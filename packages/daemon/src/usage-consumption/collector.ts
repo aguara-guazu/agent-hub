@@ -11,6 +11,13 @@ const CYCLE_MS = 60_000
 /** Longer than a cycle, so an import of a large first pass does not lose its lease. A crashed run frees it after this. */
 const LEASE_MS = 300_000
 const BATCH = 500
+/** A link without a session file is searched for at most once an hour. */
+const NOT_FOUND_RETRY_MS = 3_600_000
+
+function recentlyNotFound(link: LinkCursor): boolean {
+  const at = (link.scan_state as { not_found_at?: unknown } | null)?.not_found_at
+  return link.file_path === null && typeof at === "string" && Date.now() - Date.parse(at) < NOT_FOUND_RETRY_MS
+}
 
 type Reader = (link: LinkCursor, home: string) => Promise<SessionReadResult | null>
 
@@ -39,18 +46,36 @@ function acquireLease(directory: string): boolean {
   return false
 }
 
-async function collectAgent(state: DaemonState, home: string, agentId: string, cli: ConsumptionCli, reader: Reader): Promise<void> {
+async function collectAgent(state: DaemonState, home: string, agentId: string): Promise<void> {
   const client = new ConsumptionClient(state, agentId)
   if (!client.usageEnabled()) return
   const lease = join(state.root, "usage-consumption", `${agentId}.lock`)
   if (!acquireLease(lease)) return
   try {
-    for (const link of await client.links(cli)) {
-      // Only hook-captured sessions are read from disk. Fleet runtime links have no file reader,
-      // and kiro_env links wait for the Kiro disk reader.
-      if (link.source !== "hook") continue
-      const result = await reader(link, home).catch(() => null)
-      if (!result) continue
+    for (const link of await client.links()) {
+      // Hub team members get only fleet_runtime links: their hooks skip hub_fleet sessions.
+      // kiro_env links wait for the Kiro disk reader.
+      const reader = READERS[link.cli_kind]
+      if (!reader || (link.source !== "hook" && link.source !== "fleet_runtime")) continue
+      if (recentlyNotFound(link)) continue
+      let result: SessionReadResult | null
+      try {
+        result = await reader(link, home)
+      } catch {
+        // A read error is not a missing file: keep the cursor and retry on the next cycle.
+        continue
+      }
+      if (!result) {
+        // The only ingest without events: it stores when the file was searched for, so it is not searched again each cycle.
+        await client.ingest([], {
+          hub_session_id: link.hub_session_id,
+          native_session_id: link.native_session_id,
+          file_path: null,
+          file_offset: 0,
+          scan_state: { not_found_at: new Date().toISOString() },
+        })
+        continue
+      }
       const cursor = {
         hub_session_id: link.hub_session_id,
         native_session_id: link.native_session_id,
@@ -59,7 +84,10 @@ async function collectAgent(state: DaemonState, home: string, agentId: string, c
         scan_state: result.cursor.scan_state,
       }
       if (result.events.length === 0) {
-        await client.ingest([], cursor)
+        const unchanged = result.cursor.file_offset === link.file_offset
+          && result.cursor.file_path === link.file_path
+          && JSON.stringify(result.cursor.scan_state) === JSON.stringify(link.scan_state)
+        if (!unchanged) await client.ingest([], cursor)
         continue
       }
       for (let start = 0; start < result.events.length; start += BATCH) {
@@ -85,10 +113,9 @@ export function startConsumptionCollectors(state: DaemonState, home: string): { 
     try {
       for (const [agentId, snapshot] of Object.entries(state.allSnapshots())) {
         const cli = String(snapshot["cli_kind"]) as ConsumptionCli
-        const reader = READERS[cli]
-        if (!reader) continue
+        if (!READERS[cli]) continue
         // A failure in one agent must not stop the others; the next cycle retries from the stored cursor.
-        await collectAgent(state, home, agentId, cli, reader).catch(() => undefined)
+        await collectAgent(state, home, agentId).catch(() => undefined)
       }
     } finally {
       running = false
