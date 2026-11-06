@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { runQuotaHookProbe } from './usage-quota-hook.js'
 import { startConsumptionCollectors } from './usage-consumption/collector.js'
+import { ConsumptionClient } from './usage-consumption/client.js'
 import { reportClaudeStatusline } from './usage-quota-statusline.js'
 /**
  * Interfaz de línea de comandos del daemon (`agenthub`).
@@ -525,7 +526,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     if(args.command==='chat-protocol') {
       if(!args.agent || !args.stateDir)throw new Error('chat-protocol requiere --agent y --state-dir.')
-      return await runChatTerminal(expand(args.stateDir),args.agent,args.extra,args.resume)
+      const stateDir=expand(args.stateDir),consumption=new ConsumptionClient(new DaemonState(stateDir),args.agent)
+      return await runChatTerminal(stateDir,args.agent,args.extra,args.resume,events=>consumption.ingest(events))
     }
     if(args.command==='chat-bridge') {
       if(!args.agent || !args.stateDir)throw new Error('chat-bridge requiere --agent y --state-dir.')
