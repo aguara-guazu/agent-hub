@@ -75,13 +75,24 @@ export function useConsumptionLabels() {
     exact: (value: number) => format.number(value, { maximumFractionDigits: 0 }),
     usage: (row: SummaryRow) => (row.unit === null ? "—" : row.unit === "credits" ? `${credits(row.total)} ${t("consumption.unit.credits")}` : compact(row.total)),
     money: (value: number) => format.number(value, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-    cost: (row: SummaryRow) => (row.cost_usd !== null ? format.number(row.cost_usd, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }) : row.unit === "tokens" && row.unpriced ? t("consumption.noPrice") : "—"),
+    /** Sin costo informado en tokens es «Sin precio», nunca cero; con modelos sin precio el monto es parcial. */
+    cost: (row: SummaryRow) => {
+      if (row.unit !== "tokens") return "—"
+      if (row.cost_usd === null) return t("consumption.noPrice")
+      const amount = format.number(row.cost_usd, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      return row.unpriced ? `${amount} · ${t("consumption.partial")}` : amount
+    },
+    costHint: (row: SummaryRow) => (row.unit === "tokens" && row.cost_usd !== null && row.unpriced ? t("consumption.partialHint") : undefined),
+    originCost: (value: number | null) => (value === null ? t("consumption.noPrice") : format.number(value, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 })),
     percent: (value: number) => `${format.number(value, { maximumFractionDigits: 0 })} %`,
-    /** Etiqueta de eje o tooltip de un compartimento; semanas y meses llegan ya como texto. */
+    /** Inicio de un compartimento (instante ISO) según la granularidad del período: hora, día, semana o mes. */
     bucket: (bucket: string, range: ConsumptionRange, long = false) => {
-      const date = range === "1y" || range === "3y" ? null : parseBucket(bucket)
-      if (!date) return bucket
-      return format.date(date, dailyRange(range) ? "date" : long ? "datetime" : "time")
+      const date = parseBucket(bucket)
+      if (!date) return "—"
+      if (range === "3y") return format.date(date, "month")
+      if (range === "1y") return t("consumption.week", { date: format.date(date, long ? "date" : "day") })
+      if (dailyRange(range)) return format.date(date, long ? "date" : "day")
+      return format.date(date, long ? "datetime" : "time")
     },
     instant: (value: string, range: ConsumptionRange, long = false) => {
       const date = parseBucket(value)

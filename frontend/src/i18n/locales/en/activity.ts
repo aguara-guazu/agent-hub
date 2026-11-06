@@ -452,6 +452,9 @@ const activity = {
     loading: "Loading usage",
     estimated: "Estimated",
     noData: "No data",
+    partial: "partial",
+    partialHint: "Some usage comes from models without a loaded price",
+    week: "Week of {{date}}",
     noPrice: "No price",
     group: { label: "Group by", agent: "By agent", cli: "By CLI", total: "Total" },
     range: {
@@ -517,6 +520,7 @@ const activity = {
       sourceAcp: "Reported by Kiro",
       cost: "Equivalent cost",
       compactions: "Compactions",
+      contextNow: "Current context",
       contextPeak: "Context peak",
       input: "Input",
       output: "Output",

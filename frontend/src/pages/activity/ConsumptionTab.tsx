@@ -91,7 +91,7 @@ export default function ConsumptionTab({ header }: { header: ReactNode }) {
             meta={<>
               {view === "agent" && <Col width={120} className="xs t2 trunc">{labels.cli(row.cli_kind)}</Col>}
               <Col width={130} right className="xs t2 num" title={row.unit === "tokens" ? labels.exact(row.total) : undefined}>{labels.usage(row)}</Col>
-              <Col width={110} right className="xs t2 num">{row.unit === null ? "—" : labels.cost(row)}</Col>
+              <Col width={110} right className="xs t2 num" title={labels.costHint(row)}>{labels.cost(row)}</Col>
               {view !== "total" && <Col width={120}>{context(row, t, labels.percent)}</Col>}
             </>}
           />
@@ -156,13 +156,15 @@ function buildCharts(
 ): ChartSpec[] {
   const subtitle = t("consumption.charts.subtitle", { range: labels.range(range), granularity: labels.granularity(range) })
   const specs: ChartSpec[] = []
-  const build = (key: string, title: string, entries: { bucket: string; total: number }[], format: (value: number) => string, extra?: string): ChartSpec => {
+  const build = (key: string, title: string, entries: { bucket: string; total: number | null }[], format: (value: number) => string, extra?: string): ChartSpec => {
     const points = entries.map(entry => {
       const when = labels.bucket(entry.bucket, range, true)
-      return { label: labels.bucket(entry.bucket, range), value: entry.total, tooltip: t("consumption.charts.tooltip", { when, value: format(entry.total) }) }
+      // Un compartimento sin precio no es cero: queda sin barra y su tooltip lo dice.
+      const text = entry.total === null ? t("consumption.noPrice") : format(entry.total)
+      return { label: labels.bucket(entry.bucket, range), value: entry.total ?? 0, tooltip: t("consumption.charts.tooltip", { when, value: text }) }
     })
-    const total = entries.reduce((sum, entry) => sum + entry.total, 0)
-    const peak = entries.reduce<{ bucket: string; total: number } | null>((best, entry) => (best === null || entry.total > best.total ? entry : best), null)
+    const total = entries.reduce((sum, entry) => sum + (entry.total ?? 0), 0)
+    const peak = entries.reduce<{ bucket: string; total: number } | null>((best, entry) => (entry.total !== null && (best === null || entry.total > best.total) ? { bucket: entry.bucket, total: entry.total } : best), null)
     const value = format(total)
     const ariaLabel = peak && total > 0
       ? t("consumption.charts.aria", { title, value, range: labels.range(range), peak: format(peak.total), when: labels.bucket(peak.bucket, range, true) })
@@ -180,9 +182,9 @@ function buildCharts(
   }
 
   const cost = items.find(item => item.cli_kind === "cost")
-  if (cost && cost.points.some(point => point.total !== null)) {
+  if (cost && cost.points.some(point => point.total !== null && point.total > 0)) {
     const hasKiro = items.some(item => item.cli_kind === "kiro")
-    const entries = cost.points.map(point => ({ bucket: point.bucket, total: point.total ?? 0 }))
+    const entries = cost.points
     specs.push(build("cost", t("consumption.charts.costTitle"), entries, labels.money, t(hasKiro ? "consumption.charts.costSubtitleKiro" : "consumption.charts.costSubtitle")))
   }
   return specs

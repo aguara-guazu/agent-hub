@@ -26,6 +26,8 @@ export interface SummaryRow {
   context_peak_pct: number | null
   context_peak_tokens: number | null
   compactions: number
+  /** Turnos registrados: número para Kiro, null para las CLI que informan tokens. */
+  turns: number | null
   /** Solo en el resumen por agente. */
   project_title: string | null
   channel_name: string | null
@@ -46,6 +48,8 @@ export interface AgentDetail {
   source: "file" | "acp" | null
   row: SummaryRow | null
   breakdown: { origin: ConsumptionOrigin; unit: ConsumptionUnit; amount: number; cost_usd: number | null }[]
+  /** Último porcentaje de contexto del período. */
+  context_last_pct: number | null
   context: { at: string; pct: number | null; tokens: number | null; compaction: boolean }[]
 }
 
@@ -70,9 +74,10 @@ export function useConsumptionSummary(range: ConsumptionRange, group: Consumptio
 }
 
 export function useConsumptionSeries(range: ConsumptionRange, projectId: string | null) {
+  const tz = String(-new Date().getTimezoneOffset())
   return useQuery({
-    queryKey: ["consumption", "series", range, projectId],
-    queryFn: () => api.get<{ items: SeriesItem[] }>(`/memory/usage/consumption/series?${search({ range, project_id: projectId })}`),
+    queryKey: ["consumption", "series", range, projectId, tz],
+    queryFn: () => api.get<{ items: SeriesItem[] }>(`/memory/usage/consumption/series?${search({ range, project_id: projectId, tz_offset_minutes: tz })}`),
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
   })

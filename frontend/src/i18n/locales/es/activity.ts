@@ -449,6 +449,9 @@ const activity = {
     loading: "Cargando consumo",
     estimated: "Estimado",
     noData: "Sin dato",
+    partial: "parcial",
+    partialHint: "Hay consumo de modelos sin precio cargado",
+    week: "Semana del {{date}}",
     noPrice: "Sin precio",
     group: { label: "Agrupar", agent: "Por agente", cli: "Por CLI", total: "Total" },
     range: {
@@ -514,6 +517,7 @@ const activity = {
       sourceAcp: "Informado por Kiro",
       cost: "Costo equivalente",
       compactions: "Compactaciones",
+      contextNow: "Contexto actual",
       contextPeak: "Pico de contexto",
       input: "Entrada",
       output: "Salida",

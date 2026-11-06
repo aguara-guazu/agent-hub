@@ -35,11 +35,9 @@ export function ConsumptionPanel({ id, fallback, range, onClose }: Props) {
     { label: t("consumption.panel.cliModel"), value: detail?.model ? <>{labels.cli(row.cli_kind)} · <span className="mono xs">{detail.model}</span></> : labels.cli(row.cli_kind) },
     { label: t("consumption.panel.usage"), value: row.unit === null ? t("consumption.noData") : labels.usage(row) },
   ] : []
-  if (row && row.unit !== null && detail) {
-    items.push(
-      { label: t("consumption.panel.turns"), value: labels.exact(detail.turns) },
-      { label: t("consumption.panel.modelCalls"), value: labels.exact(detail.model_calls) },
-    )
+  if (row && row.unit !== null) {
+    if (row.turns !== null) items.push({ label: t("consumption.panel.turns"), value: labels.exact(row.turns) })
+    if (detail) items.push({ label: t("consumption.panel.modelCalls"), value: labels.exact(detail.model_calls) })
   }
   if (row && row.unit === "tokens") {
     items.push(
@@ -51,10 +49,11 @@ export function ConsumptionPanel({ id, fallback, range, onClose }: Props) {
   }
   if (row && row.unit !== null) {
     items.push(
-      { label: t("consumption.panel.cost"), value: labels.cost(row) },
+      { label: t("consumption.panel.cost"), value: <span title={labels.costHint(row)}>{labels.cost(row)}</span> },
       { label: t("consumption.panel.compactions"), value: labels.exact(row.compactions) },
     )
   }
+  if (row && detail?.context_last_pct != null) items.push({ label: t("consumption.panel.contextNow"), value: labels.percent(detail.context_last_pct) })
   if (row) items.push({ label: t("consumption.panel.contextPeak"), value: row.context_peak_pct === null ? t("consumption.noData") : labels.percent(row.context_peak_pct) })
   if (row && row.unit !== null && detail?.source) {
     items.push({ label: t("consumption.panel.source"), value: detail.source === "acp" ? t("consumption.panel.sourceAcp") : t("consumption.panel.sourceFile") })
@@ -76,7 +75,11 @@ export function ConsumptionPanel({ id, fallback, range, onClose }: Props) {
         ? <span className="xs t3">{t("consumption.panel.breakdownEmpty")}</span>
         : <BarList items={breakdown.map(item => ({
           label: labels.origin(item.origin),
-          value: `${labels.amount(item.unit, item.amount)} · ${labels.percent(breakdownTotal > 0 ? (item.amount / breakdownTotal) * 100 : 0)}`,
+          value: [
+            labels.amount(item.unit, item.amount),
+            labels.percent(breakdownTotal > 0 ? (item.amount / breakdownTotal) * 100 : 0),
+            ...(item.unit === "tokens" ? [labels.originCost(item.cost_usd)] : []),
+          ].join(" · "),
           ratio: breakdownMax > 0 ? item.amount / breakdownMax : 0,
         }))} />}
     </div>
