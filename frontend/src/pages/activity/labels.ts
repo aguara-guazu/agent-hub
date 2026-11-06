@@ -1,6 +1,7 @@
-import { useT } from "../../i18n"
+import { useFormat, useT } from "../../i18n"
 import { jobLocked, jobMode, jobTitle, resolverOf, type Job } from "../../lib/activity"
 import type { MemoryEntity } from "../../lib/memory-view"
+import { dailyRange, parseBucket, type ConsumptionOrigin, type ConsumptionRange, type ConsumptionUnit, type SummaryRow } from "../../lib/consumption"
 
 /** Título visible del trabajo, traducido cuando no viene de la fuente. */
 export function useJobLabels() {
@@ -52,3 +53,40 @@ export function useProposalLabels(kind: "identity" | "duplicate") {
   }
 }
 
+
+const CLI_KEYS = ["claude_code", "codex_cli", "kiro"] as const
+type CliKey = (typeof CLI_KEYS)[number]
+
+/** Textos y números del consumo: cada CLI en su unidad, el costo en dólares y lo que no se mide como «Sin dato». */
+export function useConsumptionLabels() {
+  const { t } = useT("activity")
+  const format = useFormat()
+  const compact = (value: number) => format.number(value, { notation: "compact", maximumFractionDigits: 1 })
+  const credits = (value: number) => format.number(value, { maximumFractionDigits: 2 })
+  const cli = (kind: string | null) => (kind && (CLI_KEYS as readonly string[]).includes(kind) ? t(`consumption.cli.${kind as CliKey}`) : t("consumption.cli.other"))
+  return {
+    cli,
+    origin: (origin: ConsumptionOrigin) => t(`consumption.origin.${origin}`),
+    range: (range: ConsumptionRange) => t(`consumption.range.${range}`),
+    granularity: (range: ConsumptionRange) => t(`consumption.granularity.${range === "1y" ? "week" : range === "3y" ? "month" : dailyRange(range) ? "day" : "hour"}`),
+    unit: (unit: ConsumptionUnit) => t(`consumption.unit.${unit}`),
+    /** Tokens en forma compacta («1,2 M»); créditos con su unidad. */
+    amount: (unit: ConsumptionUnit, value: number) => (unit === "credits" ? `${credits(value)} ${t("consumption.unit.credits")}` : compact(value)),
+    exact: (value: number) => format.number(value, { maximumFractionDigits: 0 }),
+    usage: (row: SummaryRow) => (row.unit === null ? "—" : row.unit === "credits" ? `${credits(row.total)} ${t("consumption.unit.credits")}` : compact(row.total)),
+    money: (value: number) => format.number(value, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    cost: (row: SummaryRow) => (row.cost_usd !== null ? format.number(row.cost_usd, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }) : row.unit === "tokens" && row.unpriced ? t("consumption.noPrice") : "—"),
+    percent: (value: number) => `${format.number(value, { maximumFractionDigits: 0 })} %`,
+    /** Etiqueta de eje o tooltip de un compartimento; semanas y meses llegan ya como texto. */
+    bucket: (bucket: string, range: ConsumptionRange, long = false) => {
+      const date = range === "1y" || range === "3y" ? null : parseBucket(bucket)
+      if (!date) return bucket
+      return format.date(date, dailyRange(range) ? "date" : long ? "datetime" : "time")
+    },
+    instant: (value: string, range: ConsumptionRange, long = false) => {
+      const date = parseBucket(value)
+      if (!date) return value
+      return format.date(date, dailyRange(range) ? "date" : long ? "datetime" : "time")
+    },
+  }
+}
