@@ -7,6 +7,8 @@ import { NativeChatClient } from './local-chat-client.js'
 import { ChatProtocol } from './chat-protocol.js'
 import { DaemonState } from './state.js'
 import { daemonCommand } from './config.js'
+import { createKiroConsumptionObserver } from './usage-consumption/kiro.js'
+import type { ConsumptionEvent } from '@agenthub/shared'
 
 export const chatInvocation = (kind:string, extra:string[], resume?:string): {command:string;args:string[];format:'acp'|'antigravity'|'codex'} => {
   if(kind==='codex_cli')return {command:'codex',args:['app-server',...extra],format:'codex'}
@@ -63,7 +65,7 @@ export class ConnectedChatSession {
 }
 
 /** A small terminal front end for the CLIs' supported persistent protocols. */
-export async function runChatTerminal(stateDir:string,agentId:string,extra:string[]=[],resume?:string) {
+export async function runChatTerminal(stateDir:string,agentId:string,extra:string[]=[],resume?:string,ingestConsumption?:(events:ConsumptionEvent[])=>Promise<void>) {
   const state=new DaemonState(stateDir),snapshot=state.loadSnapshot(agentId)
   if(!snapshot)throw new Error('Sincronizá este agente con Agent Hub antes de abrir la terminal conectada.')
   const kind=String(snapshot['cli_kind']),invocation=chatInvocation(kind,extra,resume),cwd=process.cwd()
@@ -127,6 +129,11 @@ export async function runChatTerminal(stateDir:string,agentId:string,extra:strin
     const broker=new NativeChatClient(state,agentId,nativeId,cwd,invocation.format==='codex'?'codex_appserver':invocation.format==='acp'?'acp_prompt':'antigravity_stream')
     const registration=await broker.start()
     session=new ConnectedChatSession(protocol,broker)
+    if(kind==='kiro' && ingestConsumption && typeof registration?.session?.id==='string') {
+      // Updates replayed by session/load arrive before this point and are never counted.
+      protocol.promptMeta={kiro:{contextBreakdown:'summary'}}
+      protocol.onSessionInfo=createKiroConsumptionObserver({hub_session_id:registration.session.id,native_session_id:nativeId,ingest:ingestConsumption,warn:()=>{}})
+    }
     stopQuotas=startQuotaCollector({root:state.root,cli:kind,command:executable.command,prefix:executable.prefix,args:extra,cwd,env:process.env,broker,signal:controller.signal,protocol})
     say(`\n${registration.session.label} · ${cwd}\nSesión ${nativeId}. Escucha activa; /exit para cerrar.\n> `)
     // submit adds identity/context once; do not prepend the same context in the listener too.
