@@ -20,6 +20,8 @@ export interface SummaryRow {
   context_peak_pct: number | null
   context_peak_tokens: number | null
   compactions: number
+  /** Recorded turns (one event per turn) for Kiro, which reports credits; null for token CLIs. */
+  turns: number | null
   /** Only set by the per-agent summary. */
   project_title: string | null
   channel_name: string | null
@@ -100,7 +102,7 @@ export async function summary(
        MAX((SELECT e.title FROM entities e WHERE e.id=${projectOfSession("s")})) AS project_title,
        SUM(h.input) AS input, SUM(h.output) AS output, SUM(h.cache_write) AS cache_write, SUM(h.cache_read) AS cache_read,
        SUM(h.credits) AS credits, SUM(h.cost_usd) AS cost, SUM(h.events-h.unpriced_events) AS priced, SUM(h.unpriced_events) AS unpriced,
-       MAX(h.context_peak_pct) AS peak_pct, MAX(h.context_peak_tokens) AS peak_tokens, SUM(h.compactions) AS compactions
+       MAX(h.context_peak_pct) AS peak_pct, MAX(h.context_peak_tokens) AS peak_tokens, SUM(h.compactions) AS compactions, SUM(h.events) AS events
      FROM usage_consumption_hourly h JOIN chat_sessions s ON s.id=h.hub_session_id LEFT JOIN chat_channels sc ON sc.id=s.channel_id
      WHERE h.hour>=${from}${where(clauses)}
      GROUP BY ${keyColumn}, h.unit`,
@@ -121,6 +123,7 @@ export async function summary(
       context_peak_pct: nullableNum(row.peak_pct),
       context_peak_tokens: nullableNum(row.peak_tokens),
       compactions: num(row.compactions),
+      turns: row.cli_kind === "kiro" ? num(row.events) : null,
       project_title: input.group === "agent" && row.project_title !== null ? String(row.project_title) : null,
       channel_name: input.group === "agent" && row.channel_name !== null ? String(row.channel_name) : null,
       top_origins: [],
@@ -155,7 +158,7 @@ export async function summary(
       result.push({
         key: String(row.key), label: String(row.label), cli_kind: String(row.cli_kind), unit: null, total: 0, input: 0, output: 0,
         cache_write: 0, cache_read: 0, credits: 0, cost_usd: null, unpriced: false, context_peak_pct: null, context_peak_tokens: null,
-        compactions: 0, project_title: row.project_title === null ? null : String(row.project_title),
+        compactions: 0, turns: null, project_title: row.project_title === null ? null : String(row.project_title),
         channel_name: row.channel_name === null ? null : String(row.channel_name), top_origins: [],
       })
     }
@@ -181,7 +184,7 @@ async function originSummary(sql: Sql, input: ScopeInput, start: string): Promis
       key: String(row.key), label: String(row.key), cli_kind: null, unit, total: amount, input: 0, output: 0, cache_write: 0, cache_read: 0,
       credits: unit === "credits" ? amount : 0, cost_usd: unit === "tokens" && num(row.priced) > 0 ? num(row.cost) : null,
       unpriced: num(row.unpriced) > 0,
-      context_peak_pct: null, context_peak_tokens: null, compactions: 0, project_title: null, channel_name: null, top_origins: [],
+      context_peak_pct: null, context_peak_tokens: null, compactions: 0, turns: null, project_title: null, channel_name: null, top_origins: [],
     }
   })
 }
