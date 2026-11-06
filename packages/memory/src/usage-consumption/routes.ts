@@ -12,6 +12,7 @@ const DAY_MS = 86_400_000
 const agentId = z.string().min(1).max(200)
 const projectId = z.string().min(1).max(200).optional()
 const range = z.enum(CONSUMPTION_RANGES).optional()
+const tzOffset = z.number().int().min(-840).max(840).optional()
 
 const cursorSchema = z.object({
   hub_session_id: z.string().min(1).max(200),
@@ -72,21 +73,22 @@ export function registerConsumptionRoutes(app: FastifyInstance, service: MemoryS
   })
 
   app.get("/api/memory/usage/consumption/series", { preHandler: authorizeOwner }, async (request, reply) => {
-    const query = parse(z.object({ range, project_id: projectId }).strict(), request.query)
+    const query = parse(z.object({ range, project_id: projectId, tz_offset_minutes: tzOffset }).strict(), request.query)
+    const tz = query.tz_offset_minutes ?? 0
     const selected = (query.range ?? "24h") as ConsumptionRange
     const projectScope = query.project_id ?? null
     reply.header("Cache-Control", "no-store")
     const { db } = await service.get()
     const items: { cli_kind: string; unit: string; points: { bucket: string; total: number | null }[] }[] = []
     for (const cli of CONSUMPTION_CLIS) {
-      const rows = await series(db, { range: selected, projectId: projectScope, cli })
+      const rows = await series(db, { range: selected, projectId: projectScope, cli, tzOffsetMinutes: tz })
       for (const unit of ["tokens", "credits"] as const) {
         const points = rows.filter(row => row.unit === unit).map(row => ({ bucket: row.bucket, total: row.total }))
-        if (points.length) items.push({ cli_kind: cli, unit, points: fillSeries(selected, points) })
+        if (points.length) items.push({ cli_kind: cli, unit, points: fillSeries(selected, points, undefined, tz) })
       }
     }
-    const costRows = await series(db, { range: selected, projectId: projectScope })
-    items.push({ cli_kind: "cost", unit: "usd", points: fillSeries(selected, costRows.filter(row => row.unit === "tokens").map(row => ({ bucket: row.bucket, total: row.cost_usd }))) })
+    const costRows = await series(db, { range: selected, projectId: projectScope, tzOffsetMinutes: tz })
+    items.push({ cli_kind: "cost", unit: "usd", points: fillSeries(selected, costRows.filter(row => row.unit === "tokens").map(row => ({ bucket: row.bucket, total: row.cost_usd })), undefined, tz) })
     return { items }
   })
 
@@ -101,10 +103,12 @@ export function registerConsumptionRoutes(app: FastifyInstance, service: MemoryS
     return { ...(await agentDetail(db, params.hubSessionId, selected)), ...(await agentFacts(db, params.hubSessionId, selected)) }
   })
 
-  // Retention runs once a day; it never keeps the process alive.
-  const timer = setInterval(() => {
+  // Retention runs once at startup and then once a day; the timer never keeps the process alive.
+  const pruneRetention = () => {
     void store().then(value => value.prune()).catch(() => app.log.warn("No se pudo aplicar la retención del consumo"))
-  }, DAY_MS)
+  }
+  pruneRetention()
+  const timer = setInterval(pruneRetention, DAY_MS)
   timer.unref()
   return { close: () => clearInterval(timer) }
 }

@@ -20,6 +20,8 @@ export interface SummaryRow {
   context_peak_pct: number | null
   context_peak_tokens: number | null
   compactions: number
+  /** Recorded turns (one event per turn) for Kiro, which reports credits; null for token CLIs. */
+  turns: number | null
   /** Only set by the per-agent summary. */
   project_title: string | null
   channel_name: string | null
@@ -40,12 +42,12 @@ const RANGE_MS: Record<Exclude<ConsumptionRange, "1y" | "3y">, number> = {
 
 /** Start of the range as the ISO instant hourly buckets are stored with. */
 export function rangeStart(range: ConsumptionRange, now: Date = new Date()): string {
-  if (range === "1y" || range === "3y") {
-    const start = new Date(now)
-    start.setUTCFullYear(start.getUTCFullYear() - (range === "1y" ? 1 : 3))
-    return start.toISOString()
-  }
-  return new Date(now.getTime() - RANGE_MS[range]).toISOString()
+  const start = new Date(now)
+  if (range === "1y" || range === "3y") start.setUTCFullYear(start.getUTCFullYear() - (range === "1y" ? 1 : 3))
+  else start.setTime(now.getTime() - RANGE_MS[range])
+  // Rounded down to the hour, so the hour where the range begins is part of it.
+  start.setUTCMinutes(0, 0, 0)
+  return start.toISOString()
 }
 
 /** Positional parameters for the SQL below; each `add` returns the placeholder to put in the statement. */
@@ -100,7 +102,7 @@ export async function summary(
        MAX((SELECT e.title FROM entities e WHERE e.id=${projectOfSession("s")})) AS project_title,
        SUM(h.input) AS input, SUM(h.output) AS output, SUM(h.cache_write) AS cache_write, SUM(h.cache_read) AS cache_read,
        SUM(h.credits) AS credits, SUM(h.cost_usd) AS cost, SUM(h.events-h.unpriced_events) AS priced, SUM(h.unpriced_events) AS unpriced,
-       MAX(h.context_peak_pct) AS peak_pct, MAX(h.context_peak_tokens) AS peak_tokens, SUM(h.compactions) AS compactions
+       MAX(h.context_peak_pct) AS peak_pct, MAX(h.context_peak_tokens) AS peak_tokens, SUM(h.compactions) AS compactions, SUM(h.events) AS events
      FROM usage_consumption_hourly h JOIN chat_sessions s ON s.id=h.hub_session_id LEFT JOIN chat_channels sc ON sc.id=s.channel_id
      WHERE h.hour>=${from}${where(clauses)}
      GROUP BY ${keyColumn}, h.unit`,
@@ -121,6 +123,7 @@ export async function summary(
       context_peak_pct: nullableNum(row.peak_pct),
       context_peak_tokens: nullableNum(row.peak_tokens),
       compactions: num(row.compactions),
+      turns: row.cli_kind === "kiro" ? num(row.events) : null,
       project_title: input.group === "agent" && row.project_title !== null ? String(row.project_title) : null,
       channel_name: input.group === "agent" && row.channel_name !== null ? String(row.channel_name) : null,
       top_origins: [],
@@ -155,7 +158,7 @@ export async function summary(
       result.push({
         key: String(row.key), label: String(row.label), cli_kind: String(row.cli_kind), unit: null, total: 0, input: 0, output: 0,
         cache_write: 0, cache_read: 0, credits: 0, cost_usd: null, unpriced: false, context_peak_pct: null, context_peak_tokens: null,
-        compactions: 0, project_title: row.project_title === null ? null : String(row.project_title),
+        compactions: 0, turns: null, project_title: row.project_title === null ? null : String(row.project_title),
         channel_name: row.channel_name === null ? null : String(row.channel_name), top_origins: [],
       })
     }
@@ -168,7 +171,8 @@ async function originSummary(sql: Sql, input: ScopeInput, start: string): Promis
   const from = args.add(start)
   const clauses = sessionScope(args, input, "s.id")
   const rows = await sql.query(
-    `SELECT o.origin AS key, o.unit AS unit, SUM(o.amount) AS amount, SUM(o.cost_usd) AS cost
+    `SELECT o.origin AS key, o.unit AS unit, SUM(o.amount) AS amount, SUM(o.cost_usd) AS cost,
+       SUM(o.events-o.unpriced_events) AS priced, SUM(o.unpriced_events) AS unpriced
      FROM usage_consumption_hourly_origin o JOIN chat_sessions s ON s.id=o.hub_session_id
      WHERE o.hour>=${from}${where(clauses)} GROUP BY o.origin, o.unit ORDER BY amount DESC`,
     args.values,
@@ -178,8 +182,9 @@ async function originSummary(sql: Sql, input: ScopeInput, start: string): Promis
     const amount = num(row.amount)
     return {
       key: String(row.key), label: String(row.key), cli_kind: null, unit, total: amount, input: 0, output: 0, cache_write: 0, cache_read: 0,
-      credits: unit === "credits" ? amount : 0, cost_usd: unit === "tokens" ? num(row.cost) : null, unpriced: false,
-      context_peak_pct: null, context_peak_tokens: null, compactions: 0, project_title: null, channel_name: null, top_origins: [],
+      credits: unit === "credits" ? amount : 0, cost_usd: unit === "tokens" && num(row.priced) > 0 ? num(row.cost) : null,
+      unpriced: num(row.unpriced) > 0,
+      context_peak_pct: null, context_peak_tokens: null, compactions: 0, turns: null, project_title: null, channel_name: null, top_origins: [],
     }
   })
 }
@@ -192,42 +197,83 @@ export function granularityFor(range: ConsumptionRange): SeriesGranularity {
   return range === "1y" ? "week" : "month"
 }
 
+/**
+ * Start instant (UTC ISO) of the bucket that holds `hourIso`. Day, week (Monday) and month buckets follow the local
+ * zone `tzOffsetMinutes` minutes ahead of UTC; hour buckets are the hour itself.
+ */
+export function bucketStart(hourIso: string, granularity: SeriesGranularity, tzOffsetMinutes = 0): string {
+  const instant = Date.parse(hourIso)
+  if (granularity === "hour") return new Date(instant).toISOString()
+  const local = new Date(instant + tzOffsetMinutes * 60_000)
+  const year = local.getUTCFullYear(), month = local.getUTCMonth(), day = local.getUTCDate()
+  const startLocal = granularity === "day" ? Date.UTC(year, month, day)
+    : granularity === "week" ? Date.UTC(year, month, day - ((local.getUTCDay() + 6) % 7))
+      : Date.UTC(year, month, 1)
+  return new Date(startLocal - tzOffsetMinutes * 60_000).toISOString()
+}
+
 export async function series(
   sql: Sql,
-  input: ScopeInput & { cli?: ConsumptionCli },
+  input: ScopeInput & { cli?: ConsumptionCli; tzOffsetMinutes?: number | undefined },
 ): Promise<{ bucket: string; unit: "tokens" | "credits"; total: number; cost_usd: number | null }[]> {
   if (input.sessionIds?.length === 0) return []
   const start = rangeStart(input.range, input.now)
-  const bucket = {
-    hour: "h.hour",
-    day: "substr(h.hour,1,10)",
-    week: "strftime('%Y-W%W', h.hour)",
-    month: "substr(h.hour,1,7)",
-  }[granularityFor(input.range)]
+  const granularity = granularityFor(input.range)
   const args = new Args()
   const from = args.add(start)
   const clauses = sessionScope(args, input, "s.id")
   if (input.cli) clauses.push(`h.cli_kind=${args.add(input.cli)}`)
+  // Aggregated per hour first; the buckets are formed here so the zone offset applies to day, week and month.
   const rows = await sql.query(
-    `SELECT ${bucket} AS bucket, h.unit AS unit,
+    `SELECT h.hour AS hour, h.unit AS unit,
        SUM(CASE WHEN h.unit='credits' THEN h.credits ELSE h.input+h.output+h.cache_write+h.cache_read END) AS total,
-       CASE WHEN SUM(CASE WHEN h.unit='tokens' THEN h.events-h.unpriced_events ELSE 0 END)=0 THEN NULL ELSE SUM(h.cost_usd) END AS cost
+       SUM(CASE WHEN h.unit='tokens' THEN h.events-h.unpriced_events ELSE 0 END) AS priced, SUM(h.cost_usd) AS cost
      FROM usage_consumption_hourly h JOIN chat_sessions s ON s.id=h.hub_session_id
-     WHERE h.hour>=${from}${where(clauses)} GROUP BY bucket, h.unit ORDER BY bucket, h.unit`,
+     WHERE h.hour>=${from}${where(clauses)} GROUP BY h.hour, h.unit`,
     args.values,
   )
-  return rows.map(row => ({
-    bucket: String(row.bucket),
-    unit: row.unit === "credits" ? "credits" : "tokens",
-    total: num(row.total),
-    cost_usd: nullableNum(row.cost),
-  }))
+  const buckets = new Map<string, { bucket: string; unit: "tokens" | "credits"; total: number; priced: number; cost: number }>()
+  for (const row of rows) {
+    const bucket = bucketStart(String(row.hour), granularity, input.tzOffsetMinutes ?? 0)
+    const unit = row.unit === "credits" ? "credits" as const : "tokens" as const
+    const key = `${bucket}|${unit}`
+    const entry = buckets.get(key) ?? { bucket, unit, total: 0, priced: 0, cost: 0 }
+    entry.total += num(row.total)
+    entry.priced += num(row.priced)
+    entry.cost += num(row.cost)
+    buckets.set(key, entry)
+  }
+  return [...buckets.values()]
+    .sort((a, b) => a.bucket.localeCompare(b.bucket) || a.unit.localeCompare(b.unit))
+    .map(entry => ({ bucket: entry.bucket, unit: entry.unit, total: entry.total, cost_usd: entry.unit === "tokens" && entry.priced > 0 ? entry.cost : null }))
 }
+
+export const CURVE_POINTS = 300
+
+export interface ContextPoint { at: string; pct: number | null; tokens: number | null; compaction: boolean }
 
 export interface AgentDetail {
   row: SummaryRow | null
   breakdown: { origin: ConsumptionOrigin; unit: "tokens" | "credits"; amount: number; cost_usd: number | null }[]
-  context: { at: string; pct: number | null; tokens: number | null; compaction: boolean }[]
+  /** Latest context percentage in the range, from the full data before the curve is capped. */
+  context_last_pct: number | null
+  context: ContextPoint[]
+}
+
+/** Keeps the peak of each equal slice of the range, so at most `max` points remain. Compaction flags survive. */
+function capCurve(points: ContextPoint[], start: string, end: Date, max: number): ContextPoint[] {
+  if (points.length <= max) return points
+  const from = Date.parse(start)
+  const width = (end.getTime() - from) / max
+  const slots = new Map<number, ContextPoint>()
+  for (const point of points) {
+    const index = Math.min(max - 1, Math.max(0, Math.floor((Date.parse(point.at) - from) / width)))
+    const current = slots.get(index)
+    if (!current) { slots.set(index, point); continue }
+    const winner = (point.pct ?? -1) > (current.pct ?? -1) ? point : current
+    slots.set(index, { ...winner, compaction: current.compaction || point.compaction })
+  }
+  return [...slots.entries()].sort((a, b) => a[0] - b[0]).map(([, point]) => point)
 }
 
 /** Detail of one session. The context curve uses event rows up to 90 days, and hourly peaks beyond that. */
@@ -235,15 +281,16 @@ export async function agentDetail(sql: Sql, hubSessionId: string, range: Consump
   const start = rangeStart(range, now)
   const [row] = await summary(sql, { range, sessionIds: [hubSessionId], group: "agent", now })
   const breakdownRows = await sql.query(
-    `SELECT o.origin AS origin, o.unit AS unit, SUM(o.amount) AS amount, SUM(o.cost_usd) AS cost
+    `SELECT o.origin AS origin, o.unit AS unit, SUM(o.amount) AS amount, SUM(o.cost_usd) AS cost, SUM(o.events-o.unpriced_events) AS priced
      FROM usage_consumption_hourly_origin o WHERE o.hub_session_id=$1 AND o.hour>=$2 GROUP BY o.origin, o.unit ORDER BY amount DESC`,
     [hubSessionId, start],
   )
   const breakdown = breakdownRows.map(item => {
     const unit = item.unit === "credits" ? "credits" as const : "tokens" as const
-    return { origin: item.origin as ConsumptionOrigin, unit, amount: num(item.amount), cost_usd: unit === "tokens" ? num(item.cost) : null }
+    return { origin: item.origin as ConsumptionOrigin, unit, amount: num(item.amount), cost_usd: unit === "tokens" && num(item.priced) > 0 ? num(item.cost) : null }
   })
-  const detailed = range !== "1y" && range !== "3y"
+  // Up to 48 h the curve comes from event rows; longer ranges use hourly peaks.
+  const detailed = range === "1h" || range === "12h" || range === "24h" || range === "48h"
   const contextRows = detailed
     ? await sql.query(
       `SELECT occurred_at AS at, context_pct AS pct, context_tokens AS tokens, compaction AS compaction
@@ -255,15 +302,18 @@ export async function agentDetail(sql: Sql, hubSessionId: string, range: Consump
        FROM usage_consumption_hourly WHERE hub_session_id=$1 AND hour>=$2 GROUP BY hour ORDER BY hour`,
       [hubSessionId, start],
     )
+  const points: ContextPoint[] = contextRows.map(item => ({
+    at: String(item.at),
+    pct: nullableNum(item.pct),
+    tokens: nullableNum(item.tokens),
+    compaction: Number(item.compaction) === 1,
+  }))
+  const latest = [...points].reverse().find(point => point.pct !== null)
   return {
     row: row ?? null,
     breakdown,
-    context: contextRows.map(item => ({
-      at: String(item.at),
-      pct: nullableNum(item.pct),
-      tokens: nullableNum(item.tokens),
-      compaction: Number(item.compaction) === 1,
-    })),
+    context_last_pct: latest?.pct ?? null,
+    context: capCurve(points, start, now ?? new Date(), CURVE_POINTS),
   }
 }
 
@@ -300,32 +350,25 @@ export async function agentFacts(sql: Sql, hubSessionId: string, range: Consumpt
   }
 }
 
-/** Week number as SQLite's strftime('%W'): Monday-based, days before the first Monday belong to week 00. */
-function weekKey(date: Date): string {
-  const yearStart = Date.UTC(date.getUTCFullYear(), 0, 1)
-  const dayOfYear = Math.floor((Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - yearStart) / 86_400_000)
-  const week = Math.floor((dayOfYear + 7 - ((date.getUTCDay() + 6) % 7)) / 7)
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
-
-/** Every bucket key of the range, in the same format `series` stores, oldest first. */
-export function bucketKeys(range: ConsumptionRange, now: Date = new Date()): string[] {
+/** Every bucket start of the range, as `series` returns them, oldest first. */
+export function bucketKeys(range: ConsumptionRange, now: Date = new Date(), tzOffsetMinutes = 0): string[] {
   const granularity = granularityFor(range)
-  const first = new Date(rangeStart(range, now))
-  const hour = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate(), first.getUTCHours()))
-  if (hour.getTime() < first.getTime()) hour.setUTCHours(hour.getUTCHours() + 1)
   const keys = new Set<string>()
-  for (const cursor = new Date(hour); cursor.getTime() <= now.getTime(); cursor.setUTCHours(cursor.getUTCHours() + 1)) {
-    const iso = cursor.toISOString()
-    keys.add(granularity === "hour" ? iso : granularity === "day" ? iso.slice(0, 10) : granularity === "month" ? iso.slice(0, 7) : weekKey(cursor))
+  for (const cursor = new Date(rangeStart(range, now)); cursor.getTime() <= now.getTime(); cursor.setUTCHours(cursor.getUTCHours() + 1)) {
+    keys.add(bucketStart(cursor.toISOString(), granularity, tzOffsetMinutes))
   }
-  return [...keys]
+  return [...keys].sort()
 }
 
 /** Completes a sparse series with zero for the buckets without consumption. Buckets outside the range are kept. */
-export function fillSeries<T extends { bucket: string; total: number | null }>(range: ConsumptionRange, points: readonly T[], now?: Date): { bucket: string; total: number | null }[] {
+export function fillSeries<T extends { bucket: string; total: number | null }>(
+  range: ConsumptionRange,
+  points: readonly T[],
+  now?: Date,
+  tzOffsetMinutes = 0,
+): { bucket: string; total: number | null }[] {
   const byBucket = new Map(points.map(point => [point.bucket, point.total]))
-  const keys = bucketKeys(range, now)
+  const keys = bucketKeys(range, now, tzOffsetMinutes)
   const known = new Set(keys)
   const extra = points.map(point => point.bucket).filter(bucket => !known.has(bucket))
   return [...keys, ...extra].sort().map(bucket => ({ bucket, total: byBucket.has(bucket) ? byBucket.get(bucket)! : 0 }))
