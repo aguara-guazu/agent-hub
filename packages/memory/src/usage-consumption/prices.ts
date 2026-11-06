@@ -82,16 +82,98 @@ export const PRICES: PriceEntry[] = [
     long_context: { above_tokens: 100_000, input: 0.5, output: 2.5, cache_read: 0.05, cache_write_5m: 0.625, cache_write_1h: 1 },
     source_url: ANTHROPIC_PRICING_URL,
   },
+  {
+    provider: "anthropic",
+    model: "claude-sonnet-5-5",
+    valid_from: "2026-11-06",
+    input: 2,
+    output: 10,
+    cache_write_5m: 2.5,
+    cache_write_1h: 4,
+    cache_read: 0.1,
+    context_window: 1_000_000,
+    long_context: null,
+    source_url: ANTHROPIC_PRICING_URL,
+  },
+  {
+    provider: "anthropic",
+    model: "claude-fable-5-1",
+    valid_from: "2026-11-06",
+    input: 10,
+    output: 50,
+    cache_write_5m: 12.5,
+    cache_write_1h: 20,
+    cache_read: 0.25,
+    context_window: 1_000_000,
+    long_context: null,
+    source_url: ANTHROPIC_PRICING_URL,
+  },
+  {
+    provider: "openai",
+    model: "gpt-6.1-terra",
+    valid_from: "2026-11-06",
+    input: 1,
+    output: 5,
+    cache_write_5m: 1.25,
+    cache_write_1h: 2.5,
+    cache_read: 0.05,
+    context_window: null,
+    long_context: { above_tokens: 272_000, input: 2, output: 7.5, cache_read: 0.1, cache_write_5m: 2.5, cache_write_1h: 5 },
+    source_url: OPENAI_PRICING_URL,
+  },
+  {
+    provider: "openai",
+    model: "gpt-6.1-sol",
+    valid_from: "2026-11-06",
+    input: 2,
+    output: 10,
+    cache_write_5m: 2.5,
+    cache_write_1h: 5,
+    cache_read: 0.1,
+    context_window: null,
+    long_context: { above_tokens: 272_000, input: 4, output: 15, cache_read: 0.2, cache_write_5m: 5, cache_write_1h: 10 },
+    source_url: OPENAI_PRICING_URL,
+  },
+  {
+    provider: "openai",
+    model: "gpt-6-sol",
+    valid_from: "2026-11-06",
+    input: 2,
+    output: 10,
+    cache_write_5m: 2.5,
+    cache_write_1h: 5,
+    cache_read: 0.2,
+    context_window: null,
+    long_context: { above_tokens: 272_000, input: 4, output: 15, cache_read: 0.4, cache_write_5m: 5, cache_write_1h: 10 },
+    source_url: OPENAI_PRICING_URL,
+  },
+  {
+    provider: "openai",
+    model: "gpt-5.6-terra",
+    valid_from: "2026-11-06",
+    input: 2,
+    output: 12,
+    cache_write_5m: 2.5,
+    cache_write_1h: 5,
+    cache_read: 0.2,
+    context_window: null,
+    long_context: { above_tokens: 272_000, input: 4, output: 18, cache_read: 0.4, cache_write_5m: 5, cache_write_1h: 10 },
+    source_url: OPENAI_PRICING_URL,
+  },
 ]
 
+// Events older than the first known price of a model use that first price: the table only
+// starts when a price was read, and earlier usage would otherwise be unpriced.
 function latestEntry(model: string, at: number | null): PriceEntry | null {
   let best: PriceEntry | null = null
+  let earliest: PriceEntry | null = null
   for (const entry of PRICES) {
     if (entry.model !== model) continue
+    if (earliest === null || Date.parse(entry.valid_from) < Date.parse(earliest.valid_from)) earliest = entry
     if (at !== null && Date.parse(entry.valid_from) > at) continue
     if (best === null || Date.parse(entry.valid_from) > Date.parse(best.valid_from)) best = entry
   }
-  return best
+  return best ?? earliest
 }
 
 function costUsd(entry: PriceEntry, usage: PriceUsage): number | null {
