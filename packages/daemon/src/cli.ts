@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runQuotaHookProbe } from './usage-quota-hook.js'
+import { startConsumptionCollectors } from './usage-consumption/collector.js'
 import { reportClaudeStatusline } from './usage-quota-statusline.js'
 /**
  * Interfaz de línea de comandos del daemon (`agenthub`).
@@ -440,6 +441,7 @@ async function cmdRun(app: DaemonApp, args: ParsedArgs): Promise<number> {
     /* un temporal huérfano no justifica frenar el arranque */
   }
   const stopWatching = app.watchExternalSkills()
+  const stopConsumption = startConsumptionCollectors(app.state, app.home)
   const first = await app.syncOnce({ apply: true, wait: 0 })
   printSync(app, first, true)
   if (app.stdioGateway) {
@@ -456,6 +458,7 @@ async function cmdRun(app: DaemonApp, args: ParsedArgs): Promise<number> {
     cycles += 1
   }
   stopWatching()
+  stopConsumption.close()
   process.off('SIGINT', onSignal)
   process.off('SIGTERM', onSignal)
   say('Daemon apagado.')
