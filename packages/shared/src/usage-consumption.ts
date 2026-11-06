@@ -72,3 +72,13 @@ export const consumptionEventSchema = z
     source: z.enum(['file', 'acp']),
   })
   .strict() as z.ZodType<ConsumptionEvent>
+
+/**
+ * Origin of a tool result. Claude Code names Hub tools `mcp__hub__*`, Codex `mcp__hub.*`;
+ * any other MCP tool counts as `mcp_tools`, and built-in CLI tools as `cli_tools`.
+ */
+export function classifyTool(cli: ConsumptionCli, name: string, server?: string): 'cli_tools' | 'mcp_tools' | 'hub_tools' {
+  if (server === 'hub' || name.startsWith('mcp__hub__') || name.startsWith('mcp__hub.')) return 'hub_tools'
+  if (server || name.startsWith('mcp__')) return 'mcp_tools'
+  return 'cli_tools'
+}
