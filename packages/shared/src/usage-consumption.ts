@@ -68,7 +68,7 @@ export const consumptionEventSchema = z
     context_pct: nonNegative.nullable(),
     compaction: z.boolean(),
     model_calls: z.number().int().nonnegative(),
-    breakdown: z.record(z.enum(CONSUMPTION_ORIGINS), nonNegative),
+    breakdown: z.partialRecord(z.enum(CONSUMPTION_ORIGINS), nonNegative),
     source: z.enum(["file", "acp"]),
   })
   .strict() as z.ZodType<ConsumptionEvent>
