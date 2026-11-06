@@ -4,7 +4,7 @@ import { CONSUMPTION_CLIS, consumptionEventSchema } from "@agenthub/shared"
 import { check, parse } from "../contracts.js"
 import type { MemoryService } from "../service.js"
 import { isConsumptionCli } from "./links.js"
-import { CONSUMPTION_RANGES, agentDetail, series, summary, type ConsumptionRange } from "./query.js"
+import { CONSUMPTION_RANGES, agentDetail, agentFacts, fillSeries, series, summary, type ConsumptionRange } from "./query.js"
 import { ConsumptionStore } from "./store.js"
 
 const DAY_MS = 86_400_000
@@ -82,11 +82,11 @@ export function registerConsumptionRoutes(app: FastifyInstance, service: MemoryS
       const rows = await series(db, { range: selected, projectId: projectScope, cli })
       for (const unit of ["tokens", "credits"] as const) {
         const points = rows.filter(row => row.unit === unit).map(row => ({ bucket: row.bucket, total: row.total }))
-        if (points.length) items.push({ cli_kind: cli, unit, points })
+        if (points.length) items.push({ cli_kind: cli, unit, points: fillSeries(selected, points) })
       }
     }
     const costRows = await series(db, { range: selected, projectId: projectScope })
-    items.push({ cli_kind: "cost", unit: "usd", points: costRows.filter(row => row.unit === "tokens").map(row => ({ bucket: row.bucket, total: row.cost_usd })) })
+    items.push({ cli_kind: "cost", unit: "usd", points: fillSeries(selected, costRows.filter(row => row.unit === "tokens").map(row => ({ bucket: row.bucket, total: row.cost_usd }))) })
     return { items }
   })
 
@@ -97,7 +97,8 @@ export function registerConsumptionRoutes(app: FastifyInstance, service: MemoryS
     const { db } = await service.get()
     const exists = await db.query("SELECT 1 AS ok FROM chat_sessions WHERE id=$1", [params.hubSessionId])
     check(exists.length > 0, "La sesión no existe", 404)
-    return agentDetail(db, params.hubSessionId, (query.range ?? "24h") as ConsumptionRange)
+    const selected = (query.range ?? "24h") as ConsumptionRange
+    return { ...(await agentDetail(db, params.hubSessionId, selected)), ...(await agentFacts(db, params.hubSessionId, selected)) }
   })
 
   // Retention runs once a day; it never keeps the process alive.

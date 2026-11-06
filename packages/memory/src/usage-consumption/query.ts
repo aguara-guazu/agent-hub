@@ -20,6 +20,9 @@ export interface SummaryRow {
   context_peak_pct: number | null
   context_peak_tokens: number | null
   compactions: number
+  /** Only set by the per-agent summary. */
+  project_title: string | null
+  channel_name: string | null
   top_origins: { origin: ConsumptionOrigin; amount: number }[]
 }
 
@@ -93,11 +96,12 @@ export async function summary(
   const clauses = sessionScope(args, input, "s.id")
   const keyColumn = input.group === "cli" ? "h.cli_kind" : "h.hub_session_id"
   const rows = await sql.query(
-    `SELECT ${keyColumn} AS key, h.unit AS unit, MAX(h.cli_kind) AS cli_kind, MAX(s.nickname) AS nickname, MAX(s.label) AS label,
+    `SELECT ${keyColumn} AS key, h.unit AS unit, MAX(h.cli_kind) AS cli_kind, MAX(s.nickname) AS nickname, MAX(s.label) AS label, MAX(sc.name) AS channel_name,
+       MAX((SELECT e.title FROM entities e WHERE e.id=${projectOfSession("s")})) AS project_title,
        SUM(h.input) AS input, SUM(h.output) AS output, SUM(h.cache_write) AS cache_write, SUM(h.cache_read) AS cache_read,
        SUM(h.credits) AS credits, SUM(h.cost_usd) AS cost, SUM(h.events-h.unpriced_events) AS priced, SUM(h.unpriced_events) AS unpriced,
        MAX(h.context_peak_pct) AS peak_pct, MAX(h.context_peak_tokens) AS peak_tokens, SUM(h.compactions) AS compactions
-     FROM usage_consumption_hourly h JOIN chat_sessions s ON s.id=h.hub_session_id
+     FROM usage_consumption_hourly h JOIN chat_sessions s ON s.id=h.hub_session_id LEFT JOIN chat_channels sc ON sc.id=s.channel_id
      WHERE h.hour>=${from}${where(clauses)}
      GROUP BY ${keyColumn}, h.unit`,
     args.values,
@@ -117,6 +121,8 @@ export async function summary(
       context_peak_pct: nullableNum(row.peak_pct),
       context_peak_tokens: nullableNum(row.peak_tokens),
       compactions: num(row.compactions),
+      project_title: input.group === "agent" && row.project_title !== null ? String(row.project_title) : null,
+      channel_name: input.group === "agent" && row.channel_name !== null ? String(row.channel_name) : null,
       top_origins: [],
     }
   })
@@ -138,7 +144,9 @@ export async function summary(
 
     // Sessions with activity in the range but no registered consumption: shown as "Sin dato" by the interface.
     const idle = await sql.query(
-      `SELECT s.id AS key, COALESCE(s.nickname,s.label) AS label, s.cli_kind AS cli_kind FROM chat_sessions s
+      `SELECT s.id AS key, COALESCE(s.nickname,s.label) AS label, s.cli_kind AS cli_kind, sc.name AS channel_name,
+         (SELECT e.title FROM entities e WHERE e.id=${projectOfSession("s")}) AS project_title
+       FROM chat_sessions s LEFT JOIN chat_channels sc ON sc.id=s.channel_id
        WHERE s.cli_kind NOT IN ('hub','interhub-remote') AND (s.activity_at>=${from} OR s.last_seen_at>=${from})
          AND NOT EXISTS (SELECT 1 FROM usage_consumption_hourly h WHERE h.hub_session_id=s.id AND h.hour>=${from})${where(clauses)}`,
       args.values,
@@ -147,7 +155,8 @@ export async function summary(
       result.push({
         key: String(row.key), label: String(row.label), cli_kind: String(row.cli_kind), unit: null, total: 0, input: 0, output: 0,
         cache_write: 0, cache_read: 0, credits: 0, cost_usd: null, unpriced: false, context_peak_pct: null, context_peak_tokens: null,
-        compactions: 0, top_origins: [],
+        compactions: 0, project_title: row.project_title === null ? null : String(row.project_title),
+        channel_name: row.channel_name === null ? null : String(row.channel_name), top_origins: [],
       })
     }
   }
@@ -170,7 +179,7 @@ async function originSummary(sql: Sql, input: ScopeInput, start: string): Promis
     return {
       key: String(row.key), label: String(row.key), cli_kind: null, unit, total: amount, input: 0, output: 0, cache_write: 0, cache_read: 0,
       credits: unit === "credits" ? amount : 0, cost_usd: unit === "tokens" ? num(row.cost) : null, unpriced: false,
-      context_peak_pct: null, context_peak_tokens: null, compactions: 0, top_origins: [],
+      context_peak_pct: null, context_peak_tokens: null, compactions: 0, project_title: null, channel_name: null, top_origins: [],
     }
   })
 }
@@ -256,4 +265,68 @@ export async function agentDetail(sql: Sql, hubSessionId: string, range: Consump
       compaction: Number(item.compaction) === 1,
     })),
   }
+}
+
+/** Facts about one session for the interface panel. Kept apart from `agentDetail`, which the MCP tools return as is. */
+export interface AgentFacts {
+  cli_kind: string | null
+  /** Most recent model used in the range. */
+  model: string | null
+  /** Number of recorded events (turns or requests) in the range. */
+  turns: number
+  model_calls: number
+  /** Where the latest event of the session came from; null when no event is retained. */
+  source: "file" | "acp" | null
+}
+
+export async function agentFacts(sql: Sql, hubSessionId: string, range: ConsumptionRange, now?: Date): Promise<AgentFacts> {
+  const start = rangeStart(range, now)
+  const [totals] = await sql.query(
+    "SELECT MAX(cli_kind) AS cli, SUM(events) AS turns, SUM(model_calls) AS calls FROM usage_consumption_hourly WHERE hub_session_id=$1 AND hour>=$2",
+    [hubSessionId, start],
+  )
+  const [latest] = await sql.query(
+    "SELECT model FROM usage_consumption_hourly WHERE hub_session_id=$1 AND hour>=$2 AND model<>'' ORDER BY hour DESC LIMIT 1",
+    [hubSessionId, start],
+  )
+  const [event] = await sql.query("SELECT source FROM usage_consumption_events WHERE hub_session_id=$1 ORDER BY occurred_at DESC LIMIT 1", [hubSessionId])
+  const [session] = await sql.query("SELECT cli_kind FROM chat_sessions WHERE id=$1", [hubSessionId])
+  return {
+    cli_kind: totals?.cli ? String(totals.cli) : session?.cli_kind ? String(session.cli_kind) : null,
+    model: latest ? String(latest.model) : null,
+    turns: num(totals?.turns),
+    model_calls: num(totals?.calls),
+    source: event?.source === "acp" || event?.source === "file" ? event.source : null,
+  }
+}
+
+/** Week number as SQLite's strftime('%W'): Monday-based, days before the first Monday belong to week 00. */
+function weekKey(date: Date): string {
+  const yearStart = Date.UTC(date.getUTCFullYear(), 0, 1)
+  const dayOfYear = Math.floor((Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - yearStart) / 86_400_000)
+  const week = Math.floor((dayOfYear + 7 - ((date.getUTCDay() + 6) % 7)) / 7)
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
+}
+
+/** Every bucket key of the range, in the same format `series` stores, oldest first. */
+export function bucketKeys(range: ConsumptionRange, now: Date = new Date()): string[] {
+  const granularity = granularityFor(range)
+  const first = new Date(rangeStart(range, now))
+  const hour = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate(), first.getUTCHours()))
+  if (hour.getTime() < first.getTime()) hour.setUTCHours(hour.getUTCHours() + 1)
+  const keys = new Set<string>()
+  for (const cursor = new Date(hour); cursor.getTime() <= now.getTime(); cursor.setUTCHours(cursor.getUTCHours() + 1)) {
+    const iso = cursor.toISOString()
+    keys.add(granularity === "hour" ? iso : granularity === "day" ? iso.slice(0, 10) : granularity === "month" ? iso.slice(0, 7) : weekKey(cursor))
+  }
+  return [...keys]
+}
+
+/** Completes a sparse series with zero for the buckets without consumption. Buckets outside the range are kept. */
+export function fillSeries<T extends { bucket: string; total: number | null }>(range: ConsumptionRange, points: readonly T[], now?: Date): { bucket: string; total: number | null }[] {
+  const byBucket = new Map(points.map(point => [point.bucket, point.total]))
+  const keys = bucketKeys(range, now)
+  const known = new Set(keys)
+  const extra = points.map(point => point.bucket).filter(bucket => !known.has(bucket))
+  return [...keys, ...extra].sort().map(bucket => ({ bucket, total: byBucket.has(bucket) ? byBucket.get(bucket)! : 0 }))
 }
