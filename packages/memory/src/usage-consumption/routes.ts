@@ -103,10 +103,12 @@ export function registerConsumptionRoutes(app: FastifyInstance, service: MemoryS
     return { ...(await agentDetail(db, params.hubSessionId, selected)), ...(await agentFacts(db, params.hubSessionId, selected)) }
   })
 
-  // Retention runs once a day; it never keeps the process alive.
-  const timer = setInterval(() => {
+  // Retention runs once at startup and then once a day; the timer never keeps the process alive.
+  const pruneRetention = () => {
     void store().then(value => value.prune()).catch(() => app.log.warn("No se pudo aplicar la retención del consumo"))
-  }, DAY_MS)
+  }
+  pruneRetention()
+  const timer = setInterval(pruneRetention, DAY_MS)
   timer.unref()
   return { close: () => clearInterval(timer) }
 }
