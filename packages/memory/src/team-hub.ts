@@ -146,7 +146,7 @@ export class HubTeamRuntime implements TeamOrca {
         lastContextPct: this.kiroContextPct.get(info.id) ?? null })
       if (!parsed) return warn("format_mismatch")
       if (parsed.contextPct !== undefined) this.kiroContextPct.set(info.id, parsed.contextPct)
-      if (parsed.event) await new ConsumptionStore(this.chat.db).ingest([{ ...parsed.event, model: info.model || null }])
+      if (parsed.event) await new ConsumptionStore(this.chat.db).ingest([{ ...parsed.event, model: info.model || null }], "kiro")
     } catch (error) {
       warn(error instanceof MemoryError ? `rejected_${error.statusCode}` : "ingest_failed")
     }
