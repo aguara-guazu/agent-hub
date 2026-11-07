@@ -113,7 +113,8 @@ export function LineChart({ points, marks, threshold, ariaLabel }: LineChartProp
       {threshold && (
         <>
           <line className="chart-limit" x1={0} y1={yAt(threshold.y)} x2={width} y2={yAt(threshold.y)} />
-          <text className="chart-axis" x={width} y={Math.max(10, yAt(threshold.y) - 3)} textAnchor="end">{threshold.label}</text>
+          {/* Sin lugar para el texto sobre la línea (12 px), va debajo. */}
+          <text className="chart-axis" x={width} y={yAt(threshold.y) - 3 >= 12 ? yAt(threshold.y) - 3 : yAt(threshold.y) + 13} textAnchor="end">{threshold.label}</text>
         </>
       )}
       {marks.map(mark => {

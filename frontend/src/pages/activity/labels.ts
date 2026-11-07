@@ -1,6 +1,7 @@
 import { useFormat, useT } from "../../i18n"
 import { jobLocked, jobMode, jobTitle, resolverOf, type Job } from "../../lib/activity"
 import type { MemoryEntity } from "../../lib/memory-view"
+import { CLI_LABELS, type CliKind } from "../../lib/types"
 import { dailyRange, parseBucket, type ConsumptionOrigin, type ConsumptionRange, type ConsumptionUnit, type SummaryRow } from "../../lib/consumption"
 
 /** Título visible del trabajo, traducido cuando no viene de la fuente. */
@@ -63,7 +64,10 @@ export function useConsumptionLabels() {
   const format = useFormat()
   const compact = (value: number) => format.number(value, { notation: "compact", maximumFractionDigits: 1 })
   const credits = (value: number) => format.number(value, { maximumFractionDigits: 2 })
-  const cli = (kind: string | null) => (kind && (CLI_KEYS as readonly string[]).includes(kind) ? t(`consumption.cli.${kind as CliKey}`) : t("consumption.cli.other"))
+  const cli = (kind: string | null) => {
+    if (kind && (CLI_KEYS as readonly string[]).includes(kind)) return t(`consumption.cli.${kind as CliKey}`)
+    return kind && kind in CLI_LABELS ? CLI_LABELS[kind as CliKind] : t("consumption.cli.other")
+  }
   return {
     cli,
     origin: (origin: ConsumptionOrigin) => t(`consumption.origin.${origin}`),
