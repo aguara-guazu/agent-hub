@@ -12,7 +12,7 @@ const DAY_MS = 86_400_000
 const agentId = z.string().min(1).max(200)
 const projectId = z.string().min(1).max(200).optional()
 const range = z.enum(CONSUMPTION_RANGES).optional()
-const tzOffset = z.number().int().min(-840).max(840).optional()
+const tzOffset = z.coerce.number().int().min(-840).max(840).optional()
 
 const cursorSchema = z.object({
   hub_session_id: z.string().min(1).max(200),
