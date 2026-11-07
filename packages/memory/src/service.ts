@@ -137,7 +137,8 @@ export class MemoryService {
       await db.close().catch(() => undefined)
       throw new MemoryError(503, 'No se pudo abrir la base de memoria local')
     }
-    await backfillLinks(db)
+    // Consumption links are best effort: a failed backfill must not keep the memory from opening.
+    await backfillLinks(db).catch(error => hubLog(this.directory).event("service", "consumption_backfill_failed", { error: error instanceof Error ? error.name : "unknown" }))
     const store = new MemoryStore(db, this.directory)
     this.admissionDb = db
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)

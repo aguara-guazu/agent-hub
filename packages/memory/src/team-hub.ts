@@ -490,8 +490,12 @@ export class HubTeamRuntime implements TeamOrca {
     const runtime: HubTeamStatus = { ...event, ...(turn ? { turn_id: turn } : {}), provider: 'hub', generation, updated_at: new Date().toISOString() }
     await this.chat.db.query('UPDATE chat_team_members SET runtime=$1 WHERE id=$2', [JSON.stringify(runtime), event.id])
     if (runtime.native_id && runtime.native_id !== previous?.native_id && member.session_id) {
-      const session = (await this.chat.db.query('SELECT cli_kind FROM chat_sessions WHERE id=$1', [member.session_id]))[0]
-      await recordLink(this.chat.db, { hub_session_id: String(member.session_id), cli_kind: session?.cli_kind, native_session_id: runtime.native_id, source: 'fleet_runtime' })
+      // Consumption is best effort: a failed link must not fail the runtime event that confirms the launch.
+      try {
+        await recordLink(this.chat.db, { hub_session_id: String(member.session_id), cli_kind: runtime.cli, native_session_id: runtime.native_id, source: 'fleet_runtime' })
+      } catch {
+        hubLog(this.directory).event("fleet", "consumption_unavailable", { member_id: event.id, reason: "link_failed" })
+      }
     }
     if (previous?.state !== runtime.state || previous?.generation !== generation) hubLog(this.directory).event("fleet", "runtime", { member_id: event.id, generation, state: runtime.state,
       from: previous?.generation === generation ? previous.state : null, error_code: runtime.error_code, cli: runtime.cli, native_id: runtime.native_id })
