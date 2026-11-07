@@ -21,6 +21,11 @@ export const consumptionDefinitions = {
   ],
 } satisfies Record<string, [string, z.ZodType]>
 
+function round(value: number, digits: number): number {
+  const factor = 10 ** digits
+  return Math.round(value * factor) / factor
+}
+
 export interface ConsumptionToolDeps {
   chat: Pick<LocalChat, "identity">
   db: Sql
@@ -76,9 +81,9 @@ export async function callConsumptionTool(
       label: row.label,
       cli: row.cli_kind,
       unit: row.unit,
-      total: row.total,
-      ...(row.unit === "credits" ? { credits: row.credits } : { input: row.input, output: row.output, cache: row.cache_write + row.cache_read }),
-      cost_usd: row.cost_usd,
+      total: round(row.total, 2),
+      ...(row.unit === "credits" ? { credits: round(row.credits, 2) } : { input: row.input, output: row.output, cache: row.cache_write + row.cache_read }),
+      cost_usd: row.cost_usd === null ? null : round(row.cost_usd, row.cost_usd < 1 ? 4 : 2),
       unpriced: row.unpriced,
       context_peak_pct: row.context_peak_pct,
       compactions: row.compactions,

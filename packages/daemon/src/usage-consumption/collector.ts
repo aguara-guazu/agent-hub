@@ -121,8 +121,10 @@ export function startConsumptionCollectors(state: DaemonState, home: string): { 
       running = false
     }
   }
-  void cycle()
-  const timer = setInterval(() => void cycle(), CYCLE_MS)
+  // Consumption is best effort: a failed cycle must never take the daemon down with an unhandled rejection.
+  const run = () => void cycle().catch(() => undefined)
+  run()
+  const timer = setInterval(run, CYCLE_MS)
   timer.unref()
   return { close: () => clearInterval(timer) }
 }
