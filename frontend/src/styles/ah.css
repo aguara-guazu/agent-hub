@@ -261,6 +261,28 @@ textarea.input { height: auto; padding: 8px 10px; line-height: 1.5; resize: vert
 .dl dt { color: var(--text-3); }
 .dl dd { margin: 0; min-width: 0; }
 
+/* Gráficos de Actividad › Consumo: una serie por gráfico, sin leyenda */
+.chart { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; padding: var(--sp-3) var(--sp-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); }
+.chart-h { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); font-size: var(--fs-sm); font-weight: 500; color: var(--text-2); }
+.chart-h strong { font-size: var(--fs-lg); font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.chart-s { font-size: var(--fs-xs); color: var(--text-3); }
+.chart-svg { display: block; width: 100%; height: 96px; overflow: visible; }
+.chart-bar { fill: var(--accent); }
+.chart-bar:hover { fill: var(--accent-hover); }
+.chart-axis { fill: var(--text-3); font-size: var(--fs-xs); font-family: var(--font); }
+.chart-base { stroke: var(--border); stroke-width: 1; }
+.chart-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-mark { stroke: var(--text-3); stroke-width: 1; stroke-dasharray: 2 3; }
+.chart-limit { stroke: var(--warn); stroke-width: 1; stroke-dasharray: 4 3; }
+
+/* Lista de barras horizontales con valor al final */
+.barlist { display: flex; flex-direction: column; gap: var(--sp-2); margin: 0; padding: 0; list-style: none; }
+.barlist-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--sp-3); font-size: var(--fs-sm); }
+.barlist-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.barlist-row > span:nth-child(2) { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.barlist-track { grid-column: 1 / -1; height: 6px; border-radius: var(--r-full); background: var(--surface-3); overflow: hidden; }
+.barlist-fill { display: block; height: 100%; border-radius: var(--r-full); background: var(--accent); }
+
 /* Capas */
 .pop { background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r); box-shadow: var(--shadow-pop); }
 .menu { padding: 4px; min-width: 200px; display: flex; flex-direction: column; }

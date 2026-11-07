@@ -45,7 +45,7 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 | U4 | Crea un modal para editar, informar o confirmar algo reversible | Panel, en línea, o Deshacer |
 | U5 | Repite el mismo aviso en varias filas o tarjetas | Un aviso de página que agrupa + chips |
 | U6 | Agrega un texto que explica cómo usar la interfaz | Estado vacío, `hint` o tooltip; o mejorar la etiqueta |
-| U7 | Muestra un número que no lleva a ninguna decisión (tiles de totales) | Contador en el filtro, o nada |
+| U7 | Muestra un número que no lleva a ninguna decisión (tiles de totales) | Contador en el filtro, o nada. Excepción: los gráficos de Actividad › Consumo |
 | U8 | Expone un valor interno (`snake_case`, IDs, enums en inglés) como texto principal | Traducir; el valor técnico solo en mono y en paneles |
 | U9 | Agrega configuración fuera de Ajustes (salvo el ajuste propio de un elemento en su panel) | Fila en la sección de Ajustes que corresponda |
 | U10 | Crea una vista nueva para un filtro de una colección existente | Opción en el segmentado |
@@ -90,6 +90,7 @@ Un agente de front debe **no implementar** (y explicar por qué, proponiendo la 
 - Números con separador local: «1.240», «2,1».
 - Conteos en filtros, no en tarjetas.
 - Un dato faltante se muestra como «—», nunca vacío ni «null».
+- Consumo: cada CLI en su unidad (tokens, créditos); solo el costo equivalente en dólares se suma entre proveedores. Lo calculado lleva «Estimado»; lo que no se puede medir, «Sin dato»; un modelo sin precio, «Sin precio», nunca cero.
 
 ## Lo que hacen los agentes y lo que hace la persona
 

@@ -2,6 +2,7 @@ import { hubLog } from "./report.js"
 import { isCollaborationTool } from './collaboration.js'
 import { orcaWorkspaceSchema } from './agents.js'
 import { registerUsageRoutes } from './usage-routes.js'
+import { registerConsumptionRoutes } from './usage-consumption/routes.js'
 import { registerUpdateDrain, updateSecretAuthorizer, type LegacyGatewayScan } from './update-drain.js'
 import { chatKickInput, chatCoordinatorInput, chatDeleteChannelInput } from './local-chat.js'
 import { LocalChatRuntime } from './local-chat-runtime.js'
@@ -71,6 +72,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const requireCollaboration = () => check(collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
   service.usageEnabled=options.usageAgentEnabled ?? (()=>true)
   registerUsageRoutes(app,service,options)
+  const consumption = registerConsumptionRoutes(app, service, { authorizeUsageAgent: options.authorizeUsageAgent, authorizeOwner: request => options.authorize(request) })
   const updateDrain = registerUpdateDrain(app, service, { authorize: options.authorizeUpdate ?? updateSecretAuthorizer(undefined),
     beforeStartupAdmit: transactionId => service.get().then(({ stop }) => stop.assertStartupTransaction(transactionId)),
     startupAdmitted: async transactionId => { await (await service.get()).stop.resumeApplied(transactionId) },
@@ -420,7 +422,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   app.addHook("onClose", async () => {
     clearInterval(defaultsTimer)
     const failures: unknown[] = []
-    for (const step of [() => watchdog?.close(), () => chatRuntime?.close(), () => service.defaults.stop(), () => worker.stop(), () => service.close()]) {
+    for (const step of [() => consumption.close(), () => watchdog?.close(), () => chatRuntime?.close(), () => service.defaults.stop(), () => worker.stop(), () => service.close()]) {
       try { await step() } catch (error) { failures.push(error) }
     }
     if (failures.length) throw failures[0]

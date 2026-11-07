@@ -312,6 +312,33 @@ Columna derecha de 440 px (`--panel-w`; 520 px para editores de texto). Tres zon
 
 Pares etiqueta/valor en dos columnas (120 px + resto). Para metadatos de solo lectura en paneles y fichas.
 
+### Gráficos y lista de barras — `.chart`, `.barlist`
+
+Solo para Actividad › Consumo. Un gráfico muestra **una serie**; para comparar varias hay un gráfico por serie, cada uno en su unidad.
+
+```html
+<figure class="chart">
+  <div class="chart-h"><span>Tokens · Claude Code</span><strong>1,2 M</strong></div>
+  <div class="chart-s">Últimas 24 h, por hora</div>
+  <svg class="chart-svg" viewBox="0 0 240 96" preserveAspectRatio="none" role="img" aria-label="Claude Code consumió 1,2 M de tokens en las últimas 24 h; el pico fue a las 15:00">
+    <line class="chart-base" x1="0" y1="80" x2="240" y2="80"/>
+    <rect class="chart-bar" x="2" y="40" width="8" height="40"><title>15:00 · 310 k tokens</title></rect>
+    <text class="chart-axis" x="0" y="94">00:00</text>
+  </svg>
+</figure>
+
+<ul class="barlist">
+  <li class="barlist-row"><span>Herramientas de la CLI</span><span>42 %</span><span class="barlist-track"><span class="barlist-fill" style="width: 42%"></span></span></li>
+</ul>
+```
+
+- `.chart` lleva título y valor en `.chart-h` (el valor en `<strong>`), subtítulo en `.chart-s` y un `svg.chart-svg`. Barras: `.chart-bar`; ejes: `.chart-axis` (texto) y `.chart-base` (línea base). Curva: `.chart-line`; marca vertical de un evento: `.chart-mark`; referencia: `.chart-limit` (usa `--warn`).
+- Una serie por gráfico, sin leyenda. El título dice qué es y en qué unidad.
+- Cada barra lleva `<title>` con valor y momento. El `svg` tiene `role="img"` y un `aria-label` que resume el dato (total, período, pico).
+- `.barlist` es una lista de barras horizontales: etiqueta, valor y `.barlist-track` con `.barlist-fill` de ancho proporcional. Para repartos que se leen de mayor a menor.
+- Un reparto calculado y no medido lleva `.tag` «Estimado» junto al título de la lista.
+- No lleva: leyendas de varias series, ejes con más de tres marcas, sumas entre unidades distintas, tarjetas de números sueltos, gradientes ni sombras.
+
 ### Menú — `.pop.menu` + `.menu-item`
 
 Acciones secundarias de un elemento. Lo destructivo va último, separado por `.menu-sep` y con `.danger`.
@@ -336,3 +363,4 @@ Icono + título + una línea + una acción. Ver «Patrones».
 - **Pestañas verticales** fuera de Ajustes.
 - **Bordes de color a la izquierda** como acento decorativo.
 - **Gradientes** y sombras en contenedores estáticos.
+- **Gráficos fuera de Actividad › Consumo.** En el resto de las vistas los números van en el texto o en el contador del filtro.

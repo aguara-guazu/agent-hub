@@ -17,10 +17,11 @@ const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 
   'chat_team_plans', 'chat_team_members', 'chat_team_events', 'chat_work_state', 'chat_work_events', 'chat_watchdog_observations', 'chat_watchdog_events', 'chat_turn_state', 'chat_turn_alerts', 'chat_turns', 'chat_status_notices', 'usage_quota_bindings', 'usage_quota_pools', 'usage_quota_memberships', 'usage_quota_transitions', 'usage_quota_notices',
   'schedules', 'schedule_constraints', 'schedule_runs', 'schedule_run_attempts', 'schedule_run_phases', 'schedule_deliveries', 'schedule_artifacts', 'schedule_item_states', 'schedule_events', 'process_incidents',
   "decision_exclusions", "liveness_incidents", "progress_checkpoints", "project_automation", "project_delegations", "project_repositories", "push_candidates", "project_status_snapshots", "hour_estimates", "interhub_thread_staging",
-  "hub_stops", "hub_stop_targets", "hub_stop_member_receipts", "hub_stop_events"] as const
+  "hub_stops", "hub_stop_targets", "hub_stop_member_receipts", "hub_stop_events",
+  "usage_session_links", "usage_consumption_hourly", "usage_consumption_hourly_origin"] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–24 restore. */
-const BACKUP_SCHEMA_VERSION = 25
+/** Data-model version of agenthub-memory-v1; backups from 1–26 restore. Version 26 adds the consumption tables. */
+const BACKUP_SCHEMA_VERSION = 26
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 

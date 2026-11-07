@@ -168,12 +168,21 @@ Implementado en esta pestaña; maqueta de referencia: `design-system/03-vistas/h
 ![Actividad](../../03-vistas/png/oscuro/12-actividad.png)
 
 - **Plantilla:** A con panel.
-- **Pestañas:** Llamadas · Procesamiento.
+- **Pestañas:** Llamadas · Procesamiento · Consumo (ver más abajo).
 - **Encabezado:** chip «En vivo» (no hay botón «Actualizar»).
 - **Barra:** Todas / Errores / Bloqueadas (separados) · Cliente · Servidor.
 - **Fila:** herramienta en mono + servidor, cliente, resultado (Ejecutada `c-ok`, Error `c-danger`, Bloqueada `c-locked`), duración, hora.
 - **Panel:** detalles, respuesta (caja con borde de error si falló), argumentos.
 - **No va:** desplegable «Ver detalle» dentro de la fila, Error y Bloqueada en el mismo color.
+
+### Actividad › Consumo
+
+- **Plantilla:** A con panel.
+- **Barra:** `.seg` Por agente / Por CLI / Total · Período · Proyecto. La CLI se elige con «Por CLI».
+- **Gráficos:** uno por CLI en su unidad (`.chart`, barras por hora o por día según el período) y uno del costo equivalente de API. Sin leyenda y sin sumar unidades.
+- **Fila:** título = nick (o la CLI, o el origen, según el segmentado); detalle = proyecto · canal; estado = chip del pico de contexto (`c-warn` desde 80 %, `c-off` «Sin dato»); columnas de consumo y de costo («—» si no aplica).
+- **Panel:** `.dl` con CLI y modelo, consumo y turnos, llamadas al modelo, compactaciones y fuente del dato; en tokens, el total separado en entrada, salida, escritura y lectura de caché; «Desglose por origen» con `.tag` «Estimado» como `.barlist`; «Tamaño del contexto» como curva con la marca de cada compactación y la referencia del 80 %.
+- **No va:** tarjetas de números sueltos, sumas entre unidades, leyendas de varias series, el total de la cuenta de un proveedor.
 
 ## Ajustes
 

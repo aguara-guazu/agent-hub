@@ -22,6 +22,7 @@ import { AUTHOR_SOURCE_SQL, NON_AGENT_CLI_KINDS, THREAD_AGENT_COUNT_COLUMN, agen
 import { CHAT_CHANNEL_DESCRIPTION_MAX, INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
 import { INTERHUB_REMOTE_CLI_KIND, interhubChannelFields, interhubMentions, interhubMessageFields, interhubNoticeValid, interhubThreadFields } from "./interhub/chat.js"
 import { LISTED_SESSION_SQL, channelActivitySql, channelUsed, cleanAgents, markSessionActivity, proposeArchive, sweepChannelArchive, wrapUpDefinitions, wrapUpTiming } from "./chat-wrap-up.js"
+import { recordLink } from "./usage-consumption/links.js"
 
 const exec = promisify(execFile)
 const key = z.string().min(32).max(200)
@@ -584,6 +585,9 @@ export class LocalChat {
       surface=COALESCE(surface,'interactive'),id_captured_by=COALESCE(id_captured_by,'hook'),id_captured_at=COALESCE(id_captured_at,$6),resumable=1
       WHERE id=$1 AND native_id IS NOT NULL AND native_id=$7 AND (id_captured_at IS NULL OR $2 IS NOT NULL OR $3 IS NOT NULL OR $4='SessionStart')`,
     [sid,input.model ?? null,input.source ?? null,input.event,agent.cwd,input.at,input.native_id])
+    const session = (await this.db.query('SELECT cli_kind,native_id FROM chat_sessions WHERE id=$1',[sid]))[0]
+    // Consumption is best effort: a failed link must not fail the hook that registers the session.
+    if (session?.native_id === input.native_id) await recordLink(this.db, { hub_session_id: sid, cli_kind: session.cli_kind, native_session_id: input.native_id, source: 'hook' }).catch(() => undefined)
   }
   /** Authoritative native protocol from a Hub-owned process; never a caller-supplied tool. */
   async managedLifecycle(sessionId:string,event:string,at:string,turnId?:string) {

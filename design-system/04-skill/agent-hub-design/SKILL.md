@@ -35,7 +35,7 @@ CONEXIONES
 ├ Servidores MCP
 ├ Skills
 ├ Clientes
-└ Actividad            Llamadas · Procesamiento
+└ Actividad            Llamadas · Procesamiento · Consumo
 Ajustes                General · Fuentes · IA y procesamiento · Automatizaciones ·
                        Colaboración y red · Integraciones · Respaldos · Sistema
 ● estado del equipo y sincronización (una línea al pie)

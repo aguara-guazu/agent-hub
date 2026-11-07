@@ -11,6 +11,10 @@ export class ChatProtocol {
   sessionId = ''
   private initialized: Packet | undefined
   onQuotaChanged: ((method:string, params:Packet) => void) | undefined
+  /** Side observer of `session_info_update`; it must not throw into the protocol. */
+  onSessionInfo: ((update:Packet) => void) | undefined
+  /** Extra `_meta` sent with every ACP prompt, e.g. Kiro's context breakdown opt-in. */
+  promptMeta: Packet | undefined
   private seq = 0
   private pending = new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void}>()
   private dead = false
@@ -132,6 +136,7 @@ export class ChatProtocol {
     } else if(packet.method==='session/update' || packet.method==='session/notification') {
       if(packet.params?.sessionId!==this.sessionId)return
       const update=packet.params?.update
+      if(update?.sessionUpdate==='session_info_update'){try{this.onSessionInfo?.(update)}catch{/* telemetry is optional */}}
       if(update?.sessionUpdate==='agent_message_chunk' && update.content?.type==='text')this.output(update.content.text)
       if(update?.sessionUpdate==='tool_call')this.output(`\n[${update.title ?? 'Herramienta'}]\n`)
     }
@@ -173,7 +178,7 @@ export class ChatProtocol {
     return this.sessionId
   }
   async prompt(text:string) {
-    if(this.format==='acp')return this.request('session/prompt',{sessionId:this.sessionId,prompt:[{type:'text',text}]},0)
+    if(this.format==='acp')return this.request('session/prompt',{sessionId:this.sessionId,prompt:[{type:'text',text}],...(this.promptMeta?{_meta:this.promptMeta}:{})},0)
     if(this.streamTurn)throw new Error('La sesión ya tiene un turno activo.')
     return new Promise((resolve,reject)=>{
       this.streamTurn={resolve,reject}

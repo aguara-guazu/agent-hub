@@ -2,13 +2,15 @@ import type { Language } from "./types"
 
 type DateInput = Date | string | number
 
-/** Estilos de fecha absoluta: `date` «29 oct 2026», `time` «14:13», `datetime` «29 oct 2026, 14:13». */
-export type DateStyle = "date" | "time" | "datetime"
+/** Estilos de fecha absoluta: `date` «29 oct 2026», `time` «14:13», `datetime` «29 oct 2026, 14:13», `day` «29 oct», `month` «oct 2026». */
+export type DateStyle = "date" | "time" | "datetime" | "day" | "month"
 
 const DATE_OPTIONS: Record<DateStyle, Intl.DateTimeFormatOptions> = {
   date: { day: "numeric", month: "short", year: "numeric" },
   time: { hour: "numeric", minute: "2-digit" },
   datetime: { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" },
+  day: { day: "numeric", month: "short" },
+  month: { month: "short", year: "numeric" },
 }
 
 const cache = new Map<string, Intl.DateTimeFormat | Intl.RelativeTimeFormat | Intl.NumberFormat | Intl.ListFormat | Intl.PluralRules>()

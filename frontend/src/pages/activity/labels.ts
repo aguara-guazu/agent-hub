@@ -1,6 +1,8 @@
-import { useT } from "../../i18n"
+import { useFormat, useT } from "../../i18n"
 import { jobLocked, jobMode, jobTitle, resolverOf, type Job } from "../../lib/activity"
 import type { MemoryEntity } from "../../lib/memory-view"
+import { CLI_LABELS, type CliKind } from "../../lib/types"
+import { dailyRange, parseBucket, type ConsumptionOrigin, type ConsumptionRange, type ConsumptionUnit, type SummaryRow } from "../../lib/consumption"
 
 /** Título visible del trabajo, traducido cuando no viene de la fuente. */
 export function useJobLabels() {
@@ -52,3 +54,54 @@ export function useProposalLabels(kind: "identity" | "duplicate") {
   }
 }
 
+
+const CLI_KEYS = ["claude_code", "codex_cli", "kiro"] as const
+type CliKey = (typeof CLI_KEYS)[number]
+
+/** Textos y números del consumo: cada CLI en su unidad, el costo en dólares y lo que no se mide como «Sin dato». */
+export function useConsumptionLabels() {
+  const { t } = useT("activity")
+  const format = useFormat()
+  const compact = (value: number) => format.number(value, { notation: "compact", maximumFractionDigits: 1 })
+  const credits = (value: number) => format.number(value, { maximumFractionDigits: 2 })
+  const cli = (kind: string | null) => {
+    if (kind && (CLI_KEYS as readonly string[]).includes(kind)) return t(`consumption.cli.${kind as CliKey}`)
+    return kind && kind in CLI_LABELS ? CLI_LABELS[kind as CliKind] : t("consumption.cli.other")
+  }
+  return {
+    cli,
+    origin: (origin: ConsumptionOrigin) => t(`consumption.origin.${origin}`),
+    range: (range: ConsumptionRange) => t(`consumption.range.${range}`),
+    granularity: (range: ConsumptionRange) => t(`consumption.granularity.${range === "1y" ? "week" : range === "3y" ? "month" : dailyRange(range) ? "day" : "hour"}`),
+    unit: (unit: ConsumptionUnit) => t(`consumption.unit.${unit}`),
+    /** Tokens en forma compacta («1,2 M»); créditos con su unidad. */
+    amount: (unit: ConsumptionUnit, value: number) => (unit === "credits" ? `${credits(value)} ${t("consumption.unit.credits")}` : compact(value)),
+    exact: (value: number) => format.number(value, { maximumFractionDigits: 0 }),
+    usage: (row: SummaryRow) => (row.unit === null ? "—" : row.unit === "credits" ? `${credits(row.total)} ${t("consumption.unit.credits")}` : compact(row.total)),
+    money: (value: number) => format.number(value, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    /** Sin costo informado en tokens es «Sin precio», nunca cero; con modelos sin precio el monto es parcial. */
+    cost: (row: SummaryRow) => {
+      if (row.unit !== "tokens") return "—"
+      if (row.cost_usd === null) return t("consumption.noPrice")
+      const amount = format.number(row.cost_usd, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      return row.unpriced ? `${amount} · ${t("consumption.partial")}` : amount
+    },
+    costHint: (row: SummaryRow) => (row.unit === "tokens" && row.cost_usd !== null && row.unpriced ? t("consumption.partialHint") : undefined),
+    originCost: (value: number | null) => (value === null ? t("consumption.noPrice") : format.number(value, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 })),
+    percent: (value: number) => `${format.number(value, { maximumFractionDigits: 0 })} %`,
+    /** Inicio de un compartimento (instante ISO) según la granularidad del período: hora, día, semana o mes. */
+    bucket: (bucket: string, range: ConsumptionRange, long = false) => {
+      const date = parseBucket(bucket)
+      if (!date) return "—"
+      if (range === "3y") return format.date(date, "month")
+      if (range === "1y") return t("consumption.week", { date: format.date(date, long ? "date" : "day") })
+      if (dailyRange(range)) return format.date(date, long ? "date" : "day")
+      return format.date(date, long ? "datetime" : "time")
+    },
+    instant: (value: string, range: ConsumptionRange, long = false) => {
+      const date = parseBucket(value)
+      if (!date) return value
+      return format.date(date, dailyRange(range) ? "date" : long ? "datetime" : "time")
+    },
+  }
+}

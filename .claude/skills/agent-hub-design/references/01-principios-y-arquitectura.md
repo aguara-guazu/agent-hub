@@ -82,7 +82,7 @@ CONEXIONES
 ├ Servidores MCP
 ├ Skills
 ├ Clientes
-└ Actividad            llamadas + procesamiento
+└ Actividad            llamadas + procesamiento + consumo
 
 Ajustes                una página, ocho secciones
 ● equipo · estado de sincronización (una línea)
@@ -129,5 +129,5 @@ La colaboración no es un destino propio: todo canal pertenece a un proyecto y s
 ## Qué no se movió y por qué
 
 - **Servidores MCP, Skills y Clientes** siguen siendo destinos propios: son las tres cosas que el hub entrega a los agentes y la persona las administra por separado.
-- **Actividad** se mantiene como registro de solo lectura. No se convierte en panel de métricas.
+- **Actividad** se mantiene como registro de solo lectura. La única excepción es la pestaña Consumo, que muestra gráficos del consumo registrado; en el resto no hay métricas.
 - **Proyectos** sigue siendo el centro de la memoria, pero ahora es un destino de primer nivel en lugar de una pestaña de Memoria.
