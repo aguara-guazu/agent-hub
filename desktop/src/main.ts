@@ -612,7 +612,8 @@ async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }
     if (!bundle || !runtimeOldBundle(bundle)) return postpone(update.version, [{ code: 'runtime_unavailable' }])
     const prepared = await updater.prepare(update)
     if (prepared.state === 'postponed') return postpone(update.version, prepared.reasons)
-    if (!await recordStagedTransaction(update)) return postpone(update.version, [{ code: 'runtime_unavailable' }])
+    const blocked = await recordStagedTransaction(update)
+    if (blocked) return postpone(update.version, [{ code: blocked }])
     const tx = await ensureWatchdogReady(update)
     return await applyThroughHubStop(update, 'dmg', tx.transaction_id)
   }
@@ -632,7 +633,10 @@ async function applyThroughHubStop(update: Extract<UpdateStatus, { state: 'downl
   const intent = stopAttempt({ reason: 'update', strategy, transactionId, targetVersion: update.version })
   const run = startHubStop(intent, view => {
     setUpdateReport({ phase: 'postponed', version: update.version, reasons: stopReasons(view), stop: stopReportOf(view), ...(update.trust ? { trust: update.trust } : {}) })
-  }, strategy === 'dmg' ? undefined : strategy === 'nsis'
+  }, strategy === 'dmg'
+    // La parada puede tardar más que la vida del vigía: sin uno vivo, swap_intent dejaría la app cerrada sin nadie que intercambie.
+    ? async () => { await ensureWatchdogReady(update) }
+    : strategy === 'nsis'
     // La marca de recuperación va antes del commit irreversible: si no se confirma, no hay commit ni instalador y se libera todo.
     ? () => nsisBeforeCommit({ revalidate: () => revalidateArtifact(update.path, update.sha256, update.size), store: updateStore, transactionId, version: app.getVersion(), log: updaterLog })
     : () => revalidateArtifact(update.path, update.sha256, update.size))
@@ -771,19 +775,22 @@ function transactionInFlight(): boolean {
   return read.kind === 'ok' && read.tx.phase !== 'staged'
 }
 
-/** Registra el stage verificado en el journal (contrato v2 y el formato que aún consume el vigía) y descarta otros stages sólo si no hay una transacción en curso. */
-async function recordStagedTransaction(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<boolean> {
+/**
+ * Registra el stage verificado en el journal (contrato v2 y el formato que aún consume el vigía) y descarta otros stages sólo si no
+ * hay una transacción en curso. Devuelve `null` si quedó registrado o el código de la razón por la que se pospone.
+ */
+async function recordStagedTransaction(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<string | null> {
   const bundle = realBundlePath(process.execPath)
-  if (!bundle || !update.stage || !update.sha256 || !update.size || !update.trust) return false
+  if (!bundle || !update.stage || !update.sha256 || !update.size || !update.trust) return 'runtime_unavailable'
   try {
     const current = readTransaction(updateStore.dir)
-    // Ya registrado (reintento tras una pospuesta): no se repite ni se limpia nada.
-    if (current.kind === 'ok' && current.tx.transaction_id === update.stage.id && current.tx.phase === 'staged') return true
-    if (transactionInFlight()) { updaterLog('[updater] hay una transacción anterior sin cerrar; no se prepara otra'); return false }
+    // Ya registrado (reintento tras una pospuesta): antes de swap_intent nada es irreversible y el stage sigue siendo el mismo.
+    if (current.kind === 'ok' && current.tx.transaction_id === update.stage.id && (current.tx.phase === 'staged' || current.tx.phase === 'watchdog_ready')) return null
+    if (transactionInFlight()) { updaterLog('[updater] hay una transacción anterior sin cerrar; no se prepara otra'); return 'transaction_in_flight' }
     const oldStart = await processStartTime(process.pid)
     if (!oldStart) throw new Error('no se pudo identificar este proceso')
     const runtime = runtimeOldBundle(bundle)
-    if (!runtime) { updaterLog('[updater] sin copia de runtime de esta versión no se prepara la actualización'); return false }
+    if (!runtime) { updaterLog('[updater] sin copia de runtime de esta versión no se prepara la actualización'); return 'runtime_unavailable' }
     updateStore.stageTransaction({ schema: 1, transaction_id: update.stage.id, phase: 'staged',
       from: { version: app.getVersion(), digest: await sha256OfFile(join(bundle, 'Contents', 'Info.plist')) },
       to: { version: update.version, digest: update.sha256, size: update.size, auth: update.trust },
@@ -794,24 +801,29 @@ async function recordStagedTransaction(update: Extract<UpdateStatus, { state: 'd
       updated_at: new Date().toISOString() })
     const prefix = `${basename(bundle)}.incoming-`
     for (const entry of readdirSync(dirname(bundle)).filter(name => name.startsWith(prefix) && join(dirname(bundle), name) !== update.stage!.path)) void removeTree(join(dirname(bundle), entry)).catch(() => undefined)
-    return true
+    return null
   } catch (error) {
     updaterLog(`[updater] no se pudo registrar la transacción: ${error instanceof Error ? error.message : String(error)}`)
-    return false
+    return 'runtime_unavailable'
   }
 }
 
 /**
- * Deja preparado el vigía (desde el runtime anterior) fuera del drenaje y anota `watchdog_ready`. Idempotente: si la transacción
- * ya está en `watchdog_ready` con ese vigía vivo no repite nada.
+ * Deja preparado el vigía (desde el runtime anterior) y anota `watchdog_ready`. Idempotente: si la transacción ya está en
+ * `watchdog_ready` con ese vigía vivo no repite nada. Un vigía que terminó (vive 30 min sin intercambio, p. ej. tras una parada
+ * pospuesta) se reemplaza: primero se borra su identidad del journal, porque el nuevo cede ante cualquier otra identidad registrada.
  */
 async function ensureWatchdogReady(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<UpdateTransaction> {
   const read = readTransaction(updateStore.dir)
   if (read.kind !== 'ok' || read.tx.transaction_id !== update.stage?.id) throw new Error('el journal no corresponde al stage preparado')
-  const tx = read.tx
+  let tx = read.tx
   if (tx.old_app.pid !== process.pid || await processStartTime(process.pid) !== tx.old_app.start) throw new Error('el journal no corresponde a este proceso')
   if (tx.phase === 'watchdog_ready' && tx.watchdog && await processStartTime(tx.watchdog.pid) === tx.watchdog.start) return tx
-  if (tx.phase !== 'staged') throw new Error(`la transacción está en ${tx.phase}; no se prepara el vigía`)
+  if (tx.phase !== 'staged' && tx.phase !== 'watchdog_ready') throw new Error(`la transacción está en ${tx.phase}; no se prepara el vigía`)
+  if (tx.phase === 'watchdog_ready') {
+    if (tx.watchdog) tx = advancePhase(updateStore.dir, tx.transaction_id, 'watchdog_ready', { watchdog: null })
+    updaterLog(`[updater] el vigía de ${tx.transaction_id} ya no corre; se prepara otro`)
+  }
   const identity = await prepareWatchdog({ stateDir, updateDir: updateStore.dir, transaction: tx, timeoutMs: HEALTH_DEADLINE_MS, logFile: join(logsDir, 'core.log'), executableName: basename(process.execPath) })
   return advancePhase(updateStore.dir, tx.transaction_id, 'watchdog_ready', { watchdog: identity })
 }

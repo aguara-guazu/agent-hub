@@ -64,6 +64,7 @@ const settings = {
         drain_lease_lost: "the update preparation expired; it will be retried",
         swap_helper_unavailable: "this installation lacks the atomic installer it needs",
         runtime_unavailable: "this version's runtime copy is missing",
+        transaction_in_flight: "an earlier update was left unfinished",
         blockers_unknown: "could not check for work in progress",
         core_unreachable: "waiting for the hub to be available",
         mcp_bridges: "MCP connections are open",

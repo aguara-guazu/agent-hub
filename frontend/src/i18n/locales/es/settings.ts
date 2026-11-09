@@ -62,6 +62,7 @@ const settings = {
         drain_lease_lost: "la preparación de la actualización venció; se reintentará",
         swap_helper_unavailable: "esta instalación no tiene el instalador atómico necesario",
         runtime_unavailable: "falta la copia de ejecución de esta versión",
+        transaction_in_flight: "una actualización anterior quedó sin cerrar",
         blockers_unknown: "no se pudo comprobar si hay trabajo en curso",
         core_unreachable: "esperando a que el hub esté disponible",
         mcp_bridges: "hay conexiones MCP abiertas",

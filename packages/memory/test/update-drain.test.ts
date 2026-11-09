@@ -104,11 +104,10 @@ describe("UpdateDrain convergente", () => {
     const gate = new Gate()
     const drain = new UpdateDrain({
       gate: () => gate,
-      nonMcpBlockers: () => async () => ({ fleet_live: 0, jobs_nonresumable: 0 }),
-      legacyGateways: async () => ({ count: 1 }),
+      nonMcpBlockers: () => undefined,
     })
 
-    expect(await drain.acquire()).toEqual({ ok: false, reasons: [{ code: "legacy_gateways", count: 1 }] })
+    expect(await drain.acquire()).toEqual({ ok: false, reasons: [{ code: "blockers_unknown" }] })
     expect(drain.isDraining).toBe(false)
     expect(gate.closed).toBe(false)
   })
