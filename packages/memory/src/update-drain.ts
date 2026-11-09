@@ -28,8 +28,6 @@ export type DrainCode =
   | "mcp_inflight"
   | "fleet_live"
   | "jobs_nonresumable"
-  | "legacy_gateways"
-  | "legacy_gateways_unknown"
   | "blockers_unknown"
   | "drain_lease_lost"
 
@@ -69,8 +67,6 @@ export interface DrainDependencies {
   gate(): AdmissionGateLike | undefined
   /** Waits for the closure to reach the worker before counting; rejects when it cannot. */
   nonMcpBlockers(): (() => Promise<NonMcpBlockers>) | undefined
-  /** Absent means the scan is not available: the answer is `legacy_gateways_unknown`, never zero. */
-  legacyGateways?: () => Promise<LegacyGatewayScan>
 }
 
 /**
@@ -81,7 +77,8 @@ export interface DrainDependencies {
  *
  * Order, all inside one `try` that releases exactly what was acquired on every path: refuse MCP and close the
  * shared gate without awaiting, then read each blocker (the counter waits for the worker to see the closure),
- * `legacyGateways`, and last the MCP calls in flight.
+ * and last the MCP calls in flight. Gateways started from a pre-runtime bundle never block: the swap keeps them
+ * running from the renamed bundle and they reconnect or need a client-side reconnect.
  *
  * The grant carries a `boot_id` that is fixed for the life of this core process: a lease can only be confirmed
  * by the same process that granted it, so a restart of core is a lost lease.
@@ -244,7 +241,7 @@ export class UpdateDrain {
     return { ok: true }
   }
 
-  async acquire(purpose: "update" | "quit" = "update"): Promise<DrainResult> {
+  async acquire(): Promise<DrainResult> {
     if (this.startup) return { ok: false, reasons: [{ code: "already_draining" }] }
     if (this.lease || this.acquiring) return { ok: false, reasons: [{ code: "already_draining" }] }
     this.acquiring = true
@@ -304,18 +301,6 @@ export class UpdateDrain {
       if (reasons.some(reason => reason.code === "jobs_nonresumable")) {
         this.draining = false
         return { ok: false, reasons: dedupe(reasons) }
-      }
-      if (purpose === "update") {
-        if (!this.deps.legacyGateways) reasons.push({ code: "legacy_gateways_unknown" })
-        else {
-          try {
-            const scan = await this.deps.legacyGateways()
-            if (scan.error !== undefined) reasons.push({ code: "legacy_gateways_unknown" })
-            else if (scan.count > 0) reasons.push({ code: "legacy_gateways", count: scan.count })
-          } catch {
-            reasons.push({ code: "legacy_gateways_unknown" })
-          }
-        }
       }
       // In-flight is read last and synchronously with the grant: with MCP refused it can only have fallen.
       if (this.inflight > 0) reasons.push({ code: "mcp_inflight", count: this.inflight })
@@ -509,7 +494,6 @@ type ServiceExtras = {
 
 export interface UpdateDrainOptions {
   authorize: (request: FastifyRequest) => Promise<unknown>
-  legacyGateways?: () => Promise<LegacyGatewayScan>
   /** Stops this core after a commit. The default closes the listener and the app with a 5 s cap and then exits unconditionally. */
   shutdown?: (drain: UpdateDrain) => void | Promise<void>
   /** Transaction of the update that launched this core: it starts closed until `POST /api/internal/update-admit`. */
@@ -526,7 +510,6 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
   const drain = new UpdateDrain({
     gate: () => extras.admissionGate,
     nonMcpBlockers: () => (extras.nonMcpBlockers ? () => extras.nonMcpBlockers!() : undefined),
-    ...(options.legacyGateways ? { legacyGateways: options.legacyGateways } : {}),
   })
   /**
    * Default stop after a commit. The lease already proved no MCP call in flight and no non-MCP work, so exiting unconditionally

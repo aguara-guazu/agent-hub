@@ -52,7 +52,7 @@ export interface MemoryRouteOptions {
   authorizeUpdate?(request: FastifyRequest): Promise<void>
   /** Transaction of the update that launched this core: it starts closed until the desktop admits it. */
   updateTransaction?: string
-  /** Scan of gateways started from a bundle older than the versioned runtime; absent means unknown. */
+  /** Scan of gateways started from a bundle older than the versioned runtime; logged by an update stop, never blocking. */
   legacyGateways?(): Promise<LegacyGatewayScan>
   collaborationEnabled?(): boolean
   chatAgentEnabled?(agentId: string): boolean
@@ -76,7 +76,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const updateDrain = registerUpdateDrain(app, service, { authorize: options.authorizeUpdate ?? updateSecretAuthorizer(undefined),
     beforeStartupAdmit: transactionId => service.get().then(({ stop }) => stop.assertStartupTransaction(transactionId)),
     startupAdmitted: async transactionId => { await (await service.get()).stop.resumeApplied(transactionId) },
-    ...(options.updateTransaction ? { startupTransaction: options.updateTransaction } : {}), ...(options.legacyGateways ? { legacyGateways: () => options.legacyGateways!() } : {}) })
+    ...(options.updateTransaction ? { startupTransaction: options.updateTransaction } : {}) })
   const stopGuard = { preHandler: async (request: FastifyRequest) => { await (options.authorizeUpdate ?? updateSecretAuthorizer(undefined))(request) } }
   const stopIdBody = z.object({ stop_id: id }).strict()
   app.post("/api/internal/hub-stop", stopGuard, async request => {

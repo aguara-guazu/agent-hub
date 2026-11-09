@@ -321,7 +321,7 @@ export class HubStopCoordinator {
         this.gateToken = null
         await this.deps.db.query("UPDATE hub_stops SET gate_owner='drain',updated_at=now() WHERE id=$1 AND state='ready'", [stopId])
       }
-      const result = await drain.acquire(stop.reason)
+      const result = await drain.acquire()
       if (result.ok) {
         await this.deps.db.transaction(async sql => {
           await sql.query("UPDATE hub_stops SET drain_boot_id=$2,drain_generation=$3,drain_lease=$4,last_error_code=NULL,last_error_detail=NULL,updated_at=now() WHERE id=$1 AND state='ready'",
@@ -334,11 +334,8 @@ export class HubStopCoordinator {
       }
       const converging = result.reasons.every(item => item.code === "jobs_nonresumable" || item.code === "mcp_inflight")
       if (!converging) {
-        const legacy = result.reasons.find(reason => reason.code === "legacy_gateways")
-        const code = legacy ? "legacy_gateways" : "drain_not_ready"
-        const detail = legacy ? JSON.stringify({ count: legacy.count ?? 0 }) : JSON.stringify(result.reasons)
-        await this.deps.db.query("UPDATE hub_stops SET state='waiting_members',gate_owner=NULL,last_error_code=$2,last_error_detail=$3,updated_at=now() WHERE id=$1 AND state='ready'",
-          [stopId, code, detail])
+        await this.deps.db.query("UPDATE hub_stops SET state='waiting_members',gate_owner=NULL,last_error_code='drain_not_ready',last_error_detail=$2,updated_at=now() WHERE id=$1 AND state='ready'",
+          [stopId, JSON.stringify(result.reasons)])
         this.log(stopId, "drain_refused", { reasons: result.reasons.map(item => item.code).join(",") })
       }
       this.arm(await this.requireStop(stopId))
@@ -438,20 +435,12 @@ export class HubStopCoordinator {
   }
 
   private async prepare(stop: StopRow): Promise<void> {
-    if (stop.reason === "update" && this.deps.legacyGateways) {
+    // Pre-runtime gateways do not block an update; their count is recorded so a client that loses the MCP after the swap can be traced.
+    if (stop.reason === "update" && this.deps.legacyGateways && !stop.backup_id) {
       try {
         const legacy = await this.deps.legacyGateways()
-        if (legacy.error === undefined && legacy.count > 0) {
-          const detail = JSON.stringify({ count: legacy.count })
-          await this.deps.db.transaction(async sql => {
-            await sql.query("UPDATE hub_stops SET last_error_code='legacy_gateways',last_error_detail=$2,updated_at=now() WHERE id=$1", [stop.id, detail])
-            await this.event(sql, stop.id, "legacy_gateways", { count: legacy.count })
-          })
-          this.log(stop.id, "legacy_gateways", { count: legacy.count })
-          await this.terminal(await this.requireStop(stop.id), "postponed", "legacy_gateways")
-          return
-        }
-      } catch { /* UpdateDrain repeats the fail-closed scan before granting a lease. */ }
+        if (legacy.error === undefined && legacy.count > 0) this.log(stop.id, "legacy_gateways_ignored", { count: legacy.count })
+      } catch { /* Diagnostic only. */ }
     }
     if (!stop.backup_id) {
       try {
