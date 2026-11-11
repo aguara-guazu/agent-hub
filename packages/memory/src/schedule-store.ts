@@ -313,24 +313,30 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
    */
   async setRunsRead(runIds: string[], read: boolean): Promise<string[]> {
     if (!runIds.length) return []
-    const now = isoNow()
-    const changed = (read
-      ? await this.db.query<{ run_id: string }>(`UPDATE schedule_artifacts SET read_at=$1 WHERE read_at IS NULL AND run_id IN (${this.placeholders(runIds.length, 2)}) RETURNING run_id`, [now, ...runIds])
-      : await this.db.query<{ run_id: string }>(`UPDATE schedule_artifacts SET read_at=NULL WHERE read_at IS NOT NULL AND run_id IN (${this.placeholders(runIds.length)}) RETURNING run_id`, runIds)
-    ).map(row => String(row.run_id))
-    if (!changed.length) return changed
-    const targets = "target IN ('hub_inbox','app_window')"
-    if (read) await this.db.query(`UPDATE schedule_deliveries SET read_at=COALESCE(read_at,$1) WHERE ${targets} AND run_id IN (${this.placeholders(changed.length, 2)})`, [now, ...changed])
-    else await this.db.query(`UPDATE schedule_deliveries SET read_at=NULL WHERE ${targets} AND run_id IN (${this.placeholders(changed.length)})`, changed)
-    return changed
+    return this.db.transaction(async () => {
+      const now = isoNow()
+      const changed = (read
+        ? await this.db.query<{ run_id: string }>(`UPDATE schedule_artifacts SET read_at=$1 WHERE read_at IS NULL AND run_id IN (${this.placeholders(runIds.length, 2)}) RETURNING run_id`, [now, ...runIds])
+        : await this.db.query<{ run_id: string }>(`UPDATE schedule_artifacts SET read_at=NULL WHERE read_at IS NOT NULL AND run_id IN (${this.placeholders(runIds.length)}) RETURNING run_id`, runIds)
+      ).map(row => String(row.run_id))
+      const targets = "target IN ('hub_inbox','app_window')"
+      // Deliveries are created after the artifact, so a run opened in between has a read artifact and unread deliveries; reading clears them for every run that has an artifact.
+      if (read) await this.db.query(`UPDATE schedule_deliveries SET read_at=COALESCE(read_at,$1) WHERE ${targets} AND read_at IS NULL AND run_id IN (${this.placeholders(runIds.length, 2)})
+        AND EXISTS (SELECT 1 FROM schedule_artifacts a WHERE a.run_id=schedule_deliveries.run_id)`, [now, ...runIds])
+      else if (changed.length) await this.db.query(`UPDATE schedule_deliveries SET read_at=NULL WHERE ${targets} AND run_id IN (${this.placeholders(changed.length)})`, changed)
+      return changed
+    })
   }
-  /** Every unread run (optionally of one project) as read; same notion of "unread" as `listRuns({ unread: true })`. */
+  /** Every unread run (optionally of one project) as read; same notion of "unread" as `listRuns({ unread: true })`, plus runs whose artifact is read but a sent inbox/app delivery is not. */
   async markAllRunsRead(projectId?: string): Promise<string[]> {
-    const ids = (await this.db.query<{ run_id: string }>(`SELECT a.run_id FROM schedule_artifacts a JOIN schedule_runs r ON r.id=a.run_id JOIN schedules s ON s.id=r.schedule_id
-      WHERE a.read_at IS NULL AND ($1 IS NULL OR s.project_id=$1)`, [projectId ?? null])).map(row => String(row.run_id))
-    const changed: string[] = []
-    for (let start = 0; start < ids.length; start += 200) changed.push(...await this.setRunsRead(ids.slice(start, start + 200), true))
-    return changed
+    return this.db.transaction(async () => {
+      const ids = (await this.db.query<{ run_id: string }>(`SELECT a.run_id FROM schedule_artifacts a JOIN schedule_runs r ON r.id=a.run_id JOIN schedules s ON s.id=r.schedule_id
+        WHERE (a.read_at IS NULL OR EXISTS (SELECT 1 FROM schedule_deliveries d WHERE d.run_id=a.run_id AND d.target IN ('hub_inbox','app_window') AND d.state='sent' AND d.read_at IS NULL))
+        AND ($1 IS NULL OR s.project_id=$1)`, [projectId ?? null])).map(row => String(row.run_id))
+      const changed: string[] = []
+      for (let start = 0; start < ids.length; start += 200) changed.push(...await this.setRunsRead(ids.slice(start, start + 200), true))
+      return changed
+    })
   }
   async lastPausedAt(scheduleId: string): Promise<string | undefined> {
     const row = (await this.db.query<{ created_at: string }>("SELECT created_at FROM schedule_events WHERE schedule_id=$1 AND type='schedule.paused' ORDER BY seq DESC LIMIT 1", [scheduleId]))[0]
