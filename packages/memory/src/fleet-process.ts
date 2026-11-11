@@ -205,6 +205,10 @@ export class FleetProcessManager {
           response: { behavior: 'deny', message: 'Unsupported interactive fleet request' } } })
         return
       }
+      if (packet.type === 'control_request') {
+        this.write(s, { type: 'control_response', response: { subtype: 'error', request_id: packet.request_id, error: 'Unsupported fleet control request' } })
+        return
+      }
       if (packet.type === 'control_cancel_request') { this.cancelQuestion(s, packet.request_id); return }
       if (packet.type === 'system' && packet.subtype === 'init') {
         // A fork learns its new native ID here: once, different from its source, and fixed for every later packet and message.
@@ -606,7 +610,7 @@ export class FleetProcessManager {
       if (this.live(s) && !s.completedTurns.has(id)) {
         this.setTurn(s, id)
         this.refreshQuestions(s)
-        if (response.turn.status === 'failed') this.fail(s, 'fleet_turn_failed')
+        if (response.turn.status === 'failed') this.fail(s, 'fleet_turn_failed', codexCause(response.turn.error))
         else if (['completed', 'interrupted'].includes(response.turn.status)) this.receive(s, { method: 'turn/completed', params: { threadId: s.status.native_id, turn: response.turn } })
       }
     } finally { s.submitting = false }
@@ -735,10 +739,11 @@ export class FleetProcessManager {
     if (!s) throw new Error('fleet_unknown_id')
     await this.terminate(s)
     // terminate() is memoized, so a repeated stop never signals again; it only waits again for an exit still unconfirmed.
-    if (!s.exited && s.status.state === 'unknown') await this.waitForExit(s)
+    if (!s.exited && ['unknown', 'failed'].includes(s.status.state)) await this.waitForExit(s)
     this.clearQuestions(s)
     delete s.status.turn_id
-    this.publish(s, s.exited ? 'stopped' : 'unknown', s.exited ? undefined : 'fleet_shutdown_timeout')
+    // A confirmed exit keeps a failure's code and cause; only an unconfirmed exit replaces it.
+    if (!(s.exited && s.status.state === 'failed')) this.publish(s, s.exited ? 'stopped' : 'unknown', s.exited ? undefined : 'fleet_shutdown_timeout')
     await s.eventQueue
     return this.snapshot(s.status)
   }
@@ -752,17 +757,21 @@ export class FleetProcessManager {
   async retryStop(id: string): Promise<FleetStatus> {
     const s = this.sessions.get(id)
     if (!s) throw new Error("fleet_unknown_id")
-    if (!s.exited && s.status.state === "unknown" && s.cleanup) {
+    if (!s.exited && ['unknown', 'failed'].includes(s.status.state) && s.cleanup) {
       s.cleanup = undefined
       s.stopping = false
     }
     return this.stop(id)
   }
 
+  private exitSettled(status: FleetStatus): boolean {
+    return status.state === 'stopped' || (status.state === 'failed' && this.exitConfirmed(status.id))
+  }
+
   /** Resolves with the ids whose exit is still unconfirmed (empty when all stopped); calling it again waits again without signaling. */
   async close(): Promise<string[]> {
     this.closing = true
     const stopped = await Promise.all([...this.sessions.keys()].map(id => this.stop(id)))
-    return stopped.filter(status => status.state === 'unknown').map(status => status.id)
+    return stopped.filter(status => !this.exitSettled(status)).map(status => status.id)
   }
 }
