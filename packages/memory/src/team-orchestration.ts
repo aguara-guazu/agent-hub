@@ -428,8 +428,10 @@ export class TeamOrchestration {
     try {
       for(const item of members)if(!await this.launchMember(plan,item,parent,who))break
     } catch(error) {
-      // Authority can disappear while Orca is working. Preserve every receipt,
-      // revoke pending invitations and do not leave a stopped run "launching".
+      // Members launched in this run cannot join once invitations are revoked and a paused plan is not controllable, so they are stopped first.
+      let uncertain:string[]=[]
+      try {uncertain=(await this.stopMembers(plan,who)).uncertain} catch { /* the original error is the one to report */ }
+      if(uncertain.length && error instanceof Error)error.message+=` No se pudo confirmar la detención de ${uncertain.length} miembro(s) ya lanzados; revisá team_status y relanzá la detención con team_close.`
       await this.db.transaction(async sql=>{
         await sql.query("UPDATE chat_team_plans SET state='paused',updated_at=now() WHERE id=$1 AND state='launching'",[plan.id])
         await sql.query('UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL WHERE team_id=$1',[plan.id])
