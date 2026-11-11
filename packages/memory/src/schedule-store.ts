@@ -192,8 +192,8 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
       WHERE schedule_id=$1 AND state IN ('pending','deferred','interrupted') RETURNING id`, [scheduleId, skipReason, now])).length
   }
   async listRuns(filter: { schedule_id?: string | undefined; project_id?: string | undefined; state?: RunState | undefined; unread?: boolean | undefined; kind?: string | undefined; limit: number; offset: number }) {
-    const where = '($1 IS NULL OR r.schedule_id=$1) AND ($2 IS NULL OR s.project_id=$2) AND ($3 IS NULL OR r.state=$3) AND ($4=0 OR (a.id IS NOT NULL AND a.read_at IS NULL)) AND ($5 IS NULL OR a.kind=$5)'
-    const params = [filter.schedule_id ?? null, filter.project_id ?? null, filter.state ?? null, filter.unread ? 1 : 0, filter.kind ?? null]
+    const where = '($1 IS NULL OR r.schedule_id=$1) AND ($2 IS NULL OR s.project_id=$2) AND ($3 IS NULL OR r.state=$3) AND ($4 IS NULL OR ($4=1 AND a.id IS NOT NULL AND a.read_at IS NULL) OR ($4=0 AND a.read_at IS NOT NULL)) AND ($5 IS NULL OR a.kind=$5)'
+    const params = [filter.schedule_id ?? null, filter.project_id ?? null, filter.state ?? null, filter.unread === undefined ? null : filter.unread ? 1 : 0, filter.kind ?? null]
     const count = (await this.db.query<{ count: number }>(`SELECT count(*) AS count FROM schedule_runs r JOIN schedules s ON s.id=r.schedule_id LEFT JOIN schedule_artifacts a ON a.run_id=r.id WHERE ${where}`, params))[0]!.count
     const items = await this.db.query<Row>(`SELECT r.id,r.schedule_id,r.scheduled_for,r.trigger,r.state,r.phase,r.skip_reason,r.deferred_reason,r.next_attempt_at,r.error_code,r.continuity,r.started_at,r.finished_at,
       s.title AS schedule_title,s.project_id,s.template,a.id AS artifact_id,a.kind AS artifact_kind,a.title,a.read_at

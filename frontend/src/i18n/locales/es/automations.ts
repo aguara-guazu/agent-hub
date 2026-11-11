@@ -15,6 +15,7 @@ const automations = {
     allKinds: "Todos",
     show: "Mostrar",
     unread: "Sin ver",
+    read: "Vistas",
     all: "Todas",
     showAll: "Ver todas",
   },
@@ -86,7 +87,9 @@ const automations = {
     errorTitle: "No se pudieron cargar las automatizaciones",
     historyErrorTitle: "No se pudieron cargar las entregas",
     unreadTitle: "Estás al día",
-    unreadDetail: "No quedan entregas sin ver. Elegí «Todas» para ver el historial completo.",
+    unreadDetail: "No quedan entregas sin ver. Elegí «Vistas» para repasar las que ya viste o «Todas» para ver el historial completo.",
+    readTitle: "Todavía no hay entregas vistas",
+    readDetail: "Las entregas que abras o marques como vistas aparecen acá.",
   },
   toast: {
     enabled: "Automatizaciones activadas",

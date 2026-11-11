@@ -16,10 +16,11 @@ import { cancel, commit, commitAll, isPending, schedule as deferAction } from ".
 import { useActionError, useProjects, useScheduleText } from "./shared"
 
 type View = "active" | "paused" | "history"
-type Show = "unread" | "all"
+type Show = "unread" | "read" | "all"
 const VIEWS: readonly View[] = ["active", "paused", "history"]
 const ALL = "all"
 const NONE = "none"
+const SHOW_PARAM: Record<Show, "true" | "false" | undefined> = { unread: "true", read: "false", all: undefined }
 const ROW_MIN = 560
 const PAGE = 50
 /** Tope de `limit` del core para `GET …/schedules/runs`. */
@@ -64,14 +65,14 @@ export default function AutomationsPage() {
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set())
   const [selection, setSelection] = useState<Set<string>>(new Set())
   /**
-   * Estado de lectura cambiado en esta vista. Con «Sin ver», una entrega que se abre o se marca como vista sigue en la lista
-   * (si no, desaparecería bajo el cursor y J/K perderían el lugar) hasta que cambie el filtro.
+   * Estado de lectura cambiado en esta vista, aplicado antes de que el servidor responda. Con «Sin ver» y «Vistas» la lista se
+   * filtra por este estado; la única entrega que se conserva aunque ya no coincida es la abierta en el panel.
    */
   const [touched, setTouched] = useState<ReadonlyMap<string, RunListItem>>(new Map())
   const [marking, setMarking] = useState(false)
 
   const projectFilter = project !== ALL && project !== NONE ? project : undefined
-  const runs = useRuns({ project_id: projectFilter, unread: show === "unread" ? "true" : undefined, limit: String(limit) }, view === "history")
+  const runs = useRuns({ project_id: projectFilter, unread: SHOW_PARAM[show], limit: String(limit) }, view === "history")
   const unreadTotal = useUnreadRunCount()
 
   const setView = (next: View) => {
@@ -193,7 +194,11 @@ export default function AutomationsPage() {
     { value: NONE, label: t("filter.noProject") },
     ...projects.list.map(item => ({ value: item.id, label: item.title, avatar: item.title })),
   ]
-  const showOptions: { value: Show; label: string }[] = [{ value: "unread", label: t("filter.unread") }, { value: "all", label: t("filter.all") }]
+  const showOptions: { value: Show; label: string }[] = [
+    { value: "unread", label: t("filter.unread") },
+    { value: "read", label: t("filter.read") },
+    { value: "all", label: t("filter.all") },
+  ]
   const clearFilters = () => { setProject(ALL); resetHistory() }
   const changeProject = (next: string) => { setProject(next); resetHistory() }
   const changeShow = (next: Show) => { setShow(next); resetHistory() }
@@ -279,10 +284,11 @@ export default function AutomationsPage() {
       const local = touched.get(run.run_id)
       return local ? { ...run, read_at: local.read_at } : run
     })
-    if (show === "unread") for (const run of touched.values()) if (!ids.has(run.run_id) && byProject(run)) list.push(run)
-    return list.sort((a, b) => Date.parse(b.scheduled_for) - Date.parse(a.scheduled_for) || a.run_id.localeCompare(b.run_id))
+    if (show !== "all") for (const run of touched.values()) if (!ids.has(run.run_id) && byProject(run)) list.push(run)
+    const matches = (run: RunListItem) => show === "all" || run.run_id === runId || (run.read_at === null) === (show === "unread")
+    return list.filter(matches).sort((a, b) => Date.parse(b.scheduled_for) - Date.parse(a.scheduled_for) || a.run_id.localeCompare(b.run_id))
     // `byProject` depende solo de `project`.
-  }, [runs.data, touched, show, project])
+  }, [runs.data, touched, show, project, runId])
 
   const touch = useCallback((items: readonly RunListItem[], read: boolean) => {
     const at = new Date().toISOString()
@@ -398,9 +404,11 @@ export default function AutomationsPage() {
     if (runs.error) return <List><ErrorState error={runs.error} title={t("empty.historyErrorTitle")} onRetry={() => void runs.refetch()} /></List>
     if (projectRuns.length === 0) {
       if (project !== ALL) return <List><EmptyFiltered text={t("empty.historyFiltered")} onClear={clearFilters} /></List>
-      return show === "unread"
-        ? <List><Empty icon="done" title={t("empty.unreadTitle")} detail={t("empty.unreadDetail")} action={<Button small onClick={() => { resetHistory(); setShow("all") }}>{t("filter.showAll")}</Button>} /></List>
-        : <List><Empty icon="automations" title={t("empty.historyTitle")} detail={t("empty.historyDetail")} action={<Button small onClick={() => setView("active")}>{t("view.active")}</Button>} /></List>
+      if (show !== "all") {
+        const unseen = show === "unread"
+        return <List><Empty icon={unseen ? "done" : "automations"} title={t(unseen ? "empty.unreadTitle" : "empty.readTitle")} detail={t(unseen ? "empty.unreadDetail" : "empty.readDetail")} action={<Button small onClick={() => { resetHistory(); setShow("all") }}>{t("filter.showAll")}</Button>} /></List>
+      }
+      return <List><Empty icon="automations" title={t("empty.historyTitle")} detail={t("empty.historyDetail")} action={<Button small onClick={() => setView("active")}>{t("view.active")}</Button>} /></List>
     }
     const total = runs.data?.total ?? 0
     const loaded = runs.data?.items.length ?? 0
