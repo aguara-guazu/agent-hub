@@ -25,6 +25,8 @@ import { LISTED_SESSION_SQL, channelActivitySql, channelUsed, cleanAgents, markS
 import { recordLink } from "./usage-consumption/links.js"
 
 const exec = promisify(execFile)
+/** Containment by relative path so the check follows the platform separator and `/repo2` is not inside `/repo`. */
+const within=(path:string,folder:string)=>{const rel=relative(folder,path);return rel==='' || (rel!=='..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))}
 const key = z.string().min(32).max(200)
 const nickname = z.string().max(200).transform(s => s.normalize('NFKC').trim().replace(/ +/g, ' ')).pipe(z.string().min(2).max(40)
   .refine(s => !/[\p{Cc}\p{Cf}]/u.test(s), 'El nick no puede contener caracteres invisibles ni de control')
@@ -232,6 +234,12 @@ export class LocalChat {
     }
     return plans.map(p=>String(p.id))
   }
+  /** The registered path fixes the project scope: with a known cwd, an explicit path may only narrow it. */
+  private async joinPath(cwd:string|null,path?:string|null) {
+    if(!path || !cwd)return path ?? cwd
+    const [real,base]=await Promise.all([realpath(resolve(path)).catch(()=>null),realpath(resolve(cwd)).catch(()=>resolve(cwd))])
+    return real && within(real,base) ? path : cwd
+  }
   private async project(...paths: string[]) {
     let best: { id:string; length:number } | null = null
     for (const path of paths) {
@@ -241,7 +249,7 @@ export class LocalChat {
     const projects = await this.db.query("SELECT id,data FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND json_type(data,'$.folders')='array'")
     for (const project of projects) for (const raw of project.data.folders as string[]) {
       const folder = await realpath(resolve(raw)).catch(()=>resolve(raw))
-      for (const path of paths) if ((path===folder || path.startsWith(`${folder}/`)) && (!best || folder.length>best.length)) best={ id:project.id,length:folder.length }
+      for (const path of paths) if (within(path,folder) && (!best || folder.length>best.length)) best={ id:project.id,length:folder.length }
     }
     return best
   }
@@ -811,6 +819,16 @@ export class LocalChat {
     if(channel?.kind===INTERHUB_CHANNEL_KIND)return await channelMembership(sql,author.id,thread.channel_id)!==null && await channelMembership(sql,notice.session_id,thread.channel_id)!==null
     return thread.channel_id===author.channel_id && (await sql.query('SELECT 1 FROM chat_sessions WHERE id=$1 AND channel_id=$2 AND removed_at IS NULL',[notice.session_id,thread.channel_id])).length>0
   }
+  /** hub_resumed outlives its stop (already `resumed`); the other causes need an open stop and a target not invalidated. */
+  private async hubStopNoticeValid(sql:Sql,alert:Record<string,any>) {
+    if(!(await sql.query('SELECT 1 FROM chat_sessions WHERE id=$1 AND removed_at IS NULL',[alert.recipient_id])).length)return false
+    const payload=typeof alert.payload==='string' ? (()=>{try{return JSON.parse(alert.payload)}catch{return null}})() : alert.payload
+    const stopId=payload?.stop_id
+    if(typeof stopId!=='string')return false
+    if(alert.cause==='hub_resumed')return true
+    return (await sql.query(`SELECT 1 FROM hub_stops h JOIN hub_stop_targets t ON t.stop_id=h.id
+      WHERE h.id=$1 AND h.state NOT IN ('resumed','postponed','cancelled') AND t.session_id=$2 AND t.invalidated_at IS NULL LIMIT 1`,[stopId,alert.recipient_id])).length>0
+  }
   /** Presence is deliberately not an authorization condition: an offline leader retains a durable notice. */
   private async turnAlertRoute(sql:Sql,turn:Record<string,any>) {
     const source=(await sql.query(`SELECT s.* FROM chat_sessions s JOIN chat_channels c ON c.id=s.channel_id
@@ -854,6 +872,7 @@ export class LocalChat {
       if(!route)return
       if((await sql.query("SELECT 1 FROM chat_status_notices WHERE session_id=$1 AND turn_id=$2 LIMIT 1",[c.session_id,`liveness:${generation}`])).length)return
       await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Superado por aviso de liveness' WHERE session_id=$1 AND recipient_id=$2 AND cause<>'liveness' AND handled_at IS NULL AND cancelled_at IS NULL",[c.session_id,route.recipient.id])
+      await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Superado por liveness de una generación posterior' WHERE session_id=$1 AND recipient_id=$2 AND cause='liveness' AND turn_id<>$3 AND handled_at IS NULL AND cancelled_at IS NULL",[c.session_id,route.recipient.id,`liveness:${generation}`])
       const text=`${c.label} is not reachable: ${reason==="hub_restart"?"the Hub restarted and no longer owns its process":reason==="unowned"?"the Hub no longer controls the current process; cause unconfirmed":"its process exited or failed"} (runtime ${runtime.state}, since ${runtime.updated_at}). Mentions to it will not be delivered. Relaunch it with team_control start using the current generation from team_status, then re-check pending requests in its work thread. This notice replaces pending response_due and delivery_stalled notices for this worker: after relaunching, re-check every request and mention to it that is still pending. A registered wait does not cover a lost process. Never read its terminal, output, logs or transcript. Private notice, not a thread.`
       await sql.query(`INSERT INTO chat_status_notices(id,session_id,turn_id,cause,channel_id,team_id,recipient_id,work_thread_id,text,created_at)
         VALUES($1,$2,$3,'liveness',$4,$5,$6,$7,$8,$9)`,[randomUUID(),c.session_id,`liveness:${generation}`,c.channel_id,c.team_id,route.recipient.id,c.work_thread_id,text,new Date(now).toISOString()])
@@ -876,6 +895,10 @@ export class LocalChat {
           // Owed to the displaced session even while it is offline; only a removal makes it moot.
           if((await sql.query("SELECT 1 FROM chat_sessions WHERE id=$1 AND removed_at IS NULL",[alert.recipient_id])).length)continue
           await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Destinatario expulsado' WHERE id=$1",[alert.id]);continue
+        }
+        if(['stop_requested','stop_grace','hub_resumed'].includes(alert.cause)) {
+          if(await this.hubStopNoticeValid(sql,alert))continue
+          await sql.query("UPDATE chat_status_notices SET cancelled_at=now(),error='Parada superada, objetivo invalidado o destinatario expulsado' WHERE id=$1",[alert.id]);continue
         }
         if(alert.cause==='response_due') {
           if(await this.responseAlertValid(sql,alert))continue
@@ -938,7 +961,7 @@ export class LocalChat {
     if (operation === 'chat_join') {
       check(agent, 'Sólo los agentes pueden registrarse', 403)
       const joined=async(result:Record<string,any>)=>{await markSessionActivity(this.db,result.session.id);return this.enrollmentView(result)}
-      if (input.session_key) return joined(await this.register({ ...agent, cwd: input.path ?? agent.cwd }, input.session_key))
+      if (input.session_key) return joined(await this.register({ ...agent, cwd: await this.joinPath(agent.cwd,input.path) }, input.session_key))
       // Native identities must retain their hook-issued key; fallback conversations create their own identity.
       const native = (await this.db.query('SELECT * FROM chat_sessions WHERE id=$1 AND agent_id=$2',[agent.session_id, agent.agent_id]))[0]
       if (native) {
@@ -946,7 +969,7 @@ export class LocalChat {
         await this.joinableChannel(channel)
         return joined(await this.registration(native,channel,undefined,true))
       }
-      return joined(await this.register({ ...agent, cwd: input.path ?? agent.cwd }, randomUUID()))
+      return joined(await this.register({ ...agent, cwd: await this.joinPath(agent.cwd,input.path) }, randomUUID()))
     }
     if (operation === 'chat_channels') {
       // Folder assignments can be added after sessions and channels already exist. Inter-hub channels have no folder:
