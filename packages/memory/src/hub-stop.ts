@@ -93,8 +93,17 @@ export class HubStopCoordinator {
     const delay = Math.max(1_000, at - this.now())
     this.timer = setTimeout(() => {
       void this.exclusive(async () => {
-        await this.advance(stop.id)
+        try {
+          await this.advance(stop.id)
+        } catch (error) {
+          this.log(stop.id, "blocked", { error_code: "advance_failed", error: error instanceof Error ? error.message : String(error) })
+        }
         this.arm(await this.requireStop(stop.id))
+      }).catch(error => {
+        this.log(stop.id, "blocked", { error_code: "rearm_failed", error: error instanceof Error ? error.message : String(error) })
+        // requireStop or arm failed: re-arm from the last known row after a fixed 5 s backoff.
+        this.timer = setTimeout(() => this.arm(stop), 5_000)
+        this.timer.unref()
       })
     }, delay)
     this.timer.unref()
@@ -812,14 +821,18 @@ export class HubStopCoordinator {
   }
 
   private async terminal(stop: StopRow, state: "postponed" | "cancelled", reason: string): Promise<void> {
-    clearTimeout(this.timer)
-    this.timer = undefined
-    if (stop.gate_owner === "drain") throw new MemoryError(409, "El drenaje ya tomó la compuerta; esperá su resolución.")
+    if (stop.gate_owner === "drain") {
+      this.arm(stop)
+      throw new MemoryError(409, "El drenaje ya tomó la compuerta; esperá su resolución.")
+    }
     const reopened = await this.reopenGate(stop.id)
     if (!reopened) {
       await this.deps.db.transaction(sql => this.event(sql, stop.id, "blocked", { error_code: "admission_reopen_unconfirmed", requested_terminal: state }))
+      this.arm(await this.requireStop(stop.id))
       return
     }
+    clearTimeout(this.timer)
+    this.timer = undefined
     this.deps.fleet?.endCoordinatedStop(stop.id)
     await this.deps.db.transaction(async sql => {
       await sql.query("UPDATE hub_stops SET state=$2,terminal_reason=$3,gate_owner=NULL,retry_not_before=$4,updated_at=now() WHERE id=$1",
