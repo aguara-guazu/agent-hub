@@ -27,7 +27,7 @@ export interface DecisionMutation {
   blocked_uncertain?: number[]
 }
 
-/** `code` es cerrado: digest_mismatch | expired | revoked | superseded | locked | authority_unavailable | bad_selection | not_revisable | no_decision | not_reproposable | not_retryable. */
+/** `code` es cerrado: digest_mismatch | expired | revoked | superseded | locked | authority_unavailable | bad_selection | not_revisable | pending_dispatch | no_decision | not_reproposable | not_retryable. */
 export class DecisionReviewError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); this.name = 'DecisionReviewError' }
 }

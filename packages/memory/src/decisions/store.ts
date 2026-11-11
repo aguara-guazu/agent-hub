@@ -328,14 +328,16 @@ export class DecisionStore {
   }
 
   /**
-   * Nueva revisión por corrección de un ítem. Solo se corrigen ítems `pending`, nunca despachados: lo aprobado, despachado, incierto o
-   * ya exitoso conserva su identidad y no se reemplaza. La anterior queda `superseded` y sin efecto; la nueva copia los ítems pendientes,
+   * Nueva revisión por corrección de un ítem. Solo se corrigen ítems `pending`, nunca despachados: lo despachado, incierto o
+   * ya exitoso conserva su identidad y no se reemplaza. Se rechaza con `request_has_pending_dispatch` mientras haya intenciones
+   * `pending` o `prepared`: lo aprobado no se copia a la revisión y su autoridad vigente quedaría en la solicitud reemplazada. La anterior queda `superseded` y sin efecto; la nueva copia los ítems pendientes,
    * conserva su `operation_key` y exige aprobar de nuevo.
    */
   reviseRequest(requestId: string, ordinal: number, effect: unknown, expiresAt?: string): { request_id: string; revision: number } {
     return this.tx(() => {
       const old = this.request(requestId)
       if (old.state !== 'open') throw new DecisionError('request_not_open')
+      if (this.get(`SELECT 1 FROM action_intents WHERE request_id = ? AND state IN ('pending','prepared')`, requestId)) throw new DecisionError('request_has_pending_dispatch')
       const items = this.all<ItemRow>('SELECT * FROM decision_items WHERE request_id = ? ORDER BY ordinal', requestId)
       const target = items.find(item => item.ordinal === ordinal)
       if (!target || target.state !== 'pending') throw new DecisionError('item_not_revisable')
@@ -564,7 +566,7 @@ export class DecisionStore {
     const selection = (wanted: number[] | 'all'): ItemRow[] | null => {
       const pending = items.filter(item => item.state === 'pending')
       if (wanted === 'all') return pending
-      const chosen = wanted.map(ordinal => items.find(item => item.ordinal === ordinal))
+      const chosen = [...new Set(wanted)].map(ordinal => items.find(item => item.ordinal === ordinal))
       return chosen.every(item => item?.state === 'pending') ? chosen as ItemRow[] : null
     }
     const chosen = selection(parsed.items)

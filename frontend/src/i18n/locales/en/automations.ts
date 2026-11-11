@@ -297,6 +297,7 @@ const automations = {
       locked: "The request is locked after too many failed attempts.",
       authority_unavailable: "Who authorized this request can't be verified, for example after restoring a backup. It can't be approved or proposed again until it's reconciled.",
       bad_selection: "The selection isn't valid.",
+      pending_dispatch: "Wait for the approved items to be sent, then correct again.",
     },
     summary: {
       none: "No actions",

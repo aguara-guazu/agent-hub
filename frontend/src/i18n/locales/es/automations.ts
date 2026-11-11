@@ -294,6 +294,7 @@ const automations = {
       locked: "La solicitud está bloqueada por demasiados intentos fallidos.",
       authority_unavailable: "No se puede verificar quién autorizó esta solicitud, por ejemplo tras restaurar un respaldo. No se puede aprobar ni volver a proponer hasta reconciliarla.",
       bad_selection: "La selección no es válida.",
+      pending_dispatch: "Esperá a que se envíe lo aprobado y volvé a corregir.",
     },
     summary: {
       none: "Sin acciones",
