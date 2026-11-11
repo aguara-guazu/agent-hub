@@ -516,17 +516,20 @@ export class MemoryStore {
     })
   }
 
-  async updateRecord(recordId: string, raw: unknown) {
-    const input = parse(recordInput, raw)
+  /** `evidence_ids` omitted keeps the stored evidence; an explicit list (even empty) replaces it. */
+  async updateRecord(recordId: string, raw: unknown, origin = 'user') {
+    const input = parse(recordInput.extend({ evidence_ids: recordInput.shape.evidence_ids.unwrap().optional() }), raw)
     return this.db.transaction(async sql => {
       const row = (await sql.query('SELECT * FROM collection_records WHERE id=$1', [parse(id, recordId)]))[0]
       check(row, 'Registro inexistente', 404)
       const collection = await requireWritableEntity(sql, row.collection_id, "collection")
       await this.validateValues(sql, parse(fieldsSchema, collection.data.fields), input.values)
-      await validateEvidence(sql, input.evidence_ids)
-      await sql.query('DELETE FROM record_evidence WHERE record_id=$1', [recordId])
-      for (const ev of new Set(input.evidence_ids)) await sql.query('INSERT INTO record_evidence VALUES($1,$2)', [recordId, ev])
-      await audit(sql, collection.id, 'record.updated', 'user', row.values, input.values)
+      if (input.evidence_ids) {
+        await validateEvidence(sql, input.evidence_ids)
+        await sql.query('DELETE FROM record_evidence WHERE record_id=$1', [recordId])
+        for (const ev of new Set(input.evidence_ids)) await sql.query('INSERT INTO record_evidence VALUES($1,$2)', [recordId, ev])
+      }
+      await audit(sql, collection.id, 'record.updated', origin, row.values, input.values)
       return (await sql.query(`UPDATE collection_records SET "values"=$2,origin='manual',updated_at=clock_timestamp() WHERE id=$1 RETURNING *`, [recordId, JSON.stringify(input.values)]))[0]
     })
   }
