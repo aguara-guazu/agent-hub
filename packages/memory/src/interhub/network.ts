@@ -342,7 +342,8 @@ export class InterhubNetwork {
     check(origin, "El origen del evento no pertenece al canal", 403)
     const identity = identityOf(origin.peer_identity)
     check(Date.parse(event.occurred_at) <= Date.now() + FUTURE_SKEW_MS, "Fecha de evento inválida", 403)
-    check(!origin.removed_at || Date.parse(event.occurred_at) <= Date.parse(String(origin.removed_at)), "El origen ya no pertenece al canal", 403)
+    // occurred_at is chosen by the origin, so a removed origin is only accepted for events this replica already stores (idempotent replays).
+    if (origin.removed_at) check((await this.store.db.query("SELECT 1 FROM interhub_events WHERE channel_id=$1 AND id=$2", [event.channel_id, event.id]))[0], "El origen ya no pertenece al canal", 403)
     const { signature: proof, ...unsigned } = event
     check(event.origin_peer_public_key === identity.signing && validSignature(unsigned, proof, identity), "Firma de evento inter-hub inválida", 403)
     return this.authorize(event)
