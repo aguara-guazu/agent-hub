@@ -118,6 +118,7 @@ export class ScheduleRuntime {
   private inFlight = new Map<string, { controller: AbortController; done: Promise<void> }>()
   private periodic = new Map<string, { task: () => Promise<unknown>; everyMs: number; last: number; running?: Promise<void> | undefined }>()
   private lastActive = ''
+  private synthesisReserved = 0
   constructor(private o: ScheduleRuntimeOptions) {}
 
   private now() { return (this.o.now?.() ?? new Date()).getTime() }
@@ -175,8 +176,15 @@ export class ScheduleRuntime {
     this.automationsWere = true
     await this.checkZone()
     const now = this.now()
-    for (const schedule of await this.store.expiredSchedules(isoAt(now))) { await this.store.touchSchedule(schedule.id, { state: 'expired', next_run_at: null }); this.events.emit('schedule.changed', { schedule_id: schedule.id, type: 'schedule.cancelled' }) }
-    for (const schedule of await this.store.dueSchedules(isoAt(now))) await this.fire(schedule, now)
+    // A failing schedule must not abort the tick for the others: it stays due and is retried on the next pass.
+    for (const schedule of await this.store.expiredSchedules(isoAt(now))) {
+      try { await this.store.touchSchedule(schedule.id, { state: 'expired', next_run_at: null }); this.events.emit('schedule.changed', { schedule_id: schedule.id, type: 'schedule.cancelled' }) }
+      catch { /* retried on the next tick */ }
+    }
+    for (const schedule of await this.store.dueSchedules(isoAt(now))) {
+      try { await this.fire(schedule, now) }
+      catch { /* retried on the next tick */ }
+    }
     // Periodic tasks may wait on the network: they run in the background, never overlap themselves and never delay launching a due run.
     for (const entry of this.periodic.values()) {
       if (entry.running || now - entry.last < entry.everyMs || this.o.admission?.isClosed()) continue
@@ -248,7 +256,7 @@ export class ScheduleRuntime {
       if (schedule.misfire === 'skip' || now > deadline) { state = 'skipped'; skip = 'misfire_out_of_grace' }
       else if (schedule.grace_policy === 'until_next' && following !== null && following - now <= SUPERSEDE_MS) { state = 'skipped'; skip = 'superseded' }
     }
-    if (state === 'pending' && await this.store.liveRunOf(schedule.id)) { state = 'skipped'; skip = 'overlap' }
+    if (state === 'pending' && await this.store.liveRunOf(schedule.id, schedule.recurrence.type === 'once')) { state = 'skipped'; skip = 'overlap' }
     const previous = await this.store.lastRunOf(schedule.id)
     const definition = { ...snapshotOf(schedule), covered_since: (await this.store.lastDeliveredRun(schedule.id)) ?? null,
       extend_from: previous?.state === 'skipped' && ['misfire_out_of_grace', 'superseded'].includes(previous.skip_reason ?? '') ? previous.scheduled_for : null }
@@ -268,7 +276,7 @@ export class ScheduleRuntime {
       await this.execute(claimed, controller, { deferredUntil: resumeRunning || run.state !== 'deferred' ? null : run.next_attempt_at, previousQuota: run.quota, wasInterrupted: run.state === 'interrupted' })
       const final = await this.store.run(run.id)
       if (final && TERMINAL_RUN_STATES.includes(final.state)) this.events.emit('run.finished', { run_id: run.id, state: final.state })
-    })().catch(() => undefined).finally(() => { this.inFlight.delete(run.id); void this.publishActive() })
+    })().catch(() => undefined).finally(() => { this.inFlight.delete(run.id); this.publishActive().catch(() => undefined) })
     this.inFlight.set(run.id, { controller, done })
   }
 
@@ -347,16 +355,20 @@ export class ScheduleRuntime {
     const engine = synthesizer ? await synthesizer.engine() : null
     if (!synthesizer || !engine) return null
     if (engine.cli && this.o.usage && await this.deferForQuota(run, engine.cli, engine.model, meta)) return 'stop'
-    if (await this.store.runningSynthesisCount() >= MAX_SYNTHESIS) { await this.store.setRun(run.id, generation, { state: 'pending' }); return 'stop' }
+    // The reservation is taken synchronously after the count so concurrent runs cannot all pass the cap before any attempt row exists.
+    const running = await this.store.runningSynthesisCount()
+    if (running + this.synthesisReserved >= MAX_SYNTHESIS) { await this.store.setRun(run.id, generation, { state: 'pending' }); return 'stop' }
+    this.synthesisReserved++
     const deadline = this.now() + template.max_runtime_ms
-    await this.store.startAttempt({ run_id: run.id, generation, phase: 'synthesize', profile: 'synthesis', cli: engine.cli, model: engine.model, boot_id: this.bootId, deadline_at: isoAt(deadline) })
+    try { await this.store.startAttempt({ run_id: run.id, generation, phase: 'synthesize', profile: 'synthesis', cli: engine.cli, model: engine.model, boot_id: this.bootId, deadline_at: isoAt(deadline) }) }
+    finally { this.synthesisReserved-- }
     await this.store.recordPhase({ run_id: run.id, phase: 'synthesize', generation, state: 'started' })
     const visible = pkg.sections.filter(section => section.model_visible !== false).map(({ id, title, data }) => ({ id, title, data }))
     const limit = template.synthesize!.max_input_chars
     const content = JSON.stringify(visible).length > limit ? visible.map(section => ({ ...section, data: JSON.stringify(section.data).slice(0, Math.floor(limit / visible.length)) })) : visible
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(template.max_runtime_ms)])
     try {
-      const result = await synthesizer.run({ system: template.synthesize!.system, content, schema: template.synthesize!.output, signal, onSpawn: info => { void this.store.setAttempt(run.id, generation, { state: 'running', ...info }) } })
+      const result = await synthesizer.run({ system: template.synthesize!.system, content, schema: template.synthesize!.output, signal, onSpawn: info => { this.store.markAttemptRunning(run.id, generation, info).catch(() => undefined) } })
       await this.store.setAttempt(run.id, generation, { state: 'exited', ended_at: isoAt(this.now()) })
       return { ...result, cli: engine.cli ?? 'engine' }
     } catch (error) {

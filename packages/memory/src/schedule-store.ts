@@ -138,8 +138,9 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   }
   async run(id: string): Promise<RunRow | undefined> { return (await this.db.query<RunRow>('SELECT * FROM schedule_runs WHERE id=$1', [id]))[0] }
   async lastRunOf(scheduleId: string): Promise<RunRow | undefined> { return (await this.db.query<RunRow>('SELECT * FROM schedule_runs WHERE schedule_id=$1 ORDER BY scheduled_for DESC LIMIT 1', [scheduleId]))[0] }
-  async liveRunOf(scheduleId: string): Promise<RunRow | undefined> {
-    return (await this.db.query<RunRow>(`SELECT * FROM schedule_runs WHERE schedule_id=$1 AND state IN ('pending','running','deferred','interrupted') ORDER BY scheduled_for LIMIT 1`, [scheduleId]))[0]
+  /** `ignoreRunNow` leaves out manual executions, which never count as an overlap for a one-shot occurrence. */
+  async liveRunOf(scheduleId: string, ignoreRunNow = false): Promise<RunRow | undefined> {
+    return (await this.db.query<RunRow>(`SELECT * FROM schedule_runs WHERE schedule_id=$1 AND state IN ('pending','running','deferred','interrupted')${ignoreRunNow ? " AND trigger<>'run_now'" : ''} ORDER BY scheduled_for LIMIT 1`, [scheduleId]))[0]
   }
   /** Takes over a run left in `running` by a previous process: the next generation fences the old one. */
   async reclaimRunning(id: string, generation: number): Promise<RunRow | undefined> {
@@ -253,6 +254,11 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   async setAttempt(runId: string, generation: number, patch: Partial<{ state: AttemptState; host_pid: number; host_started: string | null; cli_pid: number; cli_started: string | null; exit_code: string; ended_at: string }>) {
     const entries = Object.entries(patch), sets = entries.map(([key], i) => `${key}=$${i + 3}`)
     await this.db.query(`UPDATE schedule_run_attempts SET ${sets.join(',')} WHERE run_id=$1 AND generation=$2`, [runId, generation, ...entries.map(([, value]) => value)])
+  }
+  /** Moves an attempt to `running` only while it is still `starting`: a late spawn report never revives a settled attempt. */
+  async markAttemptRunning(runId: string, generation: number, info: Partial<{ host_pid: number; host_started: string | null; cli_pid: number; cli_started: string | null }>) {
+    const entries = Object.entries(info), sets = ["state='running'", ...entries.map(([key], i) => `${key}=$${i + 3}`)]
+    await this.db.query(`UPDATE schedule_run_attempts SET ${sets.join(',')} WHERE run_id=$1 AND generation=$2 AND state='starting'`, [runId, generation, ...entries.map(([, value]) => value)])
   }
   async attemptsToReconcile(bootId: string) {
     return this.db.query<Row>("SELECT * FROM schedule_run_attempts WHERE state IN ('starting','running') AND (boot_id IS NULL OR boot_id<>$1)", [bootId])
