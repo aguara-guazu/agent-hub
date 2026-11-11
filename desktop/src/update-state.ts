@@ -119,8 +119,8 @@ export class UpdateStore {
     return mergeBlacklistSidecars(this.dir).pending
   }
 
-  /** Una versión ya instalada o más vieja que la máxima instalada nunca se descarga; la lista negra la bloquea (por versión, o por versión y artefacto cuando se conoce el digest). */
-  allows(candidate: string, current: string, digest?: string): boolean {
+  /** Una versión ya instalada o más vieja que la máxima instalada nunca se descarga; la lista negra la bloquea (por versión, o por versión y artefacto cuando se conoce el digest; con `null` sólo las entradas sin digest). */
+  allows(candidate: string, current: string, digest?: string | null): boolean {
     const pending = this.pendingBlacklist()
     const state = this.read()
     return isStrictSemver(candidate) && isStrictSemver(current)

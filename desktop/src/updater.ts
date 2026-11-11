@@ -63,7 +63,11 @@ export function isLoopbackUrl(value: string): boolean {
 /** Ignora (y registra) cualquier override de API o repositorio que no apunte a loopback. */
 export function resolveFeed(input: { apiBase?: string | undefined; repo?: string | undefined }, log: (line: string) => void = () => undefined): Feed {
   if (input.apiBase && isLoopbackUrl(input.apiBase)) return { apiBase: input.apiBase.replace(/\/+$/, ''), repo: input.repo || DEFAULT_REPO, loopback: true }
-  if (input.apiBase) log(`[updater] se ignora AGENTHUB_UPDATE_API: sólo se admite loopback (${new URL(input.apiBase, 'http://invalid').hostname})`)
+  if (input.apiBase) {
+    let host: string
+    try { host = new URL(input.apiBase, 'http://invalid').hostname } catch { host = input.apiBase }
+    log(`[updater] se ignora AGENTHUB_UPDATE_API: sólo se admite loopback (${host})`)
+  }
   if (input.repo && input.repo !== DEFAULT_REPO) log('[updater] se ignora AGENTHUB_UPDATE_REPO: sólo se admite junto con un servidor en loopback')
   return { apiBase: DEFAULT_API_BASE, repo: DEFAULT_REPO, loopback: false }
 }
@@ -381,6 +385,7 @@ export function stagePathFor(bundlePath: string, transactionId: string): string 
  */
 export async function stageDmg(dmgPath: string, stagePath: string, expectedBundleId: string, expected: BundleExpectation, run: RunFn = defaultRun): Promise<void> {
   const mountPoint = await mkdtemp(join(tmpdir(), 'agenthub-mount-'))
+  let staged = false
   try {
     await run('hdiutil', ['attach', '-nobrowse', '-readonly', '-mountpoint', mountPoint, dmgPath])
     const { stdout } = await run('/bin/ls', [mountPoint])
@@ -393,6 +398,7 @@ export async function stageDmg(dmgPath: string, stagePath: string, expectedBundl
       await verifyStagedBundle(stagePath, expectedBundleId, expected, run)
       // El stage tiene que ser durable antes de que el journal o el swap dependan de él.
       if (existsSync(stagePath)) await fsyncTree(stagePath)
+      staged = true
     } catch (error) {
       await removeTree(run, stagePath)
       throw error
@@ -400,7 +406,7 @@ export async function stageDmg(dmgPath: string, stagePath: string, expectedBundl
   } finally {
     await run('hdiutil', ['detach', mountPoint, '-force']).catch(() => undefined)
     await rm(mountPoint, { recursive: true, force: true }).catch(() => undefined)
-    await rm(dirname(dmgPath), { recursive: true, force: true }).catch(() => undefined)
+    if (staged) await rm(dirname(dmgPath), { recursive: true, force: true }).catch(() => undefined)
   }
 }
 
@@ -501,8 +507,8 @@ export interface TrustProvider {
 
 export interface UpdateGate {
   isEnabled(): boolean
-  /** Con el digest del artefacto, una entrada de lista negra con otro digest no bloquea; sin él, bloquea por versión. */
-  allows(candidate: string, current: string, digest?: string): boolean
+  /** Con el digest del artefacto, una entrada de lista negra con otro digest no bloquea; sin él, bloquea por versión; con `null` sólo bloquean las entradas sin digest. */
+  allows(candidate: string, current: string, digest?: string | null): boolean
 }
 
 export class AutoUpdater {
@@ -537,7 +543,7 @@ export class AutoUpdater {
     if (!release) return { state: 'up-to-date', version: this.deps.currentVersion }
     if (compareVersions(release.version, this.deps.currentVersion) <= 0) return { state: 'up-to-date', version: this.deps.currentVersion }
     // Nunca bajar de la versión máxima instalada ni reintentar una que ya falló.
-    if (this.deps.gate && !this.deps.gate.allows(release.version, this.deps.currentVersion)) {
+    if (this.deps.gate && !this.deps.gate.allows(release.version, this.deps.currentVersion, null)) {
       this.log(`[updater] v${release.version}: omitida (ya instalada antes o marcada como fallida)`)
       return { state: 'up-to-date', version: this.deps.currentVersion }
     }
@@ -546,6 +552,12 @@ export class AutoUpdater {
     const asset = assetName ? release.assets.find((entry) => entry.name === assetName) : undefined
     if (this.strategy === 'notify' || !asset || !this.canWriteInstall()) {
       return { state: 'available', version: release.version, page: release.page }
+    }
+    if (this.strategy === 'dmg') {
+      try { await verifyHelper(this.deps.swapHelper?.() ?? '', this.deps.arch, this.deps.run ?? defaultRun) } catch (error) {
+        this.log(`[updater] v${release.version}: no se descarga, el helper de intercambio no es válido (${error instanceof Error ? error.message : String(error)})`)
+        return { state: 'available', version: release.version, page: release.page }
+      }
     }
     let directory: string | undefined
     try {
