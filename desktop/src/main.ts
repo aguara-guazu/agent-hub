@@ -1,12 +1,12 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { execFile } from 'node:child_process'
 import { release, userInfo } from 'node:os'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, shell, systemPreferences, Tray } from 'electron'
 import { buildReport, LogFile, tailLog } from '@agenthub/memory/report'
 
 import { waitForDesktopSession } from './session.js'
@@ -18,6 +18,8 @@ import { activeLanguage, isLanguagePreference, onLanguageChange, resolveLanguage
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus, type OpenFileResult } from './ipc.js'
 import { NavigationRelay } from './navigation.js'
+import { RecordingController, type FinishedRecording, type RecordingRequest, type RecordingState } from "./recording.js"
+import { openRecorderWindow } from "./recorder-window.js"
 import { AutostartOffer } from './autostart-offer.js'
 import { ClockWake } from './clock-wake.js'
 import { holdLimitFor, KeepAwake } from './keep-awake.js'
@@ -419,6 +421,72 @@ async function coreFetch(path: string, init: RequestInit = {}): Promise<Response
   return response
 }
 
+/** La captura de audio del sistema sólo está verificada en macOS; en las demás plataformas la función no se ofrece. */
+const RECORDING_SUPPORTED = process.platform === "darwin"
+const recordingsDir = join(stateDir, "recordings")
+let recordingAwake: number | null = null
+
+async function microphoneAllowed(): Promise<boolean> {
+  if (process.platform !== "darwin") return true
+  const status = systemPreferences.getMediaAccessStatus("microphone")
+  if (status === "granted") return true
+  // Con firma ad hoc cada versión nueva vuelve a `not-determined`: el sistema pregunta otra vez.
+  return status === "not-determined" ? await systemPreferences.askForMediaAccess("microphone") : false
+}
+
+const recording = new RecordingController({
+  root: recordingsDir,
+  appVersion: app.getVersion(),
+  now: () => new Date(),
+  newId: () => randomUUID(),
+  microphoneAllowed,
+  openRecorder: () => openRecorderWindow({ preload: paths.recorderPreloadPath, page: paths.recorderPagePath }, {
+    onTrackStarted: (track, epochMs) => recording.trackStarted(track, epochMs),
+    onTrackFailed: (track, message) => recording.trackFailed(track, message),
+    onChunk: (track, data) => recording.chunk(track, data),
+    onLevels: () => undefined,
+  }),
+  mkdir: async path => { await mkdir(path, { recursive: true, mode: 0o700 }) },
+  append: (path, data) => appendFile(path, data, { mode: 0o600 }),
+  writeJson: (path, value) => writeFile(path, JSON.stringify(value, null, 2), { mode: 0o600 }),
+  setTimer: (callback, ms) => setTimeout(callback, ms),
+  clearTimer: handle => clearTimeout(handle as NodeJS.Timeout),
+  onChange: state => onRecordingChange(state),
+  onLimit: finished => { notify(t("recording.limitTitle"), t("recording.limitBody")); void recordingFinished(finished) },
+  log: line => coreLog.write(line),
+})
+
+function onRecordingChange(state: RecordingState): void {
+  const active = state.phase !== "idle"
+  if (active && recordingAwake === null) recordingAwake = powerSaveBlocker.start("prevent-app-suspension")
+  if (!active && recordingAwake !== null) { powerSaveBlocker.stop(recordingAwake); recordingAwake = null }
+  if (process.platform === "darwin") tray?.setTitle(active ? "●" : "")
+  refreshTray()
+}
+
+async function startRecording(request: RecordingRequest): Promise<RecordingState> {
+  if (!RECORDING_SUPPORTED || quitting) return recording.state
+  const state = await recording.start(request)
+  if (state.error === "microphone_denied") notify(t("recording.micDeniedTitle"), t("recording.micDeniedBody"))
+  else if (state.error === "capture_failed") notify(t("recording.failedTitle"), t("recording.failedBody"))
+  return state
+}
+
+async function stopRecording(): Promise<void> {
+  await recordingFinished(await recording.stop())
+}
+
+async function recordingFinished(finished: FinishedRecording | null): Promise<void> {
+  if (!finished) { notify(t("recording.emptyTitle"), t("recording.emptyBody")); return }
+  const minutes = Math.max(1, Math.round((Date.parse(finished.meta.ended_at ?? finished.meta.started_at) - Date.parse(finished.meta.started_at)) / 60_000))
+  coreLog.write(`[recording] guardada ${finished.meta.id} (${minutes} min) en ${finished.directory}`)
+  notify(t("recording.savedTitle"), t("recording.savedBody", { title: finished.meta.title, minutes }))
+}
+
+function manualRecordingTitle(): string {
+  return t("recording.manualTitle", { date: new Intl.DateTimeFormat(activeLanguage(), { dateStyle: "medium", timeStyle: "short" }).format(new Date()) })
+}
+
 const keepAwake = new KeepAwake({
   blocker: powerSaveBlocker,
   setTimer: (callback, ms) => setTimeout(callback, ms),
@@ -599,6 +667,7 @@ function startHubStop(intent: StopIntent, onView: (view: HubStopView) => void, b
 
 async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<boolean> {
   if (quitting || updateExiting) return false
+  if (recording.active) return postpone(update.version, [{ code: 'recording_active' }])
   // NSIS closes executables in the installation folder. Wait automatically rather
   // than breaking a client's live stdio MCP connection or asking the user to act.
   if (update.strategy === 'nsis' && await updater.bridgesAtRisk() > 0) return postpone(update.version, [{ code: 'mcp_bridges' }])
@@ -1253,6 +1322,7 @@ function refreshTray(): void {
     showShortcut: { label: SHOW_WINDOW_SHORTCUT_LABEL, registered: showWindowShortcutRegistered },
     clientRestart: Boolean(pendingClientRestart),
     quitStatus: quitStatusLine(),
+    recording: RECORDING_SUPPORTED ? { title: recording.active ? recording.state.title : null, busy: recording.state.phase === "starting" || recording.state.phase === "stopping" } : null,
   })
   tray.setContextMenu(Menu.buildFromTemplate(template.map((item): Electron.MenuItemConstructorOptions => {
     if (item.type === 'separator') return { type: 'separator' }
@@ -1301,6 +1371,8 @@ function handleTrayAction(action: TrayAction): void {
   else if (action === 'toggle-autostart') autostart.setEnabled(!safeAutostart())
   else if (action === 'restart-core') void restartCore()
   else if (action === 'restart-client') void confirmAndRestartClient()
+  else if (action === 'recording-start') void startRecording({ title: manualRecordingTitle() })
+  else if (action === 'recording-stop') void stopRecording()
   else if (action === 'cancel-quit') quitRun?.cancel()
   else if (action === 'quit') void quit()
   refreshTray()
@@ -1594,6 +1666,7 @@ async function quit(): Promise<void> {
   }
   silentUpdates.stop()
   updateHints.stop()
+  await recording.stop().catch(() => null)
   keepAwake.dispose()
   clockWake.dispose()
   scheduleNotices.dispose()

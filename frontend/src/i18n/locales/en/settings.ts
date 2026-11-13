@@ -68,6 +68,7 @@ const settings = {
         blockers_unknown: "could not check for work in progress",
         core_unreachable: "waiting for the hub to be available",
         mcp_bridges: "MCP connections are open",
+        recording_active: "a meeting recording is in progress",
         stop_waiting_leaders_one: "waiting for {{count}} leader to finish their turn",
         stop_waiting_leaders_other: "waiting for {{count}} leaders to finish their turn",
         stop_waiting_coordinators_one: "waiting for {{count}} coordinator to confirm",

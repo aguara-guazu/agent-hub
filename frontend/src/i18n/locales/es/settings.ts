@@ -66,6 +66,7 @@ const settings = {
         blockers_unknown: "no se pudo comprobar si hay trabajo en curso",
         core_unreachable: "esperando a que el hub esté disponible",
         mcp_bridges: "hay conexiones MCP abiertas",
+        recording_active: "hay una grabación de reunión en curso",
         stop_waiting_leaders_one: "esperando a {{count}} líder que termine su turno",
         stop_waiting_leaders_other: "esperando a {{count}} líderes que terminen su turno",
         stop_waiting_coordinators_one: "esperando la confirmación de {{count}} coordinador",
