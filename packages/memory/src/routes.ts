@@ -13,7 +13,8 @@ import { sharingRoutes } from './sharing/routes.js'
 import { interhubRoutes } from './interhub/routes.js'
 import { pdfPreview } from './pdf.js'
 import { mediaSettings, queueMedia } from './media-processing.js'
-import { MEDIA_MODULES, mediaSettingsInput } from './media-runtime.js'
+import { ALL_MEDIA_MODULES, mediaSettingsInput } from './media-runtime.js'
+import { registerRecordingRoutes } from "./recording-routes.js"
 import { fileText, readFileAttachment } from './attachments.js'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
@@ -213,6 +214,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   registerScheduleRoutes(app, service, options.authorize)
   registerDecisionRoutes(app, options.scheduleEffects, options.authorize, { service, ...(options.automationsEnabled ? { automationsEnabled: options.automationsEnabled } : {}) })
   registerProjectAutomationRoutes(app, async () => (await service.get()).operations.projectAutomation, options.authorize)
+  registerRecordingRoutes(app, async () => ({ store: (await service.get()).store, directory: options.directory }), options.authorize)
   sharingRoutes(app, service, options.authorize)
   // Human owner authorization only: never register activity in the MCP operation dispatcher.
   app.get('/api/memory/chat/agents/:sessionId/activity', { preHandler: auth }, async (request, reply) => {
@@ -272,7 +274,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
     return { settings, modules: service.media.status() }
   })
   app.post('/api/memory/media/:module/:action', { preHandler: auth }, async (request, reply) => {
-    const { module, action } = parse(z.object({ module: z.enum(MEDIA_MODULES), action: z.enum(['install','cancel']) }).strict(), request.params)
+    const { module, action } = parse(z.object({ module: z.enum(ALL_MEDIA_MODULES), action: z.enum(['install','cancel']) }).strict(), request.params)
     return reply.code(action === 'install' ? 202 : 200).send(action === 'install' ? service.media[module].install() : await service.media[module].cancelInstall())
   })
   app.post('/api/memory/defaults/provider', { preHandler: auth }, () => service.defaults.recommendProvider())

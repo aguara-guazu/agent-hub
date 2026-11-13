@@ -372,6 +372,8 @@ const settings = {
         speech: { title: "Transcripción", size: "Whisper multilingüe · unos 80 MB" },
         vision: { title: "Búsqueda de imágenes y video", size: "Encoder visual de Gemma 2 · unos 195 MB" },
         audio: { title: "Búsqueda por sonido", size: "Encoder de audio de Gemma 2 · unos 340 MB" },
+        speech_small: { title: "Transcripción de reuniones grabadas", size: "Whisper small · unos 250 MB · se descarga con la primera grabación" },
+        diarization: { title: "Separación de voces", size: "pyannote 3.0 y TitaNet small · unos 46 MB · se descarga con la primera grabación" },
       },
       state: {
         ready: "Listo",

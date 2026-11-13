@@ -19,7 +19,7 @@ export function useJobLabels() {
 }
 
 const STAGES = {
-  pdf: 1, ocr: 1, transcription: 1, media_decode: 1, media_embeddings: 1, memory_maintenance: 1, identity_inference: 1, project_inference: 1,
+  pdf: 1, ocr: 1, transcription: 1, media_decode: 1, media_embeddings: 1, recording_models: 1, diarization: 1, recording_ingest: 1, memory_maintenance: 1, identity_inference: 1, project_inference: 1,
   metadata_inference: 1, dedupe_people: 1, preparing: 1, embeddings: 1, extraction: 1, complete: 1, identities: 1, document_speakers: 1, calendar: 1, meet: 1,
 } as const
 type Stage = keyof typeof STAGES

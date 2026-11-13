@@ -3,7 +3,7 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { AutoConfig, AutoModel, AutoTokenizer, AutoProcessor, RawImage, RawVideo, Tensor, matmul, WhisperForConditionalGeneration, AutomaticSpeechRecognitionPipeline, env } from '@huggingface/transformers'
 import sharp from 'sharp'
 import { embeddingInput } from './embedding-model.js'
-import { modelProfile, type MediaEmbedding, type InferenceProfile } from './media-models.js'
+import { isSpeechProfile, modelProfile, type MediaEmbedding, type InferenceProfile } from './media-models.js'
 
 const profile: InferenceProfile = workerData.profile ?? 'text', definition = modelProfile(profile)
 env.allowRemoteModels = workerData.install === true
@@ -35,7 +35,7 @@ if (workerData.checkRuntime) {
   parentPort!.postMessage({ type: 'runtime-ready' }); parentPort!.close()
 } else try {
   await prepareModelFiles(workerData.cache, profile, workerData.install === true, options.progress_callback)
-  if (profile === 'speech') {
+  if (isSpeechProfile(profile)) {
     const [tokenizer, processor, model] = await Promise.all([
       AutoTokenizer.from_pretrained(definition.repository, options), AutoProcessor.from_pretrained(definition.repository, options),
       WhisperForConditionalGeneration.from_pretrained(definition.repository, { ...options, device: 'cpu', dtype: 'q8', session_options }),

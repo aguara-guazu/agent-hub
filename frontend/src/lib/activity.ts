@@ -42,7 +42,7 @@ export function redactText(text: string): string {
 /* ------------------------------------------------------------------------------------------- jobs */
 
 /** Tipos de trabajo que muestra Procesamiento; coincide con `processing_status` del backend. */
-export const JOB_KINDS = "process,describe_source,dedupe_people,index_entities,tidy_memory,media"
+export const JOB_KINDS = "process,describe_source,dedupe_people,index_entities,tidy_memory,media,recording"
 
 export type JobState = "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled"
 export const JOB_STATES: readonly JobState[] = ["queued", "running", "waiting", "completed", "failed", "cancelled"]
@@ -132,7 +132,7 @@ export type JobModeKey = "media" | "maintenance" | "indexOnly" | "local" | "star
 /** Cómo se procesa: proveedor con nombre propio o una clave traducible. */
 export function jobMode(job: Job): { provider: string } | { key: JobModeKey } {
   const p = job.progress ?? {}
-  if (job.kind === "media") return { key: "media" }
+  if (job.kind === "media" || job.kind === "recording") return { key: "media" }
   if (job.kind === "tidy_memory") return { key: "maintenance" }
   if (job.kind === "index_entities" || p.index_only || job.payload?.index_only) return { key: "indexOnly" }
   const deepseek = p.provider ? p.provider === "deepseek" : Boolean(p.model?.startsWith?.("deepseek")) && p.extraction !== "not_configured"

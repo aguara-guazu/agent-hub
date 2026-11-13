@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { execFile } from 'node:child_process'
 import { release, userInfo } from 'node:os'
@@ -18,7 +18,7 @@ import { activeLanguage, isLanguagePreference, onLanguageChange, resolveLanguage
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus, type OpenFileResult } from './ipc.js'
 import { NavigationRelay } from './navigation.js'
-import { RecordingController, type FinishedRecording, type RecordingRequest, type RecordingState } from "./recording.js"
+import { RECORDING_META_FILE, RECORDING_TRACKS, RecordingController, type FinishedRecording, type RecordingMeta, type RecordingRequest, type RecordingState } from "./recording.js"
 import { openRecorderWindow } from "./recorder-window.js"
 import { AutostartOffer } from './autostart-offer.js'
 import { ClockWake } from './clock-wake.js'
@@ -424,6 +424,8 @@ async function coreFetch(path: string, init: RequestInit = {}): Promise<Response
 /** La captura de audio del sistema sólo está verificada en macOS; en las demás plataformas la función no se ofrece. */
 const RECORDING_SUPPORTED = process.platform === "darwin"
 const recordingsDir = join(stateDir, "recordings")
+/** Evento del calendario de una grabación, guardado junto al audio para que el core conozca invitados y horario. */
+const RECORDING_EVENT_FILE = "event.json"
 let recordingAwake: number | null = null
 
 async function microphoneAllowed(): Promise<boolean> {
@@ -481,6 +483,37 @@ async function recordingFinished(finished: FinishedRecording | null): Promise<vo
   const minutes = Math.max(1, Math.round((Date.parse(finished.meta.ended_at ?? finished.meta.started_at) - Date.parse(finished.meta.started_at)) / 60_000))
   coreLog.write(`[recording] guardada ${finished.meta.id} (${minutes} min) en ${finished.directory}`)
   notify(t("recording.savedTitle"), t("recording.savedBody", { title: finished.meta.title, minutes }))
+  await submitRecordings()
+}
+
+/**
+ * Entrega al core cada grabación terminada que sigue en `recordingsDir`; el core copia el audio a la memoria y borra la carpeta.
+ * Una grabación sin `ended_at` quedó a medias por un cierre inesperado: se cierra con la hora de su último tramo escrito.
+ * Se llama al terminar una grabación y al arrancar, así una entrega fallida (core caído) se reintenta sola.
+ */
+let submittingRecordings: Promise<void> | null = null
+function submitRecordings(): Promise<void> {
+  submittingRecordings ??= (async () => {
+    for (const name of await readdir(recordingsDir).catch(() => [] as string[])) {
+      if (name === recording.state.id) continue
+      const directory = join(recordingsDir, name)
+      try {
+        const meta = JSON.parse(await readFile(join(directory, RECORDING_META_FILE), "utf8")) as RecordingMeta
+        if (!meta.ended_at) {
+          const written = await Promise.all(RECORDING_TRACKS.map(track => stat(join(directory, `${track}.webm`)).then(file => file.mtimeMs, () => 0)))
+          if (!Math.max(...written)) continue
+          meta.ended_at = new Date(Math.max(...written)).toISOString()
+          await writeFile(join(directory, RECORDING_META_FILE), JSON.stringify(meta, null, 2), { mode: 0o600 })
+        }
+        const event = await readFile(join(directory, RECORDING_EVENT_FILE), "utf8").then(text => JSON.parse(text) as unknown, () => undefined)
+        const response = await coreFetch("/api/memory/recordings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ directory, ...(event ? { event } : {}) }) })
+        coreLog.write(`[recording] entrega de ${name}: HTTP ${response.status}`)
+      } catch (error) {
+        coreLog.write(`[recording] entrega de ${name} pendiente: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  })().finally(() => { submittingRecordings = null })
+  return submittingRecordings
 }
 
 function manualRecordingTitle(): string {
@@ -1745,6 +1778,7 @@ else {
     setInterval(() => void pollPendingRestarts(), PENDING_RESTART_POLL_MS).unref()
     setInterval(() => void pollSchedules(), SCHEDULE_FEED_POLL_MS).unref()
     void pollSchedules()
+    if (RECORDING_SUPPORTED) void submitRecordings()
     // `resume` sale de la suspensión; `unlock-screen` sólo existe en macOS y Windows.
     powerMonitor.on('resume', () => clockWake.trigger())
     powerMonitor.on('unlock-screen', () => clockWake.trigger())

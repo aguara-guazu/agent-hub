@@ -14,6 +14,9 @@ export const mediaSettingsInput = z.object({ pdf: z.boolean().default(true), ocr
   vision: z.boolean().default(true), audio: z.boolean().default(true), language: z.enum(['es','en','pt','fr','de','it','ja','zh','ko','ru','ar','hi']).default('es'), automatic: z.boolean().default(true) }).strict()
 export type MediaSettings = z.infer<typeof mediaSettingsInput>
 export const MEDIA_MODULES = ['ocr','decoder','vision','audio','speech'] as const
+/** Modules used only by recorded meetings. They are not part of the default installation: they download when a recording needs them or on request. */
+export const RECORDING_MODULES = ['speech_small','diarization'] as const
+export const ALL_MEDIA_MODULES = [...MEDIA_MODULES, ...RECORDING_MODULES] as const
 export const MEDIA_MAX_SECONDS = 1800, VIDEO_FRAME_INTERVAL = 5, MEDIA_REVISION = 'media-v1'
 export type MediaPart = { text: string; offset_ms?: number | undefined; metadata: Record<string, any>; vector?: number[] }
 export type MediaInput = { data: Buffer; mime_type: string; filename: string }
@@ -30,11 +33,14 @@ export class MediaRuntime {
   readonly vision: NativeEmbeddings
   readonly audio: NativeEmbeddings
   readonly speech: NativeEmbeddings
+  readonly speech_small: NativeEmbeddings
+  readonly diarization: MediaAssets
   constructor(directory: string) {
     this.ocr = new MediaAssets(directory, 'ocr'); this.decoder = new MediaAssets(directory, 'decoder')
     this.vision = new NativeEmbeddings(directory, 'vision'); this.audio = new NativeEmbeddings(directory, 'audio'); this.speech = new NativeEmbeddings(directory, 'speech')
+    this.speech_small = new NativeEmbeddings(directory, 'speech_small'); this.diarization = new MediaAssets(directory, 'diarization')
   }
-  status() { return Object.fromEntries(MEDIA_MODULES.map(m => [m, this[m].status()])) }
+  status() { return Object.fromEntries(ALL_MEDIA_MODULES.map(m => [m, this[m].status()])) }
   validate(raw: unknown) {
     const settings = parse(mediaSettingsInput, raw)
     for (const name of ['ocr','vision','audio'] as const) if (settings[name]) check(this[name].installed(), `Descargá el módulo ${name} primero`, 409)
@@ -146,7 +152,7 @@ export class MediaRuntime {
       if (directory) await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => undefined)
     }
   }
-  async close() { await Promise.all(MEDIA_MODULES.map(m => this[m].close())) }
+  async close() { await Promise.all(ALL_MEDIA_MODULES.map(m => this[m].close())) }
 }
 async function run(command: string, args: string[], signal: AbortSignal, returnStderr = false) {
   signal.throwIfAborted()

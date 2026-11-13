@@ -6,7 +6,7 @@ import { useT } from "../../i18n"
 import { api } from "../../lib/api"
 import { SettingRow, useErrorDetail } from "./SettingRow"
 
-const MODULES = ["ocr", "decoder", "speech", "vision", "audio"] as const
+const MODULES = ["ocr", "decoder", "speech", "vision", "audio", "speech_small", "diarization"] as const
 type ModuleKey = (typeof MODULES)[number]
 const OPTIONS = ["pdf", "ocr", "transcription", "vision", "audio", "automatic"] as const
 type OptionKey = (typeof OPTIONS)[number]

@@ -1,4 +1,6 @@
 import { processMedia, queueMedia } from './media-processing.js'
+import { linkRecordingEvents, processRecording } from "./recording-processing.js"
+import { sweepRecordings } from "./recordings.js"
 import { prepareSharedProcessing, finishSharedProcessing } from './sharing/processing.js'
 import type { MediaRuntime } from './media-runtime.js'
 import { tidyMemory } from './memory-maintenance.js'
@@ -34,7 +36,7 @@ const EXCLUSIVE_KINDS = ['dedupe_people', 'google_repair', 'tidy_memory']
 const IMPORT_KINDS = ['sync', 'gmail']
 const IMPORTS_ALONGSIDE = ['dedupe_people', 'tidy_memory']
 /** One running job per kind: a global pass, or local OCR/transcription engines shared by every job. */
-const SINGLE_KINDS = ['index_entities', 'media']
+const SINGLE_KINDS = ['index_entities', 'media', 'recording']
 /** Embedding-only jobs beyond one per local engine would only wait in the engines and hold slots extraction can use. */
 const MAX_EMBEDDING_ONLY_JOBS = NATIVE_EMBEDDING_ENGINES
 /** Gmail is polled apart from the full Google sync, which re-reads calendar windows and Meet records on every run. */
@@ -69,6 +71,8 @@ export class JobRunner {
       AND updated_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour')`)
     await scheduleEntityIndex(this.store, await this.settings())
     if (this.media) await queueMedia(this.store, {}, true, this.media)
+    await sweepRecordings(this.store)
+    await linkRecordingEvents(this.store)
     await sweepNotes(this.store.db)
     await this.store.db.query(`INSERT INTO settings(key,value) VALUES('worker',json_object('heartbeat',now(),'id',$1)) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [this.workerId])
   }
@@ -146,6 +150,9 @@ export class JobRunner {
       } else if (job.kind === 'media') {
         if (!this.media) throw new MemoryError(409, 'El procesamiento multimedia no está disponible')
         await progress(await processMedia(this.store, this.media, job.payload, controller.signal, progress))
+      } else if (job.kind === 'recording') {
+        if (!this.media) throw new MemoryError(409, 'El procesamiento multimedia no está disponible')
+        await progress(await processRecording(this.store, this.media, job.payload, controller.signal, progress))
       } else if (job.kind === 'index_entities') {
         const settings = await this.settings()
         await progress(await indexEntities(this.store, this.ai.forJob(settings, controller.signal, progress), settings, controller.signal, progress))
