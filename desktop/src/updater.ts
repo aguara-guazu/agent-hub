@@ -553,6 +553,7 @@ export class AutoUpdater {
     if (this.strategy === 'notify' || !asset || !this.canWriteInstall()) {
       return { state: 'available', version: release.version, page: release.page }
     }
+    // Sin helper de intercambio válido no tiene sentido bajar ni preparar nada.
     if (this.strategy === 'dmg') {
       try { await verifyHelper(this.deps.swapHelper?.() ?? '', this.deps.arch, this.deps.run ?? defaultRun) } catch (error) {
         this.log(`[updater] v${release.version}: no se descarga, el helper de intercambio no es válido (${error instanceof Error ? error.message : String(error)})`)
@@ -561,7 +562,6 @@ export class AutoUpdater {
     }
     let directory: string | undefined
     try {
-      // Sin helper de intercambio válido no tiene sentido bajar ni preparar nada.
       const integrity = await this.resolveIntegrity(release, asset)
       if (this.deps.gate && !this.deps.gate.allows(release.version, this.deps.currentVersion, integrity.sha256)) {
         this.log(`[updater] v${release.version}: omitida (lista negra de ese artefacto)`)

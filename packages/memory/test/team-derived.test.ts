@@ -373,11 +373,14 @@ it('keeps a paused plan with live workers visible to closes and to the capacity 
     automations = false
     return { handle: member.member_id!, kind: 'hub_process', prompt_outcome: 'input-accepted', runtime: { generation: 'g', state: 'busy', updated_at: new Date().toISOString() } }
   })
-  expect(await rejection(teams.launchDerived(input()))).toMatch(/automatizaciones están deshabilitadas/)
+  const confirmedStop = vi.mocked(backend.stop).getMockImplementation()!
+  vi.mocked(backend.stop).mockRejectedValue(new Error('boom'))
+  expect(await rejection(teams.launchDerived(input()))).toMatch(/automatizaciones están deshabilitadas.*No se pudo confirmar la detención/)
   const plan = (await db.query('SELECT id,state FROM chat_team_plans WHERE delegation_project_id=$1', [projectId]))[0]!
   expect(plan.state).toBe('paused')
   automations = true
   expect(await rejection(teams.launchDerived(input({ request_id: 'req-2' })))).toMatch(/tope de planes simultáneos/)
+  vi.mocked(backend.stop).mockImplementation(confirmedStop)
   expect(await teams.closeDerivedForProject(projectId, 'Limpieza.')).toEqual({ closed: [plan.id], failed: [] })
 })
 
