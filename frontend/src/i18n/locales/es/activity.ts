@@ -240,6 +240,7 @@ const activity = {
       recording_models: "Preparando los modelos de la grabación",
       diarization: "Separando las voces de la reunión",
       recording_ingest: "Guardando la reunión grabada",
+      voice_naming: "Proponiendo a quién pertenece cada voz",
       media_embeddings: "Generando embeddings multimedia",
       memory_maintenance: "Organizando recuerdos y revisando el índice",
       identity_inference: "Infiriendo vínculos de hablantes",

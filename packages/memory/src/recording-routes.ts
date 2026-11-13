@@ -4,6 +4,7 @@ import { id, parse } from "./contracts.js"
 import { deleteRecordingAudio, listRecordings, recordingSettings, registerRecording } from "./recordings.js"
 import type { MemoryStore } from "./store.js"
 import type { UpcomingEvents } from "./upcoming-events.js"
+import { decideVoice, listPendingVoices } from "./voice-naming.js"
 
 /** Owner-only routes of local meeting recordings; the desktop app registers a recording once it stops capturing. */
 export function registerRecordingRoutes(app: FastifyInstance, context: () => Promise<{ store: MemoryStore; directory: string }>, upcoming: UpcomingEvents, authorize: (request: FastifyRequest) => Promise<unknown>) {
@@ -13,6 +14,11 @@ export function registerRecordingRoutes(app: FastifyInstance, context: () => Pro
   app.post("/api/memory/recordings", { preHandler: auth, bodyLimit: 262_144 }, async (request, reply) => {
     const { store, directory } = await context()
     return reply.code(201).send(await registerRecording(store, directory, request.body))
+  })
+  app.get("/api/memory/recordings/voices", { preHandler: auth }, async () => listPendingVoices((await context()).store))
+  app.post("/api/memory/recordings/:id/voices/:voice", { preHandler: auth, bodyLimit: 4096 }, async request => {
+    const { id: recordingId, voice } = parse(z.object({ id, voice: z.coerce.number().int().min(1).max(1000) }).strict(), request.params)
+    return decideVoice((await context()).store, recordingId, voice, request.body)
   })
   app.delete("/api/memory/recordings/:id/audio", { preHandler: auth }, async request => {
     const { id: recordingId } = parse(z.object({ id }).strict(), request.params)

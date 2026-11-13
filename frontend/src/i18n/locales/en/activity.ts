@@ -243,6 +243,7 @@ const activity = {
       recording_models: "Preparing the recording models",
       diarization: "Separating the voices in the meeting",
       recording_ingest: "Saving the recorded meeting",
+      voice_naming: "Proposing who each voice belongs to",
       media_embeddings: "Generating media embeddings",
       memory_maintenance: "Organizing memories and checking the index",
       identity_inference: "Inferring speaker links",

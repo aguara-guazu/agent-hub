@@ -152,7 +152,8 @@ export class JobRunner {
         await progress(await processMedia(this.store, this.media, job.payload, controller.signal, progress))
       } else if (job.kind === 'recording') {
         if (!this.media) throw new MemoryError(409, 'El procesamiento multimedia no está disponible')
-        await progress(await processRecording(this.store, this.media, job.payload, controller.signal, progress))
+        const settings = await this.settings()
+        await progress(await processRecording(this.store, this.media, job.payload, controller.signal, progress, { ai: this.ai.forJob(settings, controller.signal, progress), config: settings }))
       } else if (job.kind === 'index_entities') {
         const settings = await this.settings()
         await progress(await indexEntities(this.store, this.ai.forJob(settings, controller.signal, progress), settings, controller.signal, progress))

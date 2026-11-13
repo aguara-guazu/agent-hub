@@ -8,6 +8,9 @@ import { mediaSettings } from "./media-processing.js"
 import type { MediaRuntime } from "./media-runtime.js"
 import { recordingSettings, RECORDING_TRACKS, type RecordingRow, type RecordingTrack } from "./recordings.js"
 import type { MemoryStore } from "./store.js"
+import type { MemoryAI } from "./ai.js"
+import type { AIConfig } from "./config.js"
+import { proposeVoiceNames } from "./voice-naming.js"
 
 /**
  * Turns a registered recording into a meeting.
@@ -37,7 +40,8 @@ interface Phrase { start: number; end: number; text: string }
 interface Spoken extends Phrase { track: RecordingTrack; voice: number | null }
 interface Installable { installed(): boolean; install(): unknown; status(): { state: string; error?: string | undefined } }
 interface SpeechEngine { transcribe(audio: Float32Array, signal: AbortSignal, language?: string): Promise<{ chunks?: { text: string; timestamp: [number, number | null] }[] }>; unload(): Promise<void> }
-export interface StoredVoice { voice: number; label: string; seconds: number; embedding: number[]; status: "self" | "unresolved" | "confirmed"; person_id?: string }
+export interface VoiceProposal { email: string; name: string; confidence: "high" | "medium" | "low"; reason: string }
+export interface StoredVoice { voice: number; label: string; seconds: number; embedding: number[]; status: "self" | "unresolved" | "confirmed" | "dismissed"; person_id?: string; proposal?: VoiceProposal }
 
 async function ensureInstalled(module: Installable, signal: AbortSignal): Promise<boolean> {
   if (module.installed()) return true
@@ -167,7 +171,8 @@ async function ownerParticipant(store: MemoryStore, row: RecordingRow): Promise<
   return { external_id: `recording-owner:${email}`, name: person?.title || known.name || email, email, identity_verified: true }
 }
 
-export async function processRecording(store: MemoryStore, media: MediaRuntime, payload: { recording_id: string }, signal: AbortSignal, progress: Progress) {
+export async function processRecording(store: MemoryStore, media: MediaRuntime, payload: { recording_id: string }, signal: AbortSignal, progress: Progress,
+  naming?: { ai: MemoryAI; config: AIConfig }) {
   const row = (await store.db.query<RecordingRow>("SELECT * FROM recordings WHERE id=$1", [payload.recording_id]))[0]
   if (!row) return { skipped: "recording_missing" }
   if (row.audio_deleted_at) return { skipped: "audio_deleted" }
@@ -252,7 +257,10 @@ export async function processRecording(store: MemoryStore, media: MediaRuntime, 
     await store.db.query("UPDATE recordings SET state='ready',error=NULL,entity_id=$2,speakers=$3,audio_expires_at=ts($4),updated_at=now() WHERE id=$1",
       [row.id, result.entity_id, JSON.stringify(stored), expiry(await recordingSettings(store))])
     await linkRecordingEvents(store)
-    return { stage: "complete", entity_id: result.entity_id, version_id: result.version_id, fragments: fragments.length, voices: voices.length, processor }
+    // A failed proposal must not fail a recording that is already saved: voices simply stay unnamed.
+    const named = naming ? await progress({ stage: "voice_naming" }).then(() => proposeVoiceNames(store, naming.ai, naming.config, row.id, signal))
+      .catch(error => { if (signal.aborted) throw error; return { voice_proposals: 0, voice_naming: "failed" } }) : {}
+    return { stage: "complete", entity_id: result.entity_id, version_id: result.version_id, fragments: fragments.length, voices: voices.length, processor, ...named }
   } catch (error) {
     if (!signal.aborted) await store.db.query("UPDATE recordings SET state='failed',error=$2,updated_at=now() WHERE id=$1",
       [row.id, error instanceof MemoryError ? error.message : "No se pudo procesar la grabación"]).catch(() => undefined)

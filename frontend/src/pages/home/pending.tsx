@@ -13,6 +13,8 @@ import { errorKey } from "../../i18n/errors"
 import { useFormat, useT } from "../../i18n"
 import type { PendingInbox, ProjectSuggestion } from "../../lib/home"
 import { memoryCall, type MemoryEntity } from "../../lib/memory"
+import { api } from "../../lib/api"
+import type { PendingVoice } from "../../lib/recording"
 
 export type PendingGroup = "connections" | "agents" | "memory"
 
@@ -43,6 +45,23 @@ function DecideMenu({ label, items }: { label: string; items: readonly MenuItem[
       trigger={props => <Button {...props} small>{label}<Icon name="down" small /></Button>}
     />
   )
+}
+
+/** Decisión sobre una voz de una reunión grabada: confirmar a quién pertenece o dejarla sin nombre. */
+function useVoiceDecision() {
+  const cache = useQueryClient()
+  const toast = useToast()
+  const { t } = useT("errors")
+  const { t: tc } = useT("common")
+  return useMutation({
+    mutationFn: ({ voice, email }: { voice: PendingVoice; email: string | null; done: string }) =>
+      api.post(`/memory/recordings/${voice.recording_id}/voices/${voice.voice}`, email ? { decision: "confirm", email } : { decision: "dismiss" }),
+    onSuccess: async (_result, { done }) => {
+      toast.success(done)
+      await cache.invalidateQueries({ queryKey: ["memory"] })
+    },
+    onError: error => toast.error(tc("toast.actionFailed"), t(errorKey(error))),
+  })
 }
 
 /** Mutación de memoria que avisa con el sistema de toasts y refresca las consultas de memoria. */
@@ -102,6 +121,7 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
   const { t: ts } = useT("status")
   const format = useFormat()
   const decide = useMemoryDecision()
+  const decideVoice = useVoiceDecision()
   const restart = useRestartClient()
   const queue = useQueueJob()
   const navigate = useNavigate()
@@ -229,6 +249,26 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
         action={<DecideMenu label={t("recording.decide")} items={[
           { label: t("recording.start"), onSelect: () => { void startRecording(offer.key) } },
           { label: t("recording.skip"), onSelect: () => { void window.agentHub?.dismissRecordingOffer?.(offer.key) } },
+        ]} />}
+      />
+    ) })
+  }
+  for (const voice of m.voices) {
+    const id = `voice-${voice.recording_id}-${voice.voice}`, proposed = voice.proposal
+    const confirm = (person: { email: string; name: string }) => decideVoice.mutate({ voice, email: person.email, done: t("voice.confirmed", { number: voice.voice, name: person.name }) })
+    rows.push({ id, group: "memory", node: (
+      <Row
+        key={id}
+        lead={<Avatar name={proposed?.name ?? t("voice.label", { number: voice.voice })} small round />}
+        title={proposed ? t("voice.titleProposed", { number: voice.voice, meeting: voice.title, name: proposed.name }) : t("voice.title", { number: voice.voice, meeting: voice.title })}
+        sub={t("voice.sample", { text: voice.sample })}
+        meta={<Chip tone="warn">{proposed ? ts("chip.inferred") : t("voice.chipUnnamed")}</Chip>}
+        action={<DecideMenu label={tc("actions.review")} items={[
+          ...(proposed ? [{ label: t("voice.confirm", { name: proposed.name }), hint: proposed.reason, disabled: decideVoice.isPending, onSelect: () => confirm(proposed) }] : []),
+          ...voice.candidates.filter(person => person.email !== proposed?.email).slice(0, 8)
+            .map(person => ({ label: t("voice.is", { name: person.name }), disabled: decideVoice.isPending, onSelect: () => confirm(person) })),
+          { label: t("voice.dismiss"), disabled: decideVoice.isPending, onSelect: () => decideVoice.mutate({ voice, email: null, done: t("voice.dismissed", { number: voice.voice }) }) },
+          { label: t("voice.viewMeeting"), onSelect: () => navigate(`/memory/entities/${voice.entity_id}`) },
         ]} />}
       />
     ) })

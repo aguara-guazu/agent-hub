@@ -331,6 +331,8 @@ const memory = {
       pdf: "PDF text · page {{page}}",
       ocr: "Automatically recognized text",
       transcription: "Automatic transcript",
+      voice: "Voice {{number}} · name not confirmed",
+      microphone: "Microphone of the person recording",
       media: "Media content",
       document: "Document context",
       unknown: "Unidentified speaker",
