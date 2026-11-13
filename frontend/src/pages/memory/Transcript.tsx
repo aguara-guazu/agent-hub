@@ -109,7 +109,7 @@ function Utterance({ fragment, query, focused, onCite, onAssign }: { fragment: F
 /** Origen de un fragmento sin hablante: texto de PDF, OCR, transcripción automática o contexto del documento. */
 function generatedLabel(fragment: Fragment, t: ReturnType<typeof useT<"memory">>["t"]): string {
   const meta = fragment.metadata ?? {}
-  if (meta.track === "system" && typeof meta.voice === "number") return t("transcript.generated.voice", { number: meta.voice })
+  if (typeof meta.voice === "number") return t("transcript.generated.voice", { number: meta.voice })
   if (meta.track === "mic") return t("transcript.generated.microphone")
   if (meta.generated === "pdf_text") return t("transcript.generated.pdf", { page: meta.page ?? "—" })
   if (meta.generated === "ocr") return t("transcript.generated.ocr")

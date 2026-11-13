@@ -30,8 +30,12 @@ export const voiceDecisionInput = z.discriminatedUnion("decision", [
 
 interface VoiceFragment { text: string; voice: number | null; track: string | null }
 
-const candidatesOf = (row: RecordingRow) => (row.event?.attendees ?? []).filter(attendee => !attendee.self && attendee.email)
-  .map(attendee => ({ email: attendee.email!.toLowerCase(), name: attendee.name || attendee.email! }))
+/** Invitees a voice can be. The person recording is one of them only when the microphone was not attributed to them (single-track recording). */
+function candidatesOf(row: RecordingRow) {
+  const owned = (row.speakers as StoredVoice[]).some(voice => voice.status === "self")
+  return (row.event?.attendees ?? []).filter(attendee => attendee.email && !(attendee.self && owned))
+    .map(attendee => ({ email: attendee.email!.toLowerCase(), name: attendee.name || attendee.email! }))
+}
 
 async function fragmentsOf(store: MemoryStore, entityId: string): Promise<VoiceFragment[]> {
   return store.db.query<VoiceFragment>(`SELECT f.text,CAST(f.metadata->>'voice' AS INTEGER) AS voice,f.metadata->>'track' AS track FROM fragments f
@@ -56,7 +60,7 @@ export async function proposeVoiceNames(store: MemoryStore, ai: MemoryAI, config
     + "Copy voice_id v1/v2 and candidate_id c1/c2 verbatim. Write reason in neutral Spanish (no voseo), one or two sentences quoting the evidence, with readable names and no v1/c1 codes.",
   { title: row.title, candidates: [...candidateRefs].map(([id, candidate]) => ({ id, ...candidate })),
     voices: voices.map(voice => ({ id: `v${voice.voice}`, seconds_speaking: Math.round(voice.seconds) })),
-    transcript: fragments.slice(0, TRANSCRIPT_FRAGMENTS).map(fragment => ({ speaker: fragment.track === "mic" ? "me" : fragment.voice === null ? "unknown" : `v${fragment.voice}`, text: fragment.text.slice(0, FRAGMENT_CHARS) })) },
+    transcript: fragments.slice(0, TRANSCRIPT_FRAGMENTS).map(fragment => ({ speaker: fragment.voice !== null && fragment.voice > 0 ? `v${fragment.voice}` : fragment.track === "mic" ? "me" : "unknown", text: fragment.text.slice(0, FRAGMENT_CHARS) })) },
   responseSchema, raw => raw as z.infer<typeof responseSchema>)
   signal.throwIfAborted()
   let proposals = 0
@@ -86,7 +90,7 @@ export async function listPendingVoices(store: MemoryStore) {
     if (!pending.length) continue
     const fragments = await fragmentsOf(store, row.entity_id!), candidates = candidatesOf(row)
     for (const voice of pending) {
-      const sample = fragments.find(fragment => fragment.track === "system" && fragment.voice === voice.voice)?.text
+      const sample = fragments.find(fragment => fragment.voice === voice.voice)?.text
       if (!sample) continue
       items.push({ recording_id: row.id, entity_id: row.entity_id, title: row.title, started_at: row.started_at, voice: voice.voice, seconds: Math.round(voice.seconds),
         sample: sample.slice(0, 200), proposal: voice.proposal ?? null, candidates })
@@ -96,42 +100,47 @@ export async function listPendingVoices(store: MemoryStore) {
   return { items }
 }
 
-/** Assigns every system-track fragment of a voice in one version to a person, as a manual assignment. Returns the number of fragments. */
+/** Assigns every fragment of a voice in one version to a person, as a manual assignment. Returns the number of fragments. */
 export async function assignVoice(sql: Sql, entityId: string, versionId: string, voiceNumber: number, personId: string): Promise<number> {
   const updated = await sql.query(`UPDATE fragments SET speaker_id=$2,metadata=jsonb_merge(metadata,'{"manual_assignment":true,"speaker_resolution":"confirmed_voice"}')
-    WHERE version_id=$1 AND (metadata->>'track')='system' AND CAST(metadata->>'voice' AS INTEGER)=$3 RETURNING id`, [versionId, personId, voiceNumber])
+    WHERE version_id=$1 AND CAST(metadata->>'voice' AS INTEGER)=$3 RETURNING id`, [versionId, personId, voiceNumber])
   await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'participant') ON CONFLICT DO NOTHING", [randomUUID(), entityId, personId])
   return updated.length
 }
 
 /** Confirms who a voice is, or leaves it unnamed. Confirming assigns every fragment of the voice in the current version of the meeting. */
 export async function decideVoice(store: MemoryStore, recordingId: string, voiceNumber: number, raw: unknown) {
-  const input = parse(voiceDecisionInput, raw)
-  const row = (await store.db.query<RecordingRow>("SELECT * FROM recordings WHERE id=$1", [recordingId]))[0]
-  check(row?.entity_id, "La grabación no existe o todavía no se procesó", 404)
-  const voice = (row.speakers as StoredVoice[]).find(item => item.voice === voiceNumber && item.status !== "self")
-  check(voice, "Esa voz no existe en la grabación", 404)
-  if (input.decision === "dismiss") {
-    voice.status = "dismissed"
-    await store.db.query("UPDATE recordings SET speakers=$2,updated_at=now() WHERE id=$1", [recordingId, JSON.stringify(row.speakers)])
-    return { updated: 0, status: voice.status }
+  const input = parse(voiceDecisionInput, raw), email = input.decision === "confirm" ? input.email.toLowerCase() : null
+  const known = (await store.db.query<RecordingRow>("SELECT * FROM recordings WHERE id=$1", [recordingId]))[0]
+  check(known?.entity_id, "La grabación no existe o todavía no se procesó", 404)
+  const candidate = email ? candidatesOf(known).find(item => item.email === email) : undefined
+  let personId: string | undefined
+  if (email) {
+    check(candidate, "Esa persona no figura entre los invitados de la reunión", 422)
+    const external = `recording-voice:${email}`
+    await store.refreshParticipants({ provider: "manual", account: "local" }, [{ external_id: external, name: candidate.name, email, identity_verified: false }])
+    personId = (await store.db.query<{ person_id: string }>("SELECT person_id FROM identities WHERE provider='manual' AND account='local' AND external_id=$1", [external]))[0]?.person_id
+    check(personId, "No se pudo resolver la persona", 409)
   }
-  const email = input.email.toLowerCase(), candidate = candidatesOf(row).find(item => item.email === email)
-  check(candidate, "Esa persona no figura entre los invitados de la reunión", 422)
-  const external = `recording-voice:${email}`
-  await store.refreshParticipants({ provider: "manual", account: "local" }, [{ external_id: external, name: candidate.name, email, identity_verified: false }])
-  const personId = (await store.db.query<{ person_id: string }>("SELECT person_id FROM identities WHERE provider='manual' AND account='local' AND external_id=$1", [external]))[0]?.person_id
-  check(personId, "No se pudo resolver la persona", 409)
+  // The voice list is read and written inside one transaction: a proposal or another decision saved meanwhile is not overwritten.
   return store.db.transaction(async sql => {
-    const version = (await sql.query<{ current_version_id: string }>("SELECT current_version_id FROM sources WHERE entity_id=$1", [row.entity_id]))[0]?.current_version_id
-    check(version, "La reunión ya no tiene una versión vigente", 409)
-    const updated = await assignVoice(sql, row.entity_id!, version, voiceNumber, personId)
-    voice.status = "confirmed"
-    voice.person_id = personId
-    voice.label = candidate.name
-    await sql.query("UPDATE recordings SET speakers=$2,updated_at=now() WHERE id=$1", [recordingId, JSON.stringify(row.speakers)])
-    await sql.query("DELETE FROM rule_runs WHERE version_id=$1", [version])
-    await store.enqueue("process", { version_id: version }, `process:${version}`, sql)
-    return { updated, status: voice.status, person_id: personId }
+    const row = (await sql.query<RecordingRow>("SELECT * FROM recordings WHERE id=$1", [recordingId]))[0]
+    check(row?.entity_id, "La grabación no existe o todavía no se procesó", 404)
+    check(row.state === "ready", "La grabación se está procesando; probá de nuevo en un momento", 409)
+    const speakers = row.speakers as StoredVoice[], voice = speakers.find(item => item.voice === voiceNumber && item.status !== "self")
+    check(voice, "Esa voz no existe en la grabación", 404)
+    let updated = 0
+    if (personId && candidate) {
+      const version = (await sql.query<{ current_version_id: string }>("SELECT current_version_id FROM sources WHERE entity_id=$1", [row.entity_id]))[0]?.current_version_id
+      check(version, "La reunión ya no tiene una versión vigente", 409)
+      updated = await assignVoice(sql, row.entity_id, version, voiceNumber, personId)
+      voice.status = "confirmed"
+      voice.person_id = personId
+      voice.label = candidate.name
+      await sql.query("DELETE FROM rule_runs WHERE version_id=$1", [version])
+      await store.enqueue("process", { version_id: version }, `process:${version}`, sql)
+    } else voice.status = "dismissed"
+    await sql.query("UPDATE recordings SET speakers=$2,updated_at=now() WHERE id=$1", [recordingId, JSON.stringify(speakers)])
+    return { updated, status: voice.status, ...(personId ? { person_id: personId } : {}) }
   })
 }

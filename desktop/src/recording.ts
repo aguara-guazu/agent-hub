@@ -12,6 +12,7 @@ import { join } from "node:path"
 export type RecordingTrack = "mic" | "system"
 export type RecordingPhase = "idle" | "starting" | "recording" | "stopping"
 export type RecordingError = "microphone_denied" | "capture_failed"
+export type AutoStopReason = "limit" | "capture_lost"
 
 export const RECORDING_TRACKS: readonly RecordingTrack[] = ["mic", "system"]
 export const RECORDING_MAX_MS = 3 * 60 * 60_000
@@ -29,7 +30,10 @@ export interface TrackMeta {
   /** Hora de reloj del primer tramo en ISO 8601; `null` si la pista no llegó a abrirse. */
   started_at: string | null
   bytes: number
+  /** La pista nunca llegó a abrirse. */
   error?: string
+  /** La pista grabó y después se cortó (dispositivo desconectado, ventana de captura caída); su audio se conserva. */
+  interrupted?: string
 }
 
 export interface RecordingMeta {
@@ -79,8 +83,10 @@ export interface RecordingDeps {
   setTimer(callback: () => void, ms: number): unknown
   clearTimer(handle: unknown): void
   onChange(state: RecordingState): void
-  /** La grabación llegó a `RECORDING_MAX_MS` y se detuvo. */
-  onLimit(finished: FinishedRecording | null): void
+  /** Una pista dejó de grabar y la otra sigue. */
+  onTrackLost(track: RecordingTrack): void
+  /** La grabación se detuvo sola: llegó a `RECORDING_MAX_MS` o se quedó sin ninguna pista. */
+  onAutoStop(reason: AutoStopReason, finished: FinishedRecording | null): void
   log(line: string): void
 }
 
@@ -122,7 +128,7 @@ export class RecordingController {
       this.deps.log(`[recording] no pudo iniciar: ${error instanceof Error ? error.message : String(error)}`)
       return this.fail("capture_failed")
     }
-    this.limit = this.deps.setTimer(() => { void this.stop().then(finished => this.deps.onLimit(finished)) }, RECORDING_MAX_MS)
+    this.limit = this.deps.setTimer(() => { void this.stop().then(finished => this.deps.onAutoStop("limit", finished)) }, RECORDING_MAX_MS)
     this.set({ ...base, phase: "recording", error: null })
     return this.current
   }
@@ -135,12 +141,19 @@ export class RecordingController {
   }
 
   trackFailed(track: RecordingTrack, message: string): void {
-    if (!this.meta) return
-    this.meta.tracks[track] = { file: `${track}.webm`, started_at: null, bytes: 0, error: message.slice(0, 300) }
-    this.deps.log(`[recording] pista ${track} falló: ${message}`)
+    // Al cerrar la ventana de captura sus pistas "terminan": eso no es una falla de una grabación que ya se está deteniendo.
+    if (!this.meta || this.stopping) return
+    const existing = this.meta.tracks[track], detail = message.slice(0, 300)
+    if (existing?.interrupted || existing?.error) return
+    if (existing?.started_at) existing.interrupted = detail
+    else this.meta.tracks[track] = { file: `${track}.webm`, started_at: null, bytes: 0, error: detail }
+    this.deps.log(`[recording] pista ${track} ${existing?.started_at ? "se cortó" : "no abrió"}: ${message}`)
     this.enqueue(() => this.persist())
-    const failed = RECORDING_TRACKS.every(name => this.meta?.tracks[name]?.error)
-    if (failed && this.current.phase === "recording") void this.stop().then(() => this.set({ ...IDLE, error: "capture_failed" }))
+    // Una pista que todavía no informó cuenta como viva: al iniciar, las dos avisan con segundos de diferencia.
+    const alive = RECORDING_TRACKS.some(name => { const entry = this.meta?.tracks[name]; return !entry || (!entry.error && !entry.interrupted) })
+    if (this.current.phase !== "recording") return
+    if (alive) this.deps.onTrackLost(track)
+    else void this.stop().then(finished => this.deps.onAutoStop("capture_lost", finished))
   }
 
   chunk(track: RecordingTrack, data: Uint8Array): void {

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { appendFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { execFile } from 'node:child_process'
 import { release, userInfo } from 'node:os'
@@ -18,7 +18,7 @@ import { activeLanguage, isLanguagePreference, onLanguageChange, resolveLanguage
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
 import { IPC, type CoreStatus, type OpenFileResult, type RecordingStatusView } from './ipc.js'
 import { NavigationRelay } from './navigation.js'
-import { RECORDING_META_FILE, RECORDING_TRACKS, RecordingController, type FinishedRecording, type RecordingMeta, type RecordingRequest, type RecordingState } from "./recording.js"
+import { RECORDING_META_FILE, RECORDING_TRACKS, RecordingController, type FinishedRecording, type RecordingMeta, type RecordingRequest, type RecordingState, type RecordingTrack } from "./recording.js"
 import { openRecorderWindow } from "./recorder-window.js"
 import { RecordingOffers, type UpcomingResponse } from "./recording-offers.js"
 import { AutostartOffer } from './autostart-offer.js'
@@ -447,7 +447,10 @@ const recording = new RecordingController({
     onTrackStarted: (track, epochMs) => recording.trackStarted(track, epochMs),
     onTrackFailed: (track, message) => recording.trackFailed(track, message),
     onChunk: (track, data) => recording.chunk(track, data),
-    onLevels: levels => { if (Object.values(levels).some(level => (level ?? 0) > RECORDING_SILENCE_RMS)) recordingHeardAt = Date.now() },
+    onLevels: levels => {
+      if (Object.values(levels).some(level => (level ?? 0) > RECORDING_SILENCE_RMS)) recordingHeardAt = Date.now()
+      if ((levels.system ?? 0) > RECORDING_DIGITAL_SILENCE) recordingSystemSilentSince = 0
+    },
   }),
   mkdir: async path => { await mkdir(path, { recursive: true, mode: 0o700 }) },
   append: (path, data) => appendFile(path, data, { mode: 0o600 }),
@@ -455,7 +458,13 @@ const recording = new RecordingController({
   setTimer: (callback, ms) => setTimeout(callback, ms),
   clearTimer: handle => clearTimeout(handle as NodeJS.Timeout),
   onChange: state => onRecordingChange(state),
-  onLimit: finished => { notify(t("recording.limitTitle"), t("recording.limitBody")); void recordingFinished(finished) },
+  onTrackLost: track => notify(t("recording.trackLostTitle"), t(track === "mic" ? "recording.micLostBody" : "recording.systemLostBody")),
+  onAutoStop: (reason, finished) => {
+    if (reason === "limit") notify(t("recording.limitTitle"), t("recording.limitBody"))
+    else if (finished) notify(t("recording.captureLostTitle"), t("recording.captureLostBody"))
+    else { notify(t("recording.failedTitle"), t("recording.failedBody")); return }
+    void recordingFinished(finished)
+  },
   log: line => coreLog.write(line),
 })
 
@@ -471,6 +480,12 @@ const RECORDING_END_GRACE_MS = 60_000
 let recordingHeardAt = 0
 let recordingEndReminded = false
 let recordingSilenceRemindedAt = 0
+/** Una pista del sistema sin permiso se abre igual y entrega ceros exactos; por encima de este nivel hay señal real. */
+const RECORDING_DIGITAL_SILENCE = 0.00001
+const RECORDING_SYSTEM_SILENT_MS = 2 * 60_000
+/** Desde cuándo la pista del sistema sólo entrega ceros; 0 si ya llegó señal o ya se avisó. */
+let recordingSystemSilentSince = 0
+let lastRecordingBroadcast = ""
 
 function recordingStatus(): RecordingStatusView {
   const state = recording.state
@@ -481,8 +496,12 @@ function recordingStatus(): RecordingStatusView {
   }
 }
 
+/** Sólo emite cuando algo cambió: el ciclo de 15 s no debe volver a dibujar Inicio en vano. */
 function broadcastRecording(): void {
-  mainWindow?.webContents.send(IPC.recordingChanged, recordingStatus())
+  const status = recordingStatus(), serialized = JSON.stringify(status)
+  if (serialized === lastRecordingBroadcast) return
+  lastRecordingBroadcast = serialized
+  mainWindow?.webContents.send(IPC.recordingChanged, status)
 }
 
 const clockTime = (instant: string): string => new Intl.DateTimeFormat(activeLanguage(), { timeStyle: "short" }).format(new Date(instant))
@@ -504,6 +523,10 @@ function recordingTick(): void {
     } else if (now - recordingHeardAt > RECORDING_SILENCE_REMIND_MS && now - recordingSilenceRemindedAt > RECORDING_SILENCE_REPEAT_MS) {
       recordingSilenceRemindedAt = now
       notifyOpening({ title: t("recording.silenceTitle"), body: t("recording.silenceBody", { title }), route: "/home" })
+    }
+    if (recordingSystemSilentSince && now - recordingSystemSilentSince > RECORDING_SYSTEM_SILENT_MS) {
+      recordingSystemSilentSince = 0
+      notify(t("recording.systemSilentTitle"), t("recording.systemSilentBody"))
     }
   }
   broadcastRecording()
@@ -527,7 +550,7 @@ function pollRecordingOffers(): Promise<void> {
 /** Empieza a grabar la reunión ofrecida y deja su evento junto al audio para que el core conozca invitados y horario. */
 async function startOfferedRecording(key: string): Promise<void> {
   const event = recordingOffers.get(key)
-  if (!event) return
+  if (!event || recording.active) return
   const state = await startRecording({ title: event.title || manualRecordingTitle(), eventId: event.event_id, scheduledEnd: event.end })
   if (state.phase !== "recording" || !state.id) return
   recordingOffers.dismiss(key)
@@ -539,7 +562,7 @@ async function startOfferedRecording(key: string): Promise<void> {
 
 function onRecordingChange(state: RecordingState): void {
   const active = state.phase !== "idle"
-  if (state.phase === "starting") { recordingHeardAt = Date.now(); recordingEndReminded = false; recordingSilenceRemindedAt = 0 }
+  if (state.phase === "starting") { recordingHeardAt = Date.now(); recordingEndReminded = false; recordingSilenceRemindedAt = 0; recordingSystemSilentSince = Date.now() }
   if (active && recordingAwake === null) recordingAwake = powerSaveBlocker.start("prevent-app-suspension")
   if (!active && recordingAwake !== null) { powerSaveBlocker.stop(recordingAwake); recordingAwake = null }
   if (process.platform === "darwin") tray?.setTitle(active ? "●" : "")
@@ -567,28 +590,68 @@ async function recordingFinished(finished: FinishedRecording | null): Promise<vo
   await submitRecordings()
 }
 
+const RECORDING_SUBMIT_RETRY_MS = 5 * 60_000
+const RECORDING_DIRECTORY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/** Sufijo de una grabación que el core rechazó de forma definitiva: se conserva para recuperarla a mano y no se reintenta. */
+const RECORDING_REJECTED = ".rejected"
+const RECORDING_REJECTED_KEEP_MS = 30 * 86_400_000
+
+interface RecordedTrack { track: RecordingTrack; born: number; written: number }
+
+async function recordedTracks(directory: string): Promise<RecordedTrack[]> {
+  const found: RecordedTrack[] = []
+  for (const track of RECORDING_TRACKS) {
+    const file = await stat(join(directory, `${track}.webm`)).catch(() => null)
+    if (file?.size) found.push({ track, born: file.birthtimeMs, written: file.mtimeMs })
+  }
+  return found
+}
+
+/** `meta.json` de una grabación; si un cierre inesperado lo dejó ilegible se reconstruye con las fechas de los archivos de audio. */
+async function readRecordingMeta(directory: string, id: string, tracks: RecordedTrack[]): Promise<RecordingMeta> {
+  const stored = await readFile(join(directory, RECORDING_META_FILE), "utf8").then(text => JSON.parse(text) as RecordingMeta, () => null)
+  if (stored?.id === id && stored.started_at && stored.tracks) return stored
+  const first = Math.min(...tracks.map(item => item.born))
+  return { schema: 1, id, title: manualRecordingTitle(new Date(first)), event_id: null, scheduled_end: null, started_at: new Date(first).toISOString(), ended_at: null,
+    tracks: Object.fromEntries(tracks.map(item => [item.track, { file: `${item.track}.webm`, started_at: new Date(item.born).toISOString(), bytes: 0 }])), app_version: app.getVersion() }
+}
+
+function postRecording(directory: string, event: unknown): Promise<Response> {
+  return coreFetch("/api/memory/recordings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ directory, ...(event ? { event } : {}) }) })
+}
+
 /**
  * Entrega al core cada grabación terminada que sigue en `recordingsDir`; el core copia el audio a la memoria y borra la carpeta.
  * Una grabación sin `ended_at` quedó a medias por un cierre inesperado: se cierra con la hora de su último tramo escrito.
- * Se llama al terminar una grabación y al arrancar, así una entrega fallida (core caído) se reintenta sola.
+ * Corre al terminar una grabación, al arrancar y cada `RECORDING_SUBMIT_RETRY_MS`, así una entrega fallida (core caído) se reintenta sola.
+ * Un rechazo definitivo del core no se reintenta: la carpeta se aparta con `RECORDING_REJECTED` y se avisa a la persona.
  */
 let submittingRecordings: Promise<void> | null = null
 function submitRecordings(): Promise<void> {
   submittingRecordings ??= (async () => {
     for (const name of await readdir(recordingsDir).catch(() => [] as string[])) {
-      if (name === recording.state.id) continue
       const directory = join(recordingsDir, name)
+      if (name.endsWith(RECORDING_REJECTED)) {
+        const info = await stat(directory).catch(() => null)
+        if (info && Date.now() - info.mtimeMs > RECORDING_REJECTED_KEEP_MS) await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+        continue
+      }
+      if (!RECORDING_DIRECTORY.test(name) || name === recording.state.id) continue
       try {
-        const meta = JSON.parse(await readFile(join(directory, RECORDING_META_FILE), "utf8")) as RecordingMeta
-        if (!meta.ended_at) {
-          const written = await Promise.all(RECORDING_TRACKS.map(track => stat(join(directory, `${track}.webm`)).then(file => file.mtimeMs, () => 0)))
-          if (!Math.max(...written)) continue
-          meta.ended_at = new Date(Math.max(...written)).toISOString()
-          await writeFile(join(directory, RECORDING_META_FILE), JSON.stringify(meta, null, 2), { mode: 0o600 })
-        }
+        const tracks = await recordedTracks(directory)
+        if (!tracks.length) { await rm(directory, { recursive: true, force: true }); continue }
+        const meta = await readRecordingMeta(directory, name, tracks)
+        meta.ended_at ??= new Date(Math.max(...tracks.map(item => item.written))).toISOString()
+        await writeFile(join(directory, RECORDING_META_FILE), JSON.stringify(meta, null, 2), { mode: 0o600 })
         const event = await readFile(join(directory, RECORDING_EVENT_FILE), "utf8").then(text => JSON.parse(text) as unknown, () => undefined)
-        const response = await coreFetch("/api/memory/recordings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ directory, ...(event ? { event } : {}) }) })
+        let response = await postRecording(directory, event)
+        // Un evento que el core no acepta no debe costar la grabación: se entrega sin invitados ni vínculo al calendario.
+        if (event && response.status === 422) response = await postRecording(directory, undefined)
         coreLog.write(`[recording] entrega de ${name}: HTTP ${response.status}`)
+        if ([400, 409, 422].includes(response.status)) {
+          await rename(directory, `${directory}${RECORDING_REJECTED}`)
+          notify(t("recording.rejectedTitle"), t("recording.rejectedBody", { title: meta.title }))
+        }
       } catch (error) {
         coreLog.write(`[recording] entrega de ${name} pendiente: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -597,8 +660,8 @@ function submitRecordings(): Promise<void> {
   return submittingRecordings
 }
 
-function manualRecordingTitle(): string {
-  return t("recording.manualTitle", { date: new Intl.DateTimeFormat(activeLanguage(), { dateStyle: "medium", timeStyle: "short" }).format(new Date()) })
+function manualRecordingTitle(date = new Date()): string {
+  return t("recording.manualTitle", { date: new Intl.DateTimeFormat(activeLanguage(), { dateStyle: "medium", timeStyle: "short" }).format(date) })
 }
 
 const keepAwake = new KeepAwake({
@@ -1867,6 +1930,7 @@ else {
       void submitRecordings()
       setInterval(() => void pollRecordingOffers(), RECORDING_OFFERS_POLL_MS).unref()
       setInterval(recordingTick, RECORDING_TICK_MS).unref()
+      setInterval(() => void submitRecordings(), RECORDING_SUBMIT_RETRY_MS).unref()
       void pollRecordingOffers()
     }
     // `resume` sale de la suspensión; `unlock-screen` sólo existe en macOS y Windows.

@@ -184,7 +184,7 @@ export async function processRecording(store: MemoryStore, media: MediaRuntime, 
   try {
     await progress({ stage: "recording_models", source_title: row.title })
     check(media.decoder.installed(), "Descargá el decodificador de audio y video desde Ajustes", 409)
-    const separable = Boolean(row.tracks.system) && await ensureInstalled(media.diarization, signal)
+    const separable = await ensureInstalled(media.diarization, signal)
     engine = await ensureInstalled(media.speech_small, signal) ? media.speech_small : media.speech
     check(engine === media.speech_small || media.speech.installed(), "Descargá el modelo de transcripción desde Ajustes", 409)
     const processor = engine === media.speech_small ? "whisper-small-q8-v1" : "whisper-base-q8-v1"
@@ -215,14 +215,17 @@ export async function processRecording(store: MemoryStore, media: MediaRuntime, 
     const remote: Spoken[] = pcm.system ? (await transcribeTrack(engine, pcm.system, language, signal,
       (start, end, samples) => turns.length ? turns.some(turn => Math.min(end, turn.end) - Math.max(start, turn.start) > 0.2) : rms(samples) > MIC_SPEECH_RMS, report("system")))
       .map(phrase => placed("system", { ...attribute(phrase, turns), track: "system" as const })) : []
-    const local = pcm.mic ? (await transcribeTrack(engine, pcm.mic, language, signal, (_start, _end, samples) => rms(samples) > MIC_SPEECH_RMS, report("mic")))
-      .filter(phrase => !isEcho(placed("mic", phrase), remote)) : []
+    // Without remote speech the microphone is the only source (in-person meeting, call played on speakers, system audio
+    // denied): it may hold several people, so it is split by voice like a remote track and nobody is assumed to be the owner.
+    const call = remote.length > 0
+    const heard = pcm.mic ? await transcribeTrack(engine, pcm.mic, language, signal, (_start, _end, samples) => rms(samples) > MIC_SPEECH_RMS, report("mic")) : []
     await engine.unload()
-
-    const own = pcm.mic && separable && local.length ? await voiceprint(media.diarization, pcm.mic, local.map(phrase => [phrase.start, phrase.end] as [number, number]), signal) : null
-    const spoken = merge([...remote, ...local.map(phrase => placed("mic", { ...phrase, track: "mic" as const, voice: 0 }))])
+    const local = call ? heard.filter(phrase => !isEcho(placed("mic", phrase), remote)) : heard
+    if (!call && pcm.mic && separable && local.length) ({ turns, voices } = await diarize(media.diarization, pcm.mic, signal))
+    const own = call && pcm.mic && separable && local.length ? await voiceprint(media.diarization, pcm.mic, local.map(phrase => [phrase.start, phrase.end] as [number, number]), signal) : null
+    const spoken = merge([...remote, ...local.map(phrase => placed("mic", call ? { ...phrase, track: "mic" as const, voice: 0 } : { ...attribute(phrase, turns), track: "mic" as const }))])
     if (!spoken.length) {
-      await store.db.query("UPDATE recordings SET state='ready',error=$2,audio_expires_at=ts($3),updated_at=now() WHERE id=$1", [row.id, "No se detectó habla en la grabación", expiry(await recordingSettings(store))])
+      await store.db.query("UPDATE recordings SET state='ready',error=$2,updated_at=now() WHERE id=$1", [row.id, "No se detectó habla en la grabación"])
       return { stage: "complete", skipped: "no_speech" }
     }
 
@@ -230,7 +233,7 @@ export async function processRecording(store: MemoryStore, media: MediaRuntime, 
     const owner = await ownerParticipant(store, row)
     const label = (voice: number): string => `Voz ${voice}`
     const fragments: ImportInput["fragments"] = spoken.map(phrase => {
-      const mine = phrase.track === "mic"
+      const mine = call && phrase.track === "mic"
       return {
         text: phrase.text,
         external_id: `${phrase.track}:${Math.round(phrase.start * 1000)}`,
@@ -244,10 +247,10 @@ export async function processRecording(store: MemoryStore, media: MediaRuntime, 
       }
     })
     // A reprocessed recording keeps the decisions already taken: each voice inherits them from the stored voice with the same voiceprint.
-    const decided = (row.speakers as StoredVoice[]).filter(voice => voice.status !== "self")
+    const decided = (((await store.db.query<{ speakers: StoredVoice[] }>("SELECT speakers FROM recordings WHERE id=$1", [row.id]))[0]?.speakers) ?? []).filter(voice => voice.status !== "self")
     const stored: StoredVoice[] = [
       ...(own ? [{ voice: 0, label: owner?.name ?? "Micrófono", seconds: local.reduce((sum, phrase) => sum + phrase.end - phrase.start, 0), embedding: own, status: "self" as const }] : []),
-      ...voices.filter(voice => spoken.some(phrase => phrase.track === "system" && phrase.voice === voice.voice)).map(voice => {
+      ...voices.filter(voice => spoken.some(phrase => phrase.voice === voice.voice)).map(voice => {
         const previous = decided.map(item => ({ item, similarity: cosine(item.embedding, voice.embedding) })).filter(match => match.similarity >= SAME_VOICE_SIMILARITY)
           .sort((a, b) => b.similarity - a.similarity)[0]?.item
         return { voice: voice.voice, label: previous?.status === "confirmed" ? previous.label : label(voice.voice), seconds: voice.seconds, embedding: voice.embedding,
@@ -256,8 +259,8 @@ export async function processRecording(store: MemoryStore, media: MediaRuntime, 
     ]
     const result = await store.ingest({
       provider: "manual", account: "local", external_id: `recording:${row.id}`, kind: "meeting", title: row.title, occurred_at: row.started_at,
-      participants: owner ? [owner] : [], fragments,
-      metadata: { recording_id: row.id, source_kind: "recording", ended_at: row.ended_at, platform: row.event?.platform ?? null, tracks: Object.keys(pcm),
+      participants: call && owner ? [owner] : [], fragments,
+      metadata: { recording_id: row.id, source_kind: "recording", capture: call ? "call" : "room", ended_at: row.ended_at, platform: row.event?.platform ?? null, tracks: Object.keys(pcm),
         attendees: row.event?.attendees ?? [], voices: stored.filter(voice => voice.status !== "self").map(voice => ({ voice: voice.voice, label: voice.label, seconds: Math.round(voice.seconds) })),
         calendar_event: row.event ? { connector_id: row.event.connector_id, calendar: row.event.calendar, event_id: row.event.event_id } : null },
       original: { recording_id: row.id, processor, phrases: spoken },

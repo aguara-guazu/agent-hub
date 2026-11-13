@@ -17,6 +17,7 @@ const LOOKAHEAD_MS = 12 * 60 * 60_000
 /** A meeting that already started is still offered for a while; the desktop decides how long. */
 const LOOKBEHIND_MS = 60 * 60_000
 const CACHE_MS = 5 * 60_000
+const RETRY_MS = 60_000
 
 const PLATFORMS: readonly [RegExp, string][] = [
   [/teams\.(microsoft|live)\.com/i, "Microsoft Teams"],
@@ -71,24 +72,33 @@ export class UpcomingEvents {
   async list(): Promise<UpcomingEvent[]> {
     if (this.cached && Date.now() - this.cached.at < CACHE_MS) return this.cached.events
     this.loading ??= this.load().then(events => { this.cached = { at: Date.now(), events }; return events })
-      .catch(() => this.cached?.events ?? []).finally(() => { this.loading = null })
+      .catch(() => {
+        // A failed read is retried after a minute, not on every poll of the desktop app.
+        this.cached = { at: Date.now() - CACHE_MS + RETRY_MS, events: this.cached?.events ?? [] }
+        return this.cached.events
+      }).finally(() => { this.loading = null })
     return this.loading
   }
 
   private async load(): Promise<UpcomingEvent[]> {
     const store = await this.store(), events: UpcomingEvent[] = [], http = new ProviderHttp(this.fetcher)
-    const connectors = await store.db.query<Connector>("SELECT * FROM connectors WHERE provider='google' AND enabled=1")
+    const connectors = (await store.db.query<Connector>("SELECT * FROM connectors WHERE provider='google' AND enabled=1")).filter(connector => connector.config.calendar_enabled !== false)
+    let read = 0
     for (const connector of connectors) {
-      if (connector.config.calendar_enabled === false) continue
-      const headers = { Authorization: `Bearer ${await this.google.token(connector.id)}` }
-      for (const calendar of (connector.config.calendars?.length ? connector.config.calendars : ["primary"]) as string[]) {
-        const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar)}/events`)
-        url.searchParams.set("singleEvents", "true"); url.searchParams.set("orderBy", "startTime"); url.searchParams.set("maxResults", "50")
-        url.searchParams.set("timeMin", new Date(Date.now() - LOOKBEHIND_MS).toISOString()); url.searchParams.set("timeMax", new Date(Date.now() + LOOKAHEAD_MS).toISOString())
-        const page = await http.json(url.toString(), headers)
-        for (const event of page.items ?? []) if (recordable(event)) events.push(upcomingEvent(connector.id, calendar, event))
-      }
+      // One account with a revoked token or a removed calendar must not hide the meetings of the others.
+      try {
+        const headers = { Authorization: `Bearer ${await this.google.token(connector.id)}` }
+        for (const calendar of (connector.config.calendars?.length ? connector.config.calendars : ["primary"]) as string[]) {
+          const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar)}/events`)
+          url.searchParams.set("singleEvents", "true"); url.searchParams.set("orderBy", "startTime"); url.searchParams.set("maxResults", "50")
+          url.searchParams.set("timeMin", new Date(Date.now() - LOOKBEHIND_MS).toISOString()); url.searchParams.set("timeMax", new Date(Date.now() + LOOKAHEAD_MS).toISOString())
+          const page = await http.json(url.toString(), headers)
+          for (const event of page.items ?? []) if (recordable(event)) events.push(upcomingEvent(connector.id, calendar, event))
+        }
+        read++
+      } catch { /* the regular sync reports this connector's error */ }
     }
+    if (connectors.length && !read) throw new Error("no calendar could be read")
     return events.sort((a, b) => (a.start ?? "").localeCompare(b.start ?? ""))
   }
 }

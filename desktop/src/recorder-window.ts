@@ -87,7 +87,7 @@ export function openRecorderWindow(paths: RecorderWindowPaths, events: RecorderE
     const timer = setTimeout(() => fail("la ventana de captura no respondió"), READY_TIMEOUT_MS)
     contents.ipc.once(RECORDER_IPC.ready, () => { clearTimeout(timer); resolve(handle) })
     contents.once("did-fail-load", (_event, _code, description) => fail(`no cargó la página de captura: ${description}`))
-    contents.once("render-process-gone", (_event, details) => events.onTrackFailed("mic", `render process gone: ${details.reason}`))
+    contents.once("render-process-gone", (_event, details) => { for (const track of RECORDING_TRACKS) events.onTrackFailed(track, `render process gone: ${details.reason}`) })
     void win.loadFile(paths.page)
   })
 }
