@@ -10,7 +10,7 @@ import { recordingSettings, RECORDING_TRACKS, type RecordingRow, type RecordingT
 import type { MemoryStore } from "./store.js"
 import type { MemoryAI } from "./ai.js"
 import type { AIConfig } from "./config.js"
-import { proposeVoiceNames } from "./voice-naming.js"
+import { assignVoice, proposeVoiceNames } from "./voice-naming.js"
 
 /**
  * Turns a registered recording into a meeting.
@@ -33,6 +33,8 @@ const FRAGMENT_MAX_GAP_SECONDS = 2
 const ECHO_WINDOW_SECONDS = 3
 const ECHO_WORD_RATIO = 0.7
 const MODEL_INSTALL_TIMEOUT_MS = 60 * 60_000
+/** Same cut-off the diarization uses to treat two voiceprints as one person. */
+const SAME_VOICE_SIMILARITY = 0.85
 const DECODE_TIMEOUT_MS = 20 * 60_000
 
 type Progress = (value: Record<string, unknown>) => Promise<void>
@@ -241,10 +243,16 @@ export async function processRecording(store: MemoryStore, media: MediaRuntime, 
             : { voice: phrase.voice, voice_label: phrase.voice === null ? "Voz sin identificar" : label(phrase.voice), speaker_resolution: "unresolved" }) },
       }
     })
+    // A reprocessed recording keeps the decisions already taken: each voice inherits them from the stored voice with the same voiceprint.
+    const decided = (row.speakers as StoredVoice[]).filter(voice => voice.status !== "self")
     const stored: StoredVoice[] = [
       ...(own ? [{ voice: 0, label: owner?.name ?? "Micrófono", seconds: local.reduce((sum, phrase) => sum + phrase.end - phrase.start, 0), embedding: own, status: "self" as const }] : []),
-      ...voices.filter(voice => spoken.some(phrase => phrase.track === "system" && phrase.voice === voice.voice))
-        .map(voice => ({ voice: voice.voice, label: label(voice.voice), seconds: voice.seconds, embedding: voice.embedding, status: "unresolved" as const })),
+      ...voices.filter(voice => spoken.some(phrase => phrase.track === "system" && phrase.voice === voice.voice)).map(voice => {
+        const previous = decided.map(item => ({ item, similarity: cosine(item.embedding, voice.embedding) })).filter(match => match.similarity >= SAME_VOICE_SIMILARITY)
+          .sort((a, b) => b.similarity - a.similarity)[0]?.item
+        return { voice: voice.voice, label: previous?.status === "confirmed" ? previous.label : label(voice.voice), seconds: voice.seconds, embedding: voice.embedding,
+          status: previous?.status ?? "unresolved" as const, ...(previous?.person_id ? { person_id: previous.person_id } : {}), ...(previous?.proposal ? { proposal: previous.proposal } : {}) }
+      }),
     ]
     const result = await store.ingest({
       provider: "manual", account: "local", external_id: `recording:${row.id}`, kind: "meeting", title: row.title, occurred_at: row.started_at,
@@ -254,8 +262,11 @@ export async function processRecording(store: MemoryStore, media: MediaRuntime, 
         calendar_event: row.event ? { connector_id: row.event.connector_id, calendar: row.event.calendar, event_id: row.event.event_id } : null },
       original: { recording_id: row.id, processor, phrases: spoken },
     }, "recording")
-    await store.db.query("UPDATE recordings SET state='ready',error=NULL,entity_id=$2,speakers=$3,audio_expires_at=ts($4),updated_at=now() WHERE id=$1",
-      [row.id, result.entity_id, JSON.stringify(stored), expiry(await recordingSettings(store))])
+    await store.db.transaction(async sql => {
+      for (const voice of stored) if (voice.status === "confirmed" && voice.person_id) await assignVoice(sql, result.entity_id, result.version_id, voice.voice, voice.person_id)
+      await sql.query("UPDATE recordings SET state='ready',error=NULL,entity_id=$2,speakers=$3,audio_expires_at=ts($4),updated_at=now() WHERE id=$1",
+        [row.id, result.entity_id, JSON.stringify(stored), expiry(await recordingSettings(store))])
+    })
     await linkRecordingEvents(store)
     // A failed proposal must not fail a recording that is already saved: voices simply stay unnamed.
     const named = naming ? await progress({ stage: "voice_naming" }).then(() => proposeVoiceNames(store, naming.ai, naming.config, row.id, signal))
@@ -269,6 +280,12 @@ export async function processRecording(store: MemoryStore, media: MediaRuntime, 
     await engine?.unload().catch(() => undefined)
     for (const path of temporary) await rm(path, { force: true }).catch(() => undefined)
   }
+}
+
+function cosine(a: number[], b: number[]): number {
+  let sum = 0
+  for (let index = 0; index < Math.min(a.length, b.length); index++) sum += a[index]! * b[index]!
+  return sum
 }
 
 function expiry(settings: { retention_days: number }): string {

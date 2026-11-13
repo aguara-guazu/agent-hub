@@ -5,6 +5,7 @@ import { usesRemoteExtraction, type AIConfig } from "./config.js"
 import { check, parse } from "./contracts.js"
 import type { StoredVoice } from "./recording-processing.js"
 import type { RecordingRow } from "./recordings.js"
+import type { Sql } from "./database.js"
 import type { MemoryStore } from "./store.js"
 
 /**
@@ -95,6 +96,14 @@ export async function listPendingVoices(store: MemoryStore) {
   return { items }
 }
 
+/** Assigns every system-track fragment of a voice in one version to a person, as a manual assignment. Returns the number of fragments. */
+export async function assignVoice(sql: Sql, entityId: string, versionId: string, voiceNumber: number, personId: string): Promise<number> {
+  const updated = await sql.query(`UPDATE fragments SET speaker_id=$2,metadata=jsonb_merge(metadata,'{"manual_assignment":true,"speaker_resolution":"confirmed_voice"}')
+    WHERE version_id=$1 AND (metadata->>'track')='system' AND CAST(metadata->>'voice' AS INTEGER)=$3 RETURNING id`, [versionId, personId, voiceNumber])
+  await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'participant') ON CONFLICT DO NOTHING", [randomUUID(), entityId, personId])
+  return updated.length
+}
+
 /** Confirms who a voice is, or leaves it unnamed. Confirming assigns every fragment of the voice in the current version of the meeting. */
 export async function decideVoice(store: MemoryStore, recordingId: string, voiceNumber: number, raw: unknown) {
   const input = parse(voiceDecisionInput, raw)
@@ -116,15 +125,13 @@ export async function decideVoice(store: MemoryStore, recordingId: string, voice
   return store.db.transaction(async sql => {
     const version = (await sql.query<{ current_version_id: string }>("SELECT current_version_id FROM sources WHERE entity_id=$1", [row.entity_id]))[0]?.current_version_id
     check(version, "La reunión ya no tiene una versión vigente", 409)
-    const updated = await sql.query(`UPDATE fragments SET speaker_id=$2,metadata=jsonb_merge(metadata,'{"manual_assignment":true,"speaker_resolution":"confirmed_voice"}')
-      WHERE version_id=$1 AND (metadata->>'track')='system' AND CAST(metadata->>'voice' AS INTEGER)=$3 RETURNING id`, [version, personId, voiceNumber])
-    await sql.query("INSERT INTO links(id,from_id,to_id,type) VALUES($1,$2,$3,'participant') ON CONFLICT DO NOTHING", [randomUUID(), row.entity_id, personId])
+    const updated = await assignVoice(sql, row.entity_id!, version, voiceNumber, personId)
     voice.status = "confirmed"
     voice.person_id = personId
     voice.label = candidate.name
     await sql.query("UPDATE recordings SET speakers=$2,updated_at=now() WHERE id=$1", [recordingId, JSON.stringify(row.speakers)])
     await sql.query("DELETE FROM rule_runs WHERE version_id=$1", [version])
     await store.enqueue("process", { version_id: version }, `process:${version}`, sql)
-    return { updated: updated.length, status: voice.status, person_id: personId }
+    return { updated, status: voice.status, person_id: personId }
   })
 }
