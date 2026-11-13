@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import { z } from "zod"
 import { id, parse } from "./contracts.js"
-import { deleteRecordingAudio, listRecordings, recordingSettings, registerRecording } from "./recordings.js"
+import { deleteRecordingAudio, listRecordings, recordingSettings, recordingSettingsInput, registerRecording } from "./recordings.js"
 import type { MemoryStore } from "./store.js"
 import type { UpcomingEvents } from "./upcoming-events.js"
 import { decideVoice, listPendingVoices } from "./voice-naming.js"
@@ -14,6 +14,12 @@ export function registerRecordingRoutes(app: FastifyInstance, context: () => Pro
   app.post("/api/memory/recordings", { preHandler: auth, bodyLimit: 262_144 }, async (request, reply) => {
     const { store, directory } = await context()
     return reply.code(201).send(await registerRecording(store, directory, request.body))
+  })
+  app.get("/api/memory/recordings/settings", { preHandler: auth }, async () => recordingSettings((await context()).store))
+  app.put("/api/memory/recordings/settings", { preHandler: auth, bodyLimit: 4096 }, async request => {
+    const settings = parse(recordingSettingsInput, request.body), { store } = await context()
+    await store.db.query("INSERT INTO settings(key,value) VALUES('recording',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(settings)])
+    return settings
   })
   app.get("/api/memory/recordings/voices", { preHandler: auth }, async () => listPendingVoices((await context()).store))
   app.post("/api/memory/recordings/:id/voices/:voice", { preHandler: auth, bodyLimit: 4096 }, async request => {

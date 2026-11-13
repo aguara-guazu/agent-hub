@@ -8,6 +8,7 @@ import { api } from "../../../lib/api"
 import { useMemoryStatus } from "../../../lib/memory"
 import { DeepseekKeyRow, KiroKeyRow } from "../Credentials"
 import { MediaSettingsBlock } from "../MediaBlock"
+import { RecordingSettingsBlock } from "../RecordingBlock"
 import { useMemoryBanner } from "../MemoryBanner"
 import { QuotasBlock } from "../QuotasBlock"
 import { SettingRow, SettingsSection, useErrorDetail } from "../SettingRow"
@@ -123,6 +124,7 @@ export default function IA() {
       </>}
     </SettingsSection>
     {ready && <MediaSettingsBlock />}
+    {ready && window.agentHub?.getRecordingStatus && window.agentHub.platform === "darwin" && <RecordingSettingsBlock />}
     {ready && <QuotasBlock />}
     {ready && (
       <section className="section">

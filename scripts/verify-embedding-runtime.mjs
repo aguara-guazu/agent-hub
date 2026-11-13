@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads'
+import { createRequire } from 'node:module'
 import { resolve, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { setTimeout, clearTimeout } from 'node:timers'
@@ -27,3 +28,7 @@ await new Promise((resolveCheck, reject) => {
     else { console.log('PDF runtime ready (bundled WASM)'); resolveCheck() }
   })
 })
+
+// The diarization addon resolves from the packaged node_modules and brings its own ONNX runtime.
+if (typeof createRequire(resolve(path))('sherpa-onnx-node').OfflineSpeakerDiarization !== 'function') throw new Error('Diarization runtime failed to load')
+console.log('Diarization runtime ready')

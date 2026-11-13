@@ -4,7 +4,7 @@ const { copyFileSync, readdirSync, readFileSync, rmSync, existsSync, mkdirSync, 
 const { Buffer } = require('node:buffer')
 const { createPublicKey } = require('node:crypto')
 const { Arch } = require('builder-util')
-const { prepareArgon2, prepareSharp, preparePty } = require('./prepare-sharp.cjs')
+const { prepareArgon2, prepareSharp, preparePty, prepareSherpa } = require('./prepare-sharp.cjs')
 
 const CRT = /^(?:msvcp140|vcruntime140)[\w]*\.dll$/i
 
@@ -111,6 +111,7 @@ exports.default = async (context) => {
   await preparePty(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   await prepareSharp(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   await prepareArgon2(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
+  await prepareSherpa(context.packager.projectDir, join(resources, 'app'), context.electronPlatformName, Arch[context.arch])
   embedTrustStore(join(resources, 'app'))
   const binaries = join(resources, 'app', 'node_modules', 'onnxruntime-node', 'bin', 'napi-v6')
   // The npm package includes bindings for five targets. Ship only the current platform/architecture.
