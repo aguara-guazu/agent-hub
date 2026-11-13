@@ -106,6 +106,12 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
   const queue = useQueueJob()
   const navigate = useNavigate()
   const [confirm, setConfirm] = useState<MergeConfirm | null>(null)
+  const toast = useToast()
+  const clock = (instant: string) => new Intl.DateTimeFormat(format.language, { timeStyle: "short" }).format(new Date(instant))
+  const startRecording = async (key: string) => {
+    const status = await window.agentHub?.startRecording?.(key)
+    if (status?.error) toast.error(t(status.error === "microphone_denied" ? "recording.micDenied" : "recording.failed"))
+  }
   const rows: PendingRow[] = []
   const { connections: c, agents: a, memory: m } = inbox
   const busy = decide.isPending
@@ -198,6 +204,35 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
     ) })
   }
 
+  if (m.recording && m.recording.phase !== "idle") {
+    const title = m.recording.title ?? t("recording.untitled")
+    rows.push({ id: "recording", group: "memory", node: (
+      <Row
+        key="recording"
+        lead={<Avatar name={title} small />}
+        title={t("recording.activeTitle", { title })}
+        sub={m.recording.startedAt ? t("recording.activeDetail", { time: clock(m.recording.startedAt) }) : undefined}
+        meta={<Chip tone="info">{t("recording.chipRecording")}</Chip>}
+        action={<Button small disabled={m.recording.phase !== "recording"} onClick={() => { void window.agentHub?.stopRecording?.() }}>{t("recording.stop")}</Button>}
+      />
+    ) })
+  }
+  for (const offer of m.recording?.offers ?? []) {
+    const title = offer.title || t("recording.untitled")
+    rows.push({ id: `rec-${offer.key}`, group: "memory", node: (
+      <Row
+        key={`rec-${offer.key}`}
+        lead={<Avatar name={title} small />}
+        title={t("recording.offerTitle", { title })}
+        sub={offer.platform ? t("recording.offerDetailPlatform", { time: clock(offer.start), platform: offer.platform }) : t("recording.offerDetail", { time: clock(offer.start) })}
+        meta={<Chip tone="warn">{t("recording.chipNoTranscript")}</Chip>}
+        action={<DecideMenu label={t("recording.decide")} items={[
+          { label: t("recording.start"), onSelect: () => { void startRecording(offer.key) } },
+          { label: t("recording.skip"), onSelect: () => { void window.agentHub?.dismissRecordingOffer?.(offer.key) } },
+        ]} />}
+      />
+    ) })
+  }
   for (const proposal of m.duplicates) rows.push({ id: `dup-${proposal.id}`, group: "memory", node: duplicateRow(proposal) })
   for (const proposal of m.identities) rows.push({ id: `idn-${proposal.id}`, group: "memory", node: identityRow(proposal) })
   for (const item of m.suggestions) rows.push({ id: `sug-${item.id}`, group: "memory", node: suggestionRow(item) })

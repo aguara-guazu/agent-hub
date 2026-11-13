@@ -12,6 +12,7 @@ const ROUTE_PATTERNS: readonly RegExp[] = [
   /^\/deliveries\/[A-Za-z0-9_-]{1,80}$/,
   /^\/schedules(\?focus=[A-Za-z0-9_-]{1,80})?$/,
   /^\/settings$/,
+  /^\/home$/,
 ]
 
 /** Devuelve la ruta si está permitida; cualquier otra cosa (incluidas URLs, fragmentos y consultas distintas de `focus`) da `null`. */

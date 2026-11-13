@@ -62,6 +62,25 @@ export interface UpdateStatusView {
   }
 }
 
+export interface RecordingOfferView {
+  key: string
+  title: string
+  start: string
+  end: string | null
+  platform: string | null
+  /** Invitados sin contar a quien graba. */
+  attendees: number
+}
+
+export interface RecordingStatusView {
+  supported: boolean
+  phase: "idle" | "starting" | "recording" | "stopping"
+  title: string | null
+  startedAt: string | null
+  error: "microphone_denied" | "capture_failed" | null
+  offers: RecordingOfferView[]
+}
+
 export interface AgentHubBridge {
   getCoreStatus(): Promise<CoreStatus>
   restartCore(): Promise<void>
@@ -90,6 +109,12 @@ export interface AgentHubBridge {
   getAutoUpdate?(): Promise<boolean>
   /** Enciende o apaga las actualizaciones automáticas; devuelve el valor vigente. Ausente en versiones anteriores del escritorio. */
   setAutoUpdate?(enabled: boolean): Promise<boolean>
+  /** Grabación de reuniones sin transcripción: estado, ofertas y control. Ausente en versiones anteriores del escritorio. */
+  getRecordingStatus?(): Promise<RecordingStatusView>
+  startRecording?(offerKey: string): Promise<RecordingStatusView>
+  stopRecording?(): Promise<RecordingStatusView>
+  dismissRecordingOffer?(offerKey: string): Promise<RecordingStatusView>
+  onRecordingChanged?(listener: (status: RecordingStatusView) => void): () => void
 }
 
 declare global {

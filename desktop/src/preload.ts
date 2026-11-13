@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { LanguagePreference } from "./i18n.js"
-import { IPC, type AgentHubBridge, type ClientRestartResult, type CoreStatus, type OpenFileResult, type UpdateStatusView, type VersionInfo } from "./ipc.js"
+import { IPC, type AgentHubBridge, type ClientRestartResult, type CoreStatus, type OpenFileResult, type RecordingStatusView, type UpdateStatusView, type VersionInfo } from "./ipc.js"
 
 /**
  * Preload seguro. Con `contextIsolation` y `sandbox` activos, el renderer sólo
@@ -43,6 +43,17 @@ const bridge: AgentHubBridge = {
   getUpdateStatus: () => ipcRenderer.invoke(IPC.getUpdateStatus) as Promise<UpdateStatusView>,
   getAutoUpdate: () => ipcRenderer.invoke(IPC.getAutoUpdate) as Promise<boolean>,
   setAutoUpdate: (enabled: boolean) => ipcRenderer.invoke(IPC.setAutoUpdate, enabled) as Promise<boolean>,
+  getRecordingStatus: () => ipcRenderer.invoke(IPC.recordingStatus) as Promise<RecordingStatusView>,
+  startRecording: (offerKey: string) => ipcRenderer.invoke(IPC.recordingStart, offerKey) as Promise<RecordingStatusView>,
+  stopRecording: () => ipcRenderer.invoke(IPC.recordingStop) as Promise<RecordingStatusView>,
+  dismissRecordingOffer: (offerKey: string) => ipcRenderer.invoke(IPC.recordingDismiss, offerKey) as Promise<RecordingStatusView>,
+  onRecordingChanged: (listener: (status: RecordingStatusView) => void) => {
+    const handler = (_event: unknown, status: RecordingStatusView): void => listener(status)
+    ipcRenderer.on(IPC.recordingChanged, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.recordingChanged, handler)
+    }
+  },
 }
 
 /**

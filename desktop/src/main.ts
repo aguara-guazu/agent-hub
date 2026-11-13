@@ -16,10 +16,11 @@ import { windowOptions, isAllowedNavigation, externalUrl } from './window.js'
 import { buildTrayTemplate, trayTooltip, type TrayAction } from './tray.js'
 import { activeLanguage, isLanguagePreference, onLanguageChange, resolveLanguage, setActiveLanguage, t, type LanguagePreference } from "./i18n.js"
 import { AutostartManager, type LinuxAutostartFs } from './autostart.js'
-import { IPC, type CoreStatus, type OpenFileResult } from './ipc.js'
+import { IPC, type CoreStatus, type OpenFileResult, type RecordingStatusView } from './ipc.js'
 import { NavigationRelay } from './navigation.js'
 import { RECORDING_META_FILE, RECORDING_TRACKS, RecordingController, type FinishedRecording, type RecordingMeta, type RecordingRequest, type RecordingState } from "./recording.js"
 import { openRecorderWindow } from "./recorder-window.js"
+import { RecordingOffers, type UpcomingResponse } from "./recording-offers.js"
 import { AutostartOffer } from './autostart-offer.js'
 import { ClockWake } from './clock-wake.js'
 import { holdLimitFor, KeepAwake } from './keep-awake.js'
@@ -446,7 +447,7 @@ const recording = new RecordingController({
     onTrackStarted: (track, epochMs) => recording.trackStarted(track, epochMs),
     onTrackFailed: (track, message) => recording.trackFailed(track, message),
     onChunk: (track, data) => recording.chunk(track, data),
-    onLevels: () => undefined,
+    onLevels: levels => { if (Object.values(levels).some(level => (level ?? 0) > RECORDING_SILENCE_RMS)) recordingHeardAt = Date.now() },
   }),
   mkdir: async path => { await mkdir(path, { recursive: true, mode: 0o700 }) },
   append: (path, data) => appendFile(path, data, { mode: 0o600 }),
@@ -458,12 +459,92 @@ const recording = new RecordingController({
   log: line => coreLog.write(line),
 })
 
+const recordingOffers = new RecordingOffers()
+const RECORDING_OFFERS_POLL_MS = 30_000
+const RECORDING_TICK_MS = 15_000
+/** Por debajo de este RMS una pista se considera en silencio. */
+const RECORDING_SILENCE_RMS = 0.003
+const RECORDING_SILENCE_REMIND_MS = 5 * 60_000
+const RECORDING_SILENCE_REPEAT_MS = 10 * 60_000
+/** Margen después del fin programado antes de preguntar si la reunión sigue. */
+const RECORDING_END_GRACE_MS = 60_000
+let recordingHeardAt = 0
+let recordingEndReminded = false
+let recordingSilenceRemindedAt = 0
+
+function recordingStatus(): RecordingStatusView {
+  const state = recording.state
+  return {
+    supported: RECORDING_SUPPORTED, phase: state.phase, title: state.title, startedAt: state.startedAt, error: state.error,
+    offers: recording.active ? [] : recordingOffers.open(Date.now()).map(event => ({ key: event.key, title: event.title, start: event.start!, end: event.end,
+      platform: event.platform, attendees: event.attendees.filter(attendee => !attendee.self).length })),
+  }
+}
+
+function broadcastRecording(): void {
+  mainWindow?.webContents.send(IPC.recordingChanged, recordingStatus())
+}
+
+const clockTime = (instant: string): string => new Intl.DateTimeFormat(activeLanguage(), { timeStyle: "short" }).format(new Date(instant))
+
+/** Avisa las ofertas que abren ahora y recuerda una grabación que quedó corriendo; nunca la detiene. */
+function recordingTick(): void {
+  if (!RECORDING_SUPPORTED || quitting) return
+  const now = Date.now(), state = recording.state
+  if (!recording.active) for (const event of recordingOffers.due(now)) notifyOpening({
+    title: t("recording.offerTitle", { title: event.title || t("recording.untitled") }),
+    body: event.platform ? t("recording.offerBodyPlatform", { time: clockTime(event.start!), platform: event.platform }) : t("recording.offerBody", { time: clockTime(event.start!) }),
+    route: "/home",
+  })
+  if (state.phase === "recording") {
+    const title = state.title ?? t("recording.untitled")
+    if (state.scheduledEnd && !recordingEndReminded && now > Date.parse(state.scheduledEnd) + RECORDING_END_GRACE_MS) {
+      recordingEndReminded = true
+      notifyOpening({ title: t("recording.endedTitle"), body: t("recording.endedBody", { title }), route: "/home" })
+    } else if (now - recordingHeardAt > RECORDING_SILENCE_REMIND_MS && now - recordingSilenceRemindedAt > RECORDING_SILENCE_REPEAT_MS) {
+      recordingSilenceRemindedAt = now
+      notifyOpening({ title: t("recording.silenceTitle"), body: t("recording.silenceBody", { title }), route: "/home" })
+    }
+  }
+  broadcastRecording()
+}
+
+let recordingOffersPoll: Promise<void> | null = null
+function pollRecordingOffers(): Promise<void> {
+  if (!RECORDING_SUPPORTED || quitting || coreSupervisor.state !== "running") return Promise.resolve()
+  recordingOffersPoll ??= (async () => {
+    try {
+      const response = await coreFetch("/api/memory/recordings/upcoming")
+      if (response.ok) recordingOffers.update(await response.json() as UpcomingResponse)
+    } catch {
+      // Con el core caído se conservan las últimas ofertas conocidas.
+    }
+    recordingTick()
+  })().finally(() => { recordingOffersPoll = null })
+  return recordingOffersPoll
+}
+
+/** Empieza a grabar la reunión ofrecida y deja su evento junto al audio para que el core conozca invitados y horario. */
+async function startOfferedRecording(key: string): Promise<void> {
+  const event = recordingOffers.get(key)
+  if (!event) return
+  const state = await startRecording({ title: event.title || manualRecordingTitle(), eventId: event.event_id, scheduledEnd: event.end })
+  if (state.phase !== "recording" || !state.id) return
+  recordingOffers.dismiss(key)
+  const { key: _key, ...stored } = event
+  await writeFile(join(recordingsDir, state.id, RECORDING_EVENT_FILE), JSON.stringify(stored), { mode: 0o600 })
+    .catch(error => coreLog.write(`[recording] no se guardó el evento: ${error instanceof Error ? error.message : String(error)}`))
+  broadcastRecording()
+}
+
 function onRecordingChange(state: RecordingState): void {
   const active = state.phase !== "idle"
+  if (state.phase === "starting") { recordingHeardAt = Date.now(); recordingEndReminded = false; recordingSilenceRemindedAt = 0 }
   if (active && recordingAwake === null) recordingAwake = powerSaveBlocker.start("prevent-app-suspension")
   if (!active && recordingAwake !== null) { powerSaveBlocker.stop(recordingAwake); recordingAwake = null }
   if (process.platform === "darwin") tray?.setTitle(active ? "●" : "")
   refreshTray()
+  broadcastRecording()
 }
 
 async function startRecording(request: RecordingRequest): Promise<RecordingState> {
@@ -1542,6 +1623,10 @@ function registerIpc(): void {
   ipcMain.handle(IPC.setLanguage, (_event, preference: unknown) => saveLanguagePreference(preference))
   ipcMain.handle(IPC.getVersionInfo, readVersionInfo)
   ipcMain.handle(IPC.getAppVersion, () => app.getVersion())
+  ipcMain.handle(IPC.recordingStatus, () => recordingStatus())
+  ipcMain.handle(IPC.recordingStart, async (_event, key: unknown) => { await startOfferedRecording(String(key)); return recordingStatus() })
+  ipcMain.handle(IPC.recordingStop, async () => { await stopRecording(); return recordingStatus() })
+  ipcMain.handle(IPC.recordingDismiss, (_event, key: unknown) => { recordingOffers.dismiss(String(key)); broadcastRecording(); return recordingStatus() })
   ipcMain.handle(IPC.getUpdateStatus, () => ({ enabled: updateStore.isEnabled(), ...updateReport }))
   ipcMain.handle(IPC.getAutoUpdate, () => updateStore.isEnabled())
   ipcMain.handle(IPC.setAutoUpdate, (_event, enabled: unknown) => setAutoUpdate(enabled))
@@ -1778,9 +1863,14 @@ else {
     setInterval(() => void pollPendingRestarts(), PENDING_RESTART_POLL_MS).unref()
     setInterval(() => void pollSchedules(), SCHEDULE_FEED_POLL_MS).unref()
     void pollSchedules()
-    if (RECORDING_SUPPORTED) void submitRecordings()
+    if (RECORDING_SUPPORTED) {
+      void submitRecordings()
+      setInterval(() => void pollRecordingOffers(), RECORDING_OFFERS_POLL_MS).unref()
+      setInterval(recordingTick, RECORDING_TICK_MS).unref()
+      void pollRecordingOffers()
+    }
     // `resume` sale de la suspensión; `unlock-screen` sólo existe en macOS y Windows.
-    powerMonitor.on('resume', () => clockWake.trigger())
+    powerMonitor.on('resume', () => { clockWake.trigger(); void pollRecordingOffers() })
     powerMonitor.on('unlock-screen', () => clockWake.trigger())
   }).catch(async (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)

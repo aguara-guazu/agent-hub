@@ -15,6 +15,7 @@ import { pdfPreview } from './pdf.js'
 import { mediaSettings, queueMedia } from './media-processing.js'
 import { ALL_MEDIA_MODULES, mediaSettingsInput } from './media-runtime.js'
 import { registerRecordingRoutes } from "./recording-routes.js"
+import { UpcomingEvents } from "./upcoming-events.js"
 import { fileText, readFileAttachment } from './attachments.js'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
@@ -214,7 +215,8 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   registerScheduleRoutes(app, service, options.authorize)
   registerDecisionRoutes(app, options.scheduleEffects, options.authorize, { service, ...(options.automationsEnabled ? { automationsEnabled: options.automationsEnabled } : {}) })
   registerProjectAutomationRoutes(app, async () => (await service.get()).operations.projectAutomation, options.authorize)
-  registerRecordingRoutes(app, async () => ({ store: (await service.get()).store, directory: options.directory }), options.authorize)
+  registerRecordingRoutes(app, async () => ({ store: (await service.get()).store, directory: options.directory }),
+    new UpcomingEvents(async () => (await service.get()).store, service.google), options.authorize)
   sharingRoutes(app, service, options.authorize)
   // Human owner authorization only: never register activity in the MCP operation dispatcher.
   app.get('/api/memory/chat/agents/:sessionId/activity', { preHandler: auth }, async (request, reply) => {
