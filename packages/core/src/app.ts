@@ -91,7 +91,7 @@ const ORG_ROLES = ['owner', 'admin', 'member']
 type OAuthLanguage = "es" | "en"
 
 const OAUTH_TEXTS: Record<OAuthLanguage, Record<
-  "close" | "unknownTitle" | "unknownDetail" | "goneTitle" | "goneDetail" | "deniedTitle" | "missingCodeTitle" | "missingCodeDetail"
+  "close" | "unknownTitle" | "unknownDetail" | "goneTitle" | "goneDetail" | "staleTitle" | "staleDetail" | "deniedTitle" | "missingCodeTitle" | "missingCodeDetail"
   | "exchangeFailedTitle" | "authorizedTitle" | "toolsOne" | "toolsOther" | "probeFailed", string>> = {
   es: {
     close: "Podés cerrar esta pestaña y volver a Agent Hub.",
@@ -99,6 +99,8 @@ const OAUTH_TEXTS: Record<OAuthLanguage, Record<
     unknownDetail: "Volvé a Agent Hub y usá «Autorizar cuenta» otra vez.",
     goneTitle: "El servidor ya no existe",
     goneDetail: "Se eliminó del catálogo mientras autorizabas.",
+    staleTitle: "El servidor cambió durante la autorización",
+    staleDetail: "Ya no usa OAuth o cambió su URL. Volvé a Agent Hub y usá «Autorizar cuenta» otra vez.",
     deniedTitle: "La autorización no se completó",
     missingCodeTitle: "Falta el código de autorización",
     missingCodeDetail: "El servidor volvió sin el parámetro code.",
@@ -114,6 +116,8 @@ const OAUTH_TEXTS: Record<OAuthLanguage, Record<
     unknownDetail: "Go back to Agent Hub and use “Authorize account” again.",
     goneTitle: "The server no longer exists",
     goneDetail: "It was removed from the catalog while you were authorizing.",
+    staleTitle: "The server changed during authorization",
+    staleDetail: "It no longer uses OAuth or its URL changed. Go back to Agent Hub and use “Authorize account” again.",
     deniedTitle: "Authorization was not completed",
     missingCodeTitle: "Authorization code missing",
     missingCodeDetail: "The server returned without the code parameter.",
@@ -621,6 +625,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const fullName = optionalString(body, 'full_name')
     const orgRole = optionalString(body, 'org_role', 'member')
     if (!ORG_ROLES.includes(orgRole)) throw new HttpError(422, 'org_role invalido')
+    requireOwnerFor(admin, orgRole)
     if (store.usersOfOrg(admin.organization_id).some((u) => u.email === email)) {
       throw new HttpError(409, 'ya existe un usuario con ese email')
     }
@@ -640,6 +645,10 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     return serializeUsers(store, store.usersOfOrg(user.organization_id))
   })
 
+  function requireOwnerFor(actor: User, ...roles: string[]): void {
+    if (roles.includes('owner') && actor.org_role !== 'owner') throw new HttpError(403, 'hace falta rol owner')
+  }
+
   function lastActiveOwner(target: User): boolean {
     if (target.org_role !== 'owner' || !target.is_active) return false
     return store.activeOwnersExcept(target.organization_id, target.id).length === 0
@@ -653,6 +662,8 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const target = store.user(id)
     if (!target || target.organization_id !== admin.organization_id) throw new HttpError(404, 'el usuario no existe')
 
+    const nextRole = typeof body.org_role === 'string' ? body.org_role : target.org_role
+    if ('org_role' in body || 'is_active' in body) requireOwnerFor(admin, target.org_role, nextRole)
     const removesOwner = 'org_role' in body && body.org_role !== 'owner'
     const deactivates = body.is_active === false
     if ((removesOwner || deactivates) && lastActiveOwner(target)) {
@@ -915,7 +926,9 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const nextTransport = (payload.transport as McpServerRow['transport'] | undefined) ?? server.transport
     if (nextAuth === 'oauth' && nextTransport !== 'http') throw new HttpError(422, 'OAuth solo aplica a servers http')
     // Dejar de usar OAuth borra la cuenta autorizada: no quedan tokens sin dueño.
-    if (server.auth === 'oauth' && nextAuth !== 'oauth') oauthStore.delete(server.id)
+    // Cambiar la URL de un server OAuth también la borra: los tokens y el cliente son del host anterior.
+    const urlChanged = typeof payload.url === 'string' && normalizeOAuthUrl(payload.url) !== normalizeOAuthUrl(server.url)
+    if (server.auth === 'oauth' && (nextAuth !== 'oauth' || urlChanged)) oauthStore.delete(server.id)
     store.updateServer(server.id, payload)
     notifyAfterCommit('user', user.id)
     const fresh = store.server(server.id)!
@@ -967,7 +980,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
   // ------------------------------------------------------------ oauth
   // Flujos en curso: `state` -> server. Viven en memoria y vencen solos. El navegador
   // vuelve a `/api/oauth/callback` sin sesión de la consola: el `state` es la prueba.
-  const pendingOAuth = new Map<string, { serverId: string; expiresAt: number; language: OAuthLanguage | null }>()
+  const pendingOAuth = new Map<string, { serverId: string; serverUrl: string; expiresAt: number; language: OAuthLanguage | null }>()
   const OAUTH_PENDING_TTL_MS = 10 * 60_000
   function prunePendingOAuth(): void {
     const now = Date.now()
@@ -981,6 +994,9 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       redirectUrl: settings.oauthRedirectUrl,
       interactive: true,
     })
+  }
+  function normalizeOAuthUrl(url: string): string {
+    return url.trim().replace(/\/+$/, '')
   }
   function describeError(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
@@ -1023,7 +1039,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     const state = provider.pendingState()
     if (!url || !state) throw new HttpError(502, 'el servidor de autorización no devolvió una URL utilizable')
     prunePendingOAuth()
-    pendingOAuth.set(state, { serverId: server.id, expiresAt: Date.now() + OAUTH_PENDING_TTL_MS, language: oauthLanguage(request.headers['accept-language']) })
+    pendingOAuth.set(state, { serverId: server.id, serverUrl: server.url, expiresAt: Date.now() + OAUTH_PENDING_TTL_MS, language: oauthLanguage(request.headers['accept-language']) })
     return { status: 'redirect', authorization_url: url.toString() }
   })
 
@@ -1039,6 +1055,9 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
     pendingOAuth.delete(state)
     const server = store.server(pending.serverId)
     if (!server) return reply.code(404).send(oauthPage(language, text.goneTitle, text.goneDetail))
+    if (server.auth !== 'oauth' || normalizeOAuthUrl(server.url) !== normalizeOAuthUrl(pending.serverUrl)) {
+      return reply.code(409).send(oauthPage(language, text.staleTitle, text.staleDetail))
+    }
     if (query.error) {
       const detail = query.error_description || query.error
       store.updateServer(server.id, { last_probe_error: `autorización rechazada: ${detail}` })
@@ -1613,6 +1632,11 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
         const other = store.skillBySlug(user.id, slug)
         if (other) {
           skipped.push({ slug, reason: other.source === 'hub' ? 'ya existe una skill del hub con ese slug' : 'ya la reporta otra máquina' })
+          continue
+        }
+        const restorable = store.deletedSkillBySlug(user.id, slug)
+        if (restorable && withinRestoreWindow(restorable.deleted_at)) {
+          skipped.push({ slug, reason: 'hay una skill del hub borrada que todavía se puede restaurar' })
           continue
         }
         const row = store.insertSkill({

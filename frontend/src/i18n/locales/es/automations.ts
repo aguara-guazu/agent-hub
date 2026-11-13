@@ -15,6 +15,7 @@ const automations = {
     allKinds: "Todos",
     show: "Mostrar",
     unread: "Sin ver",
+    read: "Vistas",
     all: "Todas",
     showAll: "Ver todas",
   },
@@ -86,7 +87,9 @@ const automations = {
     errorTitle: "No se pudieron cargar las automatizaciones",
     historyErrorTitle: "No se pudieron cargar las entregas",
     unreadTitle: "Estás al día",
-    unreadDetail: "No quedan entregas sin ver. Elegí «Todas» para ver el historial completo.",
+    unreadDetail: "No quedan entregas sin ver. Elegí «Vistas» para repasar las que ya viste o «Todas» para ver el historial completo.",
+    readTitle: "Todavía no hay entregas vistas",
+    readDetail: "Las entregas que abras o marques como vistas aparecen acá.",
   },
   toast: {
     enabled: "Automatizaciones activadas",
@@ -294,6 +297,7 @@ const automations = {
       locked: "La solicitud está bloqueada por demasiados intentos fallidos.",
       authority_unavailable: "No se puede verificar quién autorizó esta solicitud, por ejemplo tras restaurar un respaldo. No se puede aprobar ni volver a proponer hasta reconciliarla.",
       bad_selection: "La selección no es válida.",
+      pending_dispatch: "Esperá a que se envíe lo aprobado y volvé a corregir.",
     },
     summary: {
       none: "Sin acciones",

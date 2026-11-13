@@ -138,8 +138,9 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   }
   async run(id: string): Promise<RunRow | undefined> { return (await this.db.query<RunRow>('SELECT * FROM schedule_runs WHERE id=$1', [id]))[0] }
   async lastRunOf(scheduleId: string): Promise<RunRow | undefined> { return (await this.db.query<RunRow>('SELECT * FROM schedule_runs WHERE schedule_id=$1 ORDER BY scheduled_for DESC LIMIT 1', [scheduleId]))[0] }
-  async liveRunOf(scheduleId: string): Promise<RunRow | undefined> {
-    return (await this.db.query<RunRow>(`SELECT * FROM schedule_runs WHERE schedule_id=$1 AND state IN ('pending','running','deferred','interrupted') ORDER BY scheduled_for LIMIT 1`, [scheduleId]))[0]
+  /** `ignoreRunNow` leaves out manual executions, which never count as an overlap for a one-shot occurrence. */
+  async liveRunOf(scheduleId: string, ignoreRunNow = false): Promise<RunRow | undefined> {
+    return (await this.db.query<RunRow>(`SELECT * FROM schedule_runs WHERE schedule_id=$1 AND state IN ('pending','running','deferred','interrupted')${ignoreRunNow ? " AND trigger<>'run_now'" : ''} ORDER BY scheduled_for LIMIT 1`, [scheduleId]))[0]
   }
   /** Takes over a run left in `running` by a previous process: the next generation fences the old one. */
   async reclaimRunning(id: string, generation: number): Promise<RunRow | undefined> {
@@ -191,8 +192,8 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
       WHERE schedule_id=$1 AND state IN ('pending','deferred','interrupted') RETURNING id`, [scheduleId, skipReason, now])).length
   }
   async listRuns(filter: { schedule_id?: string | undefined; project_id?: string | undefined; state?: RunState | undefined; unread?: boolean | undefined; kind?: string | undefined; limit: number; offset: number }) {
-    const where = '($1 IS NULL OR r.schedule_id=$1) AND ($2 IS NULL OR s.project_id=$2) AND ($3 IS NULL OR r.state=$3) AND ($4=0 OR (a.id IS NOT NULL AND a.read_at IS NULL)) AND ($5 IS NULL OR a.kind=$5)'
-    const params = [filter.schedule_id ?? null, filter.project_id ?? null, filter.state ?? null, filter.unread ? 1 : 0, filter.kind ?? null]
+    const where = '($1 IS NULL OR r.schedule_id=$1) AND ($2 IS NULL OR s.project_id=$2) AND ($3 IS NULL OR r.state=$3) AND ($4 IS NULL OR ($4=1 AND a.id IS NOT NULL AND a.read_at IS NULL) OR ($4=0 AND a.read_at IS NOT NULL)) AND ($5 IS NULL OR a.kind=$5)'
+    const params = [filter.schedule_id ?? null, filter.project_id ?? null, filter.state ?? null, filter.unread === undefined ? null : filter.unread ? 1 : 0, filter.kind ?? null]
     const count = (await this.db.query<{ count: number }>(`SELECT count(*) AS count FROM schedule_runs r JOIN schedules s ON s.id=r.schedule_id LEFT JOIN schedule_artifacts a ON a.run_id=r.id WHERE ${where}`, params))[0]!.count
     const items = await this.db.query<Row>(`SELECT r.id,r.schedule_id,r.scheduled_for,r.trigger,r.state,r.phase,r.skip_reason,r.deferred_reason,r.next_attempt_at,r.error_code,r.continuity,r.started_at,r.finished_at,
       s.title AS schedule_title,s.project_id,s.template,a.id AS artifact_id,a.kind AS artifact_kind,a.title,a.read_at
@@ -254,6 +255,11 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
     const entries = Object.entries(patch), sets = entries.map(([key], i) => `${key}=$${i + 3}`)
     await this.db.query(`UPDATE schedule_run_attempts SET ${sets.join(',')} WHERE run_id=$1 AND generation=$2`, [runId, generation, ...entries.map(([, value]) => value)])
   }
+  /** Moves an attempt to `running` only while it is still `starting`: a late spawn report never revives a settled attempt. */
+  async markAttemptRunning(runId: string, generation: number, info: Partial<{ host_pid: number; host_started: string | null; cli_pid: number; cli_started: string | null }>) {
+    const entries = Object.entries(info), sets = ["state='running'", ...entries.map(([key], i) => `${key}=$${i + 3}`)]
+    await this.db.query(`UPDATE schedule_run_attempts SET ${sets.join(',')} WHERE run_id=$1 AND generation=$2 AND state='starting'`, [runId, generation, ...entries.map(([, value]) => value)])
+  }
   async attemptsToReconcile(bootId: string) {
     return this.db.query<Row>("SELECT * FROM schedule_run_attempts WHERE state IN ('starting','running') AND (boot_id IS NULL OR boot_id<>$1)", [bootId])
   }
@@ -309,28 +315,34 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   async markDeliveriesRead(runId: string) { await this.db.query("UPDATE schedule_deliveries SET read_at=COALESCE(read_at,$2) WHERE run_id=$1 AND target IN ('hub_inbox','app_window')", [runId, isoNow()]) }
   /**
    * Read state of several runs at once; "unread" is the artifact's `read_at`, so runs without an artifact are untouched.
+   * Marking unread only clears the artifact's `read_at`: it is the app's own state and leaves the agents' inbox/app deliveries as they are.
    * Returns the runs whose state actually changed, so the caller can undo exactly those.
    */
   async setRunsRead(runIds: string[], read: boolean): Promise<string[]> {
     if (!runIds.length) return []
-    const now = isoNow()
-    const changed = (read
-      ? await this.db.query<{ run_id: string }>(`UPDATE schedule_artifacts SET read_at=$1 WHERE read_at IS NULL AND run_id IN (${this.placeholders(runIds.length, 2)}) RETURNING run_id`, [now, ...runIds])
-      : await this.db.query<{ run_id: string }>(`UPDATE schedule_artifacts SET read_at=NULL WHERE read_at IS NOT NULL AND run_id IN (${this.placeholders(runIds.length)}) RETURNING run_id`, runIds)
-    ).map(row => String(row.run_id))
-    if (!changed.length) return changed
-    const targets = "target IN ('hub_inbox','app_window')"
-    if (read) await this.db.query(`UPDATE schedule_deliveries SET read_at=COALESCE(read_at,$1) WHERE ${targets} AND run_id IN (${this.placeholders(changed.length, 2)})`, [now, ...changed])
-    else await this.db.query(`UPDATE schedule_deliveries SET read_at=NULL WHERE ${targets} AND run_id IN (${this.placeholders(changed.length)})`, changed)
-    return changed
+    return this.db.transaction(async () => {
+      const now = isoNow()
+      const changed = (read
+        ? await this.db.query<{ run_id: string }>(`UPDATE schedule_artifacts SET read_at=$1 WHERE read_at IS NULL AND run_id IN (${this.placeholders(runIds.length, 2)}) RETURNING run_id`, [now, ...runIds])
+        : await this.db.query<{ run_id: string }>(`UPDATE schedule_artifacts SET read_at=NULL WHERE read_at IS NOT NULL AND run_id IN (${this.placeholders(runIds.length)}) RETURNING run_id`, runIds)
+      ).map(row => String(row.run_id))
+      const targets = "target IN ('hub_inbox','app_window')"
+      // Deliveries are created after the artifact, so a run opened in between has a read artifact and unread deliveries; reading clears them for every run that has an artifact.
+      if (read) await this.db.query(`UPDATE schedule_deliveries SET read_at=COALESCE(read_at,$1) WHERE ${targets} AND read_at IS NULL AND run_id IN (${this.placeholders(runIds.length, 2)})
+        AND EXISTS (SELECT 1 FROM schedule_artifacts a WHERE a.run_id=schedule_deliveries.run_id)`, [now, ...runIds])
+      return changed
+    })
   }
-  /** Every unread run (optionally of one project) as read; same notion of "unread" as `listRuns({ unread: true })`. */
+  /** Every unread run as read; with a project, also the project-less schedules' runs that its agents see in `unreadDeliveries`. Same notion of "unread" as `listRuns({ unread: true })`, plus runs whose artifact is read but a sent inbox/app delivery is not. */
   async markAllRunsRead(projectId?: string): Promise<string[]> {
-    const ids = (await this.db.query<{ run_id: string }>(`SELECT a.run_id FROM schedule_artifacts a JOIN schedule_runs r ON r.id=a.run_id JOIN schedules s ON s.id=r.schedule_id
-      WHERE a.read_at IS NULL AND ($1 IS NULL OR s.project_id=$1)`, [projectId ?? null])).map(row => String(row.run_id))
-    const changed: string[] = []
-    for (let start = 0; start < ids.length; start += 200) changed.push(...await this.setRunsRead(ids.slice(start, start + 200), true))
-    return changed
+    return this.db.transaction(async () => {
+      const ids = (await this.db.query<{ run_id: string }>(`SELECT a.run_id FROM schedule_artifacts a JOIN schedule_runs r ON r.id=a.run_id JOIN schedules s ON s.id=r.schedule_id
+        WHERE (a.read_at IS NULL OR EXISTS (SELECT 1 FROM schedule_deliveries d WHERE d.run_id=a.run_id AND d.target IN ('hub_inbox','app_window') AND d.state='sent' AND d.read_at IS NULL))
+        AND ($1 IS NULL OR s.project_id=$1 OR s.project_id IS NULL)`, [projectId ?? null])).map(row => String(row.run_id))
+      const changed: string[] = []
+      for (let start = 0; start < ids.length; start += 200) changed.push(...await this.setRunsRead(ids.slice(start, start + 200), true))
+      return changed
+    })
   }
   async lastPausedAt(scheduleId: string): Promise<string | undefined> {
     const row = (await this.db.query<{ created_at: string }>("SELECT created_at FROM schedule_events WHERE schedule_id=$1 AND type='schedule.paused' ORDER BY seq DESC LIMIT 1", [scheduleId]))[0]

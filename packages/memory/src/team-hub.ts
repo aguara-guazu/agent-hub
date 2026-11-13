@@ -665,7 +665,7 @@ export class HubTeamRuntime implements TeamOrca {
       const launching = this.launching.has(memberId)
       const state = launching ? "starting" : generationOwned ? String(owned!.state) : runtime?.state ?? "unowned"
       const terminal = ["failed", "stopped"].includes(state)
-      const proofComplete = generationOwned ? state !== "unknown" || this.manager.exitConfirmed(memberId)
+      const proofComplete = generationOwned ? (state !== "unknown" && state !== "failed") || this.manager.exitConfirmed(memberId)
         : launching || terminal || Boolean(incident)
       members.push({ member_id: memberId, plan_id: String(row.plan_id), session_id: row.session_id ? String(row.session_id) : null,
         ordinal: Number(row.ordinal), generation, ...(typeof owned?.pid === "number" ? { pid: owned.pid } : typeof runtime?.pid === "number" ? { pid: runtime.pid } : {}),
@@ -688,12 +688,13 @@ export class HubTeamRuntime implements TeamOrca {
   async stopOrdered(stopId: string, members: CoordinatedFleetMember[], force = false): Promise<CoordinatedFleetReceipt[]> {
     this.beginCoordinatedStop(stopId)
     const receipts: CoordinatedFleetReceipt[] = []
+    const settled = (status: FleetStatus) => status.state === "stopped" || (status.state === "failed" && this.manager.exitConfirmed(status.id))
     for (const member of [...members].sort((a, b) => a.plan_id.localeCompare(b.plan_id) || a.ordinal - b.ordinal || a.member_id.localeCompare(b.member_id))) {
       if (force && member.owned && !member.proof_complete) {
         try {
           const stopped = await this.manager.retryStop(member.member_id)
           receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state,
-            outcome: stopped.state === "stopped" ? "stopped" : "uncertain", ...(stopped.state === "stopped" ? {} : { detail: { state: stopped.state, error_code: stopped.error_code ?? null } }) })
+            outcome: settled(stopped) ? "stopped" : "uncertain", ...(settled(stopped) ? {} : { detail: { state: stopped.state, error_code: stopped.error_code ?? null } }) })
         } catch (error) {
           receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state, outcome: "uncertain",
             detail: { reason: error instanceof Error ? error.message : "stop_retry_failed" } })
@@ -713,7 +714,7 @@ export class HubTeamRuntime implements TeamOrca {
       try {
         const stopped = await this.manager.stop(member.member_id)
         receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state,
-          outcome: stopped.state === "stopped" ? "stopped" : "uncertain", ...(stopped.state === "stopped" ? {} : { detail: { state: stopped.state, error_code: stopped.error_code ?? null } }) })
+          outcome: settled(stopped) ? "stopped" : "uncertain", ...(settled(stopped) ? {} : { detail: { state: stopped.state, error_code: stopped.error_code ?? null } }) })
       } catch (error) {
         receipts.push({ member_id: member.member_id, generation: member.generation, before_state: member.state, outcome: "uncertain",
           detail: { reason: error instanceof Error ? error.message : "stop_failed" } })

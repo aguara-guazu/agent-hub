@@ -291,23 +291,25 @@ export class InterhubNetwork {
     const placeholder = interhubRemoteSessionId(channelId, creator.id, creatorEntry.leader_session_id ?? "creator")
     let project: string | null = null
     await this.store.db.transaction(async sql => {
+      const owner = (await sql.query("SELECT creator_hub_id FROM interhub_channels WHERE channel_id=$1", [channelId]))[0]
+      check(!owner || owner.creator_hub_id === creator.id, "Este canal ya pertenece a otro creador", 409)
       if (reentered) {
         const current = (await sql.query("SELECT m.leader_session_id,i.creator_hub_id FROM interhub_members m JOIN interhub_channels i ON i.channel_id=m.channel_id WHERE m.channel_id=$1 AND m.hub_id=$2 AND m.removed_at IS NULL", [channelId, local.id]))[0]
         check(current?.leader_session_id === caller.id && current.creator_hub_id === creator.id, "Tu hub ya es parte de este canal entre hubs", 409)
       }
       if (!existing) await sql.query("INSERT INTO chat_channels(id,project_id,scope_key,path,name,kind,leader_id,activated_at,description) VALUES($1,$6,$2,'',$3,'inter-hub',$4,now(),$5)",
-        [channelId, `interhub:${channelId}`, roster.channel.name, caller.id, roster.channel.description, null])
+        [channelId, `interhub:${channelId}`, clean(roster.channel.name), caller.id, roster.channel.description === null ? null : clean(roster.channel.description), null])
       else await sql.query("UPDATE chat_channels SET leader_id=$2,deleted_at=NULL,closed_at=NULL,updated_at=now() WHERE id=$1", [channelId, caller.id])
       // interhub_channels references a local session: the creator's leader is represented by a closed remote placeholder.
       await sql.query(`INSERT OR IGNORE INTO chat_sessions(id,agent_id,key_hash,label,cli_kind,channel_id,state,event_at,closed_at)
-        VALUES($1,$1,$1,$2,$3,$4,'offline',now(),now())`, [placeholder, creatorEntry.leader_label || "Líder", INTERHUB_REMOTE_CLI_KIND, channelId])
+        VALUES($1,$1,$1,$2,$3,$4,'offline',now(),now())`, [placeholder, label(creatorEntry.leader_label), INTERHUB_REMOTE_CLI_KIND, channelId])
       await sql.query(`INSERT INTO interhub_channels(channel_id,creator_hub_id,creator_session_id,code_hash,code_generation) VALUES($1,$2,$3,'',0)
         ON CONFLICT(channel_id) DO UPDATE SET creator_hub_id=excluded.creator_hub_id,updated_at=now()`, [channelId, creator.id, placeholder])
       for (const member of roster.members) {
         const own = member.hub_id === local.id
         await sql.query(`INSERT INTO interhub_members(channel_id,hub_id,peer_identity,leader_session_id,leader_label,joined_at) VALUES($1,$2,$3,$4,$5,$6)
           ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL`,
-        [channelId, member.hub_id, JSON.stringify(own ? publicIdentity(local) : member.peer_identity), own ? caller.id : member.leader_session_id, own ? label(caller.label) : member.leader_label, member.joined_at])
+        [channelId, member.hub_id, JSON.stringify(own ? publicIdentity(local) : member.peer_identity), own ? caller.id : member.leader_session_id, own ? label(caller.label) : label(member.leader_label), member.joined_at])
       }
       project = await settleChannelProject(sql, channelId, local.id, creator.id, projectId)
     })
@@ -340,7 +342,8 @@ export class InterhubNetwork {
     check(origin, "El origen del evento no pertenece al canal", 403)
     const identity = identityOf(origin.peer_identity)
     check(Date.parse(event.occurred_at) <= Date.now() + FUTURE_SKEW_MS, "Fecha de evento inválida", 403)
-    check(!origin.removed_at || Date.parse(event.occurred_at) <= Date.parse(String(origin.removed_at)), "El origen ya no pertenece al canal", 403)
+    // occurred_at is chosen by the origin, so a removed origin is only accepted for events this replica already stores (idempotent replays).
+    if (origin.removed_at) check((await this.store.db.query("SELECT 1 FROM interhub_events WHERE channel_id=$1 AND id=$2", [event.channel_id, event.id]))[0], "El origen ya no pertenece al canal", 403)
     const { signature: proof, ...unsigned } = event
     check(event.origin_peer_public_key === identity.signing && validSignature(unsigned, proof, identity), "Firma de evento inter-hub inválida", 403)
     return this.authorize(event)
@@ -521,8 +524,9 @@ export class InterhubNetwork {
   async applyControl(verified: Exclude<VerifiedEnvelope, { kind: "chat" }>) {
     const local = (await this.localIdentity()).id, event = verified.envelope
     if (verified.kind === "code") {
-      // The creator keeps its own row authoritative; members only mirror the generation for display.
-      await this.store.db.query(`UPDATE interhub_channels SET code_generation=MAX(code_generation,$2),code_revoked_at=$3,updated_at=now()
+      // The creator keeps its own row authoritative; members only mirror the generation for display. Revoking does not
+      // bump the generation, so a revoke of the stored generation applies while a regenerate of it never clears one.
+      await this.store.db.query(`UPDATE interhub_channels SET code_generation=MAX(code_generation,$2),code_revoked_at=CASE WHEN $2>code_generation THEN $3 WHEN $2=code_generation AND $3 IS NOT NULL THEN COALESCE(code_revoked_at,$3) ELSE code_revoked_at END,updated_at=now()
         WHERE channel_id=$1 AND creator_hub_id<>$4`, [event.channel_id, verified.envelope.payload.generation, verified.envelope.payload.action === "revoked" ? event.occurred_at : null, local])
       return
     }
@@ -539,13 +543,15 @@ export class InterhubNetwork {
     const payload = verified.envelope.payload
     // A removal of this hub stops its replica; this hub's own leader is never taken from a remote event.
     if (payload.action === "removed") {
-      await this.store.db.query("UPDATE interhub_members SET removed_at=COALESCE(removed_at,$3) WHERE channel_id=$1 AND hub_id=$2", [event.channel_id, payload.hub_id, event.occurred_at])
+      await this.store.db.query("UPDATE interhub_members SET removed_at=COALESCE(removed_at,$3) WHERE channel_id=$1 AND hub_id=$2", [event.channel_id, payload.hub_id, new Date(event.occurred_at).toISOString()])
       return
     }
     if (payload.hub_id === local) return
+    // A join older than the recorded removal is ignored; timestamps are normalized so the text comparison in SQL is chronological.
     await this.store.db.query(`INSERT INTO interhub_members(channel_id,hub_id,peer_identity,leader_session_id,leader_label) VALUES($1,$2,$3,$4,$5)
-      ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL`,
-    [event.channel_id, payload.hub_id, JSON.stringify(payload.peer_identity), payload.leader_id || null, label(payload.leader_label)])
+      ON CONFLICT(channel_id,hub_id) DO UPDATE SET peer_identity=excluded.peer_identity,leader_session_id=excluded.leader_session_id,leader_label=excluded.leader_label,removed_at=NULL
+      WHERE interhub_members.removed_at IS NULL OR interhub_members.removed_at<$6`,
+    [event.channel_id, payload.hub_id, JSON.stringify(payload.peer_identity), payload.leader_id || null, label(payload.leader_label), new Date(event.occurred_at).toISOString()])
     await this.afterMembership?.(event.channel_id)
   }
 }

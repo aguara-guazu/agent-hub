@@ -229,6 +229,11 @@ describe('instalación', () => {
 
 describe('orquestación', () => {
   const base = { currentVersion: '0.2.0', arch: 'arm64', bundleId: 'io.craftech.agenthub', enabled: true }
+  const validHelper = (root: string): { swapHelper: () => string; run: RunFn } => {
+    const helper = join(root, 'agenthub-swap')
+    writeFileSync(helper, '', { mode: 0o755 })
+    return { swapHelper: () => helper, run: async command => ({ stdout: command === '/usr/bin/lipo' ? 'arm64\n' : '' }) }
+  }
 
   it('en desarrollo o con AGENTHUB_NO_AUTO_UPDATE no hace nada', async () => {
     const dev = new AutoUpdater({ ...base, platform: 'darwin', execPath: '/x/Agent Hub.app/Contents/MacOS/Agent Hub', env: {}, enabled: false, fetchFn: async () => { throw new Error('no debería llamar') } })
@@ -254,7 +259,7 @@ describe('orquestación', () => {
     mkdirSync(join(bundle, 'Contents', 'MacOS'), { recursive: true })
     const progress: UpdateProgress[] = []
     let finish!: (response: Response) => void
-    const updater = new AutoUpdater({ ...base, platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, tmpDir: root, minAssetBytes: 1,
+    const updater = new AutoUpdater({ ...base, ...validHelper(root), platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, tmpDir: root, minAssetBytes: 1,
       onProgress: value => progress.push(value), fetchFn: async url => url.includes('/releases/latest') ? fakeResponse(release('0.3.0', ['AgentHub-arm64.dmg']))
         : new Promise<Response>(resolve => { finish = resolve }),
     })
@@ -271,7 +276,7 @@ describe('orquestación', () => {
     const root = tmp('agenthub-retry-'), bundle = join(root, 'Agent Hub.app')
     mkdirSync(join(bundle, 'Contents', 'MacOS'), { recursive: true })
     let attempts = 0
-    const updater = new AutoUpdater({ ...base, platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, tmpDir: root, minAssetBytes: 1,
+    const updater = new AutoUpdater({ ...base, ...validHelper(root), platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, tmpDir: root, minAssetBytes: 1,
       downloadIdleTimeoutMs: 50, fetchFn: async url => {
         if (url.includes('/releases/latest')) return fakeResponse(release('0.3.0', ['AgentHub-arm64.dmg']))
         return ++attempts === 1 ? new Response(new ReadableStream()) : fakeResponse(Buffer.alloc(2048))
@@ -301,7 +306,7 @@ describe('orquestación', () => {
       if (url.includes('/releases/latest')) return fakeResponse(release('0.3.0', ['AgentHub-x64.dmg', 'AgentHub-arm64.dmg'], Buffer.alloc(2048, 7)))
       return fakeResponse(Buffer.alloc(2048, 7), { headers: { 'Content-Length': '2048' } })
     }
-    const updater = new AutoUpdater({ ...base, platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, fetchFn, tmpDir: root, minAssetBytes: 1024 })
+    const updater = new AutoUpdater({ ...base, ...validHelper(root), platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, fetchFn, tmpDir: root, minAssetBytes: 1024 })
     const status = await updater.check()
     expect(status.state).toBe('downloaded')
     if (status.state !== 'downloaded') return
@@ -310,7 +315,7 @@ describe('orquestación', () => {
     expect(requested[1]).toBe('https://github.com/aguara-guazu/agent-hub/releases/download/v0.3.0/AgentHub-arm64.dmg')
     expect(statSync(status.path).size).toBe(2048)
 
-    const broken = new AutoUpdater({ ...base, platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, tmpDir: root, minAssetBytes: 1024,
+    const broken = new AutoUpdater({ ...base, ...validHelper(root), platform: 'darwin', execPath: join(bundle, 'Contents', 'MacOS', 'Agent Hub'), env: {}, tmpDir: root, minAssetBytes: 1024,
       fetchFn: async (url) => url.includes('/releases/latest') ? fakeResponse(release('0.3.0', ['AgentHub-arm64.dmg'])) : fakeResponse(Buffer.from('html')) })
     expect(await broken.check()).toMatchObject({ state: 'failed', version: '0.3.0' })
   })

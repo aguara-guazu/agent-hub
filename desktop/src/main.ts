@@ -34,7 +34,7 @@ import { formatCountdown, HubStopClient, HubStopRun, guardedQuitStop, quitPhaseO
 import { clearIntentIfSame, cooldownAfter, cooldownUntilMs, intentFromActiveStop, intentOpensCore, nsisBeforeCommit, sameAttempt, startupTransactionFor, type StopIntent, type StopStrategy } from './stop-intent.js'
 import { coreStartTime } from './process-identity.js'
 import { probeMemoryMcp, memoryCredentialPath } from './update-probe.js'
-import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, processStartTime, whenStablyHealthy } from './update-rollback.js'
+import { HEALTH_DEADLINE_MS, HEALTH_PROBE_TIMEOUT_MS, confirmWhenHealthy, probeProcessStart, processStartTime, whenStablyHealthy } from './update-rollback.js'
 import { effectiveTrust, loadBundledTrust, type BundledTrust, type TrustSet } from './update-trust.js'
 import { UpdateHintListener } from './update-hint.js'
 import { overrideIsSafe, postponedLine, type UpdateReason, type UpdateReport } from './update-report.js'
@@ -68,6 +68,8 @@ process.env.PATH = [...new Set([process.env.PATH ?? '', join(app.getPath('home')
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
+/** Desde aquí el cierre sigue adelante y la ventana puede destruirse; antes, cerrarla sólo la oculta. */
+let windowMayClose = false
 let stopped = false
 let maintenance: Promise<void> | null = null
 /** Tope para el apagado ordenado; pasado este tiempo la app sale igual. */
@@ -318,7 +320,7 @@ function notify(title: string, body: string): void {
   }
 }
 
-const navigation = new NavigationRelay(route => mainWindow?.webContents.send(IPC.navigate, route))
+const navigation = new NavigationRelay(route => liveWindow()?.webContents.send(IPC.navigate, route))
 
 /**
  * Notificaciones con acción de clic retenidas hasta el clic o el fallo. Sin una referencia viva el recolector puede reclamar el objeto
@@ -818,8 +820,10 @@ async function ensureWatchdogReady(update: Extract<UpdateStatus, { state: 'downl
   if (read.kind !== 'ok' || read.tx.transaction_id !== update.stage?.id) throw new Error('el journal no corresponde al stage preparado')
   let tx = read.tx
   if (tx.old_app.pid !== process.pid || await processStartTime(process.pid) !== tx.old_app.start) throw new Error('el journal no corresponde a este proceso')
-  if (tx.phase === 'watchdog_ready' && tx.watchdog && await processStartTime(tx.watchdog.pid) === tx.watchdog.start) return tx
+  const watchdogProbe = tx.phase === 'watchdog_ready' && tx.watchdog ? await probeProcessStart(tx.watchdog.pid) : null
+  if (watchdogProbe?.kind === 'alive' && watchdogProbe.start === tx.watchdog?.start) return tx
   if (tx.phase !== 'staged' && tx.phase !== 'watchdog_ready') throw new Error(`la transacción está en ${tx.phase}; no se prepara el vigía`)
+  if (watchdogProbe?.kind === 'unknown') throw new Error('no se pudo comprobar si el vigía sigue vivo; no se reemplaza')
   if (tx.phase === 'watchdog_ready') {
     if (tx.watchdog) tx = advancePhase(updateStore.dir, tx.transaction_id, 'watchdog_ready', { watchdog: null })
     updaterLog(`[updater] el vigía de ${tx.transaction_id} ya no corre; se prepara otro`)
@@ -1244,11 +1248,14 @@ async function confirmAndRestartClient(): Promise<void> {
 function safeAutostart(): boolean {
   try { return autostart.isEnabled() } catch { return false }
 }
+function liveWindow(): BrowserWindow | null {
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+}
 function refreshTray(): void {
   if (!tray) return
   const template = buildTrayTemplate({
     coreState: coreSupervisor.state,
-    windowVisible: Boolean(mainWindow?.isVisible()),
+    windowVisible: Boolean(liveWindow()?.isVisible()),
     autostartEnabled: safeAutostart(),
     showShortcut: { label: SHOW_WINDOW_SHORTCUT_LABEL, registered: showWindowShortcutRegistered },
     clientRestart: Boolean(pendingClientRestart),
@@ -1266,10 +1273,14 @@ function refreshTray(): void {
   tray.setToolTip(quitStatusLine() ?? trayTooltip(showWindowShortcutRegistered ? SHOW_WINDOW_SHORTCUT_LABEL : null))
 }
 function broadcastCoreState(): void {
-  mainWindow?.webContents.send(IPC.coreStateChanged, coreStatus())
+  liveWindow()?.webContents.send(IPC.coreStateChanged, coreStatus())
   refreshTray()
 }
 async function restartCore(): Promise<void> {
+  if (quitting || updateExiting || activeStop || quitRun) {
+    updaterLog('[core] reinicio omitido: hay un cierre, una parada coordinada o una actualización en curso')
+    return
+  }
   if (maintenance) return maintenance
   maintenance = (async () => {
   await daemonSupervisor.stop()
@@ -1277,7 +1288,8 @@ async function restartCore(): Promise<void> {
   coreSupervisor.start()
   const token = await waitForSession()
   daemonSupervisor.start()
-  if (token && mainWindow) void mainWindow.loadURL(consoleUrl(token))
+  const window = liveWindow()
+  if (token && window) void window.loadURL(consoleUrl(token))
   })().finally(() => { maintenance = null })
   return maintenance
 }
@@ -1341,7 +1353,7 @@ function registerShowWindowShortcut(): void {
   refreshTray()
 }
 function hideWindow(): void {
-  mainWindow?.hide()
+  liveWindow()?.hide()
   // Sin ventanas visibles una app accesoria seguiría activa y se quedaría con el
   // teclado; devolver el foco a la app anterior evita esa sensación de bloqueo.
   if (process.platform === 'darwin') app.hide()
@@ -1357,7 +1369,7 @@ function createWindow(token: string, hidden: boolean): void {
   const win = new BrowserWindow(windowOptions(paths.preloadPath, paths.iconPath))
   mainWindow = win
   win.on('close', (event) => {
-    if (quitting) return
+    if (windowMayClose) return
     event.preventDefault()
     hideWindow()
   })
@@ -1592,6 +1604,7 @@ async function quit(): Promise<void> {
   if (!installOnQuit && !relaunchAfterQuit && coreSupervisor.state === 'running') {
     if (await guardedQuitStop(stopHubForQuit, updaterLog) === 'cancelled') { quitting = false; updaterLog('[quit] cierre cancelado'); refreshTray(); return }
   }
+  windowMayClose = true
   silentUpdates.stop()
   updateHints.stop()
   keepAwake.dispose()

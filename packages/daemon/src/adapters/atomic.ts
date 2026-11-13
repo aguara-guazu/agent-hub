@@ -18,6 +18,7 @@
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
+  constants,
   closeSync,
   copyFileSync,
   cpSync,
@@ -28,6 +29,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -68,6 +70,14 @@ export class ConfigParseError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'ConfigParseError'
+  }
+}
+
+/** El archivo existe pero no se pudo leer o no es un archivo regular: nunca equivale a «no existe». */
+export class ConfigReadError extends ConfigParseError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ConfigReadError'
   }
 }
 
@@ -136,6 +146,43 @@ function isSymlink(path: string): boolean {
   }
 }
 
+function isMissing(exc: unknown): boolean {
+  const code = (exc as NodeJS.ErrnoException)?.code
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/**
+ * Ruta del archivo de configuración que se lee y se escribe, o null si no existe. Un symlink a un archivo regular
+ * se resuelve a su destino para que el enlace sobreviva; un enlace roto, un destino que no es archivo regular o
+ * cualquier error distinto de ENOENT/ENOTDIR lanza `ConfigReadError`. Solo para regiones de archivo, no para `tree`.
+ */
+function resolveConfigFile(path: string): string | null {
+  let real = path
+  try {
+    if (lstatSync(path).isSymbolicLink()) real = realpathSync(path)
+    if (!statSync(real).isFile()) throw new ConfigReadError(`${path} no apunta a un archivo regular; el hub no lo toca`)
+    return real
+  } catch (exc) {
+    if (exc instanceof ConfigReadError) throw exc
+    if (isMissing(exc) && real === path && !isSymlink(path)) return null
+    const code = (exc as NodeJS.ErrnoException)?.code ?? 'desconocido'
+    throw new ConfigReadError(`${path} no se pudo leer o es un enlace roto (${code}); el hub no lo toca`)
+  }
+}
+
+/** Texto de un config de la persona. null solo si no existe; cualquier otro fallo de lectura lanza. */
+function readConfigText(path: string): string | null {
+  const real = resolveConfigFile(path)
+  if (real === null) return null
+  try {
+    // Windows PowerShell 5.1 escribe UTF-8 con BOM y ni JSON.parse ni el parser de TOML lo aceptan.
+    return readFileSync(real, 'utf-8').replace(/^\uFEFF/, '')
+  } catch (exc) {
+    if (isMissing(exc)) return null
+    throw new ConfigReadError(`${path} no se pudo leer (${(exc as NodeJS.ErrnoException)?.code ?? 'desconocido'}); el hub no lo toca`)
+  }
+}
+
 function readText(path: string): string | null {
   if (isSymlink(path)) return null
   try {
@@ -200,7 +247,7 @@ function readTree(path: string): unknown {
 export function readRegion(path: string, r: ManagedRegion): unknown {
   if (r.kind === 'tree') return readTree(path)
 
-  const text = readText(path)
+  const text = readConfigText(path)
   if (text === null) return null
 
   if (r.kind === 'toml_table') {
@@ -241,7 +288,18 @@ export function contentTree(filename: string, content: string): { tree: Record<s
   return { tree: { [filename]: sha256Bytes(Buffer.from(content, 'utf-8')) } }
 }
 
-export function fileDigest(path: string): string | null {
+/** Con `follow` se resuelven los symlinks y un error de lectura lanza (archivos de configuración, no skills). */
+export function fileDigest(path: string, follow = false): string | null {
+  if (follow) {
+    const real = resolveConfigFile(path)
+    if (real === null) return null
+    try {
+      return sha256Bytes(readFileSync(real))
+    } catch (exc) {
+      if (isMissing(exc)) return null
+      throw new ConfigReadError(`${path} no se pudo leer (${(exc as NodeJS.ErrnoException)?.code ?? 'desconocido'}); el hub no lo toca`)
+    }
+  }
   if (isSymlink(path)) return null
   try {
     if (!statSync(path).isFile()) return null
@@ -462,17 +520,21 @@ export function atomicWriteText(path: string, content: string, mode = 0o600): vo
   mkdirSync(dirname(path), { recursive: true })
   const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`)
   const fd = openSync(tmp, 'w', mode)
+  let closed = false
   try {
     writeSync(fd, content)
     fsyncSync(fd)
+    closed = true
     closeSync(fd)
     chmodSync(tmp, mode)
     renameRetrySync(tmp, path)
   } catch (exc) {
-    try {
-      closeSync(fd)
-    } catch {
-      /* ya cerrado */
+    if (!closed) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ya cerrado */
+      }
     }
     rmSync(tmp, { force: true })
     throw exc
@@ -537,20 +599,30 @@ export function sweepStaleTemps(home: string, maxAgeMs = 60 * 60_000): string[] 
   return removed
 }
 
-function backup(change: FileChange): string | null {
-  if (isSymlink(change.path)) return null
+/**
+ * `source` es el archivo real que se va a reemplazar. El `.bak` conserva el original previo al hub y nunca se
+ * sobrescribe; `.last.bak` rota con el contenido inmediatamente anterior a cada escritura. Devuelve el `.last.bak`.
+ */
+function backup(change: FileChange, source: string): string | null {
   try {
-    if (!statSync(change.path).isFile()) return null
+    if (!statSync(source).isFile()) return null
   } catch {
     return null
   }
   const stamp = createHash('sha256').update(change.path).digest('hex').slice(0, 8)
-  const dest = join(backupDir(change.home), `${basename(change.path)}.${stamp}.bak`)
-  mkdirSync(dirname(dest), { recursive: true })
+  const base = join(backupDir(change.home), `${basename(change.path)}.${stamp}`)
+  mkdirSync(dirname(base), { recursive: true })
   chmodSync(hubDir(change.home), 0o700)
-  copyFileSync(change.path, dest)
-  chmodSync(dest, 0o600)
-  return dest
+  try {
+    copyFileSync(source, `${base}.bak`, constants.COPYFILE_EXCL)
+  } catch (exc) {
+    if ((exc as NodeJS.ErrnoException).code !== 'EEXIST') throw exc
+  }
+  chmodSync(`${base}.bak`, 0o600)
+  const last = `${base}.last.bak`
+  copyFileSync(source, last)
+  chmodSync(last, 0o600)
+  return last
 }
 
 function removePath(path: string): void {
@@ -600,9 +672,17 @@ export function applyChanges(changes: readonly FileChange[]): ApplyResult {
           continue
         }
 
-        const stale =
-          found !== change.expectedDigest ||
-          (change.action === 'write' && fileDigest(change.path) !== change.baseDigest)
+        let stale: boolean
+        try {
+          stale =
+            found !== change.expectedDigest ||
+            (change.action === 'write' && fileDigest(change.path, change.region.kind !== 'tree') !== change.baseDigest)
+        } catch (exc) {
+          if (!(exc instanceof ConfigParseError)) throw exc
+          result.drift.push(driftItem(change.path, regionLabel(change.region), exc.message))
+          result.skipped.push(change.path)
+          continue
+        }
         if (stale) {
           result.drift.push(
             driftItem(
@@ -665,9 +745,11 @@ function perform(change: FileChange, result: ApplyResult): void {
     return
   }
   if (change.action === 'write') {
-    const backupPath = backup(change)
+    // Un config que es symlink a un archivo regular se escribe en su destino y el enlace queda intacto.
+    const target = change.region.kind === 'tree' ? change.path : resolveConfigFile(change.path) ?? change.path
+    const backupPath = backup(change, target)
     if (backupPath) result.backups[change.path] = backupPath
-    atomicWriteText(change.path, change.content, change.mode)
+    atomicWriteText(target, change.content, change.mode)
     result.written.push(change.path)
     return
   }
@@ -733,7 +815,7 @@ export function planJsonHooks(args: PlanJsonArgs): PlanOutcome {
   }
   setIn(doc, args.keyPath, merged)
   return [makeChange({ home: args.home, path: args.path, action: 'write', region: r, expectedDigest: currentDigest,
-    baseDigest: fileDigest(args.path), content: dumpJson(doc), mode: 0o600, cliKind: args.cliKind ?? '', summary: 'Eventos de sesión para notas de memoria' }), []]
+    baseDigest: fileDigest(args.path, true), content: dumpJson(doc), mode: 0o600, cliKind: args.cliKind ?? '', summary: 'Eventos de sesión para notas de memoria' }), []]
 }
 
 const UNSET = Symbol('unset')
@@ -756,7 +838,7 @@ function foreignContent(
 }
 
 function loadJsonDoc(path: string): Record<string, unknown> {
-  const text = readText(path)
+  const text = readConfigText(path)
   if (text === null || !text.trim()) return {}
   let parsed: unknown
   try {
@@ -781,6 +863,17 @@ function setIn(doc: Record<string, unknown>, keyPath: string[], value: unknown):
     cursor = nested as Record<string, unknown>
   }
   cursor[keyPath[keyPath.length - 1]!] = value
+}
+
+/** Quita la clave sin crear objetos intermedios que no existían. */
+function deleteIn(doc: Record<string, unknown>, keyPath: string[]): void {
+  let cursor: unknown = doc
+  for (const key of keyPath.slice(0, -1)) {
+    if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return
+    cursor = (cursor as Record<string, unknown>)[key]
+  }
+  if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return
+  delete (cursor as Record<string, unknown>)[keyPath[keyPath.length - 1]!]
 }
 
 function dumpJson(doc: Record<string, unknown>): string {
@@ -830,7 +923,8 @@ export function planJsonValue(args: PlanJsonArgs): PlanOutcome {
       summary: `${args.summary || regionLabel(r)} (configuración existente registrada)` }), []]
   }
 
-  setIn(doc, [...args.keyPath], args.value)
+  if (args.value === null) deleteIn(doc, [...args.keyPath])
+  else setIn(doc, [...args.keyPath], args.value)
   return [
     makeChange({
       home: args.home,
@@ -838,7 +932,7 @@ export function planJsonValue(args: PlanJsonArgs): PlanOutcome {
       action: 'write',
       region: r,
       expectedDigest: currentDigest,
-      baseDigest: fileDigest(args.path),
+      baseDigest: fileDigest(args.path, true),
       content: dumpJson(doc),
       mode: args.mode ?? 0o600,
       summary: args.summary || `${args.path}: ${regionLabel(r)}`,
@@ -895,7 +989,7 @@ export function planJsonPrefixedList(args: PlanListArgs): PlanOutcome {
       action: 'write',
       region: r,
       expectedDigest: currentDigest,
-      baseDigest: fileDigest(args.path),
+      baseDigest: fileDigest(args.path, true),
       content: dumpJson(doc),
       mode: args.mode ?? 0o600,
       summary: args.summary || `${args.path}: ${regionLabel(r)}`,
@@ -919,10 +1013,11 @@ interface PlanTomlArgs {
 /** Edita el TOML conservando lo demás. */
 export function planTomlTable(args: PlanTomlArgs): PlanOutcome {
   const r = region('toml_table', [...args.keyPath])
-  const text = readText(args.path)
+  let text: string | null = null
   let current: unknown
   let doc: Record<string, unknown>
   try {
+    text = readConfigText(args.path)
     current = readRegion(args.path, r)
     doc = (text ? toml.parse(text) : {}) as Record<string, unknown>
   } catch (exc) {
@@ -953,7 +1048,7 @@ export function planTomlTable(args: PlanTomlArgs): PlanOutcome {
       action: 'write',
       region: r,
       expectedDigest: currentDigest,
-      baseDigest: fileDigest(args.path),
+      baseDigest: fileDigest(args.path, true),
       content: serialized,
       mode: args.mode ?? 0o600,
       summary: args.summary || `${args.path}: ${regionLabel(r)}`,

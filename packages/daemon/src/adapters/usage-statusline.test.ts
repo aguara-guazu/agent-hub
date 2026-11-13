@@ -29,7 +29,7 @@ it('no modifica statusline personal o editada después del plan',()=>{
 it('no reclama statusline al desactivar colaboración y retira sólo la propia',()=>{
  const disabled={...snapshot,servers:[]};expect(planUsageStatusline(disabled,endpoint,home)).toEqual([[],[]])
  applyChanges(planUsageStatusline(snapshot,endpoint,home)[0]);applyChanges(planUsageStatusline(disabled,endpoint,home)[0])
- expect(JSON.parse(readFileSync(join(home,'.claude/settings.json'),'utf8')).statusLine).toBeNull()
+ expect(Object.hasOwn(JSON.parse(readFileSync(join(home,'.claude/settings.json'),'utf8')),'statusLine')).toBe(false)
 })
 it('chat_join sin usage_status no instala el observador',()=>{
  expect(planUsageStatusline({...snapshot,servers:[{tools:[{name:'chat_join'}]}]} as Snapshot,endpoint,home)).toEqual([[],[]])

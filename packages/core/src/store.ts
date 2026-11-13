@@ -905,6 +905,11 @@ export class Store {
     return row ? { ...toSkill(row), deleted_at: str(row.deleted_at) } : undefined
   }
 
+  deletedSkillBySlug(userId: string, slug: string): (SkillRow & { deleted_at: string }) | undefined {
+    const row = this.db.get("SELECT * FROM skills WHERE user_id = ? AND slug = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT 1", userId, slug)
+    return row ? { ...toSkill(row), deleted_at: str(row.deleted_at) } : undefined
+  }
+
   softDeleteSkill(id: string, at = nowIso()): void {
     this.db.run("UPDATE skills SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL", at, at, id)
   }

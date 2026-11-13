@@ -120,11 +120,14 @@ function listSkillFiles(root: string): string[] {
 function resolveSkillFile(root: string, file: string): { path: string } | { error: string } {
   const base = realpathSync(root)
   const inside = (path: string): boolean => path === base || path.startsWith(base + sep)
+  const hidden = (path: string): boolean => relative(base, path).split(sep).some((segment) => segment.startsWith('.'))
   const target = resolve(base, file)
   if (!inside(target)) return { error: `'${file}' is outside the skill folder` }
+  if (hidden(target)) return { error: `'${file}' is not available` }
   if (!existsSync(target)) return { error: `the skill has no file '${file}'` }
   const real = realpathSync(target)
   if (!inside(real)) return { error: `'${file}' points outside the skill folder` }
+  if (hidden(real)) return { error: `'${file}' is not available` }
   const info = statSync(real)
   if (!info.isFile()) return { error: `'${file}' is not a file` }
   if (info.size > MAX_SKILL_FILE_BYTES) return { error: `'${file}' exceeds the ${MAX_SKILL_FILE_BYTES / 1024} KB limit` }
@@ -266,10 +269,15 @@ export class GatewayServer {
   async close(): Promise<void> {
     clearInterval(this.deliveryTimer)
     this.deliveryWatcher?.close()
-    if (this.memoryUsed) await this.endMemorySession()
-    this.memoryUsed = false
-    this.connected = false
-    await this.server.close()
+    try {
+      if (this.memoryUsed) await this.endMemorySession()
+    } catch {
+      // Cierre best effort: un fallo al encolar las notas no debe dejar el servidor abierto.
+    } finally {
+      this.memoryUsed = false
+      this.connected = false
+      await this.server.close()
+    }
   }
 
   /** La carpeta del cliente: su primer root MCP si lo declara, si no la carpeta desde la que lanzo el gateway. */
@@ -324,6 +332,7 @@ export class GatewayServer {
 
   private async mirrorJira(view: SnapshotView, spec: UpstreamSpec, toolName: string, args: Record<string, unknown>, result: CallResult, native?: NativeSession): Promise<void> {
     const memory = this.memoryFor(view, 'sync_tasks')
+    if (!memory) return
     const issues = issuesIn(result)
     const key = isJiraWrite(toolName) ? writtenKey(args, result) : undefined
     const reread = view.tools.find((tool) => tool.serverSlug === spec.slug && JIRA_REREADS.includes(tool.toolName.toLowerCase()))
@@ -339,11 +348,13 @@ export class GatewayServer {
           ...(resources ? { siteLookup: { server: spec.slug, tool: resources.toolName, cloudId: String(args['cloudId']) } } : {}),
           ...(reread && readArgs ? { reread: { server: spec.slug, tool: reread.toolName, args: readArgs } } : {}) }))
       }
+      const pending = async (): Promise<boolean> => (await Promise.all(ids.map(id => this.outbox!.has(id)))).some(Boolean)
       await this.flushMemory()
-      if ((await Promise.all(ids.map(id => this.outbox!.has(id)))).some(Boolean)) throw new Error('delivery_pending')
+      // Un drain en curso pudo listar la carpeta antes de las entradas nuevas: se lanza otro.
+      if (await pending()) await this.flushMemory()
+      if (await pending()) throw new Error('delivery_pending')
       return
     }
-    if (!memory) throw new Error('memory_unavailable')
     if (reread && readArgs) {
       const fresh = await this.pool.callTool(this.agentInstanceId, spec, reread.toolName, readArgs)
       if (fresh.is_error) throw new Error('jira_reread_failed')
@@ -448,7 +459,14 @@ export class GatewayServer {
         await record(DECISION_ALLOW, '', resolved.error)
         return errorResult(resolved.error)
       }
-      const data = readFileSync(resolved.path)
+      let data: Buffer
+      try {
+        data = readFileSync(resolved.path)
+      } catch (err) {
+        const message = `could not read '${file}': ${String(err)}`
+        await record(DECISION_ALLOW, '', message)
+        return errorResult(message)
+      }
       if (data.includes(0)) {
         const message = `'${file}' is binary and cannot be shown as text.`
         await record(DECISION_ALLOW, '', message)

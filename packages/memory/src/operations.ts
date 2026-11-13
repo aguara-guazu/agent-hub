@@ -94,11 +94,12 @@ const definitions = {
   assign_fragment: ['Fix utterance projects/speaker; keeps audit and original text.', z.object({ fragment_id: id, project_ids: z.array(id).max(100), person_id: id.nullable().optional() }).strict()],
   merge_people: ['Merge two identities verified as one person. Moves utterances, identities, links; logs the fix.', z.object({ from_id: id, into_id: id }).strict()],
   add_record: ['Add a collection row: typed values and evidence.', recordInput.extend({ collection_id: id })],
-  update_record: ['Edit row values/evidence.', recordInput.extend({ id })],
+  update_record: ['Edit row values/evidence.', recordInput.extend({ id, evidence_ids: recordInput.shape.evidence_ids.unwrap().optional() })],
   list_records: ['Exhaustively page/filter collection rows.', z.object({ collection_id: id, filter: jsonObject.default({}), ...page }).strict()],
   create_rule: ['Persistent extraction rule for a collection. Needs a configured model.', ruleInput],
   list_rules: ['Extraction rules and per-version coverage.', z.object({}).strict()],
-  update_rule: ['Edit/pause a rule; a new revision may reprocess history.', ruleInput.partial().extend({ id }).strict()],
+  update_rule: ['Edit/pause a rule; a new revision may reprocess history.', z.object({ id, collection_id: ruleInput.shape.collection_id.optional(), name: ruleInput.shape.name.optional(), instructions: ruleInput.shape.instructions.optional(),
+    project_ids: ruleInput.shape.project_ids.unwrap().optional(), person_id: id.nullable().optional(), enabled: ruleInput.shape.enabled.unwrap().optional() }).strict()],
   reprocess: ['Reprocess a source or all current material, incl. embeddings/rules.', z.object({ entity_id: id.optional(), force: z.boolean().default(false) }).strict()],
   rebuild_embeddings: ['Regenerate all embeddings with the configured model; no remote re-extraction, originals untouched. With Gemma 2 also enabled A/V analyses. Track via list_jobs.', z.object({}).strict()],
   infer_identities: ['Propose identities for email-less speakers from known candidates and context. High confidence with auto-merge on: links and merges into the known person.', z.object({ entity_id: id.optional() }).strict()],
@@ -202,7 +203,7 @@ export class MemoryOperations {
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
     // Cleanup remains allowed and deletion keeps its original lifecycle lock ordering.
     if (!READ_OPERATIONS.has(operation) && !["delete_entity", "unlink_entities"].includes(operation)) await assertWritableEntityTargets(this.store.db, raw)
-    if (isCollaborationTool(operation) || operation === "hub_stop_confirm" || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
+    if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
       check(this.collaborationEnabled(), 'La colaboración está desactivada en Ajustes', 403)
     if (isInterhubOperation(operation)) {
       check(actor !== 'mcp' || agent, 'La colaboración por MCP requiere la identidad de agente que agrega el gateway.', 403)
@@ -370,7 +371,7 @@ export class MemoryOperations {
       case 'assign_fragment': return store.assignFragment(input.fragment_id, input.project_ids, input.person_id, actor)
       case 'merge_people': return db.transaction(sql => mergePeople(sql, input.from_id, input.into_id, actor, 'manual'))
       case 'add_record': { const { collection_id, ...record } = input; return store.addRecord(collection_id, record, actor) }
-      case 'update_record': { const { id: recordId, ...record } = input; return store.updateRecord(recordId, record) }
+      case 'update_record': { const { id: recordId, ...record } = input; return store.updateRecord(recordId, record, actor) }
       case 'list_records': return store.records(input.collection_id, input.limit, input.offset, input.filter)
       case 'create_rule': {
         await requireEntity(db, input.collection_id, 'collection'); await validateProjects(db, input.project_ids)
@@ -384,8 +385,9 @@ export class MemoryOperations {
       case 'update_rule': {
         const old = (await db.query('SELECT * FROM rules WHERE id=$1', [input.id]))[0]
         check(old, 'Regla inexistente', 404)
+        const personId = input.person_id === undefined ? old.person_id : input.person_id
         const next = parse(ruleInput, { collection_id: input.collection_id ?? old.collection_id, name: input.name ?? old.name, instructions: input.instructions ?? old.instructions,
-          project_ids: input.project_ids ?? old.project_ids, ...(input.person_id ?? old.person_id ? { person_id: input.person_id ?? old.person_id } : {}), enabled: input.enabled ?? old.enabled })
+          project_ids: input.project_ids ?? old.project_ids, ...(personId ? { person_id: personId } : {}), enabled: input.enabled ?? old.enabled })
         await requireEntity(db, next.collection_id, 'collection'); await validateProjects(db, next.project_ids)
         if (next.person_id) await requireEntity(db, next.person_id, 'person')
         const row = (await db.query('UPDATE rules SET collection_id=$2,name=$3,instructions=$4,project_ids=$5,person_id=$6,enabled=$7,revision=revision+1,updated_at=now() WHERE id=$1 RETURNING *',
@@ -460,21 +462,23 @@ export class MemoryOperations {
         })
       }
       case 'save_connector': {
+        const sent = (raw ?? {}) as Record<string, unknown>
+        const current = input.id ? (await db.query('SELECT provider,name,config,project_ids,enabled,interval_minutes FROM connectors WHERE id=$1', [input.id]))[0] : undefined
+        if (input.id) check(current && current.provider === input.provider, 'Conector inexistente o proveedor distinto', 404)
+        // Omitted fields keep the stored value on update; zod defaults only apply when creating.
+        const keep = (key: 'config' | 'project_ids' | 'enabled' | 'interval_minutes') => current && sent[key] === undefined ? current[key] : input[key]
+        const config = { ...keep('config') } as Record<string, unknown>
+        const projectIds = keep('project_ids') as string[], enabled = keep('enabled') as boolean, intervalMinutes = keep('interval_minutes') as number
         // Google covers a fixed 90-day window; an older `since` from previous versions is dropped, and older periods use sync_connector.
-        if (input.provider === 'google') delete input.config.since
-        this.validateConnectorConfig(input.provider, input.config)
-        await validateProjects(db, input.project_ids)
+        if (input.provider === 'google') delete config.since
+        this.validateConnectorConfig(input.provider, config)
+        await validateProjects(db, projectIds)
         const connectorId = input.id ?? randomUUID()
-        let sameConfig = false
-        if (input.id) {
-          const current = (await db.query('SELECT provider,config FROM connectors WHERE id=$1', [input.id]))[0]
-          check(current && current.provider === input.provider, 'Conector inexistente o proveedor distinto', 404)
-          sameConfig = canonical(current.config) === canonical(input.config)
-        }
+        const sameConfig = !!current && canonical(current.config) === canonical(config)
         return (await db.query(`INSERT INTO connectors(id,provider,name,config,project_ids,enabled,interval_minutes) VALUES($1,$2,$3,$4,$5,$6,$7)
           ON CONFLICT(id) DO UPDATE SET name=excluded.name,config=excluded.config,project_ids=excluded.project_ids,enabled=excluded.enabled,
           interval_minutes=excluded.interval_minutes,cursor=CASE WHEN $8 THEN connectors.cursor ELSE '{}' END,updated_at=now() RETURNING *`,
-          [connectorId, input.provider, input.name, JSON.stringify(input.config), input.project_ids, input.enabled, input.interval_minutes, sameConfig]))[0]
+          [connectorId, input.provider, input.name, JSON.stringify(config), projectIds, enabled, intervalMinutes, sameConfig]))[0]
       }
       case 'sync_connector':
       case 'repair_google': {

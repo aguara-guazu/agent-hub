@@ -27,6 +27,21 @@ export async function processStartTime(pid: number): Promise<string | null> {
   }
 }
 
+/** Resultado de inspeccionar un PID: `unknown` cuando `ps` falla o vence, que no equivale a que el proceso no exista. */
+export type ProcessProbe = { kind: "alive"; start: string } | { kind: "absent" } | { kind: "unknown" }
+
+/** `ps -p` termina con código 1 y sin salida cuando el PID no existe; cualquier otro fallo o el tiempo agotado es `unknown`. */
+export async function probeProcessStart(pid: number): Promise<ProcessProbe> {
+  try {
+    const { stdout } = await promisify(execFile)("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 5_000, windowsHide: true })
+    const start = String(stdout).trim()
+    return start ? { kind: "alive", start } : { kind: "absent" }
+  } catch (error) {
+    const failure = error as { code?: unknown; killed?: boolean; stdout?: unknown }
+    return failure.code === 1 && !failure.killed && !String(failure.stdout ?? "").trim() ? { kind: "absent" } : { kind: "unknown" }
+  }
+}
+
 export interface StableHealth {
   /** `true` cuando core, daemon, sesión y la sonda MCP están sanos. Sólo lee: no cambia ningún estado. */
   healthy: () => boolean | Promise<boolean>

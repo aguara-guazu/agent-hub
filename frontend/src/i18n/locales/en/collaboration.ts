@@ -57,6 +57,7 @@ const collaboration = {
   },
   approval: {
     coordinator: "Approved in the coordinator's terminal",
+    delegation: "Approved by standing delegation",
     legacy: "Earlier record",
     none: "Not approved",
   },

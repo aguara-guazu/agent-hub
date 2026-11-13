@@ -292,7 +292,7 @@ export interface DecisionResult {
 }
 
 /** Errores cerrados de la aprobación; el texto vive en i18n (`automations.decision.errors`). */
-export const DECISION_ERROR_CODES = ["digest_mismatch", "expired", "revoked", "superseded", "locked", "authority_unavailable", "bad_selection"] as const
+export const DECISION_ERROR_CODES = ["digest_mismatch", "expired", "revoked", "superseded", "locked", "authority_unavailable", "bad_selection", "pending_dispatch"] as const
 export type DecisionErrorCode = typeof DECISION_ERROR_CODES[number]
 export function decisionErrorCode(value: unknown): DecisionErrorCode | null {
   const code = value instanceof ApiError ? value.code : typeof value === "string" ? value : undefined

@@ -18,6 +18,7 @@ const automations = {
     allKinds: "All",
     show: "Show",
     unread: "Unseen",
+    read: "Seen",
     all: "All",
     showAll: "Show all",
   },
@@ -89,7 +90,9 @@ const automations = {
     errorTitle: "Couldn't load automations",
     historyErrorTitle: "Couldn't load deliveries",
     unreadTitle: "You're all caught up",
-    unreadDetail: "No unseen deliveries left. Choose «All» to see the full history.",
+    unreadDetail: "No unseen deliveries left. Choose «Seen» to review the ones you already saw or «All» to see the full history.",
+    readTitle: "No seen deliveries yet",
+    readDetail: "Deliveries you open or mark as seen show up here.",
   },
   toast: {
     enabled: "Automations turned on",
@@ -297,6 +300,7 @@ const automations = {
       locked: "The request is locked after too many failed attempts.",
       authority_unavailable: "Who authorized this request can't be verified, for example after restoring a backup. It can't be approved or proposed again until it's reconciled.",
       bad_selection: "The selection isn't valid.",
+      pending_dispatch: "Wait for the approved items to be sent, then correct again.",
     },
     summary: {
       none: "No actions",

@@ -704,9 +704,11 @@ it('stop conserva unknown cuando el backend no confirma terminar el proceso',asy
     await db.query('UPDATE chat_team_members SET runtime=$2 WHERE id=$1',[slot.id,JSON.stringify({...slot.runtime,state:'unknown'})])
     return {...slot.runtime,state:'unknown'}
   })
-  const result=await teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
-    expected_generation:slot.runtime.generation,action:'stop'},master.agent)
-  expect(result.members[0].runtime.state).toBe('unknown')
+  await expect(teams.call('team_control',{session_key:master.key,plan_id:plan.id,member_id:slot.id,
+    expected_generation:slot.runtime.generation,action:'stop'},master.agent)).rejects.toThrow('no confirmó la detención')
+  const row=(await db.query('SELECT runtime,error FROM chat_team_members WHERE id=$1',[slot.id]))[0]
+  expect(row.runtime.state).toBe('unknown')
+  expect(row.error).toBe('stop_unconfirmed')
 })
 
 

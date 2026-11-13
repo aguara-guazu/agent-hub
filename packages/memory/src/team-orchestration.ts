@@ -428,8 +428,10 @@ export class TeamOrchestration {
     try {
       for(const item of members)if(!await this.launchMember(plan,item,parent,who))break
     } catch(error) {
-      // Authority can disappear while Orca is working. Preserve every receipt,
-      // revoke pending invitations and do not leave a stopped run "launching".
+      // Members launched in this run cannot join once invitations are revoked and a paused plan is not controllable, so they are stopped first.
+      let uncertain:string[]=[]
+      try {uncertain=(await this.stopMembers(plan,who)).uncertain} catch { /* the original error is the one to report */ }
+      if(uncertain.length && error instanceof Error)error.message+=` No se pudo confirmar la detención de ${uncertain.length} miembro(s) ya lanzados; revisá team_status y relanzá la detención con team_close.`
       await this.db.transaction(async sql=>{
         await sql.query("UPDATE chat_team_plans SET state='paused',updated_at=now() WHERE id=$1 AND state='launching'",[plan.id])
         await sql.query('UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL WHERE team_id=$1',[plan.id])
@@ -499,8 +501,8 @@ export class TeamOrchestration {
       let active=false
       try {active=await this.launchActive(plan,who)} catch { /* lost authority while the process was starting */ }
       if(!active) {
-        await this.orca.stop?.(receipt.handle)
-        await this.updateRuntime(member.id,{state:'stopped'})
+        if(await this.stopConfirmed(receipt.handle))await this.updateRuntime(member.id,{state:'stopped'})
+        else await this.markStopUnconfirmed(plan,member,who)
         return false
       }
     }
@@ -510,6 +512,17 @@ export class TeamOrchestration {
     return true
   }
 
+  /** Stops the handle and reports whether the receipt proves exit; a thrown or non-terminal receipt leaves the process possibly alive. */
+  private async stopConfirmed(handle:string) {
+    let receipt:unknown
+    try {receipt=await this.orca.stop?.(handle)} catch {return false}
+    return Boolean(receipt && typeof receipt==='object' && TERMINAL_RUNTIME.includes(String((receipt as {state?:unknown}).state)))
+  }
+  private async markStopUnconfirmed(plan:Record<string,any>,member:Record<string,any>,who:Record<string,any>) {
+    await this.updateRuntime(member.id,{state:'unknown'})
+    await this.db.query('UPDATE chat_team_members SET error=$2,updated_at=now() WHERE id=$1',[member.id,STOP_UNCONFIRMED])
+    await this.event(this.db,plan.id,member.id,'stop_unconfirmed',who.id,who.channel_id,plan.root_thread_id,{generation:member.runtime?.generation ?? null})
+  }
   private async unknown(plan:Record<string,any>,member:Record<string,any>,phase:'workspace'|'launch',who:Record<string,any>,cause:unknown) {
     this.pendingUnjoinedIdle.delete(String(member.id))
     const error=publicError(phase),receipt=this.recoveryReceipt(cause)
@@ -1157,8 +1170,8 @@ export class TeamOrchestration {
             [item.id,receipt.handle,receipt.kind,receipt.operation_id ?? null,receipt.prompt_outcome])
           await this.setRuntime(item.id,this.runtime(receipt.runtime ?? {state:'unknown'}))
           try {await this.controlAuthority(plan.id,who)} catch(error) {
-            await this.orca.stop?.(receipt.handle)
-            await this.updateRuntime(item.id,{state:'stopped'})
+            if(await this.stopConfirmed(receipt.handle))await this.updateRuntime(item.id,{state:'stopped'})
+            else await this.markStopUnconfirmed(plan,item,who)
             await this.db.query('UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL WHERE id=$1',[item.id])
             throw error
           }
@@ -1189,9 +1202,11 @@ export class TeamOrchestration {
           await this.orca.interrupt(item.launch_handle)
         } else {
           check(this.orca.stop,'El backend no permite detener',409)
-          await this.orca.stop(item.launch_handle)
-          await this.updateRuntime(item.id,{state:'stopped'})
+          const confirmed=await this.stopConfirmed(item.launch_handle)
+          if(confirmed)await this.updateRuntime(item.id,{state:'stopped'})
+          else await this.markStopUnconfirmed(plan,item,who)
           await this.db.query('UPDATE chat_team_members SET invitation_hash=NULL,invitation_expires_at=NULL WHERE id=$1',[item.id])
+          check(confirmed,'El Hub no confirmó la detención del worker. Su estado sigue desconocido; consultá team_status y reintentá la detención antes de lanzar un reemplazo.',409)
         }
       }
       await this.event(this.db,plan.id,item.id,'control',who.id,who.channel_id,plan.root_thread_id,

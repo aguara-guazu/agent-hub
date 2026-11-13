@@ -151,9 +151,9 @@ export function parseBlacklist(value: unknown): BlacklistEntry[] | null {
   return entries
 }
 
-/** ¿Bloquea la lista negra a esta versión? Con digest conocido, una entrada con otro digest (artefacto distinto) no la bloquea. */
-export function blocked(entries: readonly BlacklistEntry[], version: string, digest?: string): boolean {
-  return entries.some((entry) => entry.version === version && (entry.digest === null || digest === undefined || entry.digest === digest))
+/** ¿Bloquea la lista negra a esta versión? Con digest conocido, una entrada con otro digest (artefacto distinto) no la bloquea; con `null` (artefacto aún sin resolver) sólo bloquean las entradas sin digest. */
+export function blocked(entries: readonly BlacklistEntry[], version: string, digest?: string | null): boolean {
+  return entries.some((entry) => entry.version === version && (entry.digest === null || digest === undefined || (digest !== null && entry.digest === digest)))
 }
 
 

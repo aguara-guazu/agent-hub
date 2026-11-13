@@ -23,6 +23,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { INTERHUB_JOIN_OPERATION, INTERHUB_JOIN_TIMEOUT_MS, argsDigest, canonicalJson, sha256, type Transport as SnapshotTransport } from '@agenthub/shared'
 import { SecretResolver, defaultResolver } from './secrets.js'
 import { AUTH_NONE, AUTH_OAUTH, FileOAuthProvider, OAUTH_AUTH_REQUIRED_MESSAGE, OAuthStore, isAuthorizationRequired } from './oauth.js'
@@ -232,6 +233,11 @@ export class ClientConnection implements UpstreamConnection {
     this.slug = slug
     this.client = client
     this.transport = transport
+    const previousOnClose = client.onclose
+    client.onclose = () => {
+      this.alive = false
+      previousOnClose?.()
+    }
     this.requestTimeoutMs = requestTimeoutMs
   }
 
@@ -263,7 +269,8 @@ export class ClientConnection implements UpstreamConnection {
         timeout: Object.hasOwn(TOOL_TIMEOUTS_MS, name) ? Math.max(TOOL_TIMEOUTS_MS[name]!, this.requestTimeoutMs) : this.requestTimeoutMs,
       })) as CallShape
     } catch (err) {
-      this.alive = false
+      // Un McpError respondido por el server (params invalidos, tool desconocida) no rompe la conexion.
+      if (!(err instanceof McpError) || err.code === ErrorCode.RequestTimeout || err.code === ErrorCode.ConnectionClosed) this.alive = false
       throw new UpstreamCallError(this.slug, `la herramienta ${name} fallo: ${describe(err)}`)
     }
     return {
@@ -291,14 +298,18 @@ export interface Runtime {
 
 async function connectClient(slug: string, transport: Transport, timeoutMs: number): Promise<ClientConnection> {
   const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION })
+  let handle: NodeJS.Timeout | undefined
   const timer = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`el MCP server no completo el handshake en ${timeoutMs} ms`)), timeoutMs).unref?.()
+    handle = setTimeout(() => reject(new Error(`el MCP server no completo el handshake en ${timeoutMs} ms`)), timeoutMs)
+    handle.unref?.()
   })
   try {
-    await Promise.race([client.connect(transport), timer])
+    await Promise.race([client.connect(transport, { timeout: timeoutMs }), timer])
   } catch (err) {
     await closeClient(client, transport)
     throw new UpstreamConnectError(slug, `no se pudo conectar: ${describe(err)}`, { suppressCooldown: isCoreUnavailable(err) })
+  } finally {
+    clearTimeout(handle)
   }
   return new ClientConnection(slug, client, DEFAULT_REQUEST_TIMEOUT_MS, transport)
 }
@@ -607,11 +618,12 @@ export class ConnectionPool {
     const errors: Record<string, string> = {}
     await Promise.all(
       specs.map(async (spec) => {
+        let connection: UpstreamConnection | undefined
         try {
-          const connection = await this.get(agentId, spec)
+          connection = await this.get(agentId, spec)
           tools[spec.slug] = await connection.listTools()
         } catch (err) {
-          await this.evict(agentId, spec.slug)
+          await this.evict(agentId, spec.slug, connection)
           errors[spec.slug] = err instanceof UpstreamError ? err.reason : describe(err)
         }
       }),
@@ -638,7 +650,7 @@ export class ConnectionPool {
         isError = result.is_error
         return result
       } catch (err) {
-        await this.evict(agentId, spec.slug)
+        if (!connection.isAlive) await this.evict(agentId, spec.slug, connection)
         if (err instanceof UpstreamError) throw err
         throw new UpstreamCallError(spec.slug, `la herramienta ${name} fallo: ${describe(err)}`)
       }
@@ -690,10 +702,12 @@ export class ConnectionPool {
     this.choices.clear()
   }
 
-  private async evict(agentId: string, slug: string): Promise<void> {
+  /** Con `failed`, sólo desaloja si la entrada guardada sigue siendo esa conexión (otro llamador pudo reemplazarla). */
+  private async evict(agentId: string, slug: string, failed?: UpstreamConnection): Promise<void> {
     const key = this.key(agentId, slug)
     const entry = await this.withLock(key, async () => {
       const found = this.entries.get(key)
+      if (failed !== undefined && found?.connection !== failed) return undefined
       this.entries.delete(key)
       return found
     })

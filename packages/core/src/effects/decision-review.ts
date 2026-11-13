@@ -71,7 +71,7 @@ export function createDecisionReview(deps: DecisionReviewDeps): DecisionReview {
       let revised: { request_id: string; revision: number }
       try { revised = store.reviseRequest(request.request_id, input.ordinal, { ...effect, seconds: input.seconds }) } catch (error) {
         const code = (error as { code?: string }).code
-        throw new DecisionReviewError(409, code === 'request_not_open' ? 'locked' : 'not_revisable')
+        throw new DecisionReviewError(409, code === 'request_not_open' ? 'locked' : code === 'request_has_pending_dispatch' ? 'pending_dispatch' : 'not_revisable')
       }
       if (!(await deps.schedules.replaceDecisionRef(runId, request.request_id, revised.request_id))) throw new DecisionReviewError(409, 'authority_unavailable')
       return mutation(revised.request_id)
