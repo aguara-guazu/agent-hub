@@ -8,7 +8,7 @@ import { MODEL_FILES } from './model-files.js'
 
 /** Range requests bound each transfer; partial, verified-length progress survives a cancelled installation. */
 export async function prepareModelFiles(cache: string, profile: InferenceProfile, install: boolean, progress: (value: any) => void) {
-  const model = modelProfile(profile), files = MODEL_FILES[profile === 'speech' ? 'speech' : 'gemma']!
+  const model = modelProfile(profile), files = MODEL_FILES[profile === 'speech' || profile === 'speech_small' ? profile : 'gemma']!
   for (const name of model.files) {
     const expected = files[name]
     if (!expected) continue

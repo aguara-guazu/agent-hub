@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { useMutation } from "@tanstack/react-query"
 import { Link } from "react-router-dom"
 import { Avatar, Button, Chip, type ChipTone } from "../../components/ui/basics"
@@ -10,7 +10,7 @@ import type { RunState } from "../../lib/automations"
 import { useAuth } from "../../lib/auth"
 import { usePendingInbox, useRecentProjects, useToday, type PendingInbox } from "../../lib/home"
 import { useMemoryStatus } from "../../lib/memory"
-import { PendingSection, usePendingRows, type PendingGroup } from "./pending"
+import { PendingSection, usePendingRows, type PendingGroup, type PendingRow } from "./pending"
 
 type Filter = "all" | PendingGroup
 
@@ -68,9 +68,8 @@ function PageBanner() {
   return null
 }
 
-function Pending({ inbox, projectNames }: { inbox: PendingInbox; projectNames: Map<string, string> }) {
+function Pending({ inbox, rows, dialog }: { inbox: PendingInbox; rows: PendingRow[]; dialog: ReactNode }) {
   const { t } = useT("home")
-  const { rows, dialog } = usePendingRows(inbox, projectNames)
   const [filter, setFilter] = useState<Filter>("all")
   const groups = GROUPS.filter(group => rows.some(row => row.group === group))
   const options: SegOption<Filter>[] = [
@@ -163,19 +162,21 @@ export default function HomePage() {
   const now = useNow()
   const inbox = usePendingInbox()
   const recent = useRecentProjects()
+  const pending = usePendingRows(inbox, recent.names)
   return (
     <div className="split">
       <div className="page">
         <Greeting now={now} count={inbox.count} />
         <PageBanner />
         <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-5)", alignItems: "flex-start" }}>
-          <Pending inbox={inbox} projectNames={recent.names} />
+          <Pending inbox={inbox} rows={pending.rows} dialog={pending.dialog} />
           <aside style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
             <Today now={now} projectNames={recent.names} />
             <Recent recent={recent} />
           </aside>
         </div>
       </div>
+      {pending.panel}
     </div>
   )
 }

@@ -1072,4 +1072,17 @@ CREATE TABLE usage_consumption_hourly_origin (
  hour TEXT NOT NULL, hub_session_id TEXT NOT NULL, native_session_id TEXT NOT NULL, origin TEXT NOT NULL, unit TEXT NOT NULL,
  amount REAL NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, events INTEGER NOT NULL DEFAULT 0, unpriced_events INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY(hour,hub_session_id,native_session_id,origin));
+`, String.raw`
+-- Local meeting recordings: audio captured by the desktop app for meetings without a provider transcript.
+-- Device-bound (the audio lives under <memory>/recordings/<id>/), so the table is not part of backups; the meeting it
+-- produces is an ordinary entity. speakers keeps one voiceprint per detected voice and event the calendar reference.
+-- Rollback: DROP TABLE recordings; then delete this version from schema_versions.
+CREATE TABLE recordings (
+ id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','processing','ready','failed')),
+ title TEXT NOT NULL, event JSON, started_at TIMESTAMP NOT NULL, ended_at TIMESTAMP NOT NULL,
+ directory TEXT NOT NULL, tracks JSON NOT NULL DEFAULT '{}', speakers JSON NOT NULL DEFAULT '[]',
+ entity_id TEXT REFERENCES entities(id) ON DELETE SET NULL, error TEXT,
+ audio_expires_at TIMESTAMP, audio_deleted_at TIMESTAMP,
+ created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW});
+CREATE INDEX recordings_entity ON recordings(entity_id);
 `]

@@ -2,7 +2,7 @@ import { Worker } from 'node:worker_threads'
 import { mkdirSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { renameRetrySync } from '@agenthub/gateway/platform'
-import { modelProfile, type InferenceProfile, type MediaEmbedding, type SpeechResult } from './media-models.js'
+import { isSpeechProfile, modelProfile, type InferenceProfile, type MediaEmbedding, type SpeechResult } from './media-models.js'
 import { MemoryError } from './contracts.js'
 
 export class NativeEmbeddings {
@@ -106,7 +106,7 @@ export class NativeEmbeddings {
           throw error
         }
         signal?.throwIfAborted()
-        const result = this.wait(this.profile === 'speech' ? 10 * 60_000 : 180_000)
+        const result = this.wait(isSpeechProfile(this.profile) ? 10 * 60_000 : 180_000)
         this.worker!.postMessage(payload)
         return await result
       } finally {

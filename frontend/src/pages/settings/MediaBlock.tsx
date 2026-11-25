@@ -6,7 +6,9 @@ import { useT } from "../../i18n"
 import { api } from "../../lib/api"
 import { SettingRow, useErrorDetail } from "./SettingRow"
 
-const MODULES = ["ocr", "decoder", "speech", "vision", "audio"] as const
+const MODULES = ["ocr", "decoder", "speech", "vision", "audio", "speech_small", "diarization"] as const
+/** Módulos que se descargan con la primera grabación: que falten es su estado normal y no hace falta sondearlos. */
+const ON_DEMAND: readonly string[] = ["speech_small", "diarization"]
 type ModuleKey = (typeof MODULES)[number]
 const OPTIONS = ["pdf", "ocr", "transcription", "vision", "audio", "automatic"] as const
 type OptionKey = (typeof OPTIONS)[number]
@@ -29,7 +31,7 @@ export function MediaSettingsBlock() {
   const query = useQuery({
     queryKey: MEDIA_KEY,
     queryFn: () => api.get<MediaStatus>("/memory/media"),
-    refetchInterval: q => (Object.values(q.state.data?.modules ?? {}).some(module => module?.state === "missing" || module?.state === "downloading") ? 1000 : false),
+    refetchInterval: q => (Object.entries(q.state.data?.modules ?? {}).some(([name, module]) => module?.state === "downloading" || (module?.state === "missing" && !ON_DEMAND.includes(name))) ? 1000 : false),
   })
   const [draft, setDraft] = useState<MediaOptions | null>(null)
   const settings = draft ?? query.data?.settings

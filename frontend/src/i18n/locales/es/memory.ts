@@ -328,6 +328,8 @@ const memory = {
       pdf: "Texto del PDF · página {{page}}",
       ocr: "Texto reconocido automáticamente",
       transcription: "Transcripción automática",
+      voice: "Voz {{number}} · sin nombre confirmado",
+      microphone: "Micrófono de quien grabó",
       media: "Contenido multimedia",
       document: "Contexto del documento",
       unknown: "Hablante sin identificar",

@@ -9,7 +9,7 @@ import type { SupervisorState } from "./supervisor.js"
  * salen del idioma activo de `i18n.ts`: el main la vuelve a construir al cambiarlo.
  */
 
-export type TrayAction = "show" | "hide" | "toggle-autostart" | "restart-core" | "restart-client" | "cancel-quit" | "quit"
+export type TrayAction = "show" | "hide" | "toggle-autostart" | "restart-core" | "restart-client" | "recording-start" | "recording-stop" | "recording-window" | "recording-tab" | "cancel-quit" | "quit"
 
 export interface TrayItem {
   id?: TrayAction
@@ -28,6 +28,8 @@ export interface TrayViewModel {
   clientRestart?: boolean
   /** Cierre de la persona en espera de la parada coordinada: texto de estado con la cuenta regresiva. */
   quitStatus?: string | null
+  /** Grabación de reuniones: `null` si la plataforma no la admite; `title` presente mientras hay una en curso. */
+  recording?: { title: string | null; busy: boolean } | null
 }
 
 function coreLabel(state: SupervisorState): string {
@@ -46,6 +48,18 @@ function coreLabel(state: SupervisorState): string {
     default:
       return t("tray.core.stopped")
   }
+}
+
+function recordingItems(recording: TrayViewModel["recording"]): TrayItem[] {
+  if (!recording) return []
+  if (recording.title === null) return [{ type: "separator" }, { id: "recording-start", label: t("tray.recordStart"), type: "normal", enabled: !recording.busy }]
+  return [
+    { type: "separator" },
+    { label: t("tray.recording", { title: recording.title }), enabled: false },
+    { id: "recording-tab", label: t("tray.recordTab"), type: "normal", enabled: !recording.busy },
+    { id: "recording-window", label: t("tray.recordWindow"), type: "normal", enabled: !recording.busy },
+    { id: "recording-stop", label: t("tray.recordStop"), type: "normal", enabled: !recording.busy },
+  ]
 }
 
 export function buildTrayTemplate(vm: TrayViewModel): TrayItem[] {
@@ -73,6 +87,7 @@ export function buildTrayTemplate(vm: TrayViewModel): TrayItem[] {
       enabled: vm.coreState !== "starting" && vm.coreState !== "restarting",
     },
     ...(vm.clientRestart ? [{ id: "restart-client" as const, label: t("tray.restartClient"), type: "normal" as const }] : []),
+    ...recordingItems(vm.recording),
 
     { type: "separator" },
     ...(vm.quitStatus ? [{ id: "cancel-quit" as const, label: t("tray.cancelQuit"), type: "normal" as const }] : []),

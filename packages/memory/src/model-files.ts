@@ -35,5 +35,15 @@ export const MODEL_FILES: Record<string, Record<string, { bytes: number; sha256:
       "bytes": 23201314,
       "sha256": "5862993336bf33acd23736071aae2b32261d3b1b2f37780194460d4ef974dd46"
     }
+  },
+  "speech_small": {
+    "onnx/decoder_model_merged_quantized.onnx": {
+      "bytes": 156750845,
+      "sha256": "ec07c3cbb64172c39791e26ee870a65ac22b458c36722bfe2776b3dbf741e0c9"
+    },
+    "onnx/encoder_model_quantized.onnx": {
+      "bytes": 92326160,
+      "sha256": "a43a83f3c5361cd591cfa7c36f14b43cf7cb22f47a415cc14a8d557be800fa92"
+    }
   }
 }

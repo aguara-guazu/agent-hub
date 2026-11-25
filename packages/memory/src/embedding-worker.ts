@@ -2,8 +2,9 @@ import { prepareModelFiles } from './model-download.js'
 import { parentPort, workerData } from 'node:worker_threads'
 import { AutoConfig, AutoModel, AutoTokenizer, AutoProcessor, RawImage, RawVideo, Tensor, matmul, WhisperForConditionalGeneration, AutomaticSpeechRecognitionPipeline, env } from '@huggingface/transformers'
 import sharp from 'sharp'
+import { deflateSync } from 'node:zlib'
 import { embeddingInput } from './embedding-model.js'
-import { modelProfile, type MediaEmbedding, type InferenceProfile } from './media-models.js'
+import { isSpeechProfile, modelProfile, type MediaEmbedding, type InferenceProfile } from './media-models.js'
 
 const profile: InferenceProfile = workerData.profile ?? 'text', definition = modelProfile(profile)
 env.allowRemoteModels = workerData.install === true
@@ -35,7 +36,7 @@ if (workerData.checkRuntime) {
   parentPort!.postMessage({ type: 'runtime-ready' }); parentPort!.close()
 } else try {
   await prepareModelFiles(workerData.cache, profile, workerData.install === true, options.progress_callback)
-  if (profile === 'speech') {
+  if (isSpeechProfile(profile)) {
     const [tokenizer, processor, model] = await Promise.all([
       AutoTokenizer.from_pretrained(definition.repository, options), AutoProcessor.from_pretrained(definition.repository, options),
       WhisperForConditionalGeneration.from_pretrained(definition.repository, { ...options, device: 'cpu', dtype: 'q8', session_options }),
@@ -47,7 +48,18 @@ if (workerData.checkRuntime) {
     parentPort!.postMessage({ type: 'ready' })
     parentPort!.on('message', async ({ audio, language, shutdown }) => {
       if (shutdown) { await model.dispose(); parentPort!.postMessage({ type: 'stopped' }); parentPort!.close(); return }
-      try { parentPort!.postMessage({ type: 'result', result: await transcriber(audio, { language, return_timestamps: true, task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 }) }) }
+      try {
+        // The caller/pipeline already windows the audio. Transformers.js's seek loop also visits the padded
+        // silence and may invent repeated speech there. One bounded decode per window avoids that second pass.
+        const config = { language, return_timestamps: true as const, task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, max_new_tokens: 440 }
+        let result = await transcriber(audio, config)
+        const text = (Array.isArray(result) ? result[0]?.text : result.text) ?? ''
+        if (text.length > 160 && Buffer.byteLength(text) / deflateSync(text).length > 2.4) {
+          // Retry a pathological decode once. Ordinary repeated greetings are not edited or deduplicated.
+          result = await transcriber(audio, { ...config, no_repeat_ngram_size: 6 })
+        }
+        parentPort!.postMessage({ type: 'result', result })
+      }
       catch (error) { failure(error) }
     })
   } else {

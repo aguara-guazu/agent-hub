@@ -7,7 +7,7 @@ const { tmpdir } = require('node:os')
 const tar = require('tar')
 
 async function installPinned(lock, root, scope, name) {
-  const entry = lock.packages[`node_modules/${scope}/${name}`]
+  const entry = lock.packages[scope ? `node_modules/${scope}/${name}` : `node_modules/${name}`]
   if (!entry?.resolved || !entry.integrity?.startsWith('sha512-')) throw new Error(`Missing pinned native dependency ${scope}/${name}`)
   const destination = join(root, name), manifest = join(destination, 'package.json')
   if (existsSync(manifest) && JSON.parse(readFileSync(manifest, 'utf8')).version === entry.version) return
@@ -61,4 +61,15 @@ exports.preparePty = async (projectDir, appDir, platform, arch) => {
   if (!existsSync(join(root, 'node-pty'))) return
   await installPinned(lock, root, '@lydell', name)
   for (const entry of await readdir(root)) if (entry.startsWith('node-pty-') && entry !== name) await rm(join(root, entry), { recursive: true, force: true })
+}
+
+// Speaker diarization (sherpa-onnx-node) loads `sherpa-onnx-<platform>-<arch>`, an unscoped optional package with
+// the addon and its own ONNX runtime. The Windows packages are named `win`, not `win32`.
+exports.prepareSherpa = async (projectDir, appDir, platform, arch) => {
+  const lock = JSON.parse(readFileSync(join(projectDir, 'package-lock.json'), 'utf8'))
+  const root = join(appDir, 'node_modules'), name = `sherpa-onnx-${platform === 'win32' ? 'win' : platform}-${arch}`
+  if (!existsSync(join(root, 'sherpa-onnx-node'))) return
+  await installPinned(lock, root, '', name)
+  for (const entry of await readdir(root)) if (/^sherpa-onnx-(darwin|linux|win)-/.test(entry) && entry !== name) await rm(join(root, entry), { recursive: true, force: true })
+  if (!existsSync(join(root, name, 'sherpa-onnx.node'))) throw new Error(`Missing diarization binary for ${platform}-${arch}`)
 }

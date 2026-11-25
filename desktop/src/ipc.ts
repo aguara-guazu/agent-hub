@@ -1,4 +1,5 @@
 import type { LanguagePreference } from "./i18n.js"
+import type { RecordingError, RecordingPhase } from "./recording.js"
 import type { SupervisorState } from "./supervisor.js"
 import type { UpdateReport } from "./update-report.js"
 
@@ -44,6 +45,17 @@ export const IPC = {
   getAutoUpdate: "agenthub:auto-update-get",
   /** invoke: renderer -> main, enciende o apaga las actualizaciones automáticas y devuelve el valor vigente. */
   setAutoUpdate: "agenthub:auto-update-set",
+  /** invoke: renderer -> main, grabación en curso y reuniones que se ofrecen para grabar. */
+  recordingStatus: "agenthub:recording-status",
+  /** invoke: renderer -> main, empieza a grabar la reunión ofrecida con esa clave. */
+  recordingStart: "agenthub:recording-start",
+  recordingCalendar: "agenthub:recording-calendar",
+  /** invoke: renderer -> main, detiene la grabación en curso. */
+  recordingStop: "agenthub:recording-stop",
+  /** invoke: renderer -> main, descarta la oferta de grabar una reunión. */
+  recordingDismiss: "agenthub:recording-dismiss",
+  /** send: main -> renderer, cambió la grabación o la lista de ofertas. */
+  recordingChanged: "agenthub:recording-changed",
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -81,6 +93,27 @@ export interface OpenFileResult {
   detail: string
 }
 
+export interface RecordingOfferView {
+  key: string
+  title: string
+  start: string
+  end: string | null
+  platform: string | null
+  /** Invitados sin contar a quien graba. */
+  attendees: number
+}
+
+export interface RecordingStatusView {
+  /** La plataforma admite grabar reuniones. */
+  supported: boolean
+  phase: RecordingPhase
+  title: string | null
+  startedAt: string | null
+  error: RecordingError | null
+  offers: RecordingOfferView[]
+  calendar?: { recordingId: string; linked: boolean; choices: Pick<RecordingOfferView, "key" | "title" | "start">[] }
+}
+
 /** Superficie que el preload publica en `window.agentHub`. */
 export interface AgentHubBridge {
   getCoreStatus(): Promise<CoreStatus>
@@ -102,6 +135,12 @@ export interface AgentHubBridge {
   getUpdateStatus(): Promise<UpdateStatusView>
   getAutoUpdate(): Promise<boolean>
   setAutoUpdate(enabled: boolean): Promise<boolean>
+  getRecordingStatus(): Promise<RecordingStatusView>
+  startRecording(offerKey: string): Promise<RecordingStatusView>
+  chooseRecordingCalendar(recordingId: string, key: string | null): Promise<RecordingStatusView>
+  stopRecording(): Promise<RecordingStatusView>
+  dismissRecordingOffer(offerKey: string): Promise<RecordingStatusView>
+  onRecordingChanged(listener: (status: RecordingStatusView) => void): () => void
 }
 
 /** Lista blanca de canales que el preload puede usar en cada dirección. */
@@ -122,6 +161,11 @@ export const INVOKE_CHANNELS: readonly IpcChannel[] = [
   IPC.getUpdateStatus,
   IPC.getAutoUpdate,
   IPC.setAutoUpdate,
+  IPC.recordingStatus,
+  IPC.recordingStart,
+  IPC.recordingCalendar,
+  IPC.recordingStop,
+  IPC.recordingDismiss,
 ]
 
-export const RECEIVE_CHANNELS: readonly IpcChannel[] = [IPC.coreStateChanged, IPC.navigate]
+export const RECEIVE_CHANNELS: readonly IpcChannel[] = [IPC.coreStateChanged, IPC.navigate, IPC.recordingChanged]

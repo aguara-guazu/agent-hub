@@ -533,7 +533,7 @@ export class MemoryOperations {
         total: (await db.query(`SELECT count(*) AS total FROM jobs j WHERE ${where}`, [kinds,input.state ?? null]))[0]!.total }
       }
       case 'processing_status': {
-        const states = await db.query("SELECT state,count(*) AS count FROM jobs WHERE kind IN ('process','describe_source','index_entities','dedupe_people','tidy_memory','media') GROUP BY state")
+        const states = await db.query("SELECT state,count(*) AS count FROM jobs WHERE kind IN ('process','describe_source','index_entities','dedupe_people','tidy_memory','media','recording') GROUP BY state")
         const [usage] = await db.query("SELECT CAST(COALESCE(sum(CAST(progress->>'input_tokens' AS INTEGER)),0) AS REAL) AS input_tokens,CAST(COALESCE(sum(CAST(progress->>'output_tokens' AS INTEGER)),0) AS REAL) AS output_tokens FROM jobs WHERE kind IN ('process','describe_source')")
         const [coverage] = await db.query(`SELECT count(*) AS sources,count(*) FILTER(WHERE json_type(v.metadata,'$.extraction_key') IS NOT NULL) AS extracted
           FROM sources s JOIN versions v ON v.id=s.current_version_id WHERE s.status='active'`)

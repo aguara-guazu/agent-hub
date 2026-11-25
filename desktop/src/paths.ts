@@ -14,6 +14,8 @@ export interface ResolvedPaths {
   daemonCommand: string
   daemonArgs: string[]
   preloadPath: string
+  recorderPreloadPath: string
+  recorderPagePath: string
   renderer: { kind: 'url'; url: string } | { kind: 'file'; path: string }
   rendererIndex: string
   iconPath: string
@@ -46,6 +48,8 @@ export function resolvePaths(ctx: PathContext, platform: NodeJS.Platform = proce
     daemonCommand: process.execPath,
     daemonArgs: [daemonEntrypoint(ctx)],
     preloadPath: join(ctx.appDir, 'preload.cjs'),
+    recorderPreloadPath: join(ctx.appDir, 'recorder-preload.cjs'),
+    recorderPagePath: join(ctx.appDir, 'recorder.html'),
     renderer: !ctx.isPackaged && ctx.rendererDevServerUrl
       ? { kind: 'url', url: ctx.rendererDevServerUrl }
       : { kind: 'file', path: index },

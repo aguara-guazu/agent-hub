@@ -1,3 +1,5 @@
+import type { RecordingStatusView } from "../electron"
+import { usePendingVoices, useRecordingStatus, type PendingVoice } from "./recording"
 import { useRuns, useSchedules, type RunListItem } from "./automations"
 import { useOverview, type LocalClient } from "./local"
 import { useMemory, useMemoryStatus, type MemoryEntity, type Page } from "./memory"
@@ -54,6 +56,10 @@ export interface PendingInbox {
     facts: MemoryEntity[]
     unresolvedPeople: number
     unassignedSources: number
+    /** Grabación en curso y reuniones que se ofrecen grabar; `null` si el escritorio no graba. */
+    recording: RecordingStatusView | null
+    /** Voces de reuniones grabadas que esperan un nombre. */
+    voices: PendingVoice[]
   }
   /** Filas que muestra Inicio: los casos agrupados cuentan como una. */
   count: number
@@ -78,6 +84,8 @@ export function usePendingInbox(): PendingInbox {
   const identities = useMemory<Page<MemoryEntity>>("list_identity_proposals", { state: "pending", limit: PENDING_PAGE, offset: 0 }, ready)
   const suggestions = useMemory<Page<ProjectSuggestion>>("list_project_suggestions", { limit: PENDING_PAGE, offset: 0 }, ready)
   const review = useMemory<Page<MemoryEntity>>("review", { limit: REVIEW_PAGE, offset: 0 }, ready)
+  const recording = useRecordingStatus()
+  const voices = usePendingVoices(ready)
 
   const decisions = (runs.data?.items ?? []).filter(run => run.decision?.state === "pending")
   const decided = new Set(decisions.map(run => run.run_id))
@@ -108,6 +116,8 @@ export function usePendingInbox(): PendingInbox {
       facts,
       unresolvedPeople,
       unassignedSources,
+      recording,
+      voices: voices.data?.items ?? [],
     },
   }
   const refetch = () => { void servers.refetch(); void overview.refetch(); void runs.refetch(); void memoryStatus.refetch() }
@@ -119,6 +129,7 @@ function pendingRows({ connections: c, agents: a, memory: m }: Omit<PendingInbox
     + a.decisions.length + (a.unreadOther > 0 ? 1 : 0)
     + m.duplicates.length + m.identities.length + m.suggestions.length + m.facts.length
     + (m.unresolvedPeople > 0 ? 1 : 0) + (m.unassignedSources > 0 ? 1 : 0)
+    + (m.recording && m.recording.phase !== "idle" ? 1 : 0) + (m.recording?.calendar ? 1 : 0) + (m.recording?.offers.length ?? 0) + m.voices.length
 }
 
 /**

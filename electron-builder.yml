@@ -40,6 +40,8 @@ mac:
   identity: null
   extendInfo:
     LSUIElement: true
+    NSMicrophoneUsageDescription: Agent Hub usa el micrófono para grabar las reuniones que aceptás grabar.
+    NSAudioCaptureUsageDescription: Agent Hub captura el audio del sistema para grabar las reuniones que aceptás grabar.
   target:
     - target: dmg
       arch: [arm64, x64]
