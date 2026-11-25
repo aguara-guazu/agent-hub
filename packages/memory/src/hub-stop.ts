@@ -3,9 +3,9 @@ import type { AgentContext } from "./agents.js"
 import type { AdmissionGate } from "./admission-gate.js"
 import { check, MemoryError } from "./contracts.js"
 import type { MemoryDatabase, TransactionSql } from "./database.js"
-import type { LocalChat } from "./local-chat.js"
+import type { LocalChat } from "./agents/local-chat.js"
 import type { HubLog } from "./report.js"
-import type { CoordinatedFleetMember, CoordinatedFleetReceipt, HubTeamRuntime } from "./team-hub.js"
+import type { CoordinatedFleetMember, CoordinatedFleetReceipt, HubTeamRuntime } from "./agents/team-hub.js"
 import type { DrainResult, UpdateDrain } from "./update-drain.js"
 
 const TERMINAL_STATES = ["resumed", "postponed", "cancelled"] as const

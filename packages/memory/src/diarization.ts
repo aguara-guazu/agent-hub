@@ -1,5 +1,5 @@
 import { runAudioAnalysis } from "./audio-analysis-child.js"
-import type { MediaAssets } from "./media-assets.js"
+import type { MediaAssets } from "./transcriptions/media-assets.js"
 import type { DiarizationResult, DiarizationTask } from "./diarization-worker.js"
 import type { SpeechRegion } from "./speech-detection.js"
 

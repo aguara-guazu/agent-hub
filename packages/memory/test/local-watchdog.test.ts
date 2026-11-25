@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
-import { LocalChat } from '../src/local-chat.js'
-import { LocalWatchdog } from '../src/local-watchdog.js'
+import { LocalChat } from '../src/agents/local-chat.js'
+import { LocalWatchdog } from '../src/agents/local-watchdog.js'
 import { exportMemory, readBackup, restoreMemory } from '../src/backup.js'
 
 let directory:string,db:MemoryDatabase,chat:LocalChat,observer:LocalWatchdog,now:number,channel:string,thread:string

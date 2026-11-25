@@ -1,3 +1,5 @@
+import { appModules, moduleDefinition, operationModules, type ModuleId } from '@agenthub/shared/modules'
+import { moduleEnabled } from '../modules/settings.js'
 import { isCollaborationTool, isCollaborationSkill } from '@agenthub/memory'
 import { collaborationEnabled } from '../collaboration.js'
 /**
@@ -81,6 +83,8 @@ export interface ResolutionContext {
   servers: McpServerRow[]
   toolsByServer: Map<string, McpToolRow[]>
   skills: SkillRow[]
+  disabledModules?: Set<ModuleId>
+  builtinTools?: Map<string, string>
   collaborationEnabled?: boolean
 }
 
@@ -96,7 +100,9 @@ export function loadContext(store: Store, agentId: string, shared?: SharedResolu
     client.set(ruleKey(rule.resource_type, rule.resource_id), rule)
   }
   return {
-    collaborationEnabled: collaborationEnabled(store),
+    disabledModules: new Set(appModules.filter(module => !moduleEnabled(store, module.id)).map(module => module.id)),
+    builtinTools: new Map((base.toolsByServer.get(store.setting(MEMORY_CATALOG_SERVER_SETTING) ?? '') ?? []).map(tool => [tool.id, tool.name])),
+    collaborationEnabled: collaborationEnabled(store) && moduleEnabled(store, 'agents'),
     agent,
     machine,
     user,
@@ -113,6 +119,13 @@ export function resolveResource(
   resourceId: string,
   base?: Decision,
 ): Decision {
+  if (ctx.disabledModules?.size) {
+    const tool = ctx.builtinTools?.get(resourceId)
+    const required: ModuleId[] = resourceType === RESOURCE.skill ? ['skills'] : ['mcp']
+    if (tool && resourceType === RESOURCE.tool) required.push(...operationModules(tool))
+    const blocked = required.find(id => ctx.disabledModules!.has(id))
+    if (blocked) return decision(false, 'module_disabled', moduleDefinition(blocked).label + ' está desactivado en Ajustes')
+  }
   if (ctx.collaborationEnabled === false && (resourceType === RESOURCE.tool
     ? [...ctx.toolsByServer.values()].flat().some(tool => tool.id === resourceId && isCollaborationTool(tool.name))
     : resourceType === RESOURCE.skill && ctx.skills.some(skill => skill.id === resourceId && isCollaborationSkill(skill.slug))))

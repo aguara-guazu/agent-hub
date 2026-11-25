@@ -1,0 +1,27 @@
+import type { ModuleDefinition } from './definition.js'
+
+export const memory = {
+  id: 'memory', label: 'Proyectos y memoria', setting: 'module_memory_enabled',
+  routes: ['/api/memory/search', '/api/memory/files', '/api/memory/originals', '/api/memory/projects',
+    '/api/memory/backups', '/api/memory/restore', '/api/memory/ai', '/api/memory/embeddings',
+    '/api/memory/extraction-cli', '/api/memory/opencode', '/api/memory/defaults', '/api/memory/credentials/kiro'],
+  destinations: ['/projects', '/memory'],
+  operations: ['suggest_projects', 'draft_profile', 'save_project_company', 'context',
+    'list_entities', 'get_entity', 'create_entity', 'merge_projects',
+    'update_entity', 'remember', 'list_memories', 'manage_memory',
+    'tidy_memory', 'health', 'import_file', 'get_file',
+    'import_source', 'search', 'get_evidence', 'list_versions',
+    'link_entities', 'unlink_entities', 'merge_people', 'add_record',
+    'update_record', 'list_records', 'create_rule', 'list_rules',
+    'update_rule', 'reprocess', 'rebuild_embeddings', 'infer_identities',
+    'list_identity_proposals', 'review_identity', 'dedupe_people', 'list_duplicate_proposals',
+    'review_duplicate', 'timeline', 'list_tasks', 'get_task',
+    'save_task', 'task_stats', 'list_notes', 'write_note',
+    'finish_notes', 'list_project_suggestions', 'review_project_suggestion', 'infer_projects',
+    'review', 'export_backup', 'delete_entity',
+    'sync_tasks', 'sync_sources', 'sync_connector', 'repair_google', 'process_files', 'assign_fragment',
+    'project_automation_status', 'project_automation_activate', 'push_propose', 'publish_source'],
+  operationPrefixes: [],
+  jobs: ['process', 'index_entities', 'tidy_memory', 'dedupe_people',
+    'describe_source'],
+} as const satisfies ModuleDefinition

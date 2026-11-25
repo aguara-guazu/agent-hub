@@ -81,7 +81,7 @@ El tablero de Colaboración tiene alto acotado a la ventana (`.page-fill` en la 
 - Los interruptores y campos guardan solos. Las acciones de mantenimiento son botones secundarios que ejecutan y avisan con un toast.
 - Las opciones avanzadas van en un `<details>` «Opciones avanzadas» al final de la sección.
 
-Secciones fijas: **General, Fuentes, IA y procesamiento, Automatizaciones, Colaboración y red, Integraciones, Respaldos, Sistema.** Un ajuste nuevo entra en una de ellas; no se crea una sección para un solo ajuste.
+El índice contiene General, una sección por módulo y Sistema. Cada módulo registra sus controles y su interruptor. El contrato está en `packages/shared/src/modules`.
 
 ## Plantilla D · Bandeja
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { activateInput, delegationDocument, deriveStandingPlan, pushProposeInput, snapshotDelegation, type ApprovedItem, type DelegationDocument, type RepositorySnapshot } from '../src/project-automation.js'
+import { activateInput, delegationDocument, deriveStandingPlan, pushProposeInput, snapshotDelegation, type ApprovedItem, type DelegationDocument, type RepositorySnapshot } from '../src/schedules/project-automation.js'
 import { MemoryError } from '../src/contracts.js'
 
 const repository = (over: Partial<RepositorySnapshot> = {}): RepositorySnapshot => ({ repo_id: 'repo-1', repo_path: '/work/app', canonical_remote_url: 'https://example.invalid/app.git',

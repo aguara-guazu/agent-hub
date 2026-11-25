@@ -198,6 +198,7 @@ const automations = {
     synthesisHint: "A model without tools summarizes hub data.",
   },
   reason: {
+    moduleDisabled: "{{module}} is turned off",
     skip: {
       overlap: "The previous run was still going",
       misfire_out_of_grace: "Agent Hub was closed",

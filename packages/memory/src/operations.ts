@@ -1,44 +1,90 @@
+import { ConnectionOperations, connectionDefinitions } from './connectors/operations.js'
+import { callSharing, sharingDefinitions } from './sharing/operations.js'
+import { moduleDefinition, operationModules, type ModuleEnabled } from '@agenthub/shared/modules'
 import { diagnosticReport, diagnosticReportInput } from "./diagnostic-report.js"
 import { isCollaborationTool } from './collaboration.js'
 import { renderMemoryToolReference } from './skill.js'
-import { interhubReference, localCollaborationSkill, localOrchestrationReference } from './local-chat-skill.js'
+import { interhubReference, localCollaborationSkill, localOrchestrationReference } from './agents/local-chat-skill.js'
 import { CLI_KINDS } from '@agenthub/shared'
-import { UsageQuotas } from './usage-quotas.js'
-import { UsageNotices } from './usage-notices.js'
-import { callConsumptionTool, consumptionDefinitions } from './usage-consumption/tools.js'
-import { LocalChat, chatDefinitions, chatReadOperations } from './local-chat.js'
+import { UsageQuotas } from './agents/usage-quotas.js'
+import { UsageNotices } from './agents/usage-notices.js'
+import { callConsumptionTool, consumptionDefinitions } from './agents/usage-consumption/tools.js'
+import { LocalChat, chatDefinitions, chatReadOperations } from './agents/local-chat.js'
 import { createInterhubServices } from './interhub/services.js'
 import { InterhubTools, interhubDefinitions, interhubReadOperations, isInterhubOperation, type InterhubServices } from './interhub/tools.js'
-import { TeamOrchestration, teamDefinitions, teamReadOperations } from './team-orchestration.js'
-import { callScheduleTool, scheduleDefinitions, scheduleReadOperations } from './schedule-tools.js'
-import { callProjectAutomationTool, projectAutomationDefinitions, projectAutomationReadOperations } from './project-automation-tools.js'
-import { ProjectAutomationService } from './project-automation-service.js'
-import type { ScheduleAdmin } from './schedule-admin.js'
-import type { TeamCatalog } from './team-catalog.js'
-import type { TeamOrca } from './team-orca.js'
+import { TeamOrchestration, teamDefinitions, teamReadOperations } from './agents/team-orchestration.js'
+import { callScheduleTool, scheduleDefinitions, scheduleReadOperations } from './schedules/schedule-tools.js'
+import { callProjectAutomationTool, projectAutomationDefinitions, projectAutomationReadOperations } from './schedules/project-automation-tools.js'
+import { ProjectAutomationService } from './schedules/project-automation-service.js'
+import type { ScheduleAdmin } from './schedules/schedule-admin.js'
+import type { TeamCatalog } from './agents/team-catalog.js'
+import type { TeamOrca } from './agents/team-orca.js'
 import { SharedPublications } from './sharing/publications.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
-import { queueMedia, processFilesInput, mediaSettings } from './media-processing.js'
+import { queueMedia, processFilesInput, mediaSettings } from './transcriptions/media-processing.js'
 import { remember, rememberInput, manageMemory, manageMemoryInput } from './remember.js'
 import { listMemories, listMemoriesInput, requestTidy, tidyInput, maintenanceStatus, maintenanceStatusInput } from './memory-maintenance.js'
 import { importFile, importFileInput, getFile, getFileInput } from './attachments.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { check, parse, id, jsonObject, entityInput, entityPatch, kindSchema, importInput, linkInput, searchInput, recordInput, ruleInput, connectorInput, instant } from './contracts.js'
-import { MemoryStore, canonical, requireEntity, assertWritableEntityTargets, validateProjects, workFolder } from "./store.js"
+import {
+  MemoryError,
+  check,
+  parse,
+  id,
+  jsonObject,
+  entityInput,
+  entityPatch,
+  kindSchema,
+  importInput,
+  linkInput,
+  searchInput,
+  recordInput,
+  ruleInput,
+} from './contracts.js'
+import { MemoryStore, requireEntity, assertWritableEntityTargets, validateProjects } from "./store.js"
 import { searchMemory, citation } from './search.js'
 import type { MemoryAI } from './ai.js'
 import { exportMemory, deleteEntity } from './backup.js'
 import type { AdmissionGate } from "./admission-gate.js"
 import { reviewIdentity } from './identity-inference.js'
 import { mergePeople, resolveCanonical } from './people.js'
-import { GMAIL_SCOPE, GMAIL_SEND_SCOPE, googleScopes, type GoogleAuth } from './google-auth.js'
+import { type GoogleAuth } from './connectors/google-auth.js'
 import type { Vault } from './config.js'
-import { GOOGLE_SETUP_APIS, GOOGLE_SETUP_SCOPES, ensureGoogleSource, readGoogleClientFile } from './google-setup.js'
-import { listTasks, listTasksInput, saveTask, saveTaskInput, syncTasks, syncTasksInput, taskDetail, taskStats, taskStatsInput } from './tasks.js'
-import { contextInput, finishNotes, finishNotesInput, listNotes, listNotesInput, projectForAgent, sharedProjectsWithoutFolder, touchSession, workContext, writeNote, writeNoteInput, type AgentContext } from './agents.js'
+import {
+  listTasks,
+  listTasksInput,
+  saveTask,
+  saveTaskInput,
+  syncTasks,
+  syncTasksInput,
+  taskDetail,
+  taskStats,
+  taskStatsInput,
+} from './tasks.js'
+import {
+  contextInput,
+  finishNotes,
+  finishNotesInput,
+  listNotes,
+  listNotesInput,
+  projectForAgent,
+  sharedProjectsWithoutFolder,
+  touchSession,
+  workContext,
+  writeNote,
+  writeNoteInput,
+  type AgentContext,
+} from './agents.js'
 import { listProjectSuggestions, projectSuggestionReview, reviewProjectSuggestion, PROJECT_SOURCE_KINDS } from './project-inference.js'
-import { suggestProjects, suggestProjectsInput, draftProfile, draftProfileInput, saveProjectCompany, saveProjectCompanyInput } from './project-assistance.js'
+import {
+  suggestProjects,
+  suggestProjectsInput,
+  draftProfile,
+  draftProfileInput,
+  saveProjectCompany,
+  saveProjectCompanyInput,
+} from './project-assistance.js'
 
 import { mergeProjects, mergeProjectsInput } from "./project-merge.js"
 import type { HubStopCoordinator } from "./hub-stop.js"
@@ -55,17 +101,7 @@ const definitions = {
   ...scheduleDefinitions,
   ...projectAutomationDefinitions,
   ...consumptionDefinitions,
-  shared_status: ['Shared project members, permissions, identity, versions. Work on it per skill hub-collaboration.', z.object({ project_id: id }).strict()],
-  shared_join: ["Join a shared project only when the person asks. The invitation is the one-line ahinv1. code or the legacy agenthub-invitation-v1 JSON. Requires an existing local folder and never accepts a recovery phrase.", z.object({ invitation: z.unknown(), folder: workFolder }).strict()],
-  shared_pause: ["Pause or resume synchronization of a shared project on this hub, only when the person asks. Resuming reconsiders unassigned inter-hub channels.", z.object({ project_id: id, paused: z.boolean() }).strict()],
-  shared_version: ['Full shared version with author, agent and origin peer; read before resolving a conflict. No attachment bytes.', z.object({ project_id: id, event_id: z.string().length(64) }).strict()],
-  publish_source: ['Publish a source early (normally automatic) or share a task/collection. Keeps provenance, dedupes; shares only project fragments.', z.object({ project_id: id, entity_id: id, key: z.string().max(1000).optional() }).strict()],
-  resolve_shared: ['Resolve concurrent shared-source versions: pick an event after checking its evidence. All past versions kept.', z.object({ project_id: id, key: z.string().max(1000), event_id: z.string().length(64) }).strict()],
-  send_message: ['Expiring message/reply in the agents-only forum. Needs agent identity and authorization to communicate. Public without to_member; private with to_member (optional to_agent).', z.object({ project_id: id, text: z.string().trim().min(1).max(8000), expires_at: instant, to_member: z.string().length(64).optional(), to_agent: z.string().max(200).optional(), reply_to: z.string().length(64).optional() }).strict()],
-  read_messages: ['Active project messages for this agent or team. Marks read; never accepts or runs requests. Paginate for all; with unread_only:true keep offset:0 while draining.', z.object({ project_id: id, unread_only: z.boolean().default(false), ...page }).strict()],
-  ack_message: ['Mark a project message read or handled (request resolved, not just read).', z.object({ project_id: id, message_id: z.string().length(64), state: z.enum(['read','handled']) }).strict()],
-  claim_work: ['Claim project work for 5 minutes under a stable key. Advisory: partitions can cause concurrent attempts.', z.object({ project_id: id, key: z.string().min(1).max(200) }).strict()],
-
+  ...sharingDefinitions,
   process_files: ['Local OCR, transcription, embeddings for PDF pages, images, audio, video per «Ajustes». No version_id: all current files; force re-analyzes, keeps versions. Track via list_jobs.', processFilesInput],
   suggest_projects: ['Find projects by name, company, meaning to preselect an association. Saves no links.', suggestProjectsInput],
   draft_profile: ['Draft a company or project description with source evidence. Saves nothing; needs human review.', draftProfileInput],
@@ -120,15 +156,7 @@ const definitions = {
   list_project_suggestions: ['Project-less meetings/documents with AI suggestion: candidate or proposed name, confidence, reason, participants, extracted facts.', z.object({ state: z.enum(['pending','accepted','rejected','superseded']).default('pending'), ...page }).strict()],
   review_project_suggestion: ['Resolve a project suggestion: assign (to project_id), create (new project from title, assigned) or none (stays unassigned, never re-suggested).', projectSuggestionReview],
   infer_projects: ['Infer projects for unassigned meetings/documents. High confidence auto-assigns if enabled; the rest become suggestions.', z.object({ entity_id: id.optional() }).strict()],
-  list_connectors: ['Configured sources, coverage, errors; no credentials.', z.object({}).strict()],
-  save_connector: ['Set source scope. Credentials go in the hub UI.', connectorInput.extend({ id: id.optional() })],
-  sync_connector: ['Sync an enabled connector. Google always covers the last 90 days (Calendar, Gmail) plus new items. since (optional until, default now) also imports that older Calendar/Gmail period from a Google source; use only when the person asks for data older than 90 days.',
-    z.object({ id, since: z.union([instant, z.iso.date()]).optional(), until: z.union([instant, z.iso.date()]).optional() }).strict().refine(v => !v.until || v.since, 'until requiere since')],
-  sync_sources: ['Pull new content from all active sources (Meet transcripts, documents, conversations, issues); processed in background.', z.object({}).strict()],
-  repair_google: ['Refresh emails by Google identity; recover speakers of stored documents.', z.object({ id }).strict()],
-  google_setup_status: ['Diagnose Google setup: OAuth client, redirect URL, required APIs/scopes, connected Google sources. No credentials.', z.object({}).strict()],
-  import_google_client: ['Load the Google desktop OAuth client JSON from Google Cloud (absolute local path). Secret kept in a private file, never returned. With no Google source, creates one (Calendar, Meet, Gmail) and returns authorization_url for the browser (10-minute expiry); on consent it activates and syncs.', z.object({ path: z.string().min(1).max(4000) }).strict()],
-  connect_google: ['Browser URL to authorize a Google source; expires in 10 minutes. The token then stays on this computer.', z.object({ id }).strict()],
+  ...connectionDefinitions,
   list_jobs: ['Sync/processing jobs: source, model, progress, retries, errors. kind takes comma-separated types.', z.object({ ...page, kind: z.string().max(100).optional(), state: z.enum(['active','queued','running','waiting','completed','failed','cancelled']).optional() }).strict()],
   processing_status: ['Memory activity, reported tokens, extraction coverage.', z.object({}).strict()],
   retry_job: ['Retry a failed or paused job.', z.object({ id }).strict()],
@@ -143,12 +171,15 @@ export const memoryTools = Object.entries(definitions).map(([name, [description,
 export const READ_OPERATIONS = new Set(['skill_reference','usage_status','usage_self','usage_team',...chatReadOperations,...interhubReadOperations,...teamReadOperations,...scheduleReadOperations,...projectAutomationReadOperations,'shared_version','shared_status','read_messages','list_memories','health','diagnostic_report','get_file','suggest_projects','draft_profile','context','list_entities','get_entity','search','transcript','get_evidence','list_versions','list_records','list_rules','timeline','list_connectors','list_jobs','processing_status','review','list_identity_proposals','list_duplicate_proposals','google_setup_status','list_tasks','get_task','task_stats','list_notes','list_project_suggestions'])
 
 export class MemoryOperations {
+  private readonly connections: ConnectionOperations
+  moduleEnabled: ModuleEnabled = () => true
   readonly usage: UsageQuotas
   readonly usageNotices: UsageNotices
   readonly chat: LocalChat
   /** Set once the P2P replica and the inter-hub chat model exist; absent where they do not run. */
   private interhubServices: InterhubServices | undefined
-  get interhub(): InterhubServices { return this.interhubServices ??= createInterhubServices(this.store, { events: this.chat.events }) }
+  get interhub(): InterhubServices { return this.interhubServices ??= createInterhubServices(this.store, { events: this.chat.events, enabled: () => this.sharingEnabled() }) }
+  sharingEnabled() { return this.moduleEnabled('sharing') && this.moduleEnabled('memory') }
   set interhub(value: InterhubServices | undefined) { this.interhubServices = value }
   /** Stops the timers of the inter-hub service without creating it when it was never used. */
   closeInterhub() { this.interhubServices?.dispose() }
@@ -164,12 +195,13 @@ export class MemoryOperations {
   hubStop: HubStopCoordinator | undefined
   readonly projectAutomation: ProjectAutomationService
   get sharing() { return new SharedPublications(this.store) }
-  constructor(readonly store: MemoryStore, private ai: MemoryAI, private google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
-    private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./media-runtime.js').MediaRuntime,
+  constructor(readonly store: MemoryStore, private ai: MemoryAI, google?: GoogleAuth, private vault?: Vault, private fetcher: typeof fetch = fetch,
+    private jiraMcp?: import('./tasks.js').JiraTaskReader, private media?: import('./transcriptions/media-runtime.js').MediaRuntime,
     teamRuntime?: { catalog: TeamCatalog; orca: TeamOrca | ((chat:LocalChat)=>TeamOrca) }, readonly collaborationEnabled: () => boolean = () => true) {
+    this.connections = new ConnectionOperations(store, google, vault)
     this.chat = new LocalChat(store)
     this.interhubTools = new InterhubTools(this.chat, () => this.interhub)
-    this.chat.interhubSweep = () => this.interhub.sweepEscalations()
+    this.chat.interhubSweep = async () => { if (this.sharingEnabled()) await this.interhub.sweepEscalations() }
     this.usage = new UsageQuotas(store.db)
     this.usageNotices = new UsageNotices(this.chat)
     this.fleet = typeof teamRuntime?.orca === 'function' ? teamRuntime.orca(this.chat) : teamRuntime?.orca
@@ -177,7 +209,7 @@ export class MemoryOperations {
     this.projectAutomation = new ProjectAutomationService({ db: store.db, chat: this.chat, teams: () => this.teams, schedules: () => this.schedules })
   }
   async collaborationNotice(operation: string, raw: unknown, result: any, agent?: AgentContext) {
-    if (!this.collaborationEnabled()) return null
+    if (!this.collaborationEnabled() || !this.sharingEnabled()) return null
     if (!agent || !READ_OPERATIONS.has(operation) || operation === 'read_messages') return null
     const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
     let project = typeof input.project_id === 'string' ? input.project_id : operation === 'context' ? result?.project?.id
@@ -201,6 +233,10 @@ export class MemoryOperations {
   }
   /** `agent` identifies the calling agent session (from the gateway); it attributes notes and keeps the session alive for the notes board. */
   async call(operation: string, raw: unknown, actor = 'user', agent?: AgentContext, signal?: AbortSignal): Promise<any> {
+    const required = operationModules(operation)
+    if (operation === 'save_task' && (raw as { jira?: unknown } | null)?.jira) required.push('connections')
+    const disabled = required.find(id => !this.moduleEnabled(id))
+    if (disabled) throw new MemoryError(409, 'El módulo «' + moduleDefinition(disabled).label + '» está desactivado en Ajustes', false, 'module_disabled')
     // Cleanup remains allowed and deletion keeps its original lifecycle lock ordering.
     if (!READ_OPERATIONS.has(operation) && !["delete_entity", "unlink_entities"].includes(operation)) await assertWritableEntityTargets(this.store.db, raw)
     if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))
@@ -230,10 +266,11 @@ export class MemoryOperations {
     const definition = definitions[operation as keyof typeof definitions]
     check(definition, 'Operación de memoria inexistente', 404)
     const input = parse(definition[1] as z.ZodType, raw ?? {}) as any
-    if (['send_message', 'ack_message'].includes(operation)) check(agent?.agent_id, 'Sólo los agentes pueden participar en el foro del proyecto', 403)
     const { store } = this, db = store.db
-    if (agent && !['context', 'write_note', 'finish_notes'].includes(operation)) await touchSession(store, agent)
+    if (agent && this.moduleEnabled('agents') && !['context', 'write_note', 'finish_notes'].includes(operation)) await touchSession(store, agent)
     const author = agent ? `agent:${agent.cli_kind || 'mcp'}:${agent.session_id.slice(0, 8)}` : actor
+    if (Object.hasOwn(connectionDefinitions, operation)) return this.connections.call(operation, input, raw)
+    if (Object.hasOwn(sharingDefinitions, operation)) return callSharing(this.sharing, this.setSharedPaused, operation, input, author, agent)
     switch (operation) {
       case 'skill_reference': return {section:input.section,text:input.section==='memory-tools'?renderMemoryToolReference():input.section==='local-collaboration'?localCollaborationSkill.body:input.section==='inter-hub'?interhubReference:localOrchestrationReference}
       case "hub_stop_confirm": {
@@ -256,32 +293,8 @@ export class MemoryOperations {
         const result = await workContext(store, input, agent)
         const projectId = result.project?.id
         const shared = projectId && (await db.query('SELECT id FROM shared_projects WHERE id=$1', [projectId])).length > 0
-        return { ...result, ...(shared && this.collaborationEnabled() ? { collaboration: { shared: true, project_id: projectId, skill: 'hub-collaboration' } } : {}) }
+        return { ...result, ...(shared && this.moduleEnabled('sharing') && this.collaborationEnabled() ? { collaboration: { shared: true, project_id: projectId, skill: 'hub-collaboration' } } : {}) }
       }
-      case 'shared_status': {
-        const project = await this.sharing.get(input.project_id), who = await this.sharing.identity()
-        return { project_id: input.project_id, identity: { id: who.id, name: who.name }, members: project.policy.members, conflict: project.conflict,
-          enabled: project.enabled, publications: await this.sharing.publications(input.project_id), pending_sources: await this.sharing.sourceSyncStatus(input.project_id), skill: 'hub-collaboration' }
-      }
-      case "shared_join": {
-        check(agent, "Aceptar una invitación compartida por MCP requiere la identidad del agente", 403)
-        return this.sharing.acceptInvitation(input.invitation, input.folder, undefined, author)
-      }
-      case "shared_pause": {
-        check(this.setSharedPaused, "La sincronización compartida no está disponible en este servicio", 503)
-        return this.setSharedPaused(input.project_id, input.paused)
-      }
-      case 'shared_version': return this.sharing.version(input.project_id, input.event_id)
-      case 'publish_source': return this.sharing.publish(input.project_id, input.entity_id, input.key, agent)
-      case 'resolve_shared': return this.sharing.resolve(input.project_id, input.key, input.event_id, agent)
-      case 'send_message': return this.sharing.message(input.project_id, input.text, input.expires_at, input.to_member, input.to_agent, input.reply_to, agent)
-      case 'read_messages': {
-        const result = await this.sharing.messages(input.project_id, agent, input.offset, input.limit, input.unread_only)
-        if (agent) for (const message of result.items) if (message.state === 'unread') await this.sharing.receipt(input.project_id, message.id, 'read', agent)
-        return result
-      }
-      case 'ack_message': return this.sharing.receipt(input.project_id, input.message_id, input.state, agent)
-      case 'claim_work': return this.sharing.claim(input.project_id, input.key, agent)
       case 'list_tasks': return listTasks(store, input)
       case 'get_task': return taskDetail(store, input.id)
       case "save_task": return saveTask(store, this.requireVault(), input, author, this.fetcher)
@@ -314,16 +327,6 @@ export class MemoryOperations {
           AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project')`, [input.entity_id ?? null, PROJECT_SOURCE_KINDS])
         for (const row of rows) await store.enqueue('process', { version_id: row.current_version_id, projects_only: true }, `projects:${row.current_version_id}`)
         return { queued: rows.length }
-      }
-      case 'sync_sources': {
-        const rows = await db.query('SELECT id,name,provider,config FROM connectors WHERE enabled=true ORDER BY created_at')
-        // A sync waiting out a backoff is brought forward: the person explicitly asked to look for new content now.
-        await db.query("UPDATE jobs SET available_at=now(),updated_at=now() WHERE kind IN ('sync','gmail') AND state IN ('queued','waiting') AND available_at>now()")
-        for (const connector of rows) {
-          await store.enqueue('sync', { connector_id: connector.id }, `sync:${connector.id}`)
-          await this.enqueueGmail(connector)
-        }
-        return { queued: rows.length, connectors: rows.map(({ config: _config, ...connector }) => connector) }
       }
       case 'list_entities': return store.list(input)
       case 'get_entity': return store.detail(input.id)
@@ -450,78 +453,6 @@ export class MemoryOperations {
         return { queued: rows.length }
       }
       case 'timeline': return store.list({ project_id: input.project_id, limit: input.limit, offset: input.offset })
-      case 'list_connectors': {
-        // `mailbox` is the address Gmail reported for the account on a sync; until then there is none to show and nothing is inferred.
-        const rows = await db.query("SELECT id,provider,name,config,project_ids,enabled,interval_minutes,last_success_at,last_error,created_at,json_extract(cursor,'$.gmail.mailbox') AS mailbox FROM connectors ORDER BY created_at")
-        return rows.map(({ mailbox, ...row }) => {
-          if (row.provider !== 'google') return row
-          const account = { account_email: typeof mailbox === 'string' && mailbox ? mailbox : null }
-          if (!this.google) return { ...row, ...account }
-          return { ...row, ...account, ...(row.config.gmail_enabled !== false ? { gmail_authorized: this.google.granted(row.id, GMAIL_SCOPE) } : {}),
-            ...(row.config.gmail_send_enabled === true ? { gmail_send_authorized: this.google.granted(row.id, GMAIL_SEND_SCOPE) } : {}) }
-        })
-      }
-      case 'save_connector': {
-        const sent = (raw ?? {}) as Record<string, unknown>
-        const current = input.id ? (await db.query('SELECT provider,name,config,project_ids,enabled,interval_minutes FROM connectors WHERE id=$1', [input.id]))[0] : undefined
-        if (input.id) check(current && current.provider === input.provider, 'Conector inexistente o proveedor distinto', 404)
-        // Omitted fields keep the stored value on update; zod defaults only apply when creating.
-        const keep = (key: 'config' | 'project_ids' | 'enabled' | 'interval_minutes') => current && sent[key] === undefined ? current[key] : input[key]
-        const config = { ...keep('config') } as Record<string, unknown>
-        const projectIds = keep('project_ids') as string[], enabled = keep('enabled') as boolean, intervalMinutes = keep('interval_minutes') as number
-        // Google covers a fixed 90-day window; an older `since` from previous versions is dropped, and older periods use sync_connector.
-        if (input.provider === 'google') delete config.since
-        this.validateConnectorConfig(input.provider, config)
-        await validateProjects(db, projectIds)
-        const connectorId = input.id ?? randomUUID()
-        const sameConfig = !!current && canonical(current.config) === canonical(config)
-        return (await db.query(`INSERT INTO connectors(id,provider,name,config,project_ids,enabled,interval_minutes) VALUES($1,$2,$3,$4,$5,$6,$7)
-          ON CONFLICT(id) DO UPDATE SET name=excluded.name,config=excluded.config,project_ids=excluded.project_ids,enabled=excluded.enabled,
-          interval_minutes=excluded.interval_minutes,cursor=CASE WHEN $8 THEN connectors.cursor ELSE '{}' END,updated_at=now() RETURNING *`,
-          [connectorId, input.provider, input.name, JSON.stringify(config), projectIds, enabled, intervalMinutes, sameConfig]))[0]
-      }
-      case 'sync_connector':
-      case 'repair_google': {
-        const connector = (await db.query('SELECT id,enabled,provider,config FROM connectors WHERE id=$1', [input.id]))[0]
-        check(connector, 'Conector inexistente', 404); check(connector.enabled, 'Activá el conector antes de sincronizar', 409)
-        if (operation === 'repair_google') {
-          check(connector.provider === 'google', 'Esta reparación requiere una fuente Google')
-          return store.enqueue('google_repair', { connector_id: input.id }, `google-repair:${input.id}`)
-        }
-        if (input.since) {
-          check(connector.provider === 'google', 'La sincronización de un período sólo está disponible para fuentes Google')
-          const bound = (value: string) => value.length === 10 ? `${value}T00:00:00Z` : value
-          const since = bound(input.since), until = input.until ? bound(input.until) : new Date().toISOString()
-          check(Date.parse(since) < Date.parse(until), 'La fecha de inicio debe ser anterior al final del período')
-          return store.enqueue('sync', { connector_id: input.id, since, until }, `sync-range:${input.id}:${since}:${until}`)
-        }
-        await this.enqueueGmail(connector)
-        return store.enqueue('sync', { connector_id: input.id }, `sync:${input.id}`)
-      }
-      case 'google_setup_status': {
-        const { google, vault } = this.googleSetup()
-        const client = vault.read('google-client')
-        const connectors = await db.query("SELECT id,name,enabled,config,project_ids,last_success_at,last_error FROM connectors WHERE provider='google' ORDER BY created_at")
-        return { client_configured: Boolean(client?.client_id), client_id: client?.client_id ?? null, client_has_secret: Boolean(client?.client_secret),
-          redirect_url: google.redirectUrl, apis: GOOGLE_SETUP_APIS, scopes: GOOGLE_SETUP_SCOPES,
-          connectors: connectors.map(row => ({ ...row, connected: Boolean(vault.read(row.id)?.refresh_token),
-            ...(row.config.gmail_enabled !== false ? { gmail_authorized: google.granted(row.id, GMAIL_SCOPE) } : {}),
-            ...(row.config.gmail_send_enabled === true ? { gmail_send_authorized: google.granted(row.id, GMAIL_SEND_SCOPE) } : {}) })) }
-      }
-      case 'import_google_client': {
-        const { vault } = this.googleSetup()
-        const client = readGoogleClientFile(input.path)
-        vault.save('google-client', { client_id: client.client_id, ...(client.client_secret ? { client_secret: client.client_secret } : {}) })
-        const source = await ensureGoogleSource(store)
-        return { configured: true, client_type: client.type, client_id: client.client_id, project_id: client.project_id ?? null,
-          connector_id: source.id, authorization_url: this.googleSetup().google.start(source.id, googleScopes(source.config)), expires_in_seconds: 600 }
-      }
-      case 'connect_google': {
-        const { google } = this.googleSetup()
-        const connector = (await db.query("SELECT id,config FROM connectors WHERE id=$1 AND provider='google'", [input.id]))[0]
-        check(connector, 'Conector de Google inexistente', 404)
-        return { authorization_url: google.start(input.id, googleScopes(connector.config)), expires_in_seconds: 600 }
-      }
       case 'list_jobs': {
         const where = `($1 IS NULL OR j.kind IN (SELECT value FROM json_each($1))) AND ($2 IS NULL OR j.state=$2 OR ($2='active' AND j.state IN ('queued','running','waiting')))`
         const kinds = input.kind ? input.kind.split(',') : null
@@ -564,27 +495,5 @@ export class MemoryOperations {
     return this.vault
   }
 
-  private async enqueueGmail(connector: Record<string, any>) {
-    if (connector.provider === 'google' && connector.config.gmail_enabled !== false && this.google?.granted(connector.id, GMAIL_SCOPE))
-      await this.store.enqueue('gmail', { connector_id: connector.id }, `gmail:${connector.id}`)
-  }
 
-  private googleSetup(): { google: GoogleAuth; vault: Vault } {
-    check(this.google && this.vault, 'La configuración de Google no está disponible en este contexto', 503)
-    return { google: this.google, vault: this.vault }
-  }
-
-  private validateConnectorConfig(provider: string, config: Record<string, unknown>) {
-    const keys: Record<string, string[]> = { google: ['calendars', 'calendar_enabled', 'meet_enabled', 'gmail_enabled', 'gmail_send_enabled', 'document_ids', 'folder_ids'], notion: ['page_ids'], slack: ['channel_ids', 'since'], jira: ['site_url', 'jql'] }
-    check(Object.keys(config).every(key => keys[provider]?.includes(key)), 'Configuración desconocida. Las credenciales se guardan por separado')
-    for (const key of ['calendars', 'document_ids', 'folder_ids', 'page_ids', 'channel_ids']) if (key in config) parse(z.array(z.string().min(1).max(500)).max(100), config[key])
-    if (config.since) parse(instant, config.since)
-    for (const key of ['calendar_enabled', 'meet_enabled', 'gmail_enabled', 'gmail_send_enabled']) if (key in config) parse(z.boolean(), config[key])
-    check(!(config.gmail_send_enabled === true && config.gmail_enabled === false), 'El envío por Gmail requiere mantener activada la lectura de Gmail: las respuestas se leen desde ahí')
-    if (provider === 'jira') {
-      const url = new URL(String(config.site_url ?? ''))
-      check(url.protocol === 'https:' && url.hostname.endsWith('.atlassian.net') && !url.username && !url.password, 'Se requiere un sitio de Jira Cloud')
-      parse(z.string().min(1).max(4000), config.jql)
-    }
-  }
 }

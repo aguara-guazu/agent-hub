@@ -36,12 +36,11 @@ CONEXIONES
 ├ Skills
 ├ Clientes
 └ Actividad            Llamadas · Procesamiento · Consumo
-Ajustes                General · Fuentes · IA y procesamiento · Automatizaciones ·
-                       Colaboración y red · Integraciones · Respaldos · Sistema
+Ajustes                General · sección de cada módulo registrado · Sistema
 ● estado del equipo y sincronización (una línea al pie)
 ```
 
-No hay barra superior ni destino global de Colaboración: los canales e hilos viven solo en la pestaña Colaboración de cada proyecto. El «Foro de agentes» ya no existe en la UI. La ficha de proyecto es la única con seis pestañas (excepción documentada en `references/03-plantillas-y-layout.md`). **Un agente nunca agrega destinos a la barra lateral, pestañas a una ficha ni secciones a Ajustes.** Eso es una decisión de producto que requiere actualizar esta skill.
+No hay barra superior ni destino global de Colaboración: los canales e hilos viven solo en la pestaña Colaboración de cada proyecto. El «Foro de agentes» ya no existe en la UI. La ficha de proyecto es la única con seis pestañas (excepción documentada en `references/03-plantillas-y-layout.md`). La barra lateral y las pestañas de las fichas siguen el mapa de navegación del proyecto. Cada módulo aporta su propia sección de Ajustes. El procedimiento está en `docs/modulos.md`.
 
 ## Árbol de decisión: dónde va una función
 

@@ -6,7 +6,7 @@ import { MemoryDatabase } from '../src/database.js'
 import { migrations } from '../src/migrations.js'
 import { exportMemory, readBackup, restoreMemory } from '../src/backup.js'
 import { MemoryStore } from '../src/store.js'
-import { ScheduleStore } from '../src/schedule-store.js'
+import { ScheduleStore } from '../src/schedules/schedule-store.js'
 
 let dir: string, db: MemoryDatabase
 beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'hub-incidents-migration-')); db = new MemoryDatabase(join(dir, 'memory.sqlite')) })

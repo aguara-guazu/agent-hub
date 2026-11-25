@@ -4,10 +4,10 @@ import { join } from "node:path"
 import Fastify from "fastify"
 import { expect, it, vi } from "vitest"
 import { MemoryDatabase } from "../src/database.js"
-import { registerRecordingRoutes } from "../src/recording-routes.js"
+import { registerRecordingRoutes } from "../src/transcriptions/recording-routes.js"
 import { MemoryStore } from "../src/store.js"
-import { UpcomingEvents } from "../src/upcoming-events.js"
-import type { GoogleAuth } from "../src/google-auth.js"
+import { UpcomingEvents } from "../src/transcriptions/upcoming-events.js"
+import type { GoogleAuth } from "../src/connectors/google-auth.js"
 
 it("persists the opt-out, skips calendar access and preserves preferences sent by older clients", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hub-recording-settings-"))

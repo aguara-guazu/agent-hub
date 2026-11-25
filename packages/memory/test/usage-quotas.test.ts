@@ -6,7 +6,7 @@ import type {UsageQuotaObservation} from '@agenthub/shared'
 import {MemoryDatabase} from '../src/database.js'
 import {MemoryStore} from '../src/store.js'
 import {exportMemory,readBackup,restoreMemory} from '../src/backup.js'
-import {UsageQuotas,isRestored} from '../src/usage-quotas.js'
+import {UsageQuotas,isRestored} from '../src/agents/usage-quotas.js'
 
 let dir:string,db:MemoryDatabase,quotas:UsageQuotas,now:string
 const start='2026-10-20T10:00:00.000Z'

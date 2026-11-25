@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest'
-import { RESUME_CATALOG, compareVersions, effectiveCapability, helpCommands, helpFlags, parseCliVersion, restorableNativeId, resumeSurface, schemaMethods } from '../src/resume-capabilities.js'
-import { planResume, type ResumeOrigin, type ResumeTarget } from '../src/resume-ladder.js'
+import { RESUME_CATALOG, compareVersions, effectiveCapability, helpCommands, helpFlags, parseCliVersion, restorableNativeId, resumeSurface, schemaMethods } from '../src/agents/resume-capabilities.js'
+import { planResume, type ResumeOrigin, type ResumeTarget } from '../src/agents/resume-ladder.js'
 
 const codexSchema = { version: '0.9.1', commands: ['thread/fork', 'thread/resume'] }
 const origin = (patch: Partial<ResumeOrigin> = {}): ResumeOrigin => ({ native_id: 'thread-1', cli: 'codex_cli', surface: 'interactive',

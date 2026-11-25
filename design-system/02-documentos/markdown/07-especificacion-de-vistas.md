@@ -90,7 +90,7 @@ La captura está desactualizada: todavía muestra la propuesta de resolución co
 - **Estados:** sin canales → `.empty` que dice cuándo aparecen; solo archivados → «No hay canales activos» con «Ver archivados»; canal sin hilos → «Todavía no hay hilos». Archivados: carga y error dentro de la sección desplegada, con «Reintentar».
 - **Agentes del canal:** la lista, los avatares de la cabecera y el contador vienen de `chat_agents` completo (todas sus páginas), que excluye a los agentes que el líder limpió; nunca se piden con `include_dismissed`. El contador es el de las filas listadas, y el panel pagina de a 40 sobre esa lista.
 - **Va:** leer canales, hilos y mensajes, también de canales archivados; desplegar y plegar Archivados; abrir y cerrar un hilo; las cuatro acciones de recuperación del «…» del canal.
-- **No va:** «Desarchivar», «Archivar» o «Proponer archivado» (lo deciden el Hub y el líder; un canal vuelve solo cuando un agente lo usa); el «…», los avatares o la designación de coordinador en un canal archivado (designar lo reactivaría); agentes limpiados en la lista o en el contador; propuesta de resolución, chip «Espera tu decisión» o «En debate», `.badge.attn` por hilos pendientes, campo para escribir, «Aprobar y registrar decisión», «Pedir otra ronda», «Nuevo canal», «Cerrar sin decisión», «Mover a otro canal»; iniciar o detener agentes y aprobar planes de equipo; «Personas con acceso» (va en el panel de «Compartir»); «Foro de agentes»; bloques «Conexión y preferencias» o «Cómo se organizan» (van a Ajustes › Colaboración y red); una vista global de colaboración.
+- **No va:** «Desarchivar», «Archivar» o «Proponer archivado» (lo deciden el Hub y el líder; un canal vuelve solo cuando un agente lo usa); el «…», los avatares o la designación de coordinador en un canal archivado (designar lo reactivaría); agentes limpiados en la lista o en el contador; propuesta de resolución, chip «Espera tu decisión» o «En debate», `.badge.attn` por hilos pendientes, campo para escribir, «Aprobar y registrar decisión», «Pedir otra ronda», «Nuevo canal», «Cerrar sin decisión», «Mover a otro canal»; iniciar o detener agentes y aprobar planes de equipo; «Personas con acceso» (va en el panel de «Compartir»); «Foro de agentes»; bloques «Conexión y preferencias» o «Cómo se organizan» (van a Ajustes › Agentes y Ajustes › Proyectos compartidos); una vista global de colaboración.
 
 ### Canales compartidos entre hubs
 
@@ -189,7 +189,7 @@ Implementado en esta pestaña; maqueta de referencia: `design-system/03-vistas/h
 ![Ajustes](../../03-vistas/png/oscuro/13-ajustes.png)
 
 - **Plantilla:** C.
-- **Secciones:** General · Fuentes · IA y procesamiento · Automatizaciones · Colaboración y red · Integraciones · Respaldos · Sistema.
+- **Secciones:** General, una sección por módulo registrado y Sistema. Cada módulo muestra su interruptor y sus controles. La lista vigente está en `packages/shared/src/modules`.
 - **Fila de ajuste:** etiqueta + una línea de ayuda opcional, control a la derecha. Guardado automático.
 - **Mantenimiento** (reprocesar, buscar duplicados, reorganizar): botones que ejecutan y avisan con toast; el progreso se ve en Actividad › Procesamiento.
 - **Respaldos:** «Restaurar» es la única confirmación de la app.

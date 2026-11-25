@@ -1085,4 +1085,13 @@ CREATE TABLE recordings (
  audio_expires_at TIMESTAMP, audio_deleted_at TIMESTAMP,
  created_at TIMESTAMP NOT NULL DEFAULT ${NOW}, updated_at TIMESTAMP NOT NULL DEFAULT ${NOW});
 CREATE INDEX recordings_entity ON recordings(entity_id);
+`, String.raw`
+-- Keep existing run history and foreign keys while extending the reasons a run can be skipped.
+ALTER TABLE schedule_runs ADD COLUMN new_skip_reason TEXT CHECK(
+ new_skip_reason IN ('overlap','misfire_out_of_grace','superseded','automations_off','schedule_cancelled','remote_processing_excluded')
+ OR new_skip_reason GLOB 'module_disabled:[a-z]*'
+);
+UPDATE schedule_runs SET new_skip_reason=skip_reason WHERE skip_reason IS NOT NULL;
+ALTER TABLE schedule_runs DROP COLUMN skip_reason;
+ALTER TABLE schedule_runs RENAME COLUMN new_skip_reason TO skip_reason;
 `]

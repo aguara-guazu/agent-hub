@@ -128,8 +128,9 @@ export function useClientAccounts(): UseQueryResult<ClientAccount[], Error> {
   })
 }
 
-export function useServers(): UseQueryResult<McpServer[], Error> {
+export function useServers(enabled = true): UseQueryResult<McpServer[], Error> {
   return useQuery({
+    enabled,
     queryKey: queryKeys.servers,
     queryFn: () => api.get<McpServer[]>('/catalog/servers'),
     // El core reintenta solo los servers que no conectaron; la lista lo refleja sin tocar nada.

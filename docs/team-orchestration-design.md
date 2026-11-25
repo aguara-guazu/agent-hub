@@ -66,7 +66,7 @@ resultado. Restore conserva historia e invalida ejecución/invitaciones.
 
 ## Interfaz del adaptador Orca
 
-Archivo `packages/memory/src/team-orca.ts`, propiedad de Faro Austral:
+Archivo `packages/memory/src/agents/team-orca.ts`, propiedad de Faro Austral:
 
 ```ts
 interface TeamWorkspace {

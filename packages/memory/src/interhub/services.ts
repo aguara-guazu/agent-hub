@@ -1,9 +1,9 @@
 import type { EventEmitter } from "node:events"
 import type { InterhubChatPayload, InterhubRoster, InterhubRosterAgent, InterhubRosterHub } from "@agenthub/shared"
 import { INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
-import { ACTIVE_TEAM_STATES, channelProjectId, sessionProjectId } from "../chat-access.js"
+import { ACTIVE_TEAM_STATES, channelProjectId, sessionProjectId } from "../agents/chat-access.js"
 import { check, MemoryError } from "../contracts.js"
-import { sessionStatus } from "../local-chat.js"
+import { sessionStatus } from "../agents/local-chat.js"
 import type { MemoryStore } from "../store.js"
 import type { SharedNetwork } from "../sharing/network.js"
 import { SharedProjects } from "../sharing/projects.js"
@@ -41,7 +41,7 @@ const peerName = (value: unknown) => {
  * still record events locally but cannot join channels of other hubs. `events` is the local chat emitter: its
  * "change" wakes local listeners after inter-hub state changes and drives the transport's outbox.
  */
-export function createInterhubServices(store: MemoryStore, options: { network?: SharedNetwork; events?: EventEmitter } = {}): InterhubServices {
+export function createInterhubServices(store: MemoryStore, options: { network?: SharedNetwork; events?: EventEmitter; enabled?: () => boolean } = {}): InterhubServices {
   const network = new InterhubNetwork(store), db = store.db, events = options.events
   const localIdentity = () => new SharedProjects(store).identity()
   const localHubId = async () => (await localIdentity()).id
@@ -82,6 +82,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   }
   /** Assigns the channels whose current shared-project policies leave exactly one candidate; notifies listeners on any change. */
   const backfill = async (channelId?: string) => {
+    if (options.enabled?.() === false) return { resolved: [] }
     // Existing associations are checked first so a project this hub no longer belongs to is released before the channel is evaluated.
     try {
       const unlinked = await unlinkInvalidProjects(db, localHubId, channelId ? { channelId } : {})
@@ -103,6 +104,7 @@ export function createInterhubServices(store: MemoryStore, options: { network?: 
   const scheduleExpiry = async () => {
     clearTimeout(expiryTimer)
     expiryTimer = undefined
+    if (options.enabled?.() === false) return
     const expires = await nextLocalExpiry(db, localHubId)
     if (expires === null || disposed) return
     expiryTimer = setTimeout(() => { void reconcileProjects() }, Math.min(Math.max(expires - Date.now(), 1_000), MAX_EXPIRY_DELAY_MS))

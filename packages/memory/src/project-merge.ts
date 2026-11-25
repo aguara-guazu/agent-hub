@@ -1,5 +1,5 @@
 import { manageMemory } from "./remember.js"
-import { effectiveJiraSite } from "./jira-settings.js"
+import { effectiveJiraSite } from "./connectors/jira-settings.js"
 import { z } from "zod"
 import { INTERHUB_CHANNEL_KIND } from "@agenthub/shared"
 import { check, id, instant, parse, type Entity } from "./contracts.js"

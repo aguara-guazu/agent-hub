@@ -1,13 +1,13 @@
-import { mediaSettings } from './media-processing.js'
+import { mediaSettings } from './transcriptions/media-processing.js'
 import { maintenanceStatus } from './memory-maintenance.js'
-import { sessionProjectId } from "./chat-access.js"
+import { sessionProjectId } from "./agents/chat-access.js"
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { check, id, parse } from './contracts.js'
 import type { Sql } from './database.js'
 import { requireEntity, requireWritableEntity, type MemoryStore } from "./store.js"
-import { ScheduleStore } from './schedule-store.js'
-import { localIso, systemTimeZone } from "./schedule-time.js"
+import { ScheduleStore } from './schedules/schedule-store.js'
+import { localIso, systemTimeZone } from "./schedules/schedule-time.js"
 
 /** Identity the gateway attaches to every memory call (MCP `_meta`). Absent for the hub UI and for older gateways. */
 export interface AgentContext { agent_id: string; cli_kind: string; client: string; session_id: string; cwd: string | null; orca_workspace_id?: string | undefined }

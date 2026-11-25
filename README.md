@@ -47,7 +47,7 @@ La barra lateral tiene destinos fijos y **Buscar o ir a…** (⌘K o Ctrl+K) par
 | **Automatizaciones** | Activas, Pausadas e Historial de entregas, con selección múltiple y los atajos J y K para recorrer lo que no viste. |
 | **Servidores MCP, Skills y Clientes** | Lo que recibe cada cliente. En Clientes, el estado de cada uno y su cuota de uso. |
 | **Actividad** | Llamadas a herramientas con sus errores y bloqueos, el procesamiento de la memoria y el registro de autoridad de los canales. |
-| **Ajustes** | General, Fuentes, IA y procesamiento, Automatizaciones, Colaboración y red, Integraciones, Respaldos y Sistema. |
+| **Ajustes** | General y Sistema, más una sección con interruptor propio para cada módulo: Conexiones a servicios, Agentes, Proyectos y memoria, Servidores MCP, Skills, Transcripciones y multimedia, Cronjobs y automatizaciones y Proyectos compartidos. |
 
 ![Inicio con pendientes, automatizaciones del día y proyectos recientes](docs/screenshots/home.png)
 
@@ -63,7 +63,7 @@ Descargá la app para **macOS, Windows o Linux** desde [Releases](https://github
 
 ## Lanzar un equipo de agentes
 
-**Antes de abrir las terminales:** dejá Agent Hub en ejecución, instalá e iniciá sesión en cada CLI que quieras usar y sincronizá esos clientes desde el Hub con la colaboración entre agentes habilitada (**Ajustes → Colaboración y red**). El Hub genera los lanzadores para los clientes configurados; cada uno abre su **TUI nativa completa** y conserva sus opciones.
+**Antes de abrir las terminales:** dejá Agent Hub en ejecución, instalá e iniciá sesión en cada CLI que quieras usar y sincronizá esos clientes desde el Hub con la colaboración entre agentes habilitada (**Ajustes → Agentes**). El Hub genera los lanzadores para los clientes configurados; cada uno abre su **TUI nativa completa** y conserva sus opciones.
 
 Abrí una terminal por agente, dentro o fuera de Orca. En cada terminal entrá a la carpeta o al worktree de la tarea y ejecutá **uno** de estos comandos:
 
@@ -143,6 +143,8 @@ La delegación del líder no cambia las políticas de aprobación o sandbox de l
 - [Arquitectura](docs/TYPESCRIPT_ARCHITECTURE.md) · [Contrato HTTP](docs/API_CONTRACT.md)
 
 ## Desarrollo
+
+Cada función se mantiene y se activa por módulo. Consultá la [guía de desarrollo por módulos](docs/modulos.md) para ubicar su código, sus ajustes y sus pruebas.
 
 Node.js 22.18+ de la rama 22, o 24+, y npm.
 

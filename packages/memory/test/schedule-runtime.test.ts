@@ -8,10 +8,10 @@ import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
-import { ScheduleStore, snapshotOf, targetKey, type NewSchedule } from '../src/schedule-store.js'
-import { listCwdHolders, ScheduleRuntime, type ProcessControl, type Synthesizer } from '../src/schedule-runtime.js'
-import { registerScheduleTemplate } from '../src/schedule-templates.js'
-import type { ScheduleTemplateDefinition } from '../src/schedule-contract.js'
+import { ScheduleStore, snapshotOf, targetKey, type NewSchedule } from '../src/schedules/schedule-store.js'
+import { listCwdHolders, ScheduleRuntime, type ProcessControl, type Synthesizer } from '../src/schedules/schedule-runtime.js'
+import { registerScheduleTemplate } from '../src/schedules/schedule-templates.js'
+import type { ScheduleTemplateDefinition } from '../src/schedules/schedule-contract.js'
 
 let dir: string, db: MemoryDatabase, memory: MemoryStore, store: ScheduleStore, projectId: string, now: Date, enabled: boolean, runtime: ScheduleRuntime
 let synth: ReturnType<typeof vi.fn>, engine: { cli: string | null; model: string } | null, usage: { status: string; pools: any[] }, zone: string, processes: ProcessControl
@@ -402,4 +402,14 @@ it('un cambio de zona horaria del sistema recalcula la próxima ejecución diari
   zone = 'America/Argentina/Buenos_Aires'; now = at('2026-10-28T09:00:00.000Z')
   await runtime.tick(); await runtime.idle()
   expect((await store.schedule(s.id))!.next_run_at).toBe('2026-10-28T11:00:00.000Z')
+})
+
+it('con memoria apagada omite el trabajo de proyecto y entrega el recordatorio personal del mismo ciclo', async () => {
+  runtime = build({ automation: { enabled: () => true, moduleEnabled: id => id !== 'memory' } })
+  const project = await schedule()
+  const personal = await schedule({ scope: 'owner', project_id: null })
+  await run()
+  expect(await runsOf(project.id)).toMatchObject([{ state: 'skipped', skip_reason: 'module_disabled:memory' }])
+  expect(await runsOf(personal.id)).toMatchObject([{ state: 'succeeded' }])
+  expect((await store.schedule(project.id))?.state).toBe('active')
 })

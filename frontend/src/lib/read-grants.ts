@@ -3,7 +3,7 @@ import { api } from "./api"
 
 /**
  * Lectura de los permisos entre proyectos y del registro de autoridad. Formas alineadas con
- * `packages/memory/src/chat-read-access.ts` (personReadGrants). El líder decide y revoca por MCP después de consultar
+ * `packages/memory/src/agents/chat-read-access.ts` (personReadGrants). El líder decide y revoca por MCP después de consultar
  * a la persona en su CLI; la UI no decide. Los errores los muestra quien llama.
  */
 

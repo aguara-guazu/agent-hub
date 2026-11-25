@@ -1,3 +1,5 @@
+import { operationModules } from '@agenthub/shared/modules'
+import { useModules } from '../modules/state'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
 import { useToast } from '../components/Toast'
@@ -7,6 +9,8 @@ export interface Page<T = any> { items: T[]; total: number; limit: number; offse
 export const memoryCall = <T = any,>(operation: string, input: unknown = {}) => api.post<T>('/memory/call', { operation, input })
 export const MEMORY_REFRESH_MS = 5000
 export function useMemory<T = any>(operation: string, input: unknown = {}, enabled = true) {
+  const modules = useModules().data
+  enabled = enabled && operationModules(operation).every(id => modules?.[id] !== false)
   return useQuery({ queryKey: ['memory', operation, input], queryFn: () => memoryCall<T>(operation, input), enabled,
     // MCP clients and the worker can write while this screen stays open. Only mounted, visible queries poll.
     refetchInterval: MEMORY_REFRESH_MS, refetchIntervalInBackground: false, refetchOnWindowFocus: 'always' })

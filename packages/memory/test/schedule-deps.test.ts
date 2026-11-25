@@ -7,10 +7,10 @@ import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
-import { scheduleDeps } from '../src/schedule-deps.js'
+import { scheduleDeps } from '../src/schedules/schedule-deps.js'
 import { dailyTemplates } from '../src/daily-templates.js'
 import { confirmAssignment } from '../src/daily-close.js'
-import type { AttentionReaders, CollectDeps, JiraGuard, RunContext, ScheduleAutomation, ScheduleEffects } from '../src/schedule-contract.js'
+import type { AttentionReaders, CollectDeps, JiraGuard, RunContext, ScheduleAutomation, ScheduleEffects } from '../src/schedules/schedule-contract.js'
 import type { DailyDeps } from '../src/daily-types.js'
 
 let dir: string, db: MemoryDatabase, memory: MemoryStore, operations: MemoryOperations

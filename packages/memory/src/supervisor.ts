@@ -1,3 +1,4 @@
+import { moduleStates, type ModuleStates } from '@agenthub/shared/modules'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -13,15 +14,18 @@ export class WorkerSupervisor {
   private stopped = true
   private restart: ReturnType<typeof setTimeout> | null = null
   readonly log: LogFile
-  constructor(private directory: string, private redirectUrl: string) {
+  constructor(private directory: string, private redirectUrl: string, private modules: () => ModuleStates = () => moduleStates(() => true)) {
     this.log = new LogFile(workerLogPath(directory))
+  }
+  updateModules() {
+    if (this.child?.connected) this.child.send({ modules: this.modules() }, () => {})
   }
   start() {
     if (this.child) return
     this.stopped = false
     const child = spawn(process.execPath, [fileURLToPath(new URL('./worker.js', import.meta.url))], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', AGENTHUB_MEMORY_DIR: this.directory, AGENTHUB_MEMORY_GOOGLE_REDIRECT: this.redirectUrl },
-      stdio: ['pipe', 'ignore', 'pipe'],
+      env: { ...process.env, AGENTHUB_WORKER_MODULES: JSON.stringify(this.modules()), ELECTRON_RUN_AS_NODE: '1', AGENTHUB_MEMORY_DIR: this.directory, AGENTHUB_MEMORY_GOOGLE_REDIRECT: this.redirectUrl },
+      stdio: ['pipe', 'ignore', 'pipe', 'ipc'],
     })
     this.child = child
     if (child.stderr) this.log.follow(child.stderr)

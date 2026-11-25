@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { summarizeReplyTick } from '../src/service.js'
-import type { ActionTickResult } from '../src/schedule-contract.js'
+import type { ActionTickResult } from '../src/schedules/schedule-contract.js'
 
 it('resume solo conteos y nombres de error y calla los ciclos sin actividad', () => {
   expect(summarizeReplyTick(undefined)).toBeNull()

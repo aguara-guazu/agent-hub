@@ -1,3 +1,4 @@
+import { useModules } from '../../modules/state'
 import { useEffect, useState, type ReactNode } from "react"
 import { useMutation } from "@tanstack/react-query"
 import { Link } from "react-router-dom"
@@ -161,6 +162,7 @@ function Recent({ recent }: { recent: ReturnType<typeof useRecentProjects> }) {
 export default function HomePage() {
   const now = useNow()
   const inbox = usePendingInbox()
+  const modules = useModules().data
   const recent = useRecentProjects()
   const pending = usePendingRows(inbox, recent.names)
   return (
@@ -171,8 +173,8 @@ export default function HomePage() {
         <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--sp-5)", alignItems: "flex-start" }}>
           <Pending inbox={inbox} rows={pending.rows} dialog={pending.dialog} />
           <aside style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
-            <Today now={now} projectNames={recent.names} />
-            <Recent recent={recent} />
+            {modules?.schedules !== false && <Today now={now} projectNames={recent.names} />}
+            {modules?.memory !== false && <Recent recent={recent} />}
           </aside>
         </div>
       </div>

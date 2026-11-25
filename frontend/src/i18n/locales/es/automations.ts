@@ -195,6 +195,7 @@ const automations = {
     synthesisHint: "Un modelo sin herramientas resume datos del hub.",
   },
   reason: {
+    moduleDisabled: "{{module}} está desactivado",
     skip: {
       overlap: "La ejecución anterior seguía en curso",
       misfire_out_of_grace: "Agent Hub estaba cerrado",

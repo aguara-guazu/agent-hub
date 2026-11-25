@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
+import { useModules, visibleDestination } from '../modules/state'
 import { useQuery } from "@tanstack/react-query"
 import { api } from "../lib/api"
 import type { useTheme } from "../lib/theme"
@@ -88,7 +89,9 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
     return () => { if (previous?.isConnected) previous.focus() }
   }, [])
 
+  const modules = useModules().data
   const search = useQuery({
+    enabled: modules?.memory !== false,
     queryKey: ["memory", "palette-search", debounced],
     queryFn: ({ signal }) => api.post<SearchResults>("/memory/search", { query: debounced, limit: 6, offset: 0 }, signal),
     retry: false,
@@ -98,7 +101,7 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
 
   const items = useMemo<PaletteItem[]>(() => {
     const go = (to: string) => () => { onClose(); navigate(to) }
-    const memory: PaletteItem[] = waiting || search.isError ? [] : [...new Map((search.data?.items ?? []).map(row => [row.entity_id, row])).values()].slice(0, 6).map(row => ({
+    const memory: PaletteItem[] = modules?.memory === false || waiting || search.isError ? [] : [...new Map((search.data?.items ?? []).map(row => [row.entity_id, row])).values()].slice(0, 6).map(row => ({
       id: `m-${row.entity_id}`,
       group: "memory",
       label: row.title,
@@ -109,7 +112,7 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
       run: go(row.href),
     }))
     const destinations: PaletteItem[] = DESTINATIONS
-      .filter(destination => matches(trimmed, t(destination.labelKey), destination.keywordsKey ? t(destination.keywordsKey) : ""))
+      .filter(destination => visibleDestination(destination.to, modules) && matches(trimmed, t(destination.labelKey), destination.keywordsKey ? t(destination.keywordsKey) : ""))
       .map(destination => ({ id: `g-${destination.to}`, group: "goto", label: t(destination.labelKey), lead: <Icon name={destination.icon} />, run: go(destination.to) }))
     const actionList: Array<{ id: string; key: "cmdk.newProject" | "cmdk.newNote" | "cmdk.addServer" | "cmdk.newSkill" | "cmdk.sync" | "cmdk.themeLight" | "cmdk.themeDark"; icon: IconName; run: () => void }> = [
       { id: "new-project", key: "cmdk.newProject", icon: "add", run: go("/projects?new=project") },
@@ -119,10 +122,12 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
       { id: "sync", key: "cmdk.sync", icon: "sync", run: () => { onClose(); status.sync.mutate() } },
       { id: "theme", key: theme.theme === "dark" ? "cmdk.themeLight" : "cmdk.themeDark", icon: theme.theme === "dark" ? "sun" : "moon", run: () => { theme.toggle(); onClose() } },
     ]
-    const actions: PaletteItem[] = actionList
+    const actionModules = { 'new-project': 'memory', 'new-note': 'memory', 'add-server': 'mcp', 'new-skill': 'skills' } as const
+    const actions: PaletteItem[] = actionList.filter(action => !(action.id in actionModules) ||
+      modules?.[actionModules[action.id as keyof typeof actionModules]] !== false)
       .filter(action => matches(trimmed, t(action.key)))
       .map(action => ({ id: `a-${action.id}`, group: "actions", label: t(action.key), lead: <Icon name={action.icon} />, run: action.run }))
-    if (trimmed) {
+    if (trimmed && modules?.memory !== false) {
       actions.push({
         id: "search-all",
         group: "actions",
@@ -133,7 +138,7 @@ function Palette({ onClose, status, theme }: Omit<GlobalSearchProps, "open">) {
       })
     }
     return [...memory, ...destinations, ...actions]
-  }, [waiting, search.isError, search.data, trimmed, onClose, navigate, status.sync, theme, t, ts])
+  }, [modules, waiting, search.isError, search.data, trimmed, onClose, navigate, status.sync, theme, t, ts])
 
   // Con texto y sin coincidencias propias, la opción activa por defecto es buscar en toda la memoria.
   useEffect(() => {

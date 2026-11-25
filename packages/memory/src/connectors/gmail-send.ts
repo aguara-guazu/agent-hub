@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { GMAIL_SEND_SCOPE, type GoogleAuth } from '../google-auth.js'
+import { GMAIL_SEND_SCOPE, type GoogleAuth } from './google-auth.js'
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
 const TIMEOUT_MS = 30_000

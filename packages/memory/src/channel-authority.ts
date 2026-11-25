@@ -1,5 +1,5 @@
 import type { Sql } from "./database.js"
-import { channelMembership, type ChannelMembership } from "./chat-access.js"
+import { channelMembership, type ChannelMembership } from "./agents/chat-access.js"
 
 /** A leader silent for longer than this, as measured by the Hub, may be replaced by a same-project agent. */
 export const LEADER_LIVENESS_TIMEOUT_MS = 20 * 60_000

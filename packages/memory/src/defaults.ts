@@ -5,7 +5,7 @@ import { defaultAI, localUrl, type AIConfig } from './config.js'
 import { findExtractionCli, isExtractionCli } from './cli-extraction.js'
 import { findOpenCode } from './opencode.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
-import { MEDIA_MODULES } from './media-runtime.js'
+import { MEDIA_MODULES } from './transcriptions/media-runtime.js'
 import type { MemoryService } from './service.js'
 
 export const EXTRACTION_PRIORITY = ['claude_code','codex_cli','opencode','kiro','ollama','deepseek'] as const
@@ -57,7 +57,7 @@ export class MemoryDefaults {
    * after an update) starts downloading, one at a time; a failed or cancelled download waits for an explicit retry.
    */
   private installModels(setup: Setup) {
-    const media = this.service.media, models = [this.service.nativeEmbeddings, ...MEDIA_MODULES.map(name => media[name])]
+    const media = this.service.media, models = [this.service.nativeEmbeddings, ...(this.service.moduleEnabled?.('transcriptions') === false ? [] : MEDIA_MODULES.map(name => media[name]))]
     if (models.some(model => model.status().state === 'downloading')) return
     models.find(model => model.status().state === 'missing' &&
       (model !== this.service.nativeEmbeddings || !['paused', 'error'].includes(setup.embedding_state)))?.install()

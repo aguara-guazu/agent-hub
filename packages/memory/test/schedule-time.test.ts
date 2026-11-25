@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { graceDeadline, lastOccurrenceUpTo, localInstant, localIso, nextOccurrence } from '../src/schedule-time.js'
+import { graceDeadline, lastOccurrenceUpTo, localInstant, localIso, nextOccurrence } from '../src/schedules/schedule-time.js'
 
 const BA = 'America/Argentina/Buenos_Aires', NY = 'America/New_York'
 const at = (iso: string) => Date.parse(iso)

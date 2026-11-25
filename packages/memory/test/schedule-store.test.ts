@@ -8,7 +8,7 @@ import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
-import { ScheduleStore, targetKey, type NewSchedule } from '../src/schedule-store.js'
+import { ScheduleStore, targetKey, type NewSchedule } from '../src/schedules/schedule-store.js'
 
 let dir: string, db: MemoryDatabase, store: ScheduleStore, projectId: string
 beforeEach(async () => {

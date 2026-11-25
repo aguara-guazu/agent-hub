@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MemoryDatabase } from '../src/database.js'
-import { SqlRecoveryIncidentLog } from '../src/fleet-recovery.js'
+import { SqlRecoveryIncidentLog } from '../src/agents/fleet-recovery.js'
 
 let dir: string, db: MemoryDatabase, log: SqlRecoveryIncidentLog
 const base = { member_id: 'member-1', team_id: 'team-1', session_id: null, generation: 'gen-1', detail: { evidence: 'protocol', pool_key: 'pool-a' } }

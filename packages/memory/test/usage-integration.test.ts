@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { nativeSession } from '@agenthub/gateway'
 import { MemoryService } from '../src/service.js'
-import { registerUsageRoutes } from '../src/usage-routes.js'
-import { LocalChatRuntime } from '../src/local-chat-runtime.js'
+import { registerUsageRoutes } from '../src/agents/usage-routes.js'
+import { LocalChatRuntime } from '../src/agents/local-chat-runtime.js'
 
 let dir:string,service:MemoryService,app:ReturnType<typeof Fastify>,enabled:boolean
 beforeEach(async()=>{

@@ -14,7 +14,7 @@ import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
 import { exportMemory, restoreMemory } from '../src/backup.js'
 import { seedDemo } from '../src/demo.js'
-import { GoogleAuth } from '../src/google-auth.js'
+import { GoogleAuth } from '../src/connectors/google-auth.js'
 import { JobRunner } from '../src/jobs.js'
 import { processVersion } from '../src/processing.js'
 import { parseGoogleDocument } from '../src/connectors/google-document.js'
@@ -537,6 +537,20 @@ describe('memoria con SQLite', () => {
     await runner.once(new AbortController().signal)
     expect((await operations.call('list_jobs', { kind: 'process' })).items[0]).toMatchObject({ state: status === 409 ? 'failed' : 'waiting', attempts: 1 })
     expect(extract).toHaveBeenCalledTimes(1)
+  })
+
+  it('conserva el trabajo del conector apagado y sigue reclamando los trabajos de memoria', async () => {
+    let connected = false
+    const runner = new JobRunner(store, ai, vault, new GoogleAuth(vault, 'http://127.0.0.1/callback'), async () => defaultAI,
+      fetch, undefined, id => id !== 'connections' || connected)
+    await store.enqueue('google_repair', {}, 'module:repair')
+    await store.enqueue('process', {}, 'module:process')
+    const claimed = await runner.claim()
+    expect(claimed?.kind).toBe('process')
+    await db.query("UPDATE jobs SET state='completed' WHERE id=$1", [claimed!.id])
+    expect(await runner.claim()).toBeUndefined()
+    connected = true
+    expect(await runner.claim()).toMatchObject({ kind: 'google_repair', attempts: 1 })
   })
 
   it('recupera trabajos con lease vencido y los ejecuta una sola vez', async () => {

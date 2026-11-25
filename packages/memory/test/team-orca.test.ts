@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { LocalTeamOrca, type TeamWorkspace } from '../src/team-orca.js'
+import { LocalTeamOrca, type TeamWorkspace } from '../src/agents/team-orca.js'
 
 let directory: string, parent: TeamWorkspace
 beforeEach(async () => {

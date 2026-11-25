@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CliExtractionRuntime, CliStatus, ExtractionCli } from '../src/cli-extraction.js'
-import { TeamCatalog } from '../src/team-catalog.js'
+import { TeamCatalog } from '../src/agents/team-catalog.js'
 
 const checkedAt = '2026-10-20T18:00:00.000Z'
 const statuses: Record<ExtractionCli, CliStatus> = {

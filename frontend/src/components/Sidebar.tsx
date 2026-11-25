@@ -1,3 +1,4 @@
+import { useModules, visibleDestination } from '../modules/state'
 import { NavLink, useLocation } from "react-router-dom"
 import { useT } from "../i18n"
 import { Icon } from "./Icon"
@@ -51,7 +52,8 @@ function SyncLine({ status }: { status: ShellStatus }) {
 export function Sidebar({ status, onSearch, shortcut }: { status: ShellStatus; onSearch: () => void; shortcut: string }) {
   const { t } = useT("nav")
   const { t: tc } = useT("common")
-  const group = (name: Destination["group"]) => DESTINATIONS.filter(destination => destination.group === name)
+  const modules = useModules()
+  const group = (name: Destination["group"]) => DESTINATIONS.filter(destination => destination.group === name && visibleDestination(destination.to, modules.data))
   return (
     <nav className="side" aria-label={t("label")} style={SIDE_STYLE}>
       <div className="side-brand"><span className="side-mark"><Icon name="brand" small /></span>{tc("app.name")}</div>

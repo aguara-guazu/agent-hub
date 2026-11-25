@@ -1,5 +1,5 @@
 import { hash } from './store.js'
-import type { PublicItem } from './schedule-contract.js'
+import type { PublicItem } from './schedules/schedule-contract.js'
 import type { DailyDeps, ProposedEffect, ProposedItem } from './daily-types.js'
 import { DEFAULT_WORKDAY_HOURS, clip, dayLabel, endOfLocalDay, localTime, operationKeyOf, plural, startOfLocalDay } from './daily-types.js'
 import { HOURS_SYSTEM, collectHoursInputs, estimateWriter, formatHours, hoursPayload, hoursSynthesisSchema, estimateId, finishEstimates, type HourEstimateDraft, type HoursInputs, type HoursSynthesis } from './hours-estimate.js'

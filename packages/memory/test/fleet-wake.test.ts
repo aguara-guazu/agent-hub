@@ -10,9 +10,9 @@ import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault,defaultAI } from '../src/config.js'
-import { LocalChatRuntime,type FleetReadiness } from '../src/local-chat-runtime.js'
-import { sessionStatus } from '../src/local-chat.js'
-import { FleetActivityBuffer } from '../src/fleet-activity.js'
+import { LocalChatRuntime,type FleetReadiness } from '../src/agents/local-chat-runtime.js'
+import { sessionStatus } from '../src/agents/local-chat.js'
+import { FleetActivityBuffer } from '../src/agents/fleet-activity.js'
 import type { AgentContext } from '../src/agents.js'
 
 let directory:string,db:MemoryDatabase,ops:MemoryOperations,runtime:LocalChatRuntime|undefined

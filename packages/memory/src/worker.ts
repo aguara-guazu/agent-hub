@@ -1,3 +1,4 @@
+import type { ModuleStates } from '@agenthub/shared/modules'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { MemoryService } from './service.js'
 import { migrateLegacyMemory, migrationDue, needsMigration } from './legacy-postgres.js'
@@ -5,6 +6,14 @@ import { migrateLegacyMemory, migrationDue, needsMigration } from './legacy-post
 const directory = process.env.AGENTHUB_MEMORY_DIR
 if (!directory) throw new Error('Falta el directorio de memoria')
 const service = new MemoryService(directory, process.env.AGENTHUB_MEMORY_GOOGLE_REDIRECT ?? 'http://127.0.0.1:8765/api/memory/google/callback')
+let modules: ModuleStates = JSON.parse(process.env.AGENTHUB_WORKER_MODULES ?? '{}')
+service.moduleEnabled = id => modules[id] !== false
+process.on('message', (message: { modules?: ModuleStates }) => {
+  if (message?.modules) {
+    modules = message.modules
+    service.refreshWorkerModules()
+  }
+})
 const controller = new AbortController()
 const stop = () => controller.abort()
 process.once('SIGTERM', stop); process.once('SIGINT', stop)

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { registerMemory } from '../src/routes.js'
-import { GMAIL_SCOPE, GMAIL_SEND_SCOPE } from '../src/google-auth.js'
+import { GMAIL_SCOPE, GMAIL_SEND_SCOPE } from '../src/connectors/google-auth.js'
 
 let dir: string, app: FastifyInstance, service: ReturnType<typeof registerMemory>['service'], granted: string
 beforeEach(async () => {

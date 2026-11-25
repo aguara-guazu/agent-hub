@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { id, MemoryError, parse } from './contracts.js'
 import { DecisionReviewError } from './decisions/review.js'
 import type { MemoryService } from './service.js'
-import type { ScheduleEffects } from './schedule-contract.js'
+import type { ScheduleEffects } from './schedules/schedule-contract.js'
 
 const ordinals = z.array(z.number().int().min(1).max(99)).min(1).max(99)
 const BASE = '/api/memory/schedules'

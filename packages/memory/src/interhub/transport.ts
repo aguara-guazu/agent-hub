@@ -7,7 +7,7 @@ import type { MemoryStore } from "../store.js"
 import { MAX_FRAME, type NetworkExtension, type NetworkPeer, type NetworkTopic, type SharedNetwork } from "../sharing/network.js"
 import { digest, publicIdentity, type PublicIdentity } from "../sharing/crypto.js"
 import { active, invitationSchema } from "../sharing/schema.js"
-import { sessionStatus } from "../local-chat.js"
+import { sessionStatus } from "../agents/local-chat.js"
 import { INTERHUB_REMOTE_CLI_KIND, localChannelAgents, remoteAgentIds, type InterhubChat } from "./chat.js"
 import { INTERHUB_PROJECT_PROTOCOL, InterhubNetwork, channelTopic, chatKind, codeKey, joinProof, joinProofV2, rendezvousTopic, rosterSchema, sameProof, type JoinTranscript, type VerifiedEnvelope } from "./network.js"
 

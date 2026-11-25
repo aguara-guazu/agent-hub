@@ -4,6 +4,8 @@
 
 Agent Hub se distribuye como una aplicación Electron y usa exclusivamente TypeScript/JavaScript sobre Node.js. El renderer React, el control plane local, el daemon, el gateway MCP y los servidores de prueba comparten contratos compilados. No se distribuye ningún runtime adicional.
 
+Las funciones de producto se componen mediante el registro compartido de módulos. La [guía de desarrollo por módulos](modulos.md) describe sus límites y el ciclo de activación.
+
 ## Paquetes
 
 - `packages/shared`: tipos, esquemas, nombres expuestos, JSON canónico y hashes. No accede a disco ni red.

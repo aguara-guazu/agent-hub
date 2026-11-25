@@ -1,3 +1,4 @@
+import { useModules } from '../modules/state'
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "../lib/api"
 import { usePendingInbox } from "../lib/home"
@@ -43,8 +44,9 @@ export type SyncTone = "ok" | "warn" | "danger"
 
 /** Estado del equipo para la línea al pie de la barra lateral, los contadores de atención y «Sincronizar ahora». */
 export function useShellStatus() {
+  const modules = useModules().data
   const overview = useOverview()
-  const servers = useServers()
+  const servers = useServers(modules?.mcp !== false)
   const pending = usePendingInbox()
   const core = useQuery({ queryKey: ["desktop-status"], queryFn: () => window.agentHub?.getCoreStatus() ?? Promise.resolve(null), refetchInterval: 2000 })
   const cache = useQueryClient()
@@ -54,8 +56,8 @@ export function useShellStatus() {
   const sync = useMutation({
     mutationFn: async () => {
       const [clientSync, memory] = await Promise.allSettled([
-        window.agentHub ? window.agentHub.syncNow() : Promise.resolve(),
-        api.get<{ ready: boolean }>("/memory/status").then(status => (status.ready ? memoryCall<{ queued: number }>("sync_sources") : null)),
+        window.agentHub && modules?.agents !== false ? window.agentHub.syncNow() : Promise.resolve(),
+        modules?.connections === false || modules?.memory === false ? Promise.resolve(null) : api.get<{ ready: boolean }>("/memory/status").then(status => (status.ready ? memoryCall<{ queued: number }>("sync_sources") : null)),
       ])
       await cache.invalidateQueries()
       if (clientSync.status === "rejected") throw clientSync.reason

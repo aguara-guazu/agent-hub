@@ -35,6 +35,7 @@ export interface EffectsHost {
 }
 
 export interface CoreEffectsOptions {
+  moduleEnabled?: import('@agenthub/shared/modules').ModuleEnabled
   store: Store
   pool: ConnectionPool
   ownerId: string
@@ -176,13 +177,13 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       const { store, service, tools, gmailConnector, derived } = await resolve()
       const result: ReplyTickResult = { expired: store.expireDue() }
       try {
-        const connectorId = await gmailConnector()
+        const connectorId = options.moduleEnabled?.('connections') === false ? null : await gmailConnector()
         result.gmail = connectorId ? await pollGmailReplies({ store, service, google: options.host.google, connectorId }) : null
       } catch (error) { result.gmail = { error: error instanceof Error ? error.name : 'error' } }
-      try { result.slack = await pollSlackReplies({ store, service, tools }) } catch (error) { result.slack = { error: error instanceof Error ? error.name : 'error' } }
+      try { if (options.moduleEnabled?.('connections') !== false && options.moduleEnabled?.('mcp') !== false) result.slack = await pollSlackReplies({ store, service, tools }) } catch (error) { result.slack = { error: error instanceof Error ? error.name : 'error' } }
       const consumed = (result.gmail && 'consumed' in result.gmail ? result.gmail.consumed : 0) + (result.slack && 'consumed' in result.slack ? result.slack.consumed : 0)
       if (consumed > 0) result.actions = await runActionTick().catch((): ActionTickResult => ({ attempted: 0, succeeded: 0, rejected: 0, uncertain: 0, errors: 1 }))
-      if (derived) result.derived = await derived.tick().catch(() => ({ error: 'derived_tick_failed' }))
+      if (derived && options.moduleEnabled?.('agents') !== false) result.derived = await derived.tick().catch(() => ({ error: 'derived_tick_failed' }))
       await store.flushMirror().catch(() => undefined)
       return result
     },

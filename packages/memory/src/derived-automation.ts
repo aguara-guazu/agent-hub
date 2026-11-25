@@ -1,5 +1,5 @@
 import type { DecisionService } from './decisions/service.js'
-import type { DerivedPorts } from './team-orchestration.js'
+import type { DerivedPorts } from './agents/team-orchestration.js'
 import { MemoryError } from './contracts.js'
 
 export interface DerivedPortsOptions {

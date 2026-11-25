@@ -1,4 +1,4 @@
-import type { LocalChat } from '../../src/local-chat.js'
+import type { LocalChat } from '../../src/agents/local-chat.js'
 
 /** Seed an existing shared channel for protocol/upgrade tests, independently of enrollment. */
 export async function existingChannel(chat:LocalChat, registration:any, scope:string) {

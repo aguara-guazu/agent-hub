@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useState } from "react"
-import { Outlet } from "react-router-dom"
+import { Loading, ErrorState } from "./ui/display"
+import { Suspense, useCallback, useEffect, useState } from "react"
+import { destinationModule } from '@agenthub/shared/modules'
+import { useModules } from '../modules/state'
+import { Navigate, Outlet, useLocation } from "react-router-dom"
 import { useDesktopNavigation } from "../lib/desktop"
 import { useTheme } from "../lib/theme"
 import { GlobalSearch } from "./GlobalSearch"
@@ -15,6 +18,8 @@ export function Layout() {
   const closeSearch = useCallback(() => setSearchOpen(false), [])
   const theme = useTheme()
   const status = useShellStatus()
+  const owner = destinationModule(useLocation().pathname)
+  const modules = useModules()
   useDesktopNavigation()
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -31,7 +36,11 @@ export function Layout() {
     <div className={`ah shell ${theme.className}`}>
       <Sidebar status={status} onSearch={() => setSearchOpen(true)} shortcut={IS_MAC ? "⌘K" : "Ctrl K"} />
       <main className="main">
-        <Outlet />
+        {owner && modules.isPending ? <Loading />
+          : owner && modules.isError && !modules.data ? <ErrorState error={modules.error} onRetry={() => void modules.refetch()} />
+          : owner && modules.data?.[owner] === false
+          ? <Navigate replace to={'/settings?section=' + owner} />
+          : <Suspense fallback={<Loading />}><Outlet /></Suspense>}
       </main>
       <GlobalSearch open={searchOpen} onClose={closeSearch} status={status} theme={theme} />
     </div>

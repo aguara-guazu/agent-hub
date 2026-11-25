@@ -1,4 +1,4 @@
-import type { JiraGuard, PublicItem } from './schedule-contract.js'
+import type { JiraGuard, PublicItem } from './schedules/schedule-contract.js'
 
 /** Shapes the brief and the close share with the scheduler core; the item and guard types come from schedule-contract.ts. */
 

@@ -6,7 +6,7 @@ import { basename } from 'node:path'
 import { z } from 'zod'
 import { check, id, instant, localPath, parse } from './contracts.js'
 import type { MemoryStore } from './store.js'
-import { parseTranscript, splitText } from './transcript.js'
+import { parseTranscript, splitText } from './transcriptions/transcript.js'
 
 const MAX_BYTES = 25_000_000
 const filename = z.string().min(1).max(255).regex(/^[^/\\\x00-\x1f\x7f]+$/)

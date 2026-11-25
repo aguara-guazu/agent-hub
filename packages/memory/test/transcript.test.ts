@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseTranscript, splitText } from '../src/transcript.js'
-import { GoogleAuth } from '../src/google-auth.js'
+import { parseTranscript, splitText } from '../src/transcriptions/transcript.js'
+import { GoogleAuth } from '../src/connectors/google-auth.js'
 import { Vault } from '../src/config.js'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'

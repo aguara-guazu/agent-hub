@@ -6,9 +6,9 @@ import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
-import { LocalChat } from '../src/local-chat.js'
-import { HubTeamRuntime } from '../src/team-hub.js'
-import { TeamOrchestration } from '../src/team-orchestration.js'
+import { LocalChat } from '../src/agents/local-chat.js'
+import { HubTeamRuntime } from '../src/agents/team-hub.js'
+import { TeamOrchestration } from '../src/agents/team-orchestration.js'
 import type { AgentContext } from '../src/agents.js'
 
 let dir:string,folder:string,db:MemoryDatabase,chat:LocalChat,backend:HubTeamRuntime,teams:TeamOrchestration

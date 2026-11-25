@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import Fastify from 'fastify'
 import { randomUUID } from 'node:crypto'
-import { registerProjectAutomationRoutes } from '../src/project-automation-routes.js'
-import type { ProjectAutomationService } from '../src/project-automation-service.js'
+import { registerProjectAutomationRoutes } from '../src/schedules/project-automation-routes.js'
+import type { ProjectAutomationService } from '../src/schedules/project-automation-service.js'
 
 const projectId = randomUUID(), channelId = randomUUID()
 const stub = {

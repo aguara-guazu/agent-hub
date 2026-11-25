@@ -70,7 +70,8 @@ export class SharedNetwork {
   private stopped = false
   private lastError: string | null = null
   private extension: NetworkExtension | null = null
-  constructor(readonly sharing: SharedPublications) {}
+  constructor(readonly sharing: SharedPublications, private enabled = () => true) {}
+  async resume() { this.stopped = false; await this.start() }
   attach(extension: NetworkExtension) { this.extension = extension }
   /** Authenticated peers currently connected. */
   peers(): NetworkPeer[] { return [...this.connections].map(c => c.peer()).filter((p): p is NetworkPeer => !!p && !p.closed()) }
@@ -110,13 +111,13 @@ export class SharedNetwork {
     return this.status()
   }
   async start() {
-    if (this.stopped || this.timer) return
+    if (!this.enabled() || this.stopped || this.timer) return
     await this.tick()
-    if (this.stopped) return
+    if (!this.enabled() || this.stopped || this.timer) return
     this.timer = setInterval(() => { void this.tick() }, 10_000); this.timer.unref()
   }
   async tick() {
-    if (this.running || this.stopped) return this.running
+    if (!this.enabled() || this.running || this.stopped) return this.running
     this.running = this.update().catch(error => { this.lastError = error instanceof Error ? error.message : 'No se pudo sincronizar' }).finally(() => { this.running = null })
     return this.running
   }

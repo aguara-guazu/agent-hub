@@ -1,3 +1,4 @@
+import { moduleEnabled } from './modules/settings.js'
 import { ConnectionPool, UpstreamSpec, resultText, type CallResult, type OAuthStore } from '@agenthub/gateway'
 import { MemoryError, type JiraTaskReader } from '@agenthub/memory'
 import type { Store } from './store.js'
@@ -20,6 +21,7 @@ function origin(raw: unknown): string | null {
 export function createJiraTaskReader(store: Store, ownerId: string, pool: ConnectionPool, oauth: OAuthStore): JiraTaskReader {
   return async (request, onPage) => {
     const catalog = () => {
+      if (!moduleEnabled(store, 'mcp') || !moduleEnabled(store, 'connections')) throw new MemoryError(409, 'La conexión MCP está desactivada en Ajustes', false, 'module_disabled')
       if (request.agentId) {
         const agent = store.agent(request.agentId)
         if (!agent || store.machine(agent.machine_id)?.user_id !== ownerId) throw new MemoryError(403, 'La sesión no pertenece al dueño de esta memoria')

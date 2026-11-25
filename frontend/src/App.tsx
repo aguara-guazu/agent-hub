@@ -1,3 +1,4 @@
+import { moduleViews } from './modules/catalog'
 import "./styles/fonts.css"
 import "./styles/ah.css"
 import { Outlet, Route, Routes } from "react-router-dom"
@@ -9,16 +10,8 @@ import { ToastProvider } from "./components/ui/Toast"
 import { useT } from "./i18n"
 import { AuthProvider, useAuth } from "./lib/auth"
 import { useTheme } from "./lib/theme"
-import AutomationsPage from "./pages/automations/AutomationsPage"
-import MemoryPage from "./pages/memory/MemoryPage"
-import MemoryEntityView from "./pages/memory/EntityPage"
-import ProjectPage from "./pages/project/ProjectPage"
-import ProjectsPage from "./pages/projects/ProjectsPage"
 import ActivityPage from "./pages/activity/ActivityPage"
 import SettingsPage from "./pages/settings/SettingsPage"
-import SkillsPage from "./pages/skills/SkillsPage"
-import ClientsPage from "./pages/clients/ClientsPage"
-import ServersPage from "./pages/servers/ServersPage"
 import HomePage from "./pages/home/HomePage"
 
 function LocalSession() {
@@ -48,17 +41,10 @@ export function App() {
               <Route index element={<Redirect to="/home" />} />
               <Route path="home" element={<HomePage />} />
 
-              <Route path="projects" element={<ProjectsPage />} />
-              <Route path="projects/:id" element={<ProjectPage />} />
-              <Route path="memory" element={<MemoryPage />} />
-              <Route path="memory/entities/:id" element={<MemoryEntityView />} />
+              {Object.values(moduleViews).flatMap(module => module.routes.map(({ path, Component }) =>
+                <Route key={path} path={path} element={<Component />} />))}
               <Route path="collaboration/*" element={<CollaborationRedirect />} />
-              <Route path="automations" element={<AutomationsPage />} />
-              <Route path="automations/deliveries/:runId" element={<AutomationsPage />} />
 
-              <Route path="servers" element={<ServersPage />} />
-              <Route path="skills" element={<SkillsPage />} />
-              <Route path="clients" element={<ClientsPage />} />
               <Route path="activity" element={<ActivityPage />} />
               <Route path="settings" element={<SettingsPage />} />
 

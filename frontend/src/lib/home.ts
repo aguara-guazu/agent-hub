@@ -1,3 +1,4 @@
+import { useModules } from '../modules/state'
 import type { RecordingStatusView } from "../electron"
 import { usePendingVoices, useRecordingStatus, type PendingVoice } from "./recording"
 import { useRuns, useSchedules, type RunListItem } from "./automations"
@@ -72,28 +73,30 @@ function firstError(...errors: unknown[]): unknown {
 
 /** Reúne los pendientes. React Query deduplica con las vistas que piden lo mismo, así que montarlo en el shell y en Inicio no duplica pedidos. */
 export function usePendingInbox(): PendingInbox {
-  const servers = useServers()
+  const modules = useModules().data
+  const schedulesOn = modules?.schedules !== false
+  const servers = useServers(modules?.mcp !== false)
   const overview = useOverview()
-  const schedules = useSchedules()
-  const runs = useRuns({ limit: String(PENDING_PAGE) })
-  const unread = useRuns({ unread: "true", limit: String(PENDING_PAGE) })
+  const schedules = useSchedules(schedulesOn)
+  const runs = useRuns({ limit: String(PENDING_PAGE) }, schedulesOn)
+  const unread = useRuns({ unread: "true", limit: String(PENDING_PAGE) }, schedulesOn)
   const memoryStatus = useMemoryStatus()
-  const ready = memoryStatus.data?.ready === true
-  const connectors = useMemory<Connector[]>("list_connectors", {}, ready)
+  const ready = modules?.memory !== false && memoryStatus.data?.ready === true
+  const connectors = useMemory<Connector[]>("list_connectors", {}, memoryStatus.data?.ready === true)
   const duplicates = useMemory<Page<MemoryEntity>>("list_duplicate_proposals", { state: "pending", limit: PENDING_PAGE, offset: 0 }, ready)
   const identities = useMemory<Page<MemoryEntity>>("list_identity_proposals", { state: "pending", limit: PENDING_PAGE, offset: 0 }, ready)
   const suggestions = useMemory<Page<ProjectSuggestion>>("list_project_suggestions", { limit: PENDING_PAGE, offset: 0 }, ready)
   const review = useMemory<Page<MemoryEntity>>("review", { limit: REVIEW_PAGE, offset: 0 }, ready)
   const recording = useRecordingStatus()
-  const showVoices = ready && recording?.enabled !== false
+  const showVoices = modules?.transcriptions !== false && memoryStatus.data?.ready === true && recording?.enabled !== false
   const voices = usePendingVoices(showVoices)
 
-  const decisions = (runs.data?.items ?? []).filter(run => run.decision?.state === "pending")
+  const decisions = (schedulesOn ? runs.data?.items ?? [] : []).filter(run => run.decision?.state === "pending")
   const decided = new Set(decisions.map(run => run.run_id))
-  const unreadOther = (unread.data?.items ?? []).filter(run => !decided.has(run.run_id)).length
-  const gmail = schedules.data?.delivery_available?.gmail_self
+  const unreadOther = (schedulesOn ? unread.data?.items ?? [] : []).filter(run => !decided.has(run.run_id)).length
+  const gmail = schedulesOn && modules?.connections !== false ? schedules.data?.delivery_available?.gmail_self : undefined
   const suggested = new Set((suggestions.data?.items ?? []).map(item => item.data.source_entity_id))
-  const reviewItems = review.data?.items ?? []
+  const reviewItems = ready ? review.data?.items ?? [] : []
   const facts = reviewItems.filter(entity => entity.kind === "fact" && !PROPOSAL_CATEGORIES.has(String(entity.data.category)))
   const unresolvedPeople = reviewItems.filter(entity => entity.kind === "person").length
   const unassignedSources = reviewItems.filter(entity => SOURCE_KINDS.has(entity.kind) && !suggested.has(entity.id)).length
@@ -104,20 +107,20 @@ export function usePendingInbox(): PendingInbox {
     memoryReady: ready,
     memoryState: memoryStatus.data?.state ?? (memoryStatus.isError ? "error" : null),
     connections: {
-      oauthServers: (servers.data ?? []).filter(server => server.oauth_status === "required"),
-      restartClients: (overview.data?.clients ?? []).filter(client => client.cli_kind === "claude_desktop" && client.restart_pending),
+      oauthServers: (modules?.mcp === false ? [] : servers.data ?? []).filter(server => server.oauth_status === "required"),
+      restartClients: (modules?.agents === false ? [] : overview.data?.clients ?? []).filter(client => client.cli_kind === "claude_desktop" && client.restart_pending),
       gmailScopeMissing: gmail?.reason === "scope_missing" ? { destination: gmail.destination ?? null } : null,
-      failingConnectors: (connectors.data ?? []).filter(connector => connector.enabled && Boolean(connector.last_error)),
+      failingConnectors: (modules?.connections === false ? [] : connectors.data ?? []).filter(connector => connector.enabled && Boolean(connector.last_error)),
     },
     agents: { decisions, unreadOther },
     memory: {
-      duplicates: duplicates.data?.items ?? [],
-      identities: identities.data?.items ?? [],
-      suggestions: suggestions.data?.items ?? [],
+      duplicates: ready ? duplicates.data?.items ?? [] : [],
+      identities: ready ? identities.data?.items ?? [] : [],
+      suggestions: ready ? suggestions.data?.items ?? [] : [],
       facts,
       unresolvedPeople,
       unassignedSources,
-      recording,
+      recording: modules?.transcriptions === false ? null : recording,
       voices: showVoices ? voices.data?.items ?? [] : [],
     },
   }

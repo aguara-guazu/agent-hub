@@ -3,7 +3,7 @@ import {mkdtemp,rm} from 'node:fs/promises'
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import {MemoryDatabase} from '../../memory/dist/database.js'
-import {UsageQuotas} from '../../memory/dist/usage-quotas.js'
+import {UsageQuotas} from '../../memory/dist/agents/usage-quotas.js'
 import {codexQuotas} from './usage-quota-adapters.js'
 
 let directory:string,db:MemoryDatabase,quotas:UsageQuotas,now:number

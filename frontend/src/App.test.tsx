@@ -9,6 +9,7 @@ import { HashRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App'
+import { moduleStates, type ModuleId } from '@agenthub/shared/modules'
 import { setToken } from './lib/api'
 import type { User } from './lib/types'
 
@@ -52,7 +53,7 @@ function jsonResponse(body: unknown): Response {
   })
 }
 
-function stubApi(me: User | null): void {
+function stubApi(me: User | null, disabled?: ModuleId): void {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
@@ -60,6 +61,7 @@ function stubApi(me: User | null): void {
       if (url.endsWith('/api/auth/me')) {
         return me ? jsonResponse(me) : new Response('{"detail":"token invalido"}', { status: 401 })
       }
+      if (url.endsWith('/api/modules')) return jsonResponse({ ...moduleStates(id => id !== disabled), can_manage: true })
       if (url.endsWith('/memory/sharing/call')) return jsonResponse({ identity: { id: 'me', name: 'Dev' }, network: { settings: { enabled: true, bootstrap: [] }, peers: [], connected_peers: 0 }, projects: [] })
       if (url.endsWith('/local/overview')) return jsonResponse({hostname:'Mi Mac', clients:[], rows:[]})
       return jsonResponse([])
@@ -85,12 +87,12 @@ async function mount(): Promise<{ container: HTMLElement; unmount: () => void }>
   // Vite puede resolver el import dinámico en una vuelta posterior del event loop.
   // Desmontar antes deja la resolución de Suspense fuera de act() y Vitest 5 la
   // detecta como trabajo pendiente durante el teardown.
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  const deadline = Date.now() + 5000
+  while (!container.querySelector('main h1, .empty')) {
+    if (Date.now() >= deadline) throw new Error('timeout esperando la vista o el acceso local')
     await act(async () => {
-      await new Promise((resolveDone) => setTimeout(resolveDone, 0))
+      await new Promise((resolveDone) => setTimeout(resolveDone, 10))
     })
-    if (attempt > 5 && container.querySelector('.loading-block, .hub-loading') === null) break
-    if (attempt === 49) throw new Error('timeout esperando que termine Suspense')
   }
 
   return {
@@ -141,5 +143,14 @@ describe('hub local de escritorio', () => {
       expect(view.container.querySelector('h1')?.textContent).toBe(heading)
       view.unmount()
     }
+  })
+  it('lleva un enlace de Skills a su sección de Ajustes cuando el módulo está apagado', async () => {
+    setToken('local-session')
+    stubApi(member, 'skills')
+    window.location.hash = '#/skills'
+    const view = await mount()
+    expect(window.location.hash).toBe('#/settings?section=skills')
+    expect(view.container.querySelector('main nav a[aria-current=page]')?.textContent).toBe('Skills')
+    view.unmount()
   })
 })

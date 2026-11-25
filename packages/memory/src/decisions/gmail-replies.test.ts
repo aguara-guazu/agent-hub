@@ -4,7 +4,7 @@ import { DecisionStore } from './store.js'
 import { DecisionService, type ArtifactAuthority } from './service.js'
 import { pollGmailReplies, gmailEvidence } from './gmail-replies.js'
 import { formatCode, normalizeCode } from './codes.js'
-import type { GoogleAuth } from '../google-auth.js'
+import type { GoogleAuth } from '../connectors/google-auth.js'
 
 const ACCOUNT = 'me@example.com', THREAD = 'th-1', HUB_ID = '<hub-1@agent-hub.invalid>'
 const b64 = (text: string) => Buffer.from(text).toString('base64url')

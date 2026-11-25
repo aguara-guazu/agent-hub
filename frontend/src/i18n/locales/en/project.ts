@@ -552,7 +552,7 @@ const project = {
     invite: {
       title: "Invite to the project",
       identity: "Public identity",
-      identityHint: "The invited person copies it from Settings › Collaboration and network.",
+      identityHint: "The invited person copies it from Settings › Shared projects.",
       identityInvalid: "Paste the full public identity, exactly as copied.",
       role: "Role",
       canInvite: "Can invite",

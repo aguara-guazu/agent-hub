@@ -1,3 +1,4 @@
+import { moduleEnabled } from '../modules/settings.js'
 /**
  * Reintento automático del sondeo.
  *
@@ -41,7 +42,7 @@ export function isConfigured(server: McpServerRow): boolean {
 /** Habilitado para su dueño: no hay una regla de usuario que lo apague. */
 export function isEnabledForOwner(store: Store, server: McpServerRow): boolean {
   const rule = store.findRule(server.user_id, null, 'mcp_server', server.id)
-  return !rule || rule.state !== 'off'
+  return moduleEnabled(store, 'mcp') && (!rule || rule.state !== 'off')
 }
 
 /** Un server `oauth` sólo se sondea con una cuenta autorizada; sin ella no hay nada que reintentar. */

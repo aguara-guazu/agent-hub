@@ -4,7 +4,7 @@ import { AutoConfig, AutoModel, AutoTokenizer, AutoProcessor, RawImage, RawVideo
 import sharp from 'sharp'
 import { deflateSync } from 'node:zlib'
 import { embeddingInput } from './embedding-model.js'
-import { isSpeechProfile, modelProfile, type MediaEmbedding, type InferenceProfile } from './media-models.js'
+import { isSpeechProfile, modelProfile, type MediaEmbedding, type InferenceProfile } from './transcriptions/media-models.js'
 
 const profile: InferenceProfile = workerData.profile ?? 'text', definition = modelProfile(profile)
 env.allowRemoteModels = workerData.install === true

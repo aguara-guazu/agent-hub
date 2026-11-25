@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { registerDecisionRoutes } from '../src/decision-routes.js'
 import { DecisionReviewError, type DecisionReview } from '../src/decisions/review.js'
-import type { ScheduleEffects } from '../src/schedule-contract.js'
+import type { ScheduleEffects } from '../src/schedules/schedule-contract.js'
 
 const RUN = '11111111-1111-4111-8111-111111111111', INTENT = '22222222-2222-4222-8222-222222222222'
 const DIGEST = 'a'.repeat(64)

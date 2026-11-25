@@ -7,10 +7,10 @@ import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
-import { ScheduleAdmin } from '../src/schedule-admin.js'
-import { ScheduleStore, snapshotOf } from '../src/schedule-store.js'
+import { ScheduleAdmin } from '../src/schedules/schedule-admin.js'
+import { ScheduleStore, snapshotOf } from '../src/schedules/schedule-store.js'
 import { randomUUID } from 'node:crypto'
-import '../src/schedule-templates.js'
+import '../src/schedules/schedule-templates.js'
 
 let dir: string, db: MemoryDatabase, store: ScheduleStore, admin: ScheduleAdmin, projectId: string, enabled: boolean, gmail: boolean, stopped: string[]
 const NOW = new Date('2026-10-28T12:00:00.000Z')

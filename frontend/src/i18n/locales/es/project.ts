@@ -549,7 +549,7 @@ const project = {
     invite: {
       title: "Invitar al proyecto",
       identity: "Identidad pública",
-      identityHint: "La copia la persona invitada desde Ajustes › Colaboración y red.",
+      identityHint: "La copia la persona invitada desde Ajustes › Proyectos compartidos.",
       identityInvalid: "Pega la identidad pública completa, tal como se copia.",
       role: "Rol",
       canInvite: "Puede invitar",

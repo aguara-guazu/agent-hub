@@ -13,7 +13,7 @@ import { type AgentContext } from '../src/agents.js'
 import { exportMemory, readBackup, restoreMemory } from '../src/backup.js'
 import { syncJira } from '../src/connectors/jira.js'
 import { ProviderHttp } from '../src/connectors/http.js'
-import { getJiraSettings, saveJiraSettings } from '../src/jira-settings.js'
+import { getJiraSettings, saveJiraSettings } from '../src/connectors/jira-settings.js'
 import type { ConnectorContext, Connector } from '../src/connectors/types.js'
 
 async function resetMemory(db: MemoryDatabase) {

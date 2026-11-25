@@ -1,12 +1,13 @@
+import type { ModuleEnabled } from '@agenthub/shared/modules'
 import { hubLog } from "./report.js"
 import { sweepIssueDrafts } from "./diagnostic-report.js"
-import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
+import { unavailableActivity, type FleetActivity } from './agents/fleet-activity.js'
 import { SharedNetwork } from './sharing/network.js'
 import { UpdateHints } from './sharing/update-hint.js'
 import { observeReceipts } from './sharing/events.js'
 import { createInterhubServices } from './interhub/services.js'
 import { MemoryDefaults, DEFAULTS_KEY } from './defaults.js'
-import { MediaRuntime } from './media-runtime.js'
+import { MediaRuntime } from './transcriptions/media-runtime.js'
 import { NativeEmbeddingPool } from './native-embeddings.js'
 import { NATIVE_EMBEDDING_MODEL } from './embedding-model.js'
 import { z } from 'zod'
@@ -15,28 +16,28 @@ import { Vault, defaultAI, localUrl, type AIConfig } from './config.js'
 import { MemoryStore } from './store.js'
 import { MemoryOperations } from './operations.js'
 import { MemoryAI } from './ai.js'
-import { GoogleAuth } from './google-auth.js'
+import { GoogleAuth } from './connectors/google-auth.js'
 import { OpenCodeRuntime } from './opencode.js'
 import { CliExtractionRuntime, extractionClis, isExtractionCli, validCliModel } from './cli-extraction.js'
-import { TeamCatalog } from './team-catalog.js'
-import { HubTeamRuntime } from './team-hub.js'
+import { TeamCatalog } from './agents/team-catalog.js'
+import { HubTeamRuntime } from './agents/team-hub.js'
 import { JobRunner } from './jobs.js'
 import { AdmissionGate, ADMISSION_SETTING } from "./admission-gate.js"
 import { check, MemoryError, parse } from './contracts.js'
 import { databaseFile, migrationState, needsMigration } from './legacy-postgres.js'
 import { reasoningEffortSchema } from './reasoning.js'
-import { ScheduleStore } from './schedule-store.js'
-import { ScheduleAdmin } from './schedule-admin.js'
-import { ScheduleRuntime } from './schedule-runtime.js'
-import { EngineSynthesizer } from './schedule-synthesizer.js'
-import { scheduleDeps } from './schedule-deps.js'
-import type { ActionTickResult, AttentionReaders, ScheduleAutomation } from './schedule-contract.js'
-import './schedule-templates.js'
+import { ScheduleStore } from './schedules/schedule-store.js'
+import { ScheduleAdmin } from './schedules/schedule-admin.js'
+import { ScheduleRuntime } from './schedules/schedule-runtime.js'
+import { EngineSynthesizer } from './schedules/schedule-synthesizer.js'
+import { scheduleDeps } from './schedules/schedule-deps.js'
+import type { ActionTickResult, AttentionReaders, ScheduleAutomation } from './schedules/schedule-contract.js'
+import './schedules/schedule-templates.js'
 import './daily-templates.js'
-import { createFleetRecovery } from './fleet-recovery.js'
+import { createFleetRecovery } from './agents/fleet-recovery.js'
 import { HubStopCoordinator } from "./hub-stop.js"
 import { exportMemory } from "./backup.js"
-import { backfillLinks } from "./usage-consumption/links.js"
+import { backfillLinks } from "./agents/usage-consumption/links.js"
 
 const REPLY_TICK_MS = 60_000
 const ACTION_TICK = 'action_tick', ACTION_TICK_MS = 30_000
@@ -97,6 +98,7 @@ function selectedAI(ai: AIConfig, defaults: { target?: string; embedding_state?:
   return pending ? { ...ai, embedding_model: NATIVE_EMBEDDING_MODEL, embeddings_enabled: true } : ai
 }
 export class MemoryService {
+  moduleEnabled: ModuleEnabled = () => true
   usageEnabled:(agentId:string)=>boolean = ()=>true
   readonly defaults = new MemoryDefaults(this)
   readonly media: MediaRuntime
@@ -144,6 +146,7 @@ export class MemoryService {
     const ai = new MemoryAI(() => this.aiSettings(), this.vault, this.fetcher, this.openCode, undefined, undefined, undefined, this.cliExtraction, this.nativeEmbeddings)
     const operations = new MemoryOperations(store, ai, this.google, this.vault, this.fetcher, this.jiraMcp, this.media,
       { catalog: new TeamCatalog(this.cliExtraction), orca: chat => new HubTeamRuntime(chat,this.directory,this.collaborationEnabled,{ admission: this.admission }) }, this.collaborationEnabled)
+    operations.moduleEnabled = id => this.moduleEnabled(id)
     operations.admission = this.admission
     operations.chat.usageEnabled=this.usageEnabled
     const stop = new HubStopCoordinator({ db, chat: operations.chat,
@@ -157,10 +160,11 @@ export class MemoryService {
       hubLog(this.directory).event("service", "start", { pid: process.pid, node: process.version })
       sweepIssueDrafts(this.directory)
     }
-    const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media)
-    const network = new SharedNetwork(operations.sharing)
+    const runner = new JobRunner(store, ai, this.vault, this.google, () => this.aiSettings(), this.fetcher, this.media, id => this.moduleEnabled(id))
+    const sharingEnabled = () => operations.sharingEnabled()
+    const network = new SharedNetwork(operations.sharing, sharingEnabled)
     // Inter-hub channels ride the same P2P network; the tools reach it through these services.
-    operations.interhub = createInterhubServices(store, { network, events: operations.chat.events })
+    operations.interhub = createInterhubServices(store, { network, events: operations.chat.events, enabled: sharingEnabled })
     operations.setSharedPaused = async (projectId, paused) => {
       await operations.sharing.get(projectId)
       await db.query("UPDATE shared_projects SET enabled=$2 WHERE id=$1", [projectId, !paused])
@@ -208,13 +212,26 @@ export class MemoryService {
   }
   /** Runs the action dispatcher now, right after a decision was consumed, unless it is already running. */
   async kickActions() { (await this.get()).schedules?.runtime.kickPeriodic(ACTION_TICK) }
+  refreshWorkerModules() { this.current?.runner.refreshModules() }
+  async refreshSharingNetwork() {
+    const current = this.current ?? await this.initializing?.catch(() => null)
+    if (!current) return
+    if (current.operations.sharingEnabled()) {
+      await current.operations.interhub.reconcileProjects()
+      await current.network.resume()
+    } else await current.network.stop()
+  }
+  async refreshModuleSchedules() {
+    const current = this.current ?? await this.initializing?.catch(() => null)
+    current?.schedules?.runtime.modulesChanged()
+  }
   /** Applies an automations switch change now instead of at the next tick. */
   async kickSchedules() { (await this.get()).schedules?.runtime.kick() }
   /** Starts the clock, independent of the collaboration switch, and then looks at members that stopped on an exhausted quota while the Hub was down. */
   async startSchedules() {
     const { schedules, db, operations } = await this.get()
     if (!schedules) return
-    await startClockThenRecover(schedules.runtime, createFleetRecovery(db, operations.usage, operations.fleet, operations.usageNotices, operations.teams ? { restart: input => operations.teams!.continueMemberFresh(input.member_id, input.generation) } : undefined))
+    await startClockThenRecover(schedules.runtime, this.moduleEnabled('agents') ? createFleetRecovery(db, operations.usage, operations.fleet, operations.usageNotices, operations.teams ? { restart: input => operations.teams!.continueMemberFresh(input.member_id, input.generation) } : undefined) : undefined)
   }
   async status() {
     const configuration = { database_configured: true, google_client_configured: this.vault.has('google-client'),
@@ -271,7 +288,7 @@ export class MemoryService {
     if (deferred) void this.defaults.tick().catch(() => {})
     return config
   }
-  async suspendFleet() { await this.initializing; await this.current?.operations.fleet?.suspend?.() }
+  async suspendFleet() { await this.initializing?.catch(() => null); await this.current?.operations.fleet?.suspend?.() }
   async wakeFleet(sessionId:string,text:string) {
     const fleet=(await this.get()).operations.fleet
     return fleet instanceof HubTeamRuntime ? fleet.wake(sessionId,text) : false

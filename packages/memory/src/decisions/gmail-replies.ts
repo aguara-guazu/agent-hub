@@ -1,4 +1,4 @@
-import { GMAIL_SCOPE, type GoogleAuth } from '../google-auth.js'
+import { GMAIL_SCOPE, type GoogleAuth } from '../connectors/google-auth.js'
 import type { DecisionStore } from './store.js'
 import type { DecisionService } from './service.js'
 import { verifyGmailReply, type GmailBindingView, type GmailEvidence, type RejectReason } from './verifier.js'

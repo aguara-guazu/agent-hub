@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
-import { MediaRuntime, mediaSettingsInput } from '../src/media-runtime.js'
+import { MediaRuntime, mediaSettingsInput } from '../src/transcriptions/media-runtime.js'
 const fake = vi.hoisted(() => ({ create: vi.fn(), recognize: vi.fn(), terminate: vi.fn(async () => {}) }))
 vi.mock('tesseract.js', () => ({ OEM: { LSTM_ONLY: 1 }, createWorker: fake.create }))
 afterEach(() => { vi.resetAllMocks() })

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { check, id, instant, parse } from './contracts.js'
 import { hash, requireEntity, requireWritableEntity, validateEvidence, type MemoryStore } from "./store.js"
-import { splitText } from './transcript.js'
+import { splitText } from './transcriptions/transcript.js'
 
 export const rememberInput = z.object({ key: z.string().trim().min(1).max(200), title: z.string().trim().min(1).max(500),
   text: z.string().trim().min(1).max(20_000), project_id: id.optional(),

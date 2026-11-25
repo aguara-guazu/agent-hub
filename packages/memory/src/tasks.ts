@@ -5,7 +5,7 @@ import type { Vault } from './config.js'
 import { check, id, MemoryError, parse } from './contracts.js'
 import { ProviderHttp, richText } from './connectors/http.js'
 import { requireEntity, requireWritableEntity, validateEvidence, type MemoryStore } from "./store.js"
-import { effectiveJiraSite, getJiraSettings } from './jira-settings.js'
+import { effectiveJiraSite, getJiraSettings } from './connectors/jira-settings.js'
 
 export const TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done', 'dropped'] as const
 export const taskStatus = z.enum(TASK_STATUSES)

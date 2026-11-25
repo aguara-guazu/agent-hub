@@ -43,9 +43,9 @@ el mismo identificador externo para conservar versiones.
 
 | Área | Archivos de entrada |
 | --- | --- |
-| Persistencia, canales, sesiones e hilos | `packages/memory/src/local-chat.ts` |
-| Entrega, presencia y transporte | `packages/memory/src/local-chat-runtime.ts` |
-| Instrucciones de equipo e incorporación | `packages/memory/src/local-chat-team.ts`, `local-chat-skill.ts` |
+| Persistencia, canales, sesiones e hilos | `packages/memory/src/agents/local-chat.ts` |
+| Entrega, presencia y transporte | `packages/memory/src/agents/local-chat-runtime.ts` |
+| Instrucciones de equipo e incorporación | `packages/memory/src/agents/local-chat-team.ts`, `local-chat-skill.ts` |
 | Hooks e integración de clientes | `packages/daemon/src/local-chat-hook.ts`, `local-chat-client.ts` |
 | TUI nativa y puente de terminal | `packages/daemon/src/chat-tui.ts`, `chat-terminal.ts`, `chat-bridge.ts` |
 | Frontend de protocolo para automatización | `packages/daemon/src/chat-protocol.ts` |

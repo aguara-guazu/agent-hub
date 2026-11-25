@@ -6,7 +6,7 @@ import { useT } from "../i18n"
 
 /**
  * Formas de las rutas humanas del scheduler (`/api/memory/schedules/*`) y de los ajustes de automatizaciones.
- * `ScheduleView` espeja `packages/memory/src/schedule-contract.ts`; las respuestas de runs se normalizan abajo
+ * `ScheduleView` espeja `packages/memory/src/schedules/schedule-contract.ts`; las respuestas de runs se normalizan abajo
  * (`normalizeRunList`, `normalizeRunDetail`) porque el backend las entrega como filas planas.
  */
 
@@ -209,8 +209,8 @@ export function useSaveAutomationSettings() {
   })
 }
 
-export function useSchedules() {
-  return useQuery({ queryKey: automationKeys.schedules, queryFn: () => api.get<{ items: ScheduleView[]; delivery_available?: DeliveryAvailability } & Page>("/memory/schedules?limit=200"), refetchInterval: 5000 })
+export function useSchedules(enabled = true) {
+  return useQuery({ enabled, queryKey: automationKeys.schedules, queryFn: () => api.get<{ items: ScheduleView[]; delivery_available?: DeliveryAvailability } & Page>("/memory/schedules?limit=200"), refetchInterval: 5000 })
 }
 
 /** Mutaciones humanas sobre un schedule; todas devuelven el ScheduleView actualizado salvo `run_now` (`{ run_id }`). Los errores los muestra quien llama. */

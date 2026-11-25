@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
 import { pdfFixture } from './pdf-fixture.js'
 import { pdfPages, pdfPreview } from '../src/pdf.js'
-import { MediaRuntime, mediaSettingsInput } from '../src/media-runtime.js'
+import { MediaRuntime, mediaSettingsInput } from '../src/transcriptions/media-runtime.js'
 // Compile only the isolated worker, keeping this test runnable before the app build.
 const fixture = vi.hoisted(() => ({ worker: '' }))
 vi.mock('node:worker_threads', async importOriginal => {

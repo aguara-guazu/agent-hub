@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs'
 import { copyFile, mkdir, open, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { renameRetry } from '@agenthub/gateway/platform'
-import { modelProfile, type InferenceProfile } from './media-models.js'
+import { modelProfile, type InferenceProfile } from './transcriptions/media-models.js'
 import { MODEL_FILES } from './model-files.js'
 
 /** Range requests bound each transfer; partial, verified-length progress survives a cancelled installation. */

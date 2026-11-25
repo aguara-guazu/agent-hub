@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest'
 import type { UsageQuotaTransition } from '@agenthub/shared'
-import { FleetQuotaRecovery, QUOTA_RESUME_PROMPT, classifyQuotaFailure, type RecoveryFallback, type RecoveryIncidentLog } from '../src/fleet-recovery.js'
-import type { HubTeamStatus } from '../src/team-hub.js'
+import { FleetQuotaRecovery, QUOTA_RESUME_PROMPT, classifyQuotaFailure, type RecoveryFallback, type RecoveryIncidentLog } from '../src/agents/fleet-recovery.js'
+import type { HubTeamStatus } from '../src/agents/team-hub.js'
 
 const failedAt = '2026-10-28T18:38:00.000Z'
 const runtime = (patch: Partial<HubTeamStatus> = {}): HubTeamStatus => ({ id: 'member-1', cli: 'codex_cli', cwd: '/work', model: 'model-a', state: 'failed', error_code: 'fleet_turn_failed',

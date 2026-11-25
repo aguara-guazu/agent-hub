@@ -1,34 +1,21 @@
+import { moduleViews } from '../../modules/catalog'
+import { appModules, isModuleId, type ModuleId } from '@agenthub/shared/modules'
+import { ModuleSettings } from '../../modules/ModuleSettings'
 import { Component, Suspense, lazy } from "react"
-import type { ComponentType, LazyExoticComponent, ReactNode } from "react"
+import type { ReactNode } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { ErrorState, SkeletonRows, cx } from "../../components/ui"
 import { useT } from "../../i18n"
 
-/**
- * Ajustes (plantilla C). El índice y la sección activa salen de `?section=`; un valor desconocido muestra General.
- *
- * Contrato de secciones: cada una es `pages/settings/sections/<Nombre>.tsx` con `export default` de un componente
- * sin props que renderiza su propio `SettingsSection` (ver `SettingRow.tsx`). La página no les pasa estado: cada
- * sección consulta y guarda lo suyo con un solo modelo de guardado. Los ids de `SECTION_IDS` son públicos
- * (enlaces del escritorio, notificaciones y redirecciones de `App.tsx`); no se renombran.
- */
-export const SECTION_IDS = ["general", "fuentes", "ia", "automatizaciones", "colaboracion", "integraciones", "respaldos", "sistema"] as const
-export type SectionId = (typeof SECTION_IDS)[number]
+type SectionId = 'general' | 'sistema' | ModuleId
+export const SECTION_IDS: readonly SectionId[] = ['general', ...appModules.map(module => module.id), 'sistema']
 
-const SECTIONS: Record<SectionId, LazyExoticComponent<ComponentType>> = {
-  general: lazy(() => import("./sections/General")),
-  fuentes: lazy(() => import("./sections/Fuentes")),
-  ia: lazy(() => import("./sections/IA")),
-  automatizaciones: lazy(() => import("./sections/Automatizaciones")),
-  colaboracion: lazy(() => import("./sections/Colaboracion")),
-  integraciones: lazy(() => import("./sections/Integraciones")),
-  respaldos: lazy(() => import("./sections/Respaldos")),
-  sistema: lazy(() => import("./sections/Sistema")),
+const legacy: Record<string, ModuleId> = {
+  fuentes: 'connections', integraciones: 'connections', ia: 'memory', respaldos: 'memory',
+  colaboracion: 'agents', automatizaciones: 'schedules',
 }
-
-function isSection(value: string | null): value is SectionId {
-  return value !== null && (SECTION_IDS as readonly string[]).includes(value)
-}
+const general = lazy(() => import('./sections/General'))
+const system = lazy(() => import('./sections/Sistema'))
 
 /** Ancho del índice de secciones y de la página, tomados del ejemplo de la plantilla C. */
 const INDEX_WIDTH = 200
@@ -48,8 +35,9 @@ export default function SettingsPage() {
   const { t } = useT("settings")
   const [params] = useSearchParams()
   const requested = params.get("section")
-  const active: SectionId = isSection(requested) ? requested : "general"
-  const Section = SECTIONS[active]
+  const active: SectionId = requested === 'sistema' || (requested && isModuleId(requested)) ? requested
+    : requested && Object.hasOwn(legacy, requested) ? legacy[requested] : 'general'
+  const Section = isModuleId(active) ? moduleViews[active].settings : active === 'general' ? general : system
   return (
     <div className="page" style={{ maxWidth: PAGE_MAX_WIDTH }}>
       <div className="ph"><div className="ph-text"><h1 className="h1">{t("page.title")}</h1></div></div>
@@ -69,7 +57,7 @@ export default function SettingsPage() {
         <div style={{ flex: "999 1 480px", minWidth: 0, display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
           <SectionBoundary key={active} fallback={(retry, error) => <ErrorState error={error} title={t("page.loadFailed")} onRetry={retry} />}>
             <Suspense fallback={<SkeletonRows count={4} avatar={false} />}>
-              <Section />
+              {isModuleId(active) ? <ModuleSettings key={active} id={active}><Section /></ModuleSettings> : <Section />}
             </Suspense>
           </SectionBoundary>
         </div>

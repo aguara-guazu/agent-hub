@@ -18,7 +18,7 @@ import type { PendingVoice } from "../../lib/recording"
 import { Panel, PanelBody, PanelFooter, PanelHeader } from "../../components/ui/Panel"
 import { Field } from "../../components/ui/fields"
 import { Switch } from "../../components/ui"
-import { EntityCombobox } from "../memory/pickers"
+import { EntityCombobox } from "../../modules/memory/library/pickers"
 
 export type PendingGroup = "connections" | "agents" | "memory"
 

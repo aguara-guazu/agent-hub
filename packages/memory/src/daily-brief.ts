@@ -1,5 +1,5 @@
 import { hash } from './store.js'
-import type { PublicItem } from './schedule-contract.js'
+import type { PublicItem } from './schedules/schedule-contract.js'
 import type { DailyDeps, ProposedEffect, ProposedItem } from './daily-types.js'
 import { clip, dayLabel, endOfLocalDay, localDate, localTime, operationKeyOf, plural, startOfLocalDay } from './daily-types.js'
 import type { SnapshotCoverage, StatusDeterministic, StatusPending, StatusSynthesis, Freshness, SourceWatermark, StatusSource } from './project-status.js'

@@ -7,8 +7,8 @@ import { MemoryStore } from '../src/store.js'
 import { MemoryOperations, memoryTools } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
-import { ScheduleAdmin } from '../src/schedule-admin.js'
-import { ScheduleStore, snapshotOf } from '../src/schedule-store.js'
+import { ScheduleAdmin } from '../src/schedules/schedule-admin.js'
+import { ScheduleStore, snapshotOf } from '../src/schedules/schedule-store.js'
 import { isCollaborationTool } from '../src/collaboration.js'
 
 let dir: string, db: MemoryDatabase, operations: MemoryOperations, store: ScheduleStore, projectId: string, stopped: string[]

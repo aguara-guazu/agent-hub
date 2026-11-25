@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { defaultWatchdogConfig, evaluateWatchdog, type WatchdogSnapshot } from "../src/local-watchdog-policy.js"
+import { defaultWatchdogConfig, evaluateWatchdog, type WatchdogSnapshot } from "../src/agents/local-watchdog-policy.js"
 
 const now = 1_000_000
 const active = (): WatchdogSnapshot => ({

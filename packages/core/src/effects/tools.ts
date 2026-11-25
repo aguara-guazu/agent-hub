@@ -1,3 +1,4 @@
+import { moduleEnabled } from '../modules/settings.js'
 import { randomUUID } from 'node:crypto'
 import { UpstreamSpec, type CallResult, type CallTrace, type ConnectionPool } from '@agenthub/gateway'
 import { argsDigest, profileAllowsTool } from '@agenthub/shared'
@@ -34,6 +35,7 @@ export interface EffectToolResolver {
  */
 export function createEffectToolResolver(store: Store, pool: ConnectionPool, ownerId: string): EffectToolResolver {
   const snapshotServers = () => {
+    if (!moduleEnabled(store, 'connections')) return undefined
     const agent = ensureRunProfileAgent(store, ownerId, 'hub_effects')
     return agent ? { agent, servers: computeSnapshot(store, agent.id).servers } : undefined
   }

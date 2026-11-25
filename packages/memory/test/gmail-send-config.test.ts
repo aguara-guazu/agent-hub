@@ -7,8 +7,8 @@ import { MemoryStore } from '../src/store.js'
 import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
-import { GMAIL_SCOPE, GMAIL_SEND_SCOPE, type GoogleAuth } from '../src/google-auth.js'
-import { ensureGoogleSource } from '../src/google-setup.js'
+import { GMAIL_SCOPE, GMAIL_SEND_SCOPE, type GoogleAuth } from '../src/connectors/google-auth.js'
+import { ensureGoogleSource } from '../src/connectors/google-setup.js'
 
 describe('configuración de gmail.send en la fuente Google', () => {
   let db: MemoryDatabase, store: MemoryStore, directory: string, ops: MemoryOperations

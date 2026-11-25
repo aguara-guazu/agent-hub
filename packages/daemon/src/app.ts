@@ -380,17 +380,19 @@ export class DaemonApp {
   async syncOnce(opts: { apply: boolean; wait?: number }): Promise<SyncReport> {
     const credentials = this.state.loadCredentials()
     let bootstrapError = ''
+    let modules: Partial<import('@agenthub/shared/modules').ModuleStates> = {}
     let agents: AgentInstance[] = this.cachedAgents()
 
     if (credentials !== null) {
       try {
         const client = this.clientFor(credentials)
         const boot = await client.bootstrap()
+        modules = (boot['modules'] as typeof modules | undefined) ?? {}
         const bootAgents = Array.isArray(boot['agents']) ? (boot['agents'] as Array<Record<string, unknown>>) : []
         this.state.saveAgents(bootAgents)
         agents = bootAgents.map(agentFrom)
         const known = new Set(agents.map(agent => agent.cliKind))
-        const added = detectClis(this.home).found.filter(item => !known.has(item.cliKind))
+        const added = modules.agents === false ? [] : detectClis(this.home).found.filter(item => !known.has(item.cliKind))
         if (added.length > 0) {
           await client.registerAgents(credentials.machineId, added.map(item => ({
             cli_kind: item.cliKind, cli_version: item.version, config_path: item.configPath,
@@ -409,7 +411,7 @@ export class DaemonApp {
     let externalSkills: ExternalSkillsOutcome | null = null
     let externalScan: ExternalScan | null = null
     let externalError = ''
-    if (credentials !== null && bootstrapError === '') {
+    if (credentials !== null && bootstrapError === '' && modules.skills !== false) {
       try {
         const result = await this.syncExternalSkills(this.clientFor(credentials))
         externalSkills = result.outcome

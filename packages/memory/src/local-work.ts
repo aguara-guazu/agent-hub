@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { check, id } from './contracts.js'
-import { canReadChannel } from "./chat-read-access.js"
-import { ACTIVE_TEAM_STATES } from "./chat-access.js"
+import { canReadChannel } from "./agents/chat-read-access.js"
+import { ACTIVE_TEAM_STATES } from "./agents/chat-access.js"
 import type { Sql } from './database.js'
 
 const session = {session_key:z.string().min(32).max(200).optional()}

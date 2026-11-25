@@ -4,7 +4,7 @@ import type { ImportInput } from '../contracts.js'
 import { GooglePeople } from './google-people.js'
 import { parseGoogleDocument } from './google-document.js'
 import { importGmailRange } from './gmail.js'
-import { GMAIL_SCOPE, googleBearer } from '../google-auth.js'
+import { GMAIL_SCOPE, googleBearer } from './google-auth.js'
 
 const encoded = encodeURIComponent
 const sourceBase = (connector: Connector) => ({ provider: 'google' as const, account: connector.id, connector_id: connector.id, project_ids: connector.project_ids })

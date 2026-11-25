@@ -12,7 +12,7 @@ import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault,defaultAI } from '../src/config.js'
 import { exportMemory,readBackup,restoreMemory } from '../src/backup.js'
-import { LocalChatRuntime } from '../src/local-chat-runtime.js'
+import { LocalChatRuntime } from '../src/agents/local-chat-runtime.js'
 import type { AgentContext } from '../src/agents.js'
 
 let directory:string,db:MemoryDatabase,store:MemoryStore,ops:MemoryOperations

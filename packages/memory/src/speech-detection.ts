@@ -1,5 +1,5 @@
 import { runAudioAnalysis } from "./audio-analysis-child.js"
-import type { MediaAssets } from "./media-assets.js"
+import type { MediaAssets } from "./transcriptions/media-assets.js"
 
 export interface SpeechRegion { start: number; end: number }
 

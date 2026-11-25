@@ -16,5 +16,6 @@
     "noEmit": true,
     "types": ["vite/client", "vitest/globals"]
   },
+  "references": [{ "path": "../packages/shared" }],
   "include": ["src"]
 }

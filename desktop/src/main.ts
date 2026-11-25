@@ -1876,7 +1876,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.getVersionInfo, readVersionInfo)
   ipcMain.handle(IPC.getAppVersion, () => app.getVersion())
   ipcMain.handle(IPC.recordingEnabled, (_event, enabled: unknown) => setRecordingEnabled(enabled))
-  ipcMain.handle(IPC.recordingStatus, () => recordingStatus())
+  ipcMain.handle(IPC.recordingStatus, async () => { await refreshRecordingEnabled(); return recordingStatus() })
   ipcMain.handle(IPC.recordingStart, async (_event, key: unknown) => { await startOfferedRecording(String(key)); return recordingStatus() })
   ipcMain.handle(IPC.recordingCalendar, (_event, id: unknown, key: unknown) => { chooseRecordingCalendar(id, key); return recordingStatus() })
   ipcMain.handle(IPC.recordingStop, async () => { await stopRecording(); return recordingStatus() })

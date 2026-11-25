@@ -10,7 +10,7 @@ import { globalSearch } from '../src/global-search.js'
 import { indexEntities, scheduleEntityIndex } from '../src/entity-index.js'
 import { processVersion } from '../src/processing.js'
 import { JobRunner } from '../src/jobs.js'
-import { GoogleAuth } from '../src/google-auth.js'
+import { GoogleAuth } from '../src/connectors/google-auth.js'
 import { deleteEntity, exportMemory, restoreMemory } from '../src/backup.js'
 
 async function resetMemory(db: MemoryDatabase) {

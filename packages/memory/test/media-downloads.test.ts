@@ -4,10 +4,10 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { prepareModelFiles } from '../src/model-download.js'
-import { MediaAssets } from '../src/media-assets.js'
+import { MediaAssets } from '../src/transcriptions/media-assets.js'
 const fixture = vi.hoisted(() => ({ bytes: new Uint8Array([1,2,3,4,5,6]), sha256: '' }))
 vi.mock('../src/model-files.js', () => ({ MODEL_FILES: { gemma: { 'weights': { bytes: 6, get sha256() { return fixture.sha256 } } } } }))
-vi.mock('../src/media-models.js', () => ({ modelProfile: () => ({ repository: 'owner/model', revision: 'pinned', files: ['weights'] }) }))
+vi.mock('../src/transcriptions/media-models.js', () => ({ modelProfile: () => ({ repository: 'owner/model', revision: 'pinned', files: ['weights'] }) }))
 let directory: string
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'media-download-test-')); fixture.sha256 = createHash('sha256').update(fixture.bytes).digest('hex') })
 afterEach(async () => { vi.unstubAllGlobals(); await rm(directory, { recursive: true, force: true }) })

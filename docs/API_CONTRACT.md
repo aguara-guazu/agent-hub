@@ -19,6 +19,12 @@ Dos principales distintos, nunca intercambiables:
 - **Daemon local**: token opaco `ahd_...` en `Authorization: Bearer <token>`. Dependencia
   `deps.current_daemon`. Nunca acepta JWT, y el JWT nunca sirve para `/sync`.
 
+## Módulos de la aplicación
+
+`GET /api/modules` devuelve las preferencias booleanas por identificador y `can_manage`. En el escritorio pertenecen al dueño local. El servicio remoto admite la consulta con sesión y devuelve `can_manage: false`.
+
+`PUT /api/modules/{id}` recibe `{"enabled": false}` o `{"enabled": true}` y devuelve el mapa actualizado. Requiere sesión del dueño local. Un ID desconocido devuelve 404 y un cuerpo inválido devuelve 422. Las rutas de un módulo apagado responden 409 con `code: module_disabled`. Los accesos de control para reactivarlo siguen disponibles. Los identificadores y las dependencias están en la [guía de módulos](modulos.md).
+
 ## Endpoints
 
 ### auth (prefix `/auth`)
