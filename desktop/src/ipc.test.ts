@@ -5,7 +5,7 @@ describe('contrato IPC', () => {
   it('los canales invoke son sólo los declarados', () => {
     expect([...INVOKE_CHANNELS].sort()).toEqual(
       [IPC.getCoreStatus, IPC.restartCore, IPC.getAutostart, IPC.setAutostart, IPC.getSession, IPC.syncNow, IPC.restartClient, IPC.openStoredPdf, IPC.attachNavigation, IPC.getLanguage, IPC.setLanguage, IPC.getVersionInfo, IPC.getAppVersion, IPC.getUpdateStatus, IPC.getAutoUpdate, IPC.setAutoUpdate,
-        IPC.recordingStatus, IPC.recordingStart, IPC.recordingCalendar, IPC.recordingStop, IPC.recordingDismiss].sort(),
+        IPC.recordingStatus, IPC.recordingEnabled, IPC.recordingStart, IPC.recordingCalendar, IPC.recordingStop, IPC.recordingDismiss].sort(),
     )
   })
 

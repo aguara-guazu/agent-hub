@@ -85,7 +85,8 @@ export function usePendingInbox(): PendingInbox {
   const suggestions = useMemory<Page<ProjectSuggestion>>("list_project_suggestions", { limit: PENDING_PAGE, offset: 0 }, ready)
   const review = useMemory<Page<MemoryEntity>>("review", { limit: REVIEW_PAGE, offset: 0 }, ready)
   const recording = useRecordingStatus()
-  const voices = usePendingVoices(ready)
+  const showVoices = ready && recording?.enabled !== false
+  const voices = usePendingVoices(showVoices)
 
   const decisions = (runs.data?.items ?? []).filter(run => run.decision?.state === "pending")
   const decided = new Set(decisions.map(run => run.run_id))
@@ -117,7 +118,7 @@ export function usePendingInbox(): PendingInbox {
       unresolvedPeople,
       unassignedSources,
       recording,
-      voices: voices.data?.items ?? [],
+      voices: showVoices ? voices.data?.items ?? [] : [],
     },
   }
   const refetch = () => { void servers.refetch(); void overview.refetch(); void runs.refetch(); void memoryStatus.refetch() }

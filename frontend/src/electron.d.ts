@@ -74,6 +74,7 @@ export interface RecordingOfferView {
 
 export interface RecordingStatusView {
   supported: boolean
+  enabled: boolean
   phase: "idle" | "starting" | "recording" | "stopping"
   title: string | null
   startedAt: string | null
@@ -112,6 +113,7 @@ export interface AgentHubBridge {
   setAutoUpdate?(enabled: boolean): Promise<boolean>
   /** Grabación de reuniones sin transcripción: estado, ofertas y control. Ausente en versiones anteriores del escritorio. */
   getRecordingStatus?(): Promise<RecordingStatusView>
+  setRecordingEnabled?(enabled: boolean): Promise<void>
   startRecording?(offerKey: string): Promise<RecordingStatusView>
   chooseRecordingCalendar?(recordingId: string, key: string | null): Promise<RecordingStatusView>
   stopRecording?(): Promise<RecordingStatusView>

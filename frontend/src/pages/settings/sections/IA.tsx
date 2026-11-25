@@ -124,7 +124,7 @@ export default function IA() {
       </>}
     </SettingsSection>
     {ready && <MediaSettingsBlock />}
-    {ready && window.agentHub?.getRecordingStatus && window.agentHub.platform === "darwin" && <RecordingSettingsBlock />}
+    {ready && window.agentHub?.getRecordingStatus && <RecordingSettingsBlock />}
     {ready && <QuotasBlock />}
     {ready && (
       <section className="section">

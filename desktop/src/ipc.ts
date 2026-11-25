@@ -47,6 +47,7 @@ export const IPC = {
   setAutoUpdate: "agenthub:auto-update-set",
   /** invoke: renderer -> main, grabación en curso y reuniones que se ofrecen para grabar. */
   recordingStatus: "agenthub:recording-status",
+  recordingEnabled: "agenthub:recording-enabled",
   /** invoke: renderer -> main, empieza a grabar la reunión ofrecida con esa clave. */
   recordingStart: "agenthub:recording-start",
   recordingCalendar: "agenthub:recording-calendar",
@@ -106,6 +107,7 @@ export interface RecordingOfferView {
 export interface RecordingStatusView {
   /** La plataforma admite grabar reuniones. */
   supported: boolean
+  enabled: boolean
   phase: RecordingPhase
   title: string | null
   startedAt: string | null
@@ -136,6 +138,7 @@ export interface AgentHubBridge {
   getAutoUpdate(): Promise<boolean>
   setAutoUpdate(enabled: boolean): Promise<boolean>
   getRecordingStatus(): Promise<RecordingStatusView>
+  setRecordingEnabled(enabled: boolean): Promise<void>
   startRecording(offerKey: string): Promise<RecordingStatusView>
   chooseRecordingCalendar(recordingId: string, key: string | null): Promise<RecordingStatusView>
   stopRecording(): Promise<RecordingStatusView>
@@ -162,6 +165,7 @@ export const INVOKE_CHANNELS: readonly IpcChannel[] = [
   IPC.getAutoUpdate,
   IPC.setAutoUpdate,
   IPC.recordingStatus,
+  IPC.recordingEnabled,
   IPC.recordingStart,
   IPC.recordingCalendar,
   IPC.recordingStop,

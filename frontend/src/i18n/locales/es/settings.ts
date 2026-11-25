@@ -362,6 +362,8 @@ const settings = {
       urlRequired: "Completá la dirección para guardar",
     },
     recording: {
+      enabled: "Usar el grabador del Hub",
+      enabledHint: "Al desactivarlo, se ocultan la opción de grabar y sus avisos. Si hay una grabación en curso, se detiene y se guarda.",
       title: "Grabación de reuniones",
       saveFailed: "No se guardó la configuración de grabación",
       notify: "Avisar antes de una reunión sin transcripción",

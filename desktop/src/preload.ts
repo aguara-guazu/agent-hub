@@ -43,6 +43,7 @@ const bridge: AgentHubBridge = {
   getUpdateStatus: () => ipcRenderer.invoke(IPC.getUpdateStatus) as Promise<UpdateStatusView>,
   getAutoUpdate: () => ipcRenderer.invoke(IPC.getAutoUpdate) as Promise<boolean>,
   setAutoUpdate: (enabled: boolean) => ipcRenderer.invoke(IPC.setAutoUpdate, enabled) as Promise<boolean>,
+  setRecordingEnabled: enabled => ipcRenderer.invoke(IPC.recordingEnabled, enabled) as Promise<void>,
   getRecordingStatus: () => ipcRenderer.invoke(IPC.recordingStatus) as Promise<RecordingStatusView>,
   startRecording: (offerKey: string) => ipcRenderer.invoke(IPC.recordingStart, offerKey) as Promise<RecordingStatusView>,
   chooseRecordingCalendar: (id, key) => ipcRenderer.invoke(IPC.recordingCalendar, id, key) as Promise<RecordingStatusView>,

@@ -19,7 +19,7 @@ export interface UpcomingEvent {
   attendees: UpcomingAttendee[]
 }
 
-export interface OfferSettings { notify: boolean; lead_minutes: number }
+export interface OfferSettings { enabled: boolean; notify: boolean; lead_minutes: number }
 export interface UpcomingResponse { settings?: Partial<OfferSettings>; events?: UpcomingEvent[]; verifiedCalendars?: Pick<UpcomingEvent, "connector_id" | "calendar">[] }
 
 /** Tiempo después del inicio durante el cual una reunión todavía se ofrece: llegar tarde es lo habitual. */
@@ -27,14 +27,24 @@ export const OFFER_LATE_MS = 15 * 60_000
 
 export class RecordingOffers {
   private events = new Map<string, UpcomingEvent>()
-  private settings: OfferSettings = { notify: true, lead_minutes: 2 }
+  private settings: OfferSettings = { enabled: false, notify: true, lead_minutes: 2 }
   private readonly announced = new Set<string>()
   private readonly dismissed = new Set<string>()
   private readonly accepted = new Set<string>()
   private verified: NonNullable<UpcomingResponse["verifiedCalendars"]> = []
 
+  get enabled(): boolean { return this.settings.enabled }
+
+  setEnabled(enabled: boolean): void {
+    this.settings.enabled = enabled
+    if (!enabled) { this.events.clear(); this.verified = [] }
+  }
+
   update(response: UpcomingResponse): void {
-    this.settings = { notify: response.settings?.notify ?? true, lead_minutes: response.settings?.lead_minutes ?? 2 }
+    this.setEnabled(response.settings?.enabled ?? true)
+    if (!this.enabled) return
+    this.settings.notify = response.settings?.notify ?? true
+    this.settings.lead_minutes = response.settings?.lead_minutes ?? 2
     this.events = new Map((response.events ?? []).filter(event => event.start).map(event => [event.key, event]))
     this.verified = response.verifiedCalendars ?? []
   }

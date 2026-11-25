@@ -452,7 +452,7 @@ const recording = new RecordingController({
     onChunk: (track, data) => recording.chunk(track, data),
     speakerModelDirectory: process.env.AGENTHUB_MEMORY_DIR || join(stateDir, "memory"),
     onSpeaker: (at, name) => { if (recording.state.id) recording.speakerObserved(recording.state.id, at, name) },
-    onVisualError: () => notify(t("tray.recordWindow"), t("recording.noWindow")),
+    onVisualError: () => notifyRecording(t("tray.recordWindow"), t("recording.noWindow")),
     onVisualOpportunity: offerVisualSource,
     onLevels: levels => {
       if (Object.values(levels).some(level => (level ?? 0) > RECORDING_SILENCE_RMS)) recordingHeardAt = Date.now()
@@ -466,24 +466,79 @@ const recording = new RecordingController({
   setTimer: (callback, ms) => setTimeout(callback, ms),
   clearTimer: handle => clearTimeout(handle as NodeJS.Timeout),
   onChange: state => onRecordingChange(state),
-  onTrackLost: track => notify(t("recording.trackLostTitle"), t(track === "mic" ? "recording.micLostBody" : process.platform === "linux" ? "recording.linuxSystemLost" : "recording.systemLostBody")),
+  onTrackLost: track => notifyRecording(t("recording.trackLostTitle"), t(track === "mic" ? "recording.micLostBody" : process.platform === "linux" ? "recording.linuxSystemLost" : "recording.systemLostBody")),
   onAutoStop: (reason, finished) => {
     if (reason === "storage_failed") { void recordingFinished(finished); return }
-    if (reason === "limit") notify(t("recording.limitTitle"), t("recording.limitBody"))
-    else if (finished) notify(t("recording.captureLostTitle"), t("recording.captureLostBody"))
-    else { notify(t("recording.failedTitle"), t("recording.failedBody")); return }
+    if (reason === "limit") notifyRecording(t("recording.limitTitle"), t("recording.limitBody"))
+    else if (finished) notifyRecording(t("recording.captureLostTitle"), t("recording.captureLostBody"))
+    else { notifyRecording(t("recording.failedTitle"), t("recording.failedBody")); return }
     void recordingFinished(finished)
   },
   log: line => coreLog.write(line),
 })
 
 const recordingOffers = new RecordingOffers()
+const recordingNotifications = new WeakSet<Notification>()
+let recordingPreferenceRevision = 0
+
+function showRecordingNotification(notice: Notification): void {
+  recordingNotifications.add(notice)
+  showRetained(notice)
+}
+
+function notifyRecording(title: string, body: string, openHome = false): void {
+  if (!recordingOffers.enabled || !Notification.isSupported()) return
+  try {
+    const notice = new Notification({ title, body })
+    if (openHome) notice.on("click", () => { if (recordingOffers.enabled) openRoute("/home") })
+    showRecordingNotification(notice)
+  } catch { /* The native notification service can be unavailable. */ }
+}
+
+function applyRecordingEnabled(enabled: boolean): void {
+  if (recordingOffers.enabled === enabled) return
+  ++recordingPreferenceRevision
+  recordingOffers.setEnabled(enabled)
+  if (!enabled) {
+    if (recording.state.phase === "recording" || recording.state.phase === "starting") void stopRecording()
+    calendarEndReminder.clear()
+    closeSilenceNotice()
+    for (const notice of liveNotifications) if (recordingNotifications.has(notice)) {
+      try { notice.close() } catch { /* The notification center may have dismissed it already. */ }
+    }
+    calendarRequiresChoice = false
+  }
+  refreshTray()
+  broadcastRecording()
+}
+
+async function refreshRecordingEnabled(): Promise<void> {
+  const revision = recordingPreferenceRevision
+  try {
+    const response = await coreFetch("/api/memory/recordings/settings")
+    if (response.ok) {
+      const settings = await response.json() as { enabled?: boolean }
+      if (revision === recordingPreferenceRevision) applyRecordingEnabled(settings.enabled ?? true)
+    }
+  } catch { /* Offline, keep the last known setting. A fresh process starts with capture disabled. */ }
+}
+
+async function setRecordingEnabled(enabled: unknown): Promise<void> {
+  if (typeof enabled !== "boolean") throw new TypeError("Invalid recording setting")
+  const response = await coreFetch("/api/memory/recordings/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) })
+  if (!response.ok) throw new Error(`Recording settings: HTTP ${response.status}`)
+  const saved = await response.json() as { enabled: boolean }
+  ++recordingPreferenceRevision // Invalidate a calendar read started before the setting was saved.
+  applyRecordingEnabled(saved.enabled)
+  if (saved.enabled) void pollRecordingOffers()
+}
+
 function offerVisualSource(): void {
   const id = recording.state.id
-  if (!id || !Notification.isSupported()) return
+  if (!recordingOffers.enabled || !id || !Notification.isSupported()) return
   const select = (source: "tab" | "window") => {
     if (recording.state.id !== id || recording.state.phase !== "recording") return
-    void recording.selectSpeakerWindow(source).catch(() => notify(t("recording.visualTitle"), t("recording.noWindow")))
+    void recording.selectSpeakerWindow(source).catch(() => notifyRecording(t("recording.visualTitle"), t("recording.noWindow")))
   }
   try {
     const notice = new Notification({ title: t("recording.visualTitle"), body: t("recording.visualHint"), silent: true })
@@ -494,7 +549,7 @@ function offerVisualSource(): void {
         { label: t("tray.recordWindow"), click: () => select("window") },
       ]).popup()
     })
-    showRetained(notice)
+    showRecordingNotification(notice)
   } catch { /* The same two choices remain available in the tray. */ }
 }
 const RECORDING_OFFERS_POLL_MS = 30_000
@@ -528,7 +583,7 @@ function recordingStatus(): RecordingStatusView {
   const state = recording.state
   const choices = state.phase === "recording" ? recordingOffers.matchAt(Date.parse(state.startedAt!)) : []
   return {
-    supported: RECORDING_SUPPORTED, phase: state.phase, title: state.title, startedAt: state.startedAt, error: state.error,
+    supported: RECORDING_SUPPORTED, enabled: recordingOffers.enabled, phase: state.phase, title: state.title, startedAt: state.startedAt, error: state.error,
     ...(state.id && state.phase === "recording" && (choices.length || recording.calendarEvent) ? {
       calendar: { recordingId: state.id, linked: !!recording.calendarEvent, choices: choices.map(event => ({ key: event.key, title: event.title, start: event.start! })) },
     } : {}),
@@ -549,13 +604,12 @@ const clockTime = (instant: string): string => new Intl.DateTimeFormat(activeLan
 
 /** Avisa las ofertas que abren ahora y recuerda una grabación que quedó corriendo; nunca la detiene. */
 function recordingTick(): void {
-  if (!RECORDING_SUPPORTED || quitting) return
+  if (!RECORDING_SUPPORTED || !recordingOffers.enabled || quitting) return
   const now = Date.now(), state = recording.state
-  if (!recording.active) for (const event of recordingOffers.due(now)) notifyOpening({
-    title: t("recording.offerTitle", { title: event.title || t("recording.untitled") }),
-    body: event.platform ? t("recording.offerBodyPlatform", { time: clockTime(event.start!), platform: event.platform }) : t("recording.offerBody", { time: clockTime(event.start!) }),
-    route: "/home",
-  })
+  if (!recording.active) for (const event of recordingOffers.due(now)) notifyRecording(
+    t("recording.offerTitle", { title: event.title || t("recording.untitled") }),
+    event.platform ? t("recording.offerBodyPlatform", { time: clockTime(event.start!), platform: event.platform }) : t("recording.offerBody", { time: clockTime(event.start!) }), true,
+  )
   if (state.phase === "recording") {
     const title = state.title ?? t("recording.untitled")
     calendarEndReminder.sync()
@@ -574,7 +628,7 @@ function recordingTick(): void {
     }
     if (recordingSystemSilentSince && now - recordingSystemSilentSince > RECORDING_SYSTEM_SILENT_MS) {
       recordingSystemSilentSince = 0
-      notify(t("recording.systemSilentTitle"), t("recording.systemSilentBody"))
+      notifyRecording(t("recording.systemSilentTitle"), t("recording.systemSilentBody"))
     }
   }
   broadcastRecording()
@@ -585,10 +639,17 @@ function pollRecordingOffers(): Promise<void> {
   if (!RECORDING_SUPPORTED || quitting || coreSupervisor.state !== "running") return Promise.resolve()
   recordingOffersPoll ??= (async () => {
     try {
+      const revision = recordingPreferenceRevision
       const response = await coreFetch("/api/memory/recordings/upcoming")
       if (response.ok) {
-        recordingOffers.update(await response.json() as UpcomingResponse)
-        syncRecordingCalendar()
+        const snapshot = await response.json() as UpcomingResponse
+        if (revision !== recordingPreferenceRevision) {
+          if (recordingOffers.enabled) setTimeout(() => void pollRecordingOffers(), 0).unref()
+          return
+        }
+        applyRecordingEnabled(snapshot.settings?.enabled ?? true)
+        recordingOffers.update(snapshot)
+        if (recordingOffers.enabled) syncRecordingCalendar()
       }
     } catch {
       // Con el core caído se conservan las últimas ofertas conocidas.
@@ -618,7 +679,7 @@ function syncRecordingCalendar(): void {
   if (choices.length > 1) {
     calendarRequiresChoice = true
     recording.requireCalendarChoice(id)
-    notifyOpening({ title: t("recording.chooseCalendar"), body: t("recording.chooseCalendarBody"), route: "/home" })
+    notifyRecording(t("recording.chooseCalendar"), t("recording.chooseCalendarBody"), true)
   }
 }
 
@@ -668,10 +729,12 @@ function onRecordingChange(state: RecordingState): void {
 }
 
 async function startRecording(request: RecordingRequest): Promise<RecordingState> {
-  if (!RECORDING_SUPPORTED || quitting) return recording.state
+  if (!RECORDING_SUPPORTED || quitting || !recordingOffers.enabled) return recording.state
+  await refreshRecordingEnabled()
+  if (!recordingOffers.enabled || quitting) return recording.state
   const state = await recording.start(request)
-  if (state.error === "microphone_denied") notify(t("recording.micDeniedTitle"), t("recording.micDeniedBody"))
-  else if (state.error === "capture_failed") notify(t("recording.failedTitle"), t("recording.failedBody"))
+  if (state.error === "microphone_denied") notifyRecording(t("recording.micDeniedTitle"), t("recording.micDeniedBody"))
+  else if (state.error === "capture_failed") notifyRecording(t("recording.failedTitle"), t("recording.failedBody"))
   return state
 }
 
@@ -683,11 +746,11 @@ async function stopRecording(): Promise<void> {
 
 async function recordingFinished(finished: FinishedRecording | null): Promise<void> {
   const storageFailed = recording.state.error === "storage_failed"
-  if (storageFailed) notify(t("recording.storageFailedTitle"), t("recording.storageFailedBody"))
-  if (!finished) { if (!storageFailed) notify(t("recording.emptyTitle"), t("recording.emptyBody")); return }
+  if (storageFailed) notifyRecording(t("recording.storageFailedTitle"), t("recording.storageFailedBody"))
+  if (!finished) { if (!storageFailed) notifyRecording(t("recording.emptyTitle"), t("recording.emptyBody")); return }
   const minutes = Math.max(1, Math.round((Date.parse(finished.meta.ended_at ?? finished.meta.started_at) - Date.parse(finished.meta.started_at)) / 60_000))
   coreLog.write(`[recording] guardada ${finished.meta.id} (${minutes} min) en ${finished.directory}`)
-  if (!storageFailed) notify(t(finished.meta.incomplete ? "recording.incompleteTitle" : "recording.savedTitle"),
+  if (!storageFailed) notifyRecording(t(finished.meta.incomplete ? "recording.incompleteTitle" : "recording.savedTitle"),
     t(finished.meta.incomplete ? "recording.incompleteBody" : "recording.savedBody", { title: finished.meta.title, minutes }))
   await submitRecordings()
 }
@@ -762,7 +825,7 @@ function submitRecordings(): Promise<void> {
         coreLog.write(`[recording] entrega de ${name}: HTTP ${response.status}`)
         if ([400, 409, 422].includes(response.status)) {
           await rename(directory, `${directory}${RECORDING_REJECTED}`)
-          notify(t("recording.rejectedTitle"), t("recording.rejectedBody", { title: meta.title }))
+          notifyRecording(t("recording.rejectedTitle"), t("recording.rejectedBody", { title: meta.title }))
         }
       } catch (error) {
         coreLog.write(`[recording] entrega de ${name} pendiente: ${error instanceof Error ? error.message : String(error)}`)
@@ -1618,7 +1681,7 @@ function refreshTray(): void {
     showShortcut: { label: SHOW_WINDOW_SHORTCUT_LABEL, registered: showWindowShortcutRegistered },
     clientRestart: Boolean(pendingClientRestart),
     quitStatus: quitStatusLine(),
-    recording: RECORDING_SUPPORTED ? { title: recording.active ? recording.state.title : null, busy: recording.state.phase === "starting" || recording.state.phase === "stopping" } : null,
+    recording: RECORDING_SUPPORTED && recordingOffers.enabled ? { title: recording.active ? recording.state.title : null, busy: recording.state.phase === "starting" || recording.state.phase === "stopping" } : null,
   })
   tray.setContextMenu(Menu.buildFromTemplate(template.map((item): Electron.MenuItemConstructorOptions => {
     if (item.type === 'separator') return { type: 'separator' }
@@ -1673,8 +1736,8 @@ function handleTrayAction(action: TrayAction): void {
   else if (action === 'restart-core') void restartCore()
   else if (action === 'restart-client') void confirmAndRestartClient()
   else if (action === 'recording-start') void startManualRecording()
-  else if (action === 'recording-window') void recording.selectSpeakerWindow().catch(() => notify(t("tray.recordWindow"), t("recording.noWindow")))
-  else if (action === 'recording-tab') void recording.selectSpeakerWindow("tab").catch(() => notify(t("tray.recordTab"), t("recording.tabFallback")))
+  else if (action === 'recording-window' && recordingOffers.enabled) void recording.selectSpeakerWindow().catch(() => notifyRecording(t("tray.recordWindow"), t("recording.noWindow")))
+  else if (action === 'recording-tab' && recordingOffers.enabled) void recording.selectSpeakerWindow("tab").catch(() => notifyRecording(t("tray.recordTab"), t("recording.tabFallback")))
   else if (action === 'recording-stop') void stopRecording()
   else if (action === 'cancel-quit') quitRun?.cancel()
   else if (action === 'quit') void quit()
@@ -1812,6 +1875,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.setLanguage, (_event, preference: unknown) => saveLanguagePreference(preference))
   ipcMain.handle(IPC.getVersionInfo, readVersionInfo)
   ipcMain.handle(IPC.getAppVersion, () => app.getVersion())
+  ipcMain.handle(IPC.recordingEnabled, (_event, enabled: unknown) => setRecordingEnabled(enabled))
   ipcMain.handle(IPC.recordingStatus, () => recordingStatus())
   ipcMain.handle(IPC.recordingStart, async (_event, key: unknown) => { await startOfferedRecording(String(key)); return recordingStatus() })
   ipcMain.handle(IPC.recordingCalendar, (_event, id: unknown, key: unknown) => { chooseRecordingCalendar(id, key); return recordingStatus() })
@@ -2055,6 +2119,7 @@ else {
     setInterval(() => void pollSchedules(), SCHEDULE_FEED_POLL_MS).unref()
     void pollSchedules()
     if (RECORDING_SUPPORTED) {
+      void refreshRecordingEnabled()
       void submitRecordings()
       setInterval(() => void pollRecordingOffers(), RECORDING_OFFERS_POLL_MS).unref()
       setInterval(recordingTick, RECORDING_TICK_MS).unref()

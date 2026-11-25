@@ -16,11 +16,13 @@ export const RECORDING_TRACKS = ["mic", "system"] as const
 export type RecordingTrack = (typeof RECORDING_TRACKS)[number]
 const TRACK_FILES: Record<RecordingTrack, string> = { mic: "mic.webm", system: "system.webm" }
 
-export const recordingSettingsInput = z.object({
-  notify: z.boolean().default(true),
-  lead_minutes: z.number().int().min(0).max(30).default(2),
-  retention_days: z.number().int().min(1).max(365).default(30),
-}).strict()
+export const recordingSettingsPatch = z.object({
+  enabled: z.boolean(), notify: z.boolean(), lead_minutes: z.number().int().min(0).max(30),
+  retention_days: z.number().int().min(1).max(365),
+}).partial().strict()
+export const recordingSettingsInput = recordingSettingsPatch.transform(value => ({
+  enabled: value.enabled ?? true, notify: value.notify ?? true, lead_minutes: value.lead_minutes ?? 2, retention_days: value.retention_days ?? 30,
+}))
 export type RecordingSettings = z.infer<typeof recordingSettingsInput>
 
 export async function recordingSettings(store: MemoryStore): Promise<RecordingSettings> {

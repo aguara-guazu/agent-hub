@@ -364,6 +364,8 @@ const settings = {
       urlRequired: "Enter the address to save",
     },
     recording: {
+      enabled: "Use the Hub meeting recorder",
+      enabledHint: "Turning this off hides recording controls and notices. Any recording in progress stops and is saved.",
       title: "Meeting recording",
       saveFailed: "The recording settings were not saved",
       notify: "Notify before a meeting with no transcript",

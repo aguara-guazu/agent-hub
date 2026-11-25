@@ -31,3 +31,17 @@ it("offers both adjacent events within the notification lead time and excludes a
   expect(offers.matchAt(Date.parse(hour("14:54")))).toEqual([first, second])
   expect(offers.matchAt(Date.parse(hour("14:55")))).toEqual([second])
 })
+
+it("keeps upcoming offers, calendar matching and notifications empty while recording is off", () => {
+  const offers = new RecordingOffers()
+  const meeting = event("first", "14:30", "14:55")
+  const now = Date.parse(hour("14:31"))
+  offers.update({ events: [meeting] })
+  offers.update({ settings: { enabled: false }, events: [meeting] })
+  expect(offers.get(meeting.key)).toBeUndefined()
+  expect(offers.open(now)).toEqual([])
+  expect(offers.due(now)).toEqual([])
+  expect(offers.matchAt(now)).toEqual([])
+  offers.update({ settings: { enabled: true }, events: [meeting] })
+  expect(offers.due(now)).toEqual([meeting])
+})
