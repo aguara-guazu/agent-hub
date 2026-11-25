@@ -1,3 +1,4 @@
+import { ScheduleStore } from '../src/schedules/schedule-store.js'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -8,7 +9,7 @@ import { MemoryOperations } from '../src/operations.js'
 import { MemoryAI } from '../src/ai.js'
 import { Vault, defaultAI } from '../src/config.js'
 import { MemoryError } from '../src/contracts.js'
-import { processVersion } from '../src/processing.js'
+import { processVersion } from '../src/projects/processing.js'
 import { type AgentContext } from '../src/agents.js'
 import { exportMemory, readBackup, restoreMemory } from '../src/backup.js'
 import { syncJira } from '../src/connectors/jira.js'
@@ -36,6 +37,24 @@ describe('proyectos, tareas y agentes con SQLite', () => {
   beforeEach(async () => { await resetMemory(db) })
   afterAll(async () => { await db?.close(); if (directory) await rm(directory, { recursive: true, force: true }) })
   async function project() { return store.create({ kind: 'project', title: 'API', data: { folders: ['/work/api'], jira_project_key: 'APP' } }) }
+  it('el contexto consulta cronjobs y ofrece procesamiento multimedia solo cuando están habilitados', async () => {
+    const incidents = vi.spyOn(ScheduleStore.prototype, 'incidents')
+    const enabled = ops.moduleEnabled
+    try {
+      ops.moduleEnabled = id => id !== 'transcriptions' && id !== 'schedules'
+      const off = await ops.call('context', {})
+      expect(off.memory_capabilities.local_media).toBeUndefined()
+      expect(incidents).not.toHaveBeenCalled()
+      ops.moduleEnabled = enabled
+      const on = await ops.call('context', {})
+      expect(on.memory_capabilities.local_media.process).toBe('memory_process_files')
+      expect(incidents).toHaveBeenCalledOnce()
+    } finally {
+      ops.moduleEnabled = enabled
+      incidents.mockRestore()
+    }
+  })
+
   it('hereda el sitio Jira global en la consulta MCP y conserva las excepciones de cada proyecto',async () => {
     await saveJiraSettings(db,{default_site_url:'https://empresa.atlassian.net/jira/'})
     expect(await getJiraSettings(db)).toEqual({default_site_url:'https://empresa.atlassian.net'})

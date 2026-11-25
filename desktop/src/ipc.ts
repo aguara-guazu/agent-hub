@@ -1,5 +1,5 @@
 import type { LanguagePreference } from "./i18n.js"
-import type { RecordingError, RecordingPhase } from "./recording.js"
+import type { RecordingError, RecordingPhase } from "./modules/transcriptions/recording.js"
 import type { SupervisorState } from "./supervisor.js"
 import type { UpdateReport } from "./update-report.js"
 

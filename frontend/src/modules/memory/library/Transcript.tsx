@@ -5,7 +5,7 @@ import { EmptyFiltered, ErrorState, Seg, SkeletonRows } from "../../../component
 import { SearchInput, Select } from "../../../components/ui/fields"
 import { useToast } from "../../../components/ui/Toast"
 import { useFormat, useT } from "../../../i18n/useT"
-import { fragmentOffset, useMemoryPages, useMemoryQuery, type Fragment, type MemoryEntity, type TranscriptPage } from "../../../lib/memory-view"
+import { fragmentOffset, useMemoryPages, useMemoryQuery, type Fragment, type MemoryEntity, type TranscriptPage } from "../memory-view"
 import { Highlight, LoadMore } from "./shared"
 
 const PAGE = 100

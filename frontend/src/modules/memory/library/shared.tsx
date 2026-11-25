@@ -3,7 +3,7 @@ import type { ReactNode } from "react"
 import { Button, Tag } from "../../../components/ui/basics"
 import { Empty, ErrorState, Loading } from "../../../components/ui/display"
 import { useFormat, useT } from "../../../i18n/useT"
-import { highlightParts, isEntityKind, useMemoryReady, useRetryMigration } from "../../../lib/memory-view"
+import { highlightParts, isEntityKind, useMemoryReady, useRetryMigration } from "../memory-view"
 
 const MARK_STYLE = { background: "var(--accent-weak)", color: "var(--text)", borderRadius: "var(--r-sm)", padding: "0 2px" }
 

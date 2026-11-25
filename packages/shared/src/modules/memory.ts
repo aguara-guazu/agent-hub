@@ -4,7 +4,7 @@ export const memory = {
   id: 'memory', label: 'Proyectos y memoria', setting: 'module_memory_enabled',
   routes: ['/api/memory/search', '/api/memory/files', '/api/memory/originals', '/api/memory/projects',
     '/api/memory/backups', '/api/memory/restore', '/api/memory/ai', '/api/memory/embeddings',
-    '/api/memory/extraction-cli', '/api/memory/opencode', '/api/memory/defaults', '/api/memory/credentials/kiro'],
+    '/api/memory/extraction-cli', '/api/memory/opencode', '/api/memory/defaults', '/api/memory/credentials/kiro', '/api/memory/credentials/deepseek'],
   destinations: ['/projects', '/memory'],
   operations: ['suggest_projects', 'draft_profile', 'save_project_company', 'context',
     'list_entities', 'get_entity', 'create_entity', 'merge_projects',

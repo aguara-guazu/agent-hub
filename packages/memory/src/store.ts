@@ -6,7 +6,7 @@ import { MemoryDatabase, type Sql } from './database.js'
 import { check, parse, id, instant, entityInput, entityPatch, fieldsSchema, importInput, linkInput, recordInput,
   type Entity, type EntityKind, type Fragment, type ImportInput, type CollectionField } from './contracts.js'
 import { parseTranscript, splitText } from './transcriptions/transcript.js'
-import { isPlaceholderName, unifyByEmail } from './people.js'
+import { isPlaceholderName, unifyByEmail } from './projects/people.js'
 import { effectiveJiraSite, jiraSiteUrl } from './connectors/jira-settings.js'
 import { ENTITY_SUMMARY_PEOPLE, type EntityListInclude, type EntityRef, type EntitySummary, type FactSummary, type ProjectSummary } from "@agenthub/shared"
 

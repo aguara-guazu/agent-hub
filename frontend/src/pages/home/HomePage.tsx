@@ -7,7 +7,7 @@ import { Banner, Empty, EmptyFiltered, ErrorState, List, RowLink, Seg, SkeletonR
 import { relativeTime } from "../../components/ui/time"
 import { useShellStatus } from "../../components/useShellStatus"
 import { useFormat, useT } from "../../i18n"
-import type { RunState } from "../../lib/automations"
+import type { RunState } from "../../modules/schedules/automations"
 import { useAuth } from "../../lib/auth"
 import { usePendingInbox, useRecentProjects, useToday, type PendingInbox } from "../../lib/home"
 import { useMemoryStatus } from "../../lib/memory"

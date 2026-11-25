@@ -6,16 +6,20 @@ La unidad de trabajo es una función del producto. Un módulo puede aportar una 
 
 | Módulo | Identificador | Implementación principal |
 | --- | --- | --- |
-| Conexiones a servicios | `connections` | `packages/memory/src/connectors`, fuentes, cuentas y sincronización |
+| Conexiones a servicios | `connections` | `packages/memory/src/connectors`, incluidas las rutas, las herramientas y los trabajos de sincronización |
 | Agentes | `agents` | `packages/core/src/modules/agents` y `packages/memory/src/agents`, clientes del daemon, equipos, chat y cuotas de uso |
-| Proyectos y memoria | `memory` | `packages/memory/src/operations.ts`, entidades, búsqueda, inferencia y respaldos |
-| Servidores MCP | `mcp` | `packages/core/src/modules/mcp`, sondeos del catálogo y gateway |
-| Skills | `skills` | `packages/core/src/modules/skills`, catálogo de skills y distribución del daemon |
-| Transcripciones y multimedia | `transcriptions` | `packages/memory/src/transcriptions`, procesamiento de medios y captura de escritorio |
-| Cronjobs y automatizaciones | `schedules` | Rutas y reloj en `packages/memory/src/schedules`, adaptadores de efectos en `packages/core/src/effects` |
+| Proyectos y memoria | `memory` | `packages/memory/src/projects`, incluidas las rutas, las herramientas, la búsqueda y los trabajos de inferencia |
+| Servidores MCP | `mcp` | `packages/core/src/modules/mcp` para el catálogo, `packages/memory/src/mcp` para el servidor integrado y `packages/gateway` para el transporte |
+| Skills | `skills` | `packages/core/src/modules/skills` para catálogo y sincronización, `packages/memory/src/skills` para la referencia que leen los agentes |
+| Transcripciones y multimedia | `transcriptions` | `packages/memory/src/transcriptions` para el procesamiento y `desktop/src/modules/transcriptions` para la captura |
+| Cronjobs y automatizaciones | `schedules` | `packages/memory/src/schedules` para las rutas y el reloj, `desktop/src/modules/schedules` para avisos y reanudación, `packages/core/src/effects` para los efectos |
 | Proyectos compartidos | `sharing` | `packages/memory/src/sharing` e `interhub`, publicaciones y transporte entre hubs |
 
 Cada identificador tiene una declaración en `packages/shared/src/modules/<id>.ts`. Ahí viven la clave de persistencia, los destinos, las rutas HTTP, las operaciones, las familias de trabajos y las dependencias del módulo. En `frontend/src/modules/<id>/index.ts` se registran sus vistas y su sección de Ajustes. General y Sistema pertenecen a la aplicación que aloja los módulos.
+
+Los puntos de entrada reúnen las partes que corren en el mismo proceso. En el servicio de memoria, `routes.ts` registra las rutas de cada módulo, `operations.ts` valida permisos y despacha herramientas, y `jobs.ts` administra la cola, los reintentos y la cancelación. Los esquemas de las herramientas, las consultas y el código que ejecuta cada trabajo viven en la carpeta responsable. En Electron, `main.ts` conecta los módulos con el ciclo de vida de la ventana y el proceso.
+
+Por ejemplo, para cambiar qué ocurre al detener una grabación, empezá en `desktop/src/modules/transcriptions/desktop.ts`. La recepción del audio está en `packages/memory/src/transcriptions/routes.ts` y su procesamiento en `packages/memory/src/transcriptions/jobs.ts`. Los controles de Ajustes están en `frontend/src/modules/transcriptions`.
 
 ## Cómo agregar o cambiar una función
 
@@ -35,4 +39,6 @@ La sesión, el almacenamiento común, los diagnósticos, las actualizaciones y l
 
 ## Verificación
 
-Con las dependencias instaladas, compilá los paquetes con `npm run build`. La prueba de integración de los interruptores se ejecuta con `npx vitest run packages/core/test/modules.test.ts`. Para el reloj y la cola, ejecutá `npx vitest run packages/memory/test/schedule-runtime.test.ts packages/memory/test/memory.test.ts`. El cierre de un cambio transversal incluye `npm run typecheck`, `npm run lint` y `npm test`.
+Desde la raíz, instalá las dependencias y compilá una vez con `npm run build`. Ejecutá `npm run test:module -- <identificador>` con el identificador de la tabla. Por ejemplo, `npm run test:module -- transcriptions` cubre la captura de escritorio y el procesamiento en memoria. Al crear una suite del módulo, incluí su ruta en `scripts/test-module.mjs` si todavía no coincide con ninguno de sus filtros.
+
+Para verificar el contrato entre módulos ejecutá `npx vitest run packages/core/test/modules.test.ts`. El cierre de un cambio transversal incluye `npm run typecheck`, `npm run lint` y `npm test`.

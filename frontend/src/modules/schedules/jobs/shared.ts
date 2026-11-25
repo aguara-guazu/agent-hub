@@ -4,8 +4,8 @@ import type { ChipTone } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { describeError } from "../../../components/ui"
 import { useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
-import { decisionErrorCode, isStaleRevision } from "../../../lib/automations"
-import type { DecisionSummary, Recurrence, RunListItem, RunState, ScheduleView } from "../../../lib/automations"
+import { decisionErrorCode, isStaleRevision } from "../automations"
+import type { DecisionSummary, Recurrence, RunListItem, RunState, ScheduleView } from "../automations"
 
 export const RUN_TONES: Record<RunState, ChipTone> = {
   pending: "info", running: "info", deferred: "info", succeeded: "ok", partial: "warn", failed: "danger",

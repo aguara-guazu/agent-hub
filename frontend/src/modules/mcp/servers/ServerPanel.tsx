@@ -8,8 +8,8 @@ import type { LocalClient } from "../../../lib/local"
 import {
   STATUS_TONE, acceptToolChanges, buildPayload, draftOf, logoutOAuth, needsAuth, oauthRedirectUrl, probeServer, putRule,
   quarantinedCount, rowEnabled, sameDraft, saveOAuthClient, serverStatus, startOAuth, updateServer, useServersCache,
-} from "../../../lib/servers"
-import type { ServerDraft } from "../../../lib/servers"
+} from "../api"
+import type { ServerDraft } from "../api"
 import type { MatrixCell, MatrixRow, McpServer, ServerAuth, Transport } from "../../../lib/types"
 import { useFailDetail, useIssueText } from "./shared"
 

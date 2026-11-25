@@ -45,8 +45,11 @@ export function operationModules(name: string): ModuleId[] {
     module.operations.includes(name) || module.operationPrefixes.some(prefix => name.startsWith(prefix))).map(module => module.id)
   return requirements(owners)
 }
+export function jobOwner(kind: string): ModuleId | undefined {
+  return appModules.find((module: ModuleDefinition) => module.jobs.includes(kind))?.id
+}
 export function jobModules(kind: string): ModuleId[] {
   // Imports and inference write into project memory. A queued job keeps its place while a dependency is off.
-  const owner = appModules.find((module: ModuleDefinition) => module.jobs.includes(kind))
-  return owner && owner.id !== 'memory' ? [owner.id, 'memory'] : ['memory']
+  const owner = jobOwner(kind)
+  return owner && owner !== 'memory' ? [owner, 'memory'] : ['memory']
 }

@@ -2,7 +2,7 @@ import { Link } from "react-router-dom"
 import { Chip, Dl, Panel, PanelBody, PanelHeader } from "../../components/ui"
 import { useFormat, useT } from "../../i18n"
 import { resolverOf } from "../../lib/activity"
-import type { MemoryEntity } from "../../lib/memory-view"
+import type { MemoryEntity } from "../../modules/memory/memory-view"
 import { useProposalLabels } from "./labels"
 
 const CONFIDENCE = ["high", "medium", "low"] as const

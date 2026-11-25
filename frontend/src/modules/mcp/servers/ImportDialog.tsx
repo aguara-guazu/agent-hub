@@ -1,8 +1,8 @@
 import { useState } from "react"
 import { Button, Dialog, Field, Textarea, useToast } from "../../../components/ui"
 import { useT } from "../../../i18n/useT"
-import { createServer, parseImport, probeServer, putRule, useServersCache } from "../../../lib/servers"
-import type { ImportEntry, ImportProblem } from "../../../lib/servers"
+import { createServer, parseImport, probeServer, putRule, useServersCache } from "../api"
+import type { ImportEntry, ImportProblem } from "../api"
 import { useFailDetail } from "./shared"
 
 const PLACEHOLDER = "{\n  \"mcpServers\": {\n    \"github\": { \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-github\"] }\n  }\n}"

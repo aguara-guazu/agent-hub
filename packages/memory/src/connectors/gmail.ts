@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { check, type ImportInput } from '../contracts.js'
-import { fileMime, fileText } from '../attachments.js'
+import { fileMime, fileText } from '../projects/attachments.js'
 import { GMAIL_SCOPE, googleBearer } from './google-auth.js'
 import { CONTROL_HEADER, isExcludedAny, referencedMessageIds } from '../decisions/exclusions.js'
 import { redactSecrets, SECRET_FILE } from '../secrets.js'

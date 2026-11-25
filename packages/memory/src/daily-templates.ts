@@ -6,7 +6,7 @@ import { hash } from './store.js'
 import { registerScheduleTemplate } from './schedules/schedule-templates.js'
 import { collectBrief, projectBlock, renderBrief, type BriefPackage } from './daily-brief.js'
 import { CLOSE_SYSTEM, closeNeedsSynthesis, closePayload, closeSynthesisSchema, collectClose, renderClose, type ClosePackage } from './daily-close.js'
-import { collectStatusInputs, finishSnapshot, snapshotWriter, statusSynthesisSchema, STATUS_SYSTEM, type StatusInputs } from './project-status.js'
+import { collectStatusInputs, finishSnapshot, snapshotWriter, statusSynthesisSchema, STATUS_SYSTEM, type StatusInputs } from './projects/project-status.js'
 
 const noParams = z.object({}).strict() as z.ZodType<Record<string, never>>
 const MAX_SYNTHESIS_INPUT = 60_000

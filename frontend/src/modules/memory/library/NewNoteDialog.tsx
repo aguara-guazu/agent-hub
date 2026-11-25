@@ -5,7 +5,7 @@ import { Dialog } from "../../../components/ui/Dialog"
 import { Field, Input, Textarea } from "../../../components/ui/fields"
 import { useToast } from "../../../components/ui/Toast"
 import { useT } from "../../../i18n/useT"
-import { entityHref, useMemoryAction, type MemoryEntity } from "../../../lib/memory-view"
+import { entityHref, useMemoryAction, type MemoryEntity } from "../memory-view"
 import { EntityCombobox } from "./pickers"
 
 /** Crear una nota: nombre, contenido y proyecto (opcional). Al crear abre la ficha. */

@@ -5,7 +5,7 @@ import {
   Button, Chip, ConfirmDialog, Dl, ErrorState, Field, Input, List, Loading, MoreMenu, Panel, PanelBody, PanelFooter, PanelHeader, RowLink, Select, useToast,
 } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
-import { useDeliveryChannels, useRuns, useSchedules } from "../../../lib/automations"
+import { useDeliveryChannels, useRuns, useSchedules } from "../automations"
 import type { MemoryEntity } from "../../../lib/memory"
 import {
   AUTOMATION_FIELDS, DEFAULT_LIMITS, ROSTER_CLIS, automationErrorCode, automationServerProblem, cleanDocument, parseBranches, repositoryServerProblem,

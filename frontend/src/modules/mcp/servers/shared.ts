@@ -2,7 +2,7 @@ import { useCallback } from "react"
 import { errorKey } from "../../../i18n/errors"
 import { useT } from "../../../i18n/useT"
 import { ApiError } from "../../../lib/api"
-import type { DraftIssue } from "../../../lib/servers"
+import type { DraftIssue } from "../api"
 
 /** Detalle de un error para un toast: el motivo de validación del servidor (422) o la causa general traducida. */
 export function useFailDetail() {

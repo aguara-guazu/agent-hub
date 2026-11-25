@@ -7,8 +7,8 @@ import { useFormat, useT } from "../../../i18n"
 import { useQueryClient } from "@tanstack/react-query"
 import {
   markAllRunsRead, markRunUnread, restoreErrorCode, setRunsRead, useAutomationSettings, useAutomationSettingsMutation, useRuns, useScheduleActions, useSchedules, useUnreadRunCount,
-} from "../../../lib/automations"
-import type { RunListItem, ScheduleView } from "../../../lib/automations"
+} from "../automations"
+import type { RunListItem, ScheduleView } from "../automations"
 import { DeliveryPanel } from "./DeliveryPanel"
 import { HistoryList } from "./HistoryList"
 import { SchedulePanel } from "./SchedulePanel"

@@ -16,11 +16,11 @@ import { exportMemory, restoreMemory } from '../src/backup.js'
 import { seedDemo } from '../src/demo.js'
 import { GoogleAuth } from '../src/connectors/google-auth.js'
 import { JobRunner } from '../src/jobs.js'
-import { processVersion } from '../src/processing.js'
+import { processVersion } from '../src/projects/processing.js'
 import { parseGoogleDocument } from '../src/connectors/google-document.js'
-import { identityContext, inferIdentities } from '../src/identity-inference.js'
-import { dedupePeople } from '../src/people-dedupe.js'
-import { namesCompatible, namesRelated } from '../src/people.js'
+import { identityContext, inferIdentities } from '../src/projects/identity-inference.js'
+import { dedupePeople } from '../src/projects/people-dedupe.js'
+import { namesCompatible, namesRelated } from '../src/projects/people.js'
 
 async function resetMemory(db: MemoryDatabase) {
   const tables = await db.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' AND name NOT LIKE '%_substrings%' AND name<>'schema_versions'")

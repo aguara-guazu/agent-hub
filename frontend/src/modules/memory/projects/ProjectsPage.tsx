@@ -8,7 +8,7 @@ import {
 } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import type { MemoryEntity } from "../../../lib/memory"
-import { projectActivity, projectStage, useAllProjects, useCompanies, type ProjectWithSummary } from "../../../lib/projects"
+import { projectActivity, projectStage, useAllProjects, useCompanies, type ProjectWithSummary } from "../api"
 import { ListDate, StageChip, useNarrow } from "../project/shared"
 import { NewProjectDialog } from "./NewProjectDialog"
 import { SharedProjectDialog, type SharedMode } from "../../sharing/project/SharedProjectDialog"

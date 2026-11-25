@@ -7,7 +7,7 @@ import { Field, Input } from "../../../components/ui/fields"
 import { useToast } from "../../../components/ui/Toast"
 import { useFormat, useT } from "../../../i18n/useT"
 import { api } from "../../../lib/api"
-import { useMemoryAction, type StoredFile } from "../../../lib/memory-view"
+import { useMemoryAction, type StoredFile } from "../memory-view"
 
 const ANALYZABLE = /^(application\/pdf|image\/|audio\/|video\/)/
 

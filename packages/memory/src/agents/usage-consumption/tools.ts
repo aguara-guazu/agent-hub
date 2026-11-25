@@ -10,6 +10,10 @@ const sessionKey = z.string().min(32).max(200).optional()
 const range = z.enum(CONSUMPTION_RANGES).optional()
 const detail = z.enum(["series", "breakdown"]).optional()
 
+export const consumptionReadOperations = [
+  'usage_self', 'usage_team',
+] as const satisfies readonly (keyof typeof consumptionDefinitions)[]
+
 export const consumptionDefinitions = {
   usage_self: [
     "Token or credit consumption of your own session: totals per unit, cost estimate, context peak, compactions and top origins. Estimates are not exact billing.",

@@ -5,7 +5,7 @@ import { Field, Input, Select, Textarea } from "../../../components/ui/fields"
 import { Panel, PanelBody, PanelFooter, PanelHeader } from "../../../components/ui/Panel"
 import { useToast } from "../../../components/ui/Toast"
 import { useFormat, useT } from "../../../i18n/useT"
-import { useMemoryAction, type EntityDetail, type Fragment, type MemoryEntity } from "../../../lib/memory-view"
+import { useMemoryAction, type EntityDetail, type Fragment, type MemoryEntity } from "../memory-view"
 import { EntityCombobox, useEntityOptions } from "./pickers"
 
 /** Lista de proyectos elegidos, cada uno con X, más un combobox para agregar o crear. */

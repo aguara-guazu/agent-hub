@@ -5,7 +5,7 @@ import {
 } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
 import { entityPath, memoryCall, useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
-import { RELATION_CHOICES, STAGE_CHOICES, isRelation, projectStage, type Relation, type Stage } from "../../../lib/projects"
+import { RELATION_CHOICES, STAGE_CHOICES, isRelation, projectStage, type Relation, type Stage } from "../api"
 import { ProjectAutomationPanel } from "../../schedules/jobs/ProjectAutomationPanel"
 import { CompanyCombobox, companyPayload, type CompanyChoice } from "../projects/CompanyCombobox"
 import { useErrorText, useKindLabel, useMemoryAction } from "./shared"

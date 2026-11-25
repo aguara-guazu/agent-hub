@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router-dom"
 import { Button, Empty, EmptyFiltered, ErrorState, List, RowLink, SearchInput, Seg, SkeletonRows, Tag } from "../../../../components/ui"
 import { useT } from "../../../../i18n"
 import { entityPath, memoryCall, type Page } from "../../../../lib/memory"
-import { useProjectContentCount } from "../../../../lib/projects"
+import { useProjectContentCount } from "../../api"
 import type { Entity } from "../../../../lib/types"
 import { ListDate, entityDate, entityDetail, useKindLabel, useProjectNavigation } from "../shared"
 

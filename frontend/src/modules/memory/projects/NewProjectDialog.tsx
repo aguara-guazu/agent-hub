@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom"
 import { Button, Dialog, Field, Input, Select, Textarea, useToast } from "../../../components/ui"
 import { useT } from "../../../i18n"
 import { memoryCall, type MemoryEntity } from "../../../lib/memory"
-import { STAGE_CHOICES, type Stage } from "../../../lib/projects"
+import { STAGE_CHOICES, type Stage } from "../api"
 import { useErrorText, useMemoryAction } from "../project/shared"
 import { CompanyCombobox, NO_COMPANY, companyPayload, type CompanyChoice } from "./CompanyCombobox"
 

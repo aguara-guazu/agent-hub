@@ -3,7 +3,7 @@ import { Combobox } from "../../../components/ui/fields"
 import type { Option } from "../../../components/ui/fields"
 import { useToast } from "../../../components/ui/Toast"
 import { useT } from "../../../i18n/useT"
-import { useMemoryAction, useMemoryQuery, type MemoryEntity, type Page } from "../../../lib/memory-view"
+import { useMemoryAction, useMemoryQuery, type MemoryEntity, type Page } from "../memory-view"
 
 type PickKind = "project" | "person" | "company"
 

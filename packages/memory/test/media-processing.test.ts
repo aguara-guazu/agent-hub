@@ -5,9 +5,9 @@ import { join } from 'node:path'
 import { MemoryService } from '../src/service.js'
 import { processMedia, queueMedia } from '../src/transcriptions/media-processing.js'
 import { mediaSettingsInput, type MediaRuntime } from '../src/transcriptions/media-runtime.js'
-import { readFileAttachment } from '../src/attachments.js'
+import { readFileAttachment } from '../src/projects/attachments.js'
 import { NATIVE_EMBEDDING_MODEL } from '../src/embedding-model.js'
-import { processVersion } from '../src/processing.js'
+import { processVersion } from '../src/projects/processing.js'
 import { defaultAI } from '../src/config.js'
 
 let directory: string, service: MemoryService

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AutostartOffer } from './autostart-offer.js'
-import type { FeedEvent } from './schedule-feed.js'
+import type { FeedEvent } from './modules/schedules/schedule-feed.js'
 
 const created: FeedEvent = { seq: 1, type: 'schedule.created', actor_kind: 'agent', schedule_id: 's1', run_id: null, title: 'Brief', project_id: null }
 

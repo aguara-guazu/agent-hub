@@ -9,7 +9,7 @@ import {
 import { useFormat, useT } from "../../../i18n"
 import { entityPath, useMemory, type MemoryEntity, type Page } from "../../../lib/memory"
 import { useProjectAutomation } from "../../schedules/project-automation"
-import { STAGE_CHOICES, isRelation, listDate, projectActivity, projectStage, useProjectContentCount, type Stage } from "../../../lib/projects"
+import { STAGE_CHOICES, isRelation, listDate, projectActivity, projectStage, useProjectContentCount, type Stage } from "../api"
 import { AttachDialog, NoteDialog } from "./dialogs"
 import { AutomationPanel, CollectionPanel, DetailsPanel, HistoryPanel, LinkPanel, type EntityLink, type ProjectDetail } from "./panels"
 import { StageChip, useErrorText, useMemoryAction, useNarrow } from "./shared"

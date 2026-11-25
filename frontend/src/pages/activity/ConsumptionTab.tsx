@@ -3,11 +3,11 @@ import type { ReactNode } from "react"
 import { BarChart, Chip, Empty, EmptyFiltered, ErrorState, List, Row, RowHead, Seg, Select, SkeletonRows, TabPanel, Tag } from "../../components/ui"
 import type { BarChartPoint } from "../../components/ui"
 import { useT } from "../../i18n"
-import { useAllProjects } from "../../lib/projects"
+import { useAllProjects } from "../../modules/memory/api"
 import {
   CONSUMPTION_RANGES, CONTEXT_WARN_PCT, DEFAULT_RANGE, useConsumptionSeries, useConsumptionSummary,
   type ConsumptionGroup, type ConsumptionRange, type SeriesItem, type SummaryRow,
-} from "../../lib/consumption"
+} from "../../modules/agents/consumption"
 import { ConsumptionPanel } from "./ConsumptionPanel"
 import { useConsumptionLabels } from "./labels"
 import { Bar, Col } from "./shared"

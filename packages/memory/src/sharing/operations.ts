@@ -5,6 +5,10 @@ import { workFolder } from "../store.js"
 import { type AgentContext } from '../agents.js'
 
 const page = { limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }
+export const sharingReadOperations = [
+  'shared_version', 'shared_status', 'read_messages',
+] as const satisfies readonly (keyof typeof sharingDefinitions)[]
+
 export const sharingDefinitions = {
   shared_status: ['Shared project members, permissions, identity, versions. Work on it per skill hub-collaboration.', z.object({ project_id: id }).strict()],
   shared_join: ["Join a shared project only when the person asks. The invitation is the one-line ahinv1. code or the legacy agenthub-invitation-v1 JSON. Requires an existing local folder and never accepts a recovery phrase.", z.object({ invitation: z.unknown(), folder: workFolder }).strict()],

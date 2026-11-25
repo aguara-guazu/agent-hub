@@ -5,7 +5,7 @@ import { Field, Input, Select, Textarea } from "../../../components/ui/fields"
 import { Panel, PanelBody, PanelHeader } from "../../../components/ui/Panel"
 import { useToast } from "../../../components/ui/Toast"
 import { useT } from "../../../i18n/useT"
-import { entityHref, useMemoryAction, type MemoryEntity } from "../../../lib/memory-view"
+import { entityHref, useMemoryAction, type MemoryEntity } from "../memory-view"
 import { EntityCombobox } from "./pickers"
 
 export const COLUMN_TYPES = ["text", "number", "boolean", "date", "datetime", "entity", "json"] as const

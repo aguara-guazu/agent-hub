@@ -12,8 +12,8 @@ import { useServers } from "../../../lib/queries"
 import {
   STATUS_TONE, deleteServer, needsAttention, needsAuth, probeServer, restoreServer, rowEnabled, serverStatus, snapshotRules,
   useRuleWrite, useServersCache,
-} from "../../../lib/servers"
-import type { RuleWrite, ServerStatus } from "../../../lib/servers"
+} from "../api"
+import type { RuleWrite, ServerStatus } from "../api"
 import type { MatrixRow, McpServer } from "../../../lib/types"
 import { ImportDialog } from "./ImportDialog"
 import { NewServerDialog } from "./NewServerDialog"

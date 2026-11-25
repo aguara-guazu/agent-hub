@@ -1,8 +1,8 @@
 import { useFormat, useT } from "../../i18n"
 import { jobLocked, jobMode, jobTitle, resolverOf, type Job } from "../../lib/activity"
-import type { MemoryEntity } from "../../lib/memory-view"
+import type { MemoryEntity } from "../../modules/memory/memory-view"
 import { CLI_LABELS, type CliKind } from "../../lib/types"
-import { dailyRange, parseBucket, type ConsumptionOrigin, type ConsumptionRange, type ConsumptionUnit, type SummaryRow } from "../../lib/consumption"
+import { dailyRange, parseBucket, type ConsumptionOrigin, type ConsumptionRange, type ConsumptionUnit, type SummaryRow } from "../../modules/agents/consumption"
 
 /** Título visible del trabajo, traducido cuando no viene de la fuente. */
 export function useJobLabels() {

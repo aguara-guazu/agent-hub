@@ -48,6 +48,19 @@ afterEach(async () => {
 })
 
 describe('proyectos compartidos cifrados', () => {
+  it('conserva las notas locales sin publicarlas mientras el módulo de compartición está apagado', async () => {
+    const { a, id } = await fixture()
+    let sharing = false
+    a.ops.moduleEnabled = module => module !== 'sharing' || sharing
+    const author = agent('notes')
+    const note = await a.ops.call('write_note', { project_id: id, text: 'Trabajo local' }, 'mcp', author)
+    expect(note.project_id).toBe(id)
+    await a.ops.call('finish_notes', { state: 'done' }, 'mcp', author)
+    sharing = true
+    expect((await a.ops.call('read_messages', { project_id: id })).total).toBe(0)
+    await a.ops.call('write_note', { project_id: id, text: 'Compartir esta nota' }, 'mcp', author)
+    expect((await a.ops.call('read_messages', { project_id: id })).total).toBe(1)
+  })
   it("exige carpeta local al aceptar y evita que agentes dupliquen el proyecto asignado", async () => {
     const a = await hub("Ana"), b = await hub("Bruno")
     const project = await a.store.create({ kind: "project", title: "Compartido" })

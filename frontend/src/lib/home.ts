@@ -1,7 +1,7 @@
 import { useModules } from '../modules/state'
 import type { RecordingStatusView } from "../electron"
-import { usePendingVoices, useRecordingStatus, type PendingVoice } from "./recording"
-import { useRuns, useSchedules, type RunListItem } from "./automations"
+import { usePendingVoices, useRecordingStatus, type PendingVoice } from "../modules/transcriptions/recording"
+import { useRuns, useSchedules, type RunListItem } from "../modules/schedules/automations"
 import { useOverview, type LocalClient } from "./local"
 import { useMemory, useMemoryStatus, type MemoryEntity, type Page } from "./memory"
 import { useServers } from "./queries"

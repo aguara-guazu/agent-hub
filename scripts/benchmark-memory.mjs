@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { MemoryDatabase, vectorValues } from '../packages/memory/dist/database.js'
-import { searchMemory } from '../packages/memory/dist/search.js'
-import { globalSearch } from '../packages/memory/dist/global-search.js'
+import { searchMemory } from '../packages/memory/dist/projects/search.js'
+import { globalSearch } from '../packages/memory/dist/projects/global-search.js'
 import { MemoryError } from '../packages/memory/dist/contracts.js'
 
 const args = process.argv.slice(2)

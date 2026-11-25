@@ -1,10 +1,8 @@
-import { appModules, jobModules, type ModuleEnabled } from '@agenthub/shared/modules'
-import { processMedia, queueMedia } from './transcriptions/media-processing.js'
-import { linkRecordingEvents, processRecording } from "./transcriptions/recording-processing.js"
-import { sweepRecordings } from "./transcriptions/recordings.js"
-import { prepareSharedProcessing, finishSharedProcessing } from './sharing/processing.js'
+import { runProjectJob } from './projects/jobs.js'
+import { runConnectorJob, scheduleImports } from './connectors/jobs.js'
+import { runTranscriptionJob, scheduleTranscriptions } from './transcriptions/jobs.js'
+import { appModules, jobModules, jobOwner, type ModuleEnabled } from '@agenthub/shared/modules'
 import type { MediaRuntime } from './transcriptions/media-runtime.js'
-import { tidyMemory } from './memory-maintenance.js'
 import { NATIVE_EMBEDDING_ENGINES } from './native-embeddings.js'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -14,19 +12,9 @@ import type { MemoryAI } from './ai.js'
 import type { AIConfig, Vault } from './config.js'
 import type { GoogleAuth } from './connectors/google-auth.js'
 import { MemoryError } from './contracts.js'
-import { scheduleEntityIndex, indexEntities } from './entity-index.js'
-import { processVersion } from './processing.js'
-import { inferSourceMetadata } from './source-inference.js'
-import { dedupePeople } from './people-dedupe.js'
+import { scheduleEntityIndex } from './projects/entity-index.js'
 import { sweepNotes } from './agents.js'
-import { ProviderError, ProviderHttp } from './connectors/http.js'
-import type { Connector, ConnectorContext } from './connectors/types.js'
-import { syncGoogle, syncGoogleRange, importGoogleDocument, repairGoogle } from './connectors/google.js'
-import { syncGmail } from './connectors/gmail.js'
-import { GMAIL_SCOPE } from './connectors/google-auth.js'
-import { syncNotion } from './connectors/notion.js'
-import { syncSlack } from './connectors/slack.js'
-import { syncJira } from './connectors/jira.js'
+import { ProviderError } from './connectors/http.js'
 import { ADMISSION_SETTING } from "./admission-gate.js"
 
 /** Whole-memory passes that rewrite people, identities or vectors: they start alone and nothing starts next to them.
@@ -42,10 +30,6 @@ const IMPORTS_ALONGSIDE = ['dedupe_people', 'tidy_memory']
 const SINGLE_KINDS = ['index_entities', 'media', 'recording']
 /** Embedding-only jobs beyond one per local engine would only wait in the engines and hold slots extraction can use. */
 const MAX_EMBEDDING_ONLY_JOBS = NATIVE_EMBEDDING_ENGINES
-/** Gmail is polled apart from the full Google sync, which re-reads calendar windows and Meet records on every run. */
-const GMAIL_POLL_SECONDS = 120
-const GMAIL_RETRY_SECONDS = 1800
-
 export class JobRunner {
   private readonly runningJobs = new Map<AbortController, string>()
   refreshModules() {
@@ -67,31 +51,12 @@ export class JobRunner {
       WHERE state='running' AND lease_until<now() AND lease_owner IS NOT $1 RETURNING id,kind,state,attempts,max_attempts`, [this.workerId])
     for (const job of orphaned) console.error(`[job ${job.id}] ${job.kind} intento ${job.attempts}/${job.max_attempts}: el worker anterior se cerró con el trabajo en curso; queda ${job.state === 'failed' ? 'fallido' : 'en cola'}`)
     if (this.moduleEnabled('memory')) {
-      if (this.moduleEnabled('connections')) await this.scheduleImports()
+      if (this.moduleEnabled('connections')) await scheduleImports(this.store, this.google)
       await scheduleEntityIndex(this.store, await this.settings())
-      if (this.moduleEnabled('transcriptions')) {
-        if (this.media) await queueMedia(this.store, {}, true, this.media)
-        await sweepRecordings(this.store)
-        await linkRecordingEvents(this.store)
-      }
+      if (this.moduleEnabled('transcriptions')) await scheduleTranscriptions(this.store, this.media)
       await sweepNotes(this.store.db)
     }
     await this.store.db.query(`INSERT INTO settings(key,value) VALUES('worker',json_object('heartbeat',now(),'id',$1)) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [this.workerId])
-  }
-
-  private async scheduleImports() {
-    const due = await this.store.db.query<Connector>(`SELECT c.* FROM connectors c WHERE c.enabled=1
-      AND (c.last_success_at IS NULL OR c.last_success_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-'||c.interval_minutes||' minutes'))
-      AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='sync' AND j.payload->>'connector_id'=c.id AND j.payload->>'since' IS NULL
-        AND (j.state IN ('queued','running','waiting') OR j.updated_at>strftime('%Y-%m-%dT%H:%M:%fZ','now','-'||c.interval_minutes||' minutes')))`)
-    for (const connector of due) await this.store.enqueue('sync', { connector_id: connector.id }, `sync:${connector.id}`)
-    const mailboxes = await this.store.db.query<Connector>(`SELECT c.* FROM connectors c WHERE c.enabled=1 AND c.provider='google' AND COALESCE(c.config->>'gmail_enabled',1) NOT IN (0,'false')
-      AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.kind='gmail' AND j.payload->>'connector_id'=c.id AND (j.state IN ('queued','running','waiting')
-        OR j.updated_at>strftime('%Y-%m-%dT%H:%M:%fZ','now',CASE WHEN j.state='completed' THEN $1 ELSE $2 END)))`,
-      [`-${GMAIL_POLL_SECONDS} seconds`, `-${GMAIL_RETRY_SECONDS} seconds`])
-    for (const connector of mailboxes) if (this.google.granted(connector.id, GMAIL_SCOPE)) await this.store.enqueue('gmail', { connector_id: connector.id }, `gmail:${connector.id}`)
-    await this.store.db.query(`DELETE FROM jobs WHERE kind='gmail' AND state='completed' AND COALESCE(progress->>'imported',0)=0
-      AND updated_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour')`)
   }
 
   async once(signal: AbortSignal): Promise<boolean> {
@@ -164,61 +129,18 @@ export class JobRunner {
     }
     try {
       await progress({ started_at: new Date().toISOString(), finished_at: null, stage: 'preparing' })
-      if (job.kind === 'process') {
-        const settings = await this.settings()
-        if (job.payload.index_only) { settings.extraction = 'disabled'; await progress({ index_only: true }) }
-        const shared = this.moduleEnabled('sharing') && !job.payload.force && !job.payload.identity_only && !job.payload.projects_only
-          ? await prepareSharedProcessing(this.store, job.payload.version_id, settings) : { work: [], reusable: false, defer: false }
-        if (shared.defer) {
-          await progress({ stage: 'waiting_for_peer' })
-          await this.store.db.query(`UPDATE jobs SET state='waiting',lease_until=NULL,lease_owner=NULL,attempts=max(0,attempts-1),
-            available_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+30 seconds'),updated_at=now() WHERE id=$1 AND lease_owner=$2`, [job.id, this.workerId])
-          return true
-        }
-        if (shared.reusable) { settings.extraction = 'disabled'; await progress({ shared_result_reused: true }) }
-        if (job.payload.identity_only) await progress({ identity_only: true })
-        if (job.payload.projects_only) await progress({ projects_only: true })
-        const result = await processVersion(this.store, this.ai.forJob(settings, controller.signal, progress), job.payload.version_id, settings, progress, controller.signal,
-          Boolean(job.payload.force), Boolean(job.payload.identity_only), { runKey: job.id, projectsOnly: Boolean(job.payload.projects_only) })
-        await progress(result)
-        await finishSharedProcessing(this.store, shared.work, 'extraction' in result && result.extraction === 'processed')
-      } else if (job.kind === 'describe_source') {
-        const settings = await this.settings()
-        await progress(await inferSourceMetadata(this.store, this.ai.forJob(settings, controller.signal, progress), job.payload.version_id, settings, progress, controller.signal))
-      } else if (job.kind === 'media') {
-        if (!this.media) throw new MemoryError(409, 'El procesamiento multimedia no está disponible')
-        await progress(await processMedia(this.store, this.media, job.payload, controller.signal, progress))
-      } else if (job.kind === 'recording') {
-        if (!this.media) throw new MemoryError(409, 'El procesamiento multimedia no está disponible')
-        const settings = await this.settings()
-        await progress(await processRecording(this.store, this.media, job.payload, controller.signal, progress, { ai: this.ai.forJob(settings, controller.signal, progress), config: settings }))
-      } else if (job.kind === 'index_entities') {
-        const settings = await this.settings()
-        await progress(await indexEntities(this.store, this.ai.forJob(settings, controller.signal, progress), settings, controller.signal, progress))
-      } else if (job.kind === 'tidy_memory') {
-        await progress(await tidyMemory(this.store, await this.settings(), job.payload, controller.signal, progress))
-      } else if (job.kind === 'dedupe_people') {
-        const settings = await this.settings()
-        await progress(await dedupePeople(this.store, this.ai.forJob(settings, controller.signal, progress), settings, progress, controller.signal))
-      } else if (job.kind === 'sync' || job.kind === 'gmail' || job.kind === 'google_document' || job.kind === 'google_repair') {
-        const connector = (await this.store.db.query<Connector>('SELECT * FROM connectors WHERE id=$1', [job.payload.connector_id]))[0]
-        if (!connector) throw new MemoryError(404, 'El conector ya no existe')
-        if (!connector.enabled) throw new MemoryError(409, 'El conector está pausado')
-        const ctx: ConnectorContext = { store: this.store, vault: this.vault, google: this.google,
-          http: new ProviderHttp(this.fetcher, controller.signal), signal: controller.signal, progress,
-          checkpoint: async cursor => { await this.store.db.query('UPDATE connectors SET cursor=$2 WHERE id=$1', [connector.id, JSON.stringify(cursor)]) } }
-        if (job.kind === 'google_repair') await repairGoogle(connector, ctx)
-        else if (job.kind === 'gmail') {
-          await syncGmail(connector, ctx)
-          await this.store.db.query("UPDATE connectors SET last_error=NULL WHERE id=$1 AND last_error LIKE 'Gmail:%'", [connector.id])
-        }
-        else if (job.kind === 'google_document') await importGoogleDocument(connector, ctx, job.payload.document_id, job.payload.meeting_entity_id ?? job.payload.event_entity_id)
-        else if (job.payload.since) await syncGoogleRange(connector, ctx, job.payload.since, job.payload.until)
-        else {
-          await ({ google: syncGoogle, notion: syncNotion, slack: syncSlack, jira: syncJira })[connector.provider](connector, ctx)
-          await this.store.db.query('UPDATE connectors SET last_success_at=now(),last_error=NULL WHERE id=$1', [connector.id])
-        }
-      } else throw new MemoryError(422, 'Tipo de trabajo desconocido')
+      const owner = jobOwner(job.kind)
+      if (owner === 'transcriptions') {
+        await runTranscriptionJob(this.store, this.media, this.ai, this.settings, job, controller.signal, progress)
+      } else if (owner === 'connections') {
+        await runConnectorJob({ store: this.store, vault: this.vault, google: this.google, fetcher: this.fetcher }, job, controller.signal, progress)
+      } else {
+        const result = await runProjectJob({
+          store: this.store, ai: this.ai, loadSettings: this.settings, workerId: this.workerId,
+          sharingEnabled: () => this.moduleEnabled('sharing'),
+        }, job, controller.signal, progress)
+        if (result === 'waiting') return true
+      }
       await progress({ finished_at: new Date().toISOString() })
       await jobQuery("UPDATE jobs SET state='completed',lease_until=NULL,lease_owner=NULL,error=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2", [job.id, this.workerId])
     } catch (error) {

@@ -2,8 +2,8 @@ import { useEffect, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { Button, Chip, Dl, Field, Input, List, MoreMenu, Panel, PanelBody, PanelFooter, PanelHeader, Row, SkeletonRows, Switch, useToast } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
-import { useRuns, useScheduleActions } from "../../../lib/automations"
-import type { DeliveryAvailability, DeliveryTarget, ScheduleView } from "../../../lib/automations"
+import { useRuns, useScheduleActions } from "../automations"
+import type { DeliveryAvailability, DeliveryTarget, ScheduleView } from "../automations"
 import { RUN_TONES, runWhen, useActionError, useDecisionSummary, useScheduleText, useWeekdays } from "./shared"
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/

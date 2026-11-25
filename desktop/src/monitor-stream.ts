@@ -1,4 +1,4 @@
-import type { RecorderBridge } from "./recorder-ipc.js"
+import type { RecorderBridge } from "./modules/transcriptions/recorder-ipc.js"
 
 /** Feed the default output monitor into the same Opus recorder without playing it through the speakers. */
 export function monitorStream(context: AudioContext, bridge: RecorderBridge): Promise<MediaStream> {

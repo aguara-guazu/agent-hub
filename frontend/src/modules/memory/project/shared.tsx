@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router-dom"
 import { Chip, useToast } from "../../../components/ui"
 import { errorKey, useFormat, useT } from "../../../i18n"
 import { memoryCall, type MemoryEntity } from "../../../lib/memory"
-import { listDate, stageTone, type Stage } from "../../../lib/projects"
+import { listDate, stageTone, type Stage } from "../api"
 
 /** Texto para la persona a partir de un error de la API (R6). */
 export function useErrorText() {

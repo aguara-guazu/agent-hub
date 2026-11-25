@@ -1,7 +1,7 @@
 import { check, type ImportInput } from '../contracts.js'
 import type { Connector, ConnectorContext } from './types.js'
 import { richText } from './http.js'
-import { normalizeJiraIssue, upsertJiraIssues } from '../tasks.js'
+import { normalizeJiraIssue, upsertJiraIssues } from '../projects/tasks.js'
 
 export async function syncJira(connector: Connector, ctx: ConnectorContext): Promise<void> {
   const credentials = ctx.vault.read(connector.id)

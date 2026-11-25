@@ -7,7 +7,7 @@ import { Combobox, Select } from "../../../components/ui/fields"
 import type { Option } from "../../../components/ui/fields"
 import { useToast } from "../../../components/ui/Toast"
 import { useFormat, useT } from "../../../i18n/useT"
-import { entityHref, isEntityKind, useMemoryAction, useMemoryQuery, type EntityDetail, type EntityLink, type MemoryEntity, type Page, type SourceVersion, type TranscriptPage } from "../../../lib/memory-view"
+import { entityHref, isEntityKind, useMemoryAction, useMemoryQuery, type EntityDetail, type EntityLink, type MemoryEntity, type Page, type SourceVersion, type TranscriptPage } from "../memory-view"
 import { EntityCombobox } from "./pickers"
 import { KindTag } from "./shared"
 

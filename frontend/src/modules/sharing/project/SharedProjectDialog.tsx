@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Button, Dialog, Field, Input, Textarea, useToast } from "../../../components/ui"
 import { useT } from "../../../i18n"
 import { api } from "../../../lib/api"
-import { MAX_ARCHIVE_BYTES } from "../../../lib/projects"
+import { MAX_ARCHIVE_BYTES } from "../../memory/api"
 import { useErrorText } from "../../memory/project/shared"
 
 export type SharedMode = "join" | "restore"

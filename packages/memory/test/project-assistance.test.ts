@@ -6,7 +6,7 @@ import { MemoryDatabase, vector } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
 import type { MemoryAI } from '../src/ai.js'
 import { defaultAI } from '../src/config.js'
-import { draftProfile, saveProjectCompany, suggestProjects } from '../src/project-assistance.js'
+import { draftProfile, saveProjectCompany, suggestProjects } from '../src/projects/project-assistance.js'
 
 async function resetMemory(db: MemoryDatabase) {
   const tables = await db.query<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' AND name NOT LIKE '%_substrings%' AND name<>'schema_versions'")

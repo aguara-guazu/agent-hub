@@ -6,8 +6,8 @@ import type { ChipTone } from "../../../components/ui"
 import { Markdown } from "../../../components/Markdown"
 import { useFormat, useT } from "../../../i18n"
 import { ApiError } from "../../../lib/api"
-import { RETRY_ERROR_CODES, STORE_ITEM_TO_PUBLIC, markRunRead, useDecision, useDecisionActions, useRetryDelivery, useRun } from "../../../lib/automations"
-import type { DeliveryTarget, DeliveryView, ItemKind, ItemState, PublicItem, RunDetail, RunListItem } from "../../../lib/automations"
+import { RETRY_ERROR_CODES, STORE_ITEM_TO_PUBLIC, markRunRead, useDecision, useDecisionActions, useRetryDelivery, useRun } from "../automations"
+import type { DeliveryTarget, DeliveryView, ItemKind, ItemState, PublicItem, RunDetail, RunListItem } from "../automations"
 import { ARTIFACTS, RUN_TONES, runWhen, useActionError, useDayText, useScheduleText } from "./shared"
 
 /** Ítems cuyo efecto no se corrige después: se confirman viendo el efecto exacto. */

@@ -6,7 +6,7 @@ const source = name => fileURLToPath(new URL(`../src/${name}`, import.meta.url))
 const output = name => fileURLToPath(new URL(`../dist/${name}`, import.meta.url))
 copyFileSync(fileURLToPath(new URL('./x11-speaker-window.py', import.meta.url)), output('x11-speaker-window.py'))
 
-for (const [entry, outfile] of [['preload.ts', 'preload.cjs'], ['recorder-preload.ts', 'recorder-preload.cjs'], ['calendar-end-preload.ts', 'calendar-end-preload.cjs']]) {
+for (const [entry, outfile] of [['preload.ts', 'preload.cjs'], ['modules/transcriptions/recorder-preload.ts', 'recorder-preload.cjs'], ['modules/transcriptions/calendar-end-preload.ts', 'calendar-end-preload.cjs']]) {
   await build({
     entryPoints: [source(entry)],
     outfile: output(outfile),
@@ -18,7 +18,7 @@ for (const [entry, outfile] of [['preload.ts', 'preload.cjs'], ['recorder-preloa
 }
 
 // Página de la ventana oculta de captura: script de navegador sin módulos, cargado desde un archivo local.
-for (const [entry, outfile] of [['recorder-page.ts', 'recorder.js'], ['speaker-tab-page.ts', 'speaker-tab.js']]) {
+for (const [entry, outfile] of [['modules/transcriptions/recorder-page.ts', 'recorder.js'], ['modules/transcriptions/speaker-tab-page.ts', 'speaker-tab.js']]) {
   await build({ entryPoints: [source(entry)], outfile: output(outfile), bundle: true, platform: 'browser', format: 'iife', target: 'es2022' })
 }
 writeFileSync(output('recorder.html'), [

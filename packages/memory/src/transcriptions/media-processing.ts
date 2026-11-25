@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { id, check, parse, importInput } from '../contracts.js'
 import { hash, type MemoryStore } from '../store.js'
-import { readFileAttachment } from '../attachments.js'
+import { readFileAttachment } from '../projects/attachments.js'
 import { redactSecrets } from '../secrets.js'
 import { MediaRuntime, mediaSettingsInput, MEDIA_REVISION, type MediaSettings } from './media-runtime.js'
 

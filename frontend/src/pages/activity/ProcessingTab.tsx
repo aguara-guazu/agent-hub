@@ -11,7 +11,7 @@ import {
   JOB_KINDS, commitAllCancels, commitCancel, jobProgress, jobTone, scheduleCancel, undoCancel,
   type Job, type JobState, type ProcessingStatus,
 } from "../../lib/activity"
-import { useMemoryAction, useMemoryPages, useMemoryQuery, type MemoryEntity, type Page } from "../../lib/memory-view"
+import { useMemoryAction, useMemoryPages, useMemoryQuery, type MemoryEntity, type Page } from "../../modules/memory/memory-view"
 import { JobPanel } from "./JobPanel"
 import { ProposalPanel } from "./ProposalPanel"
 import { useJobLabels, useProposalLabels } from "./labels"

@@ -5,7 +5,7 @@ import { Dl } from "../../../components/ui/display"
 import { useToast } from "../../../components/ui/Toast"
 import { useFormat, useT } from "../../../i18n/useT"
 import { memoryCall } from "../../../lib/memory"
-import { useMemoryAction, type EntityDetail, type MemoryEntity } from "../../../lib/memory-view"
+import { useMemoryAction, type EntityDetail, type MemoryEntity } from "../memory-view"
 
 const CATEGORIES = ["preference", "decision", "lesson", "procedure", "context"] as const
 const CONFIDENCE = ["observed", "confirmed", "inferred"] as const

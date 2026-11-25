@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import { Combobox, type Option } from "../../../components/ui"
-import { useCompanies } from "../../../lib/projects"
+import { useCompanies } from "../api"
 
 /** Empresa elegida: una existente (`id`) o una nueva que se crea al guardar (`newName`). */
 export interface CompanyChoice { id: string; newName: string }

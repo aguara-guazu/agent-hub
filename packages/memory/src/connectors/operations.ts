@@ -6,6 +6,10 @@ import { GMAIL_SCOPE, GMAIL_SEND_SCOPE, googleScopes, type GoogleAuth } from './
 import type { Vault } from '../config.js'
 import { GOOGLE_SETUP_APIS, GOOGLE_SETUP_SCOPES, ensureGoogleSource, readGoogleClientFile } from './google-setup.js'
 
+export const connectionReadOperations = [
+  'list_connectors', 'google_setup_status',
+] as const satisfies readonly (keyof typeof connectionDefinitions)[]
+
 export const connectionDefinitions = {
   list_connectors: ['Configured sources, coverage, errors; no credentials.', z.object({}).strict()],
   save_connector: ['Set source scope. Credentials go in the hub UI.', connectorInput.extend({ id: id.optional() })],

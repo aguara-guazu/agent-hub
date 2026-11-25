@@ -1,7 +1,7 @@
 import { BarList, Chip, Dl, ErrorState, Loading, LineChart, Panel, PanelBody, PanelHeader, Tag } from "../../components/ui"
 import type { DlItem } from "../../components/ui"
 import { useT } from "../../i18n"
-import { CONTEXT_WARN_PCT, useConsumptionAgent, type ConsumptionRange, type SummaryRow } from "../../lib/consumption"
+import { CONTEXT_WARN_PCT, useConsumptionAgent, type ConsumptionRange, type SummaryRow } from "../../modules/agents/consumption"
 import { useConsumptionLabels } from "./labels"
 
 interface Props {

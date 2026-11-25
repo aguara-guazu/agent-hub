@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom"
 import { useT } from "../../../i18n/useT"
-import { excerpt, fragmentHref, fragmentOffset, type Fragment } from "../../../lib/memory-view"
+import { excerpt, fragmentHref, fragmentOffset, type Fragment } from "../memory-view"
 import { Highlight, KindTag, useListDate } from "./shared"
 
 const TAG_COLUMN = { width: 96, flex: "none", display: "flex", justifyContent: "center", alignSelf: "flex-start", marginTop: 1 } as const

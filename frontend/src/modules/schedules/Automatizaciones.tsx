@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { ErrorState, Input, List, SkeletonRows, Switch, useToast } from "../../components/ui"
 import { useFormat, useT } from "../../i18n"
 import { api } from "../../lib/api"
-import { automationKeys, useAutomationSettings, type AutomationSettings } from "../../lib/automations"
+import { automationKeys, useAutomationSettings, type AutomationSettings } from "./automations"
 import { SettingRow, SettingsSection, useErrorDetail } from "../../pages/settings/SettingRow"
 
 type Toggle = "notify_schedule_created" | "notify_delivery" | "keep_awake"

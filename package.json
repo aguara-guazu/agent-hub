@@ -31,6 +31,7 @@
     "agenthub": "tsx packages/daemon/src/cli.ts",
     "seed": "tsx packages/core/src/seed.ts",
     "test": "vitest run --exclude \"**/dist/**\" packages desktop/src testdata/src && npm run test --workspace @agenthub/frontend",
+    "test:module": "node scripts/test-module.mjs",
     "test:unit": "npm test",
     "test:e2e": "npm run build && vitest run tests/e2e",
     "test:sharing:e2e": "npm run build && node scripts/test-sharing-e2e.mjs",

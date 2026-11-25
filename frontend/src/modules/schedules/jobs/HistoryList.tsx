@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react"
 import type { CSSProperties } from "react"
 import { Button, Chip, IconButton, List, RowHead } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
-import type { RunListItem } from "../../../lib/automations"
+import type { RunListItem } from "../automations"
 import { dayKey, runWhen, useDayText, useRunResult } from "./shared"
 
 const ROW_MIN = 600

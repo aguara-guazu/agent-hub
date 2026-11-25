@@ -6,11 +6,11 @@ import {
 } from "../../components/ui"
 import { useFormat, useT } from "../../i18n"
 import { redact } from "../../lib/activity"
-import { useAllProjects } from "../../lib/projects"
+import { useAllProjects } from "../../modules/memory/api"
 import {
   AUTHORITY_KINDS, isAuthorityKind, useAuthorityEvents, useReadGrants,
   type AuthorityEventRow, type AuthorityKind, type ReadGrantRow,
-} from "../../lib/read-grants"
+} from "../../modules/agents/read-grants"
 import { Bar, CodeBox, Col, useListTime } from "./shared"
 
 type View = "events" | "grants"

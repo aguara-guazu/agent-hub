@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { MemoryService } from '../src/service.js'
-import { tidyMemory } from '../src/memory-maintenance.js'
+import { tidyMemory } from '../src/projects/memory-maintenance.js'
 import { defaultAI } from '../src/config.js'
 import { vector } from '../src/database.js'
 

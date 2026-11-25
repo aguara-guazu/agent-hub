@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import { Button, Dialog, Field, IconButton, Input, Select, Textarea, useToast } from "../../../components/ui"
 import { useT } from "../../../i18n"
 import { memoryCall } from "../../../lib/memory"
-import { MAX_FILE_BYTES, parseLocalDateTime, readBase64 } from "../../../lib/projects"
+import { MAX_FILE_BYTES, parseLocalDateTime, readBase64 } from "../api"
 import { useErrorText, useMemoryAction } from "./shared"
 
 /** Nueva nota del proyecto: título + contenido. */

@@ -1,4 +1,4 @@
-import type { FeedEvent } from './schedule-feed.js'
+import type { FeedEvent } from './modules/schedules/schedule-feed.js'
 
 /**
  * Oferta única de «Iniciar al ingresar» cuando aparece la primera automatización.
