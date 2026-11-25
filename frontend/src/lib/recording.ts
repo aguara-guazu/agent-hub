@@ -12,7 +12,7 @@ export interface PendingVoice {
   voice: number
   seconds: number
   sample: string
-  proposal: { email: string; name: string; confidence: "high" | "medium" | "low"; reason: string } | null
+  proposal: { email: string; person_id?: string; name: string; confidence: "high" | "medium" | "low"; reason: string } | null
   candidates: { email: string; name: string }[]
 }
 

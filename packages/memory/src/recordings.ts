@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readFile, rm, rmdir } from "node:fs/promises"
+import { copyFile, lstat, mkdir, readFile, rm, rmdir, writeFile } from "node:fs/promises"
 import { basename, isAbsolute, join } from "node:path"
 import { z } from "zod"
 import { check, id, instant, parse } from "./contracts.js"
@@ -35,14 +35,16 @@ export const recordingEvent = z.object({
 }).strict()
 export type RecordingEvent = z.infer<typeof recordingEvent>
 
-const trackMeta = z.object({ file: z.string(), started_at: instant.nullable(), bytes: z.number().int().nonnegative(), error: z.string().optional() })
+const trackMeta = z.object({ file: z.string(), started_at: instant.nullable(), bytes: z.number().int().nonnegative(), error: z.string().optional(), interrupted: z.string().optional() })
+export const speakerHints = z.array(z.object({ at: z.number().int().nonnegative(), name: z.string().trim().min(1).max(100) })).max(12000)
 const recordingMeta = z.object({
   schema: z.literal(1), id, title: z.string().trim().min(1).max(500), event_id: z.string().nullable().optional(), scheduled_end: z.string().nullable().optional(),
   started_at: instant, ended_at: instant.nullable(), tracks: z.partialRecord(z.enum(RECORDING_TRACKS), trackMeta), app_version: z.string().max(100).optional(),
+  incomplete: z.boolean().optional(), speaker_hints: z.unknown().optional(),
 })
 export const registerRecordingInput = z.object({ directory: z.string().min(1).max(4000), event: recordingEvent.optional() }).strict()
 
-export interface StoredTrack { file: string; started_at: string; bytes: number }
+export interface StoredTrack { file: string; started_at: string; bytes: number; incomplete?: boolean }
 export interface RecordingRow {
   id: string; state: "queued" | "processing" | "ready" | "failed"; title: string; event: RecordingEvent | null
   started_at: string; ended_at: string; directory: string; tracks: Partial<Record<RecordingTrack, StoredTrack>>
@@ -82,7 +84,8 @@ export async function registerRecording(store: MemoryStore, memoryDirectory: str
     const track = meta.tracks[name]
     if (!track?.started_at || track.error) continue
     const file = await lstat(join(input.directory, TRACK_FILES[name])).catch(() => null)
-    if (file?.isFile() && file.size > 0) tracks[name] = { file: TRACK_FILES[name], started_at: track.started_at, bytes: file.size }
+    if (file?.isFile() && file.size > 0) tracks[name] = { file: TRACK_FILES[name], started_at: track.started_at, bytes: file.size,
+      ...(meta.incomplete || track.interrupted ? { incomplete: true } : {}) }
   }
   check(Object.keys(tracks).length > 0, "La grabación no tiene audio")
   const first = Math.min(...Object.values(tracks).map(track => Date.parse(track.started_at)))
@@ -92,6 +95,8 @@ export async function registerRecording(store: MemoryStore, memoryDirectory: str
   const directory = recordingDirectory(memoryDirectory, meta.id)
   await mkdir(directory, { recursive: true, mode: 0o700 })
   for (const track of Object.values(tracks)) await copyFile(join(input.directory, track.file), join(directory, track.file))
+  const hints = speakerHints.safeParse(meta.speaker_hints)
+  if (hints.success && hints.data.length) await writeFile(join(directory, "speaker-hints.json"), JSON.stringify(hints.data), { mode: 0o600 })
   // The retention date is set from the start, so the audio of a recording whose processing fails still expires.
   const expires = new Date(Date.now() + (await recordingSettings(store)).retention_days * 86_400_000).toISOString()
   const row = (await store.db.query<RecordingRow>(`INSERT INTO recordings(id,title,event,started_at,ended_at,directory,tracks,audio_expires_at)

@@ -9,7 +9,7 @@ import type { SupervisorState } from "./supervisor.js"
  * salen del idioma activo de `i18n.ts`: el main la vuelve a construir al cambiarlo.
  */
 
-export type TrayAction = "show" | "hide" | "toggle-autostart" | "restart-core" | "restart-client" | "recording-start" | "recording-stop" | "cancel-quit" | "quit"
+export type TrayAction = "show" | "hide" | "toggle-autostart" | "restart-core" | "restart-client" | "recording-start" | "recording-stop" | "recording-window" | "recording-tab" | "cancel-quit" | "quit"
 
 export interface TrayItem {
   id?: TrayAction
@@ -56,6 +56,8 @@ function recordingItems(recording: TrayViewModel["recording"]): TrayItem[] {
   return [
     { type: "separator" },
     { label: t("tray.recording", { title: recording.title }), enabled: false },
+    { id: "recording-tab", label: t("tray.recordTab"), type: "normal", enabled: !recording.busy },
+    { id: "recording-window", label: t("tray.recordWindow"), type: "normal", enabled: !recording.busy },
     { id: "recording-stop", label: t("tray.recordStop"), type: "normal", enabled: !recording.busy },
   ]
 }

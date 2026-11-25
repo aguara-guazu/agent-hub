@@ -3,7 +3,8 @@ import { z } from "zod"
 import { lenientItems, type MemoryAI } from "./ai.js"
 import { usesRemoteExtraction, type AIConfig } from "./config.js"
 import { check, parse } from "./contracts.js"
-import type { StoredVoice } from "./recording-processing.js"
+import { canonicalName, rememberedVoices, type VisualHint } from "./voice-evidence.js"
+import type { VoiceProposal, StoredVoice } from "./recording-processing.js"
 import type { RecordingRow } from "./recordings.js"
 import type { Sql } from "./database.js"
 import type { MemoryStore } from "./store.js"
@@ -17,18 +18,17 @@ import type { MemoryStore } from "./store.js"
  */
 
 const CONFIDENCES = ["high", "medium", "low"] as const
-const TRANSCRIPT_FRAGMENTS = 160
-const FRAGMENT_CHARS = 320
 const PENDING_LIMIT = 50
 
-const matchSchema = z.object({ voice_id: z.string(), candidate_id: z.string().nullable(), confidence: z.enum(CONFIDENCES), reason: z.string().max(600) })
+const matchSchema = z.object({ voice_id: z.string(), name: z.string().trim().min(2).max(100), evidence_id: z.string(), confidence: z.enum(CONFIDENCES), reason: z.string().max(600) })
 const responseSchema = z.object({ matches: z.array(z.unknown()) })
 export const voiceDecisionInput = z.discriminatedUnion("decision", [
-  z.object({ decision: z.literal("confirm"), email: z.email() }).strict(),
+  z.object({ decision: z.literal("confirm"), email: z.email().optional(), person_id: z.uuid().optional(), remember: z.boolean().optional() }).strict()
+    .refine(input => Boolean(input.email) !== Boolean(input.person_id), "Elegí una persona o un correo"),
   z.object({ decision: z.literal("dismiss") }).strict(),
 ])
 
-interface VoiceFragment { text: string; voice: number | null; track: string | null }
+interface VoiceFragment { offset_ms: number; text: string; voice: number | null; track: string | null; resolution: string | null }
 
 /** Invitees a voice can be. The person recording is one of them only when the microphone was not attributed to them (single-track recording). */
 function candidatesOf(row: RecordingRow) {
@@ -38,47 +38,108 @@ function candidatesOf(row: RecordingRow) {
 }
 
 async function fragmentsOf(store: MemoryStore, entityId: string): Promise<VoiceFragment[]> {
-  return store.db.query<VoiceFragment>(`SELECT f.text,CAST(f.metadata->>'voice' AS INTEGER) AS voice,f.metadata->>'track' AS track FROM fragments f
+  return store.db.query<VoiceFragment>(`SELECT f.offset_ms,f.text,CAST(f.metadata->>'voice' AS INTEGER) AS voice,f.metadata->>'track' AS track,f.metadata->>'speaker_resolution' AS resolution FROM fragments f
     JOIN sources s ON s.current_version_id=f.version_id WHERE s.entity_id=$1 ORDER BY f.ordinal`, [entityId])
 }
 
-/** Asks the configured model which attendee each unresolved voice is. Skipped when the model may not process this content. */
-export async function proposeVoiceNames(store: MemoryStore, ai: MemoryAI, config: AIConfig, recordingId: string, signal: AbortSignal) {
-  const row = (await store.db.query<RecordingRow>("SELECT * FROM recordings WHERE id=$1", [recordingId]))[0]
-  const voices = ((row?.speakers ?? []) as StoredVoice[]).filter(voice => voice.status === "unresolved"), candidates = row ? candidatesOf(row) : []
-  if (!row?.entity_id || !voices.length || !candidates.length) return { voice_proposals: 0 }
-  const allowed = Boolean(config.extraction_model) && config.extraction !== "disabled" && (!usesRemoteExtraction(config) || config.remote_processing_enabled)
-  if (!allowed) return { voice_proposals: 0, voice_naming: "disabled" }
-  const fragments = await fragmentsOf(store, row.entity_id)
-  const voiceRefs = new Map(voices.map(voice => [`v${voice.voice}`, voice])), candidateRefs = new Map(candidates.map((candidate, index) => [`c${index + 1}`, candidate]))
-  signal.throwIfAborted()
-  const result = await ai.extract("The voices of a recorded meeting were separated acoustically and labelled v1, v2, etc.; 'me' is the person who recorded it. "
-    + "Propose which invited attendee each voice is, from how people address each other, self-introductions, roles and topics. candidate_id only from input. "
-    + "Invitees may not have attended, a voice may belong to someone who was not invited, and two voices may be one person split by the separation: omit a voice or return candidate_id null when unsure. "
-    + "Never give one candidate to two voices unless the evidence is direct for both. Being the only invitee left never justifies high confidence. "
-    + "High confidence only for direct evidence: the voice introduces itself or is addressed by that name right before or after it speaks. "
-    + "Copy voice_id v1/v2 and candidate_id c1/c2 verbatim. Write reason in neutral Spanish (no voseo), one or two sentences quoting the evidence, with readable names and no v1/c1 codes.",
-  { title: row.title, candidates: [...candidateRefs].map(([id, candidate]) => ({ id, ...candidate })),
-    voices: voices.map(voice => ({ id: `v${voice.voice}`, seconds_speaking: Math.round(voice.seconds) })),
-    transcript: fragments.slice(0, TRANSCRIPT_FRAGMENTS).map(fragment => ({ speaker: fragment.voice !== null && fragment.voice > 0 ? `v${fragment.voice}` : fragment.track === "mic" ? "me" : "unknown", text: fragment.text.slice(0, FRAGMENT_CHARS) })) },
-  responseSchema, raw => raw as z.infer<typeof responseSchema>)
-  signal.throwIfAborted()
-  let proposals = 0
-  const seen = new Set<number>()
-  for (const match of lenientItems(result.value, "matches", matchSchema)) {
-    const voice = voiceRefs.get(match.voice_id), candidate = match.candidate_id ? candidateRefs.get(match.candidate_id) : undefined
-    if (!voice || !candidate || seen.has(voice.voice)) continue
-    seen.add(voice.voice)
-    voice.proposal = { ...candidate, confidence: match.confidence, reason: match.reason }
-    proposals++
-  }
-  // Only the proposals are merged back: a decision taken while the model was answering must not be overwritten.
-  await store.db.transaction(async sql => {
-    const current = ((await sql.query<{ speakers: StoredVoice[] }>("SELECT speakers FROM recordings WHERE id=$1", [recordingId]))[0]?.speakers ?? [])
-    for (const stored of current) { const proposed = voices.find(voice => voice.voice === stored.voice)?.proposal; if (proposed && stored.status === "unresolved") stored.proposal = proposed }
-    await sql.query("UPDATE recordings SET speakers=$2,updated_at=now() WHERE id=$1", [recordingId, JSON.stringify(current)])
+/** Every word is reviewed, even when one fragment exceeds a request. Keep a timestamp and an evidence id with each piece. */
+function transcriptBatches(fragments: VoiceFragment[], hints: VisualHint[]) {
+  const entries = fragments.flatMap((fragment, index) => {
+    const text = fragment.text
+    const speaker = fragment.voice && fragment.voice > 0 ? `v${fragment.voice}` : fragment.resolution === "recording_owner" ? "me" : "unknown"
+    const pieces = []
+    for (let start = 0; start < text.length; start += 6000) pieces.push({
+      id: `f${index + 1}.${start}`, offset_ms: fragment.offset_ms ?? 0, speaker, text: text.slice(start, start + 6000), kind: "speech",
+    })
+    return pieces
   })
-  return { voice_proposals: proposals }
+  for (const [index, hint] of hints.entries()) entries.push({ id: `w${index + 1}`, offset_ms: hint.offset,
+    speaker: hint.voice ? `v${hint.voice}` : "unknown", text: hint.name, kind: "window_label" })
+  entries.sort((a, b) => a.offset_ms - b.offset_ms)
+  const batches: (typeof entries)[] = []
+  let batch: typeof entries = [], length = 0
+  for (const entry of entries) {
+    const size = JSON.stringify(entry).length
+    if (batch.length && length + size > 24000) { batches.push(batch); batch = []; length = 0 }
+    batch.push(entry); length += size
+  }
+  if (batch.length) batches.push(batch)
+  return batches
+}
+
+async function canReview(store: MemoryStore, entityId: string, config: AIConfig): Promise<boolean> {
+  if (!config.extraction_model || config.extraction === "disabled") return false
+  if (!usesRemoteExtraction(config)) return true
+  if (!config.remote_processing_enabled) return false
+  const [entity] = await store.db.query<{ data: Record<string, unknown> }>("SELECT data FROM entities WHERE id=$1", [entityId])
+  if (!entity || entity.data.remote_processing === false) return false
+  const projects = await store.db.query(`SELECT id FROM entities WHERE kind='project' AND (data->>'remote_processing') IN (0,'false')
+    AND (id IN(SELECT to_id FROM links WHERE from_id=$1 AND type='project')
+      OR id IN(SELECT fp.project_id FROM fragment_projects fp JOIN fragments f ON f.id=fp.fragment_id
+        JOIN sources s ON s.current_version_id=f.version_id WHERE s.entity_id=$1))`, [entityId])
+  return !projects.length
+}
+
+export async function proposeVoiceNames(store: MemoryStore, ai: MemoryAI, config: AIConfig, recordingId: string, signal: AbortSignal, hints: VisualHint[] = []) {
+  const row = (await store.db.query<RecordingRow>("SELECT * FROM recordings WHERE id=$1", [recordingId]))[0]
+  const voices = ((row?.speakers ?? []) as StoredVoice[]).filter(v => v.status === "unresolved")
+  if (!row?.entity_id || !voices.length) return { voice_proposals: 0 }
+  const version = async () => (await store.db.query<{ current_version_id: string }>("SELECT current_version_id FROM sources WHERE entity_id=$1", [row.entity_id]))[0]?.current_version_id
+  const reviewedVersion = await version()
+  const evidence = new Map<number, VoiceProposal[]>()
+  const add = (voice: number, proposal: VoiceProposal) => { const list = evidence.get(voice) ?? []; list.push(proposal); evidence.set(voice, list) }
+  for (const [voice, proposal] of await rememberedVoices(store, recordingId, voices)) add(voice, proposal)
+  const candidates = candidatesOf(row)
+  const candidateFor = (name: string) => {
+    const matches = candidates.filter(c => canonicalName(c.name) === canonicalName(name))
+    return matches.length === 1 ? matches[0] : undefined
+  }
+  for (const voice of voices) {
+    const anchored = hints.filter(h => h.voice === voice.voice)
+    for (const name of new Set(anchored.map(h => h.name))) {
+      const matches = anchored.filter(h => h.name === name)
+      if (matches.length < 2 || matches.at(-1)!.offset - matches[0]!.offset < 1500) continue
+      add(voice.voice, { email: "", name, ...candidateFor(name), confidence: "medium", reason: "La ventana de la llamada mostró este nombre en varios momentos de esta voz." })
+    }
+  }
+  const batches = transcriptBatches(await fragmentsOf(store, row.entity_id), hints)
+  const fromModel: { voice: number; proposal: VoiceProposal }[] = []
+  let reviewed = 0, interrupted = false
+  for (const batch of batches) {
+    signal.throwIfAborted()
+    if (!await canReview(store, row.entity_id, config)) break
+    const result = await ai.extract("Review this chronological section of a meeting. Identify unresolved acoustic voices only with direct evidence such as an explicit introduction, or a window_label aligned to that voice corroborated by speech. 'me' is the recorder. A name merely mentioned or a pinned participant is insufficient. Evidence and captions may be wrong, mixed or delayed. Never guess from an attendee list or from an unknown voice. For each justified match return {voice_id,name,evidence_id,confidence,reason}. Use exact candidate name or literal name in the evidence. Cite an entry from this section. Reasons in Spanish. When uncertain omit the match.",
+      { title: row.title, candidates, voices: voices.map(v => `v${v.voice}`), entries: batch }, responseSchema, raw => raw as z.infer<typeof responseSchema>).catch(() => null)
+    if (!result) { interrupted = true; break }
+    reviewed++
+    for (const match of lenientItems(result.value, "matches", matchSchema)) {
+      const voice = voices.find(v => `v${v.voice}` === match.voice_id)
+      const anchor = batch.find(e => e.id === match.evidence_id)
+      if (!voice || !anchor || anchor.speaker !== match.voice_id) continue
+      const candidate = candidateFor(match.name)
+      if (!candidate && !canonicalName(anchor.text).includes(canonicalName(match.name))) continue
+      fromModel.push({ voice: voice.voice, proposal: { email: "", name: match.name, ...candidate, confidence: match.confidence, reason: match.reason } })
+    }
+  }
+  signal.throwIfAborted()
+  // If a later section couldn't be reviewed, it may contradict an earlier one. Local evidence still applies.
+  if (reviewed === batches.length) for (const { voice, proposal } of fromModel) add(voice, proposal)
+  return store.db.transaction(async sql => {
+    const [current] = await sql.query<{ speakers: StoredVoice[]; current_version_id: string }>(`SELECT r.speakers,s.current_version_id FROM recordings r
+      JOIN sources s ON s.entity_id=r.entity_id WHERE r.id=$1 AND r.state='ready'`, [recordingId])
+    if (!current || current.current_version_id !== reviewedVersion) return { voice_proposals: 0 }
+    let proposals = 0
+    for (const voice of current.speakers) {
+      if (voice.status !== "unresolved") continue
+      const matches = evidence.get(voice.voice) ?? []
+      if (!matches.length || new Set(matches.map(m => canonicalName(m.name))).size !== 1) { delete voice.proposal; continue }
+      // Keep an explicit remembered person id. Conflicting evidence never becomes an assignment.
+      voice.proposal = matches.find(m => m.person_id) ?? matches.find(m => m.confidence === "high") ?? matches[0]!
+      proposals++
+    }
+    await sql.query("UPDATE recordings SET speakers=$2,updated_at=now() WHERE id=$1", [recordingId, JSON.stringify(current.speakers)])
+    return { voice_proposals: proposals, voice_sections_reviewed: reviewed, ...(interrupted ? { voice_naming: "failed" } : {}) }
+  })
 }
 
 /** Voices still without a name, newest meeting first, each with its proposal, a sample of what it said and the invitees to choose from. */
@@ -110,11 +171,16 @@ export async function assignVoice(sql: Sql, entityId: string, versionId: string,
 
 /** Confirms who a voice is, or leaves it unnamed. Confirming assigns every fragment of the voice in the current version of the meeting. */
 export async function decideVoice(store: MemoryStore, recordingId: string, voiceNumber: number, raw: unknown) {
-  const input = parse(voiceDecisionInput, raw), email = input.decision === "confirm" ? input.email.toLowerCase() : null
+  const input = parse(voiceDecisionInput, raw), email = input.decision === "confirm" ? input.email?.toLowerCase() : null
   const known = (await store.db.query<RecordingRow>("SELECT * FROM recordings WHERE id=$1", [recordingId]))[0]
   check(known?.entity_id, "La grabación no existe o todavía no se procesó", 404)
-  const candidate = email ? candidatesOf(known).find(item => item.email === email) : undefined
+  let candidate = email ? candidatesOf(known).find(item => item.email === email) : undefined
   let personId: string | undefined
+  if (input.decision === "confirm" && input.person_id) {
+    const person = (await store.db.query<{ id: string; title: string }>("SELECT id,title FROM entities WHERE id=$1 AND kind='person' AND data->>'merged_into' IS NULL", [input.person_id]))[0]
+    check(person, "La persona seleccionada ya no está disponible", 422)
+    personId = person.id; candidate = { email: "", name: person.title }
+  }
   if (email) {
     check(candidate, "Esa persona no figura entre los invitados de la reunión", 422)
     const external = `recording-voice:${email}`
@@ -135,6 +201,7 @@ export async function decideVoice(store: MemoryStore, recordingId: string, voice
       check(version, "La reunión ya no tiene una versión vigente", 409)
       updated = await assignVoice(sql, row.entity_id, version, voiceNumber, personId)
       voice.status = "confirmed"
+      voice.remember = input.decision === "confirm" && input.remember === true
       voice.person_id = personId
       voice.label = candidate.name
       await sql.query("DELETE FROM rule_runs WHERE version_id=$1", [version])

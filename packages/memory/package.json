@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./dist/index.js",
+    "./speaker-window": "./dist/speaker-window.js",
     "./report": "./dist/report.js"
   },
   "types": "./dist/index.d.ts",

@@ -10,7 +10,7 @@ import { decideVoice, listPendingVoices } from "./voice-naming.js"
 export function registerRecordingRoutes(app: FastifyInstance, context: () => Promise<{ store: MemoryStore; directory: string }>, upcoming: UpcomingEvents, authorize: (request: FastifyRequest) => Promise<unknown>) {
   const auth = async (request: FastifyRequest) => { await authorize(request) }
   app.get("/api/memory/recordings", { preHandler: auth }, async () => listRecordings((await context()).store))
-  app.get("/api/memory/recordings/upcoming", { preHandler: auth }, async () => ({ settings: await recordingSettings((await context()).store), events: await upcoming.list() }))
+  app.get("/api/memory/recordings/upcoming", { preHandler: auth }, async () => ({ settings: await recordingSettings((await context()).store), events: await upcoming.list(), verifiedCalendars: upcoming.verifiedCalendars }))
   app.post("/api/memory/recordings", { preHandler: auth, bodyLimit: 262_144 }, async (request, reply) => {
     const { store, directory } = await context()
     return reply.code(201).send(await registerRecording(store, directory, request.body))

@@ -77,8 +77,9 @@ export interface RecordingStatusView {
   phase: "idle" | "starting" | "recording" | "stopping"
   title: string | null
   startedAt: string | null
-  error: "microphone_denied" | "capture_failed" | null
+  error: "microphone_denied" | "capture_failed" | "storage_failed" | null
   offers: RecordingOfferView[]
+  calendar?: { recordingId: string; linked: boolean; choices: Pick<RecordingOfferView, "key" | "title" | "start">[] }
 }
 
 export interface AgentHubBridge {
@@ -112,6 +113,7 @@ export interface AgentHubBridge {
   /** Grabación de reuniones sin transcripción: estado, ofertas y control. Ausente en versiones anteriores del escritorio. */
   getRecordingStatus?(): Promise<RecordingStatusView>
   startRecording?(offerKey: string): Promise<RecordingStatusView>
+  chooseRecordingCalendar?(recordingId: string, key: string | null): Promise<RecordingStatusView>
   stopRecording?(): Promise<RecordingStatusView>
   dismissRecordingOffer?(offerKey: string): Promise<RecordingStatusView>
   onRecordingChanged?(listener: (status: RecordingStatusView) => void): () => void

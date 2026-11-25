@@ -13,6 +13,8 @@ const DIARIZATION_ASSETS = [
     sha256: '220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079', bytes: 5992913 },
   { name: 'embedding.onnx', url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx',
     sha256: 'ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e', bytes: 40257283 },
+  { name: 'silero_vad.onnx', url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx',
+    sha256: '9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6', bytes: 643854 },
 ]
 const ASSET_DIRECTORIES: Record<AssetModule, string> = { ocr: 'tesseract-eng-spa-fast-v1', decoder: 'ffmpeg-b6.1.1', diarization: 'diarization-pyannote3-titanet-small-v1' }
 const TESSDATA = 'https://raw.githubusercontent.com/naptha/tessdata/806cd9adc8c6e8abc11c782db1818c990576bebc/4.0.0_fast'

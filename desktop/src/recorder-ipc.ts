@@ -19,13 +19,30 @@ export const RECORDER_IPC = {
   levels: "agenthub-recorder:levels",
   /** send: página -> main, todas las pistas entregaron su último tramo. */
   stopped: "agenthub-recorder:stopped",
+  regionDone: "agenthub-recorder:region-done",
+  visualFailed: "agenthub-recorder:visual-failed",
+  speakerFrame: "agenthub-recorder:speaker-frame",
+  speakerStill: "agenthub-recorder:speaker-still",
+  tabLevel: "agenthub-recorder:tab-level",
+  monitor: "agenthub-recorder:monitor",
+  startMonitor: "agenthub-recorder:start-monitor",
+  stopMonitor: "agenthub-recorder:stop-monitor",
 } as const
 
-export type RecorderCommand = "start" | "stop"
+export type RecorderCommand = "start" | "stop" | "stop-window" | "start-tab"
 export type RecorderLevels = Partial<Record<RecordingTrack, number>>
 
 /** Superficie que el preload publica en `window.recorderBridge`. */
 export interface RecorderBridge {
+  regionDone(): void
+  tabLevel(level: number): void
+  visualFailed(): void
+  linuxMonitor: boolean
+  startMonitor(): void
+  stopMonitor(): void
+  onMonitor(listener: (samples: Uint8Array | null) => void): () => void
+  speakerFrame(at: number, tile: boolean, image: ArrayBuffer): Promise<void>
+  speakerStill(): Promise<Uint8Array<ArrayBuffer> | null>
   ready(): void
   onCommand(listener: (command: RecorderCommand) => void): void
   trackStarted(track: RecordingTrack, epochMs: number): void

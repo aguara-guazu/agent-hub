@@ -49,6 +49,7 @@ export const IPC = {
   recordingStatus: "agenthub:recording-status",
   /** invoke: renderer -> main, empieza a grabar la reunión ofrecida con esa clave. */
   recordingStart: "agenthub:recording-start",
+  recordingCalendar: "agenthub:recording-calendar",
   /** invoke: renderer -> main, detiene la grabación en curso. */
   recordingStop: "agenthub:recording-stop",
   /** invoke: renderer -> main, descarta la oferta de grabar una reunión. */
@@ -110,6 +111,7 @@ export interface RecordingStatusView {
   startedAt: string | null
   error: RecordingError | null
   offers: RecordingOfferView[]
+  calendar?: { recordingId: string; linked: boolean; choices: Pick<RecordingOfferView, "key" | "title" | "start">[] }
 }
 
 /** Superficie que el preload publica en `window.agentHub`. */
@@ -135,6 +137,7 @@ export interface AgentHubBridge {
   setAutoUpdate(enabled: boolean): Promise<boolean>
   getRecordingStatus(): Promise<RecordingStatusView>
   startRecording(offerKey: string): Promise<RecordingStatusView>
+  chooseRecordingCalendar(recordingId: string, key: string | null): Promise<RecordingStatusView>
   stopRecording(): Promise<RecordingStatusView>
   dismissRecordingOffer(offerKey: string): Promise<RecordingStatusView>
   onRecordingChanged(listener: (status: RecordingStatusView) => void): () => void
@@ -160,6 +163,7 @@ export const INVOKE_CHANNELS: readonly IpcChannel[] = [
   IPC.setAutoUpdate,
   IPC.recordingStatus,
   IPC.recordingStart,
+  IPC.recordingCalendar,
   IPC.recordingStop,
   IPC.recordingDismiss,
 ]

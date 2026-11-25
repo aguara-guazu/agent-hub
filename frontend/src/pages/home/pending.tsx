@@ -15,6 +15,10 @@ import type { PendingInbox, ProjectSuggestion } from "../../lib/home"
 import { memoryCall, type MemoryEntity } from "../../lib/memory"
 import { api } from "../../lib/api"
 import type { PendingVoice } from "../../lib/recording"
+import { Panel, PanelBody, PanelFooter, PanelHeader } from "../../components/ui/Panel"
+import { Field } from "../../components/ui/fields"
+import { Switch } from "../../components/ui"
+import { EntityCombobox } from "../memory/pickers"
 
 export type PendingGroup = "connections" | "agents" | "memory"
 
@@ -54,14 +58,35 @@ function useVoiceDecision() {
   const { t } = useT("errors")
   const { t: tc } = useT("common")
   return useMutation({
-    mutationFn: ({ voice, email }: { voice: PendingVoice; email: string | null; done: string }) =>
-      api.post(`/memory/recordings/${voice.recording_id}/voices/${voice.voice}`, email ? { decision: "confirm", email } : { decision: "dismiss" }),
+    mutationFn: ({ voice, email, person_id, remember }: { voice: PendingVoice; email?: string | null; person_id?: string; remember?: boolean; done: string }) =>
+      api.post(`/memory/recordings/${voice.recording_id}/voices/${voice.voice}`, person_id ? { decision: "confirm", person_id, remember } : email ? { decision: "confirm", email, remember } : { decision: "dismiss" }),
     onSuccess: async (_result, { done }) => {
       toast.success(done)
       await cache.invalidateQueries({ queryKey: ["memory"] })
     },
     onError: error => toast.error(tc("toast.actionFailed"), t(errorKey(error))),
   })
+}
+
+function VoiceAssignPanel({ voice, onClose }: { voice: PendingVoice; onClose: () => void }) {
+  const { t } = useT("home"), { t: tm } = useT("memory")
+  const [person, setPerson] = useState(""), [warn, setWarn] = useState(false)
+  const [remember, setRemember] = useState(false)
+  const save = useVoiceDecision()
+  return <Panel label={t("voice.choosePerson")} onClose={onClose} dirty={Boolean(person)} onBlockedClose={() => setWarn(true)}>
+    <PanelHeader title={t("voice.choosePerson")} />
+    <PanelBody>
+      <p className="t2">{t("voice.sample", { text: voice.sample })}</p>
+      {voice.proposal && <p className="t2">{voice.proposal.name} · {voice.proposal.reason}</p>}
+      <Field label={tm("assign.speaker")} hint={t("voice.assignHint")}>
+        <EntityCombobox kind="person" value={person} onChange={setPerson} label={tm("assign.speaker")} placeholder={tm("picker.personPlaceholder")} disabled={save.isPending} />
+      </Field>
+      <Field label={t("voice.remember")}><Switch label={t("voice.remember")} checked={remember} onChange={setRemember} /></Field>
+    </PanelBody>
+    <PanelFooter dirty={Boolean(person)} saving={save.isPending} warning={warn}
+      onDiscard={() => { setPerson(""); setWarn(false) }}
+      onSave={() => { if (person) save.mutate({ voice, person_id: person, remember, done: t("voice.assigned", { number: voice.voice }) }, { onSuccess: onClose }) }} />
+  </Panel>
 }
 
 /** Mutación de memoria que avisa con el sistema de toasts y refresca las consultas de memoria. */
@@ -115,7 +140,7 @@ function useQueueJob() {
  * Filas de Pendientes con su grupo. Cada fila: identidad, título que dice qué pasa, detalle con la consecuencia, chip y una acción.
  * `dialog` es la confirmación de las unificaciones; se monta una vez junto a la lista.
  */
-export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, string>): { rows: PendingRow[]; dialog: ReactNode } {
+export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, string>): { rows: PendingRow[]; dialog: ReactNode; panel: ReactNode } {
   const { t, plural } = useT("home")
   const { t: tc } = useT("common")
   const { t: ts } = useT("status")
@@ -126,6 +151,7 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
   const queue = useQueueJob()
   const navigate = useNavigate()
   const [confirm, setConfirm] = useState<MergeConfirm | null>(null)
+  const [assignVoice, setAssignVoice] = useState<PendingVoice | null>(null)
   const toast = useToast()
   const clock = (instant: string) => new Intl.DateTimeFormat(format.language, { timeStyle: "short" }).format(new Date(instant))
   const startRecording = async (key: string) => {
@@ -226,6 +252,19 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
 
   if (m.recording && m.recording.phase !== "idle") {
     const title = m.recording.title ?? t("recording.untitled")
+    const calendar = m.recording.calendar
+    const choose = (key: string | null) => {
+      if (calendar) void window.agentHub?.chooseRecordingCalendar?.(calendar.recordingId, key)
+    }
+    if (calendar) {
+      rows.push({ id: "recording-calendar", group: "memory", node: (
+        <Row lead={<Avatar name={title} small />} title={calendar.linked ? t("recording.calendarLinked", { title }) : t("recording.calendarChoose")}
+          action={<DecideMenu label={t("recording.calendarChoose")} items={[
+            ...calendar.choices.map(event => ({ label: `${clock(event.start)} · ${event.title || t("recording.untitled")}`, onSelect: () => choose(event.key) })),
+            { label: t("recording.calendarNone"), onSelect: () => choose(null) },
+          ]} />} />
+      ) })
+    }
     rows.push({ id: "recording", group: "memory", node: (
       <Row
         key="recording"
@@ -255,7 +294,10 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
   }
   for (const voice of m.voices) {
     const id = `voice-${voice.recording_id}-${voice.voice}`, proposed = voice.proposal
-    const confirm = (person: { email: string; name: string }) => decideVoice.mutate({ voice, email: person.email, done: t("voice.confirmed", { number: voice.voice, name: person.name }) })
+    const confirm = (person: { email: string; name: string; person_id?: string }, remember = false) => {
+      if (!person.email && !person.person_id) { setAssignVoice(voice); return }
+      decideVoice.mutate({ voice, remember, ...(person.person_id ? { person_id: person.person_id } : { email: person.email }), done: t("voice.confirmed", { number: voice.voice, name: person.name }) })
+    }
     rows.push({ id, group: "memory", node: (
       <Row
         key={id}
@@ -265,8 +307,10 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
         meta={<Chip tone="warn">{proposed ? ts("chip.inferred") : t("voice.chipUnnamed")}</Chip>}
         action={<DecideMenu label={tc("actions.review")} items={[
           ...(proposed ? [{ label: t("voice.confirm", { name: proposed.name }), hint: proposed.reason, disabled: decideVoice.isPending, onSelect: () => confirm(proposed) }] : []),
+          ...(proposed && (proposed.person_id || proposed.email) ? [{ label: t("voice.confirmRemember", { name: proposed.name }), disabled: decideVoice.isPending, onSelect: () => confirm(proposed, true) }] : []),
           ...voice.candidates.filter(person => person.email !== proposed?.email).slice(0, 8)
             .map(person => ({ label: t("voice.is", { name: person.name }), disabled: decideVoice.isPending, onSelect: () => confirm(person) })),
+          { label: t("voice.choosePerson"), onSelect: () => setAssignVoice(voice) },
           { label: t("voice.dismiss"), disabled: decideVoice.isPending, onSelect: () => decideVoice.mutate({ voice, email: null, done: t("voice.dismissed", { number: voice.voice }) }) },
           { label: t("voice.viewMeeting"), onSelect: () => navigate(`/memory/entities/${voice.entity_id}`) },
         ]} />}
@@ -315,7 +359,8 @@ export function usePendingRows(inbox: PendingInbox, projectNames: Map<string, st
       onConfirm={() => { confirm?.run(); setConfirm(null) }}
     />
   )
-  return { rows, dialog }
+  const panel = assignVoice ? <VoiceAssignPanel key={`${assignVoice.recording_id}-${assignVoice.voice}`} voice={assignVoice} onClose={() => setAssignVoice(null)} /> : null
+  return { rows, dialog, panel }
 
   function duplicateRow(proposal: MemoryEntity) {
     const p = proposal.data

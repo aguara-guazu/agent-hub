@@ -6,6 +6,8 @@ import type { MediaRuntime } from './media-runtime.js'
 import { tidyMemory } from './memory-maintenance.js'
 import { NATIVE_EMBEDDING_ENGINES } from './native-embeddings.js'
 import { randomUUID } from 'node:crypto'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { DatabaseError, type Sql } from './database.js'
 import type { MemoryStore } from './store.js'
 import type { MemoryAI } from './ai.js'
 import type { AIConfig, Vault } from './config.js'
@@ -115,13 +117,29 @@ export class JobRunner {
     const abort = () => controller.abort(signal.reason)
     signal.addEventListener('abort', abort, { once: true })
     if (signal.aborted) abort()
+    // Recording inference is expensive. Retry only its idempotent job writes on temporary SQLite contention.
+    // Three 30-second busy timeouts still fit inside the three-minute lease; other database errors remain failures.
+    const jobQuery: Sql['query'] = async (sql, params) => {
+      for (let attempt = 0;; attempt++) {
+        try { return await this.store.db.query(sql, params) } catch (error) {
+          const busy = error instanceof DatabaseError && [5, 6].includes((error.errcode ?? 0) & 255)
+          if (job.kind !== 'recording' || !busy || attempt >= 2 || controller.signal.aborted) throw error
+          await sleep(250 * 2 ** attempt, undefined, { signal: controller.signal })
+        }
+      }
+    }
+    let renewing = false
     const heartbeat = setInterval(() => {
+      if (renewing) return
+      renewing = true
       void this.store.db.query("UPDATE settings SET value=json_object('heartbeat',now(),'id',$1) WHERE key='worker'", [this.workerId]).catch(() => undefined)
-      void this.store.db.query("UPDATE jobs SET lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','+3 minutes') WHERE id=$1 AND lease_owner=$2 AND state='running' RETURNING id", [job.id, this.workerId])
+      void jobQuery("UPDATE jobs SET lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','+3 minutes') WHERE id=$1 AND lease_owner=$2 AND state='running' RETURNING id", [job.id, this.workerId])
         .then(rows => { if (!rows.length) controller.abort() }).catch(() => controller.abort())
+        .finally(() => { renewing = false })
     }, 30_000)
     const progress = async (value: Record<string, unknown>) => {
-      const rows = await this.store.db.query("UPDATE jobs SET progress=jsonb_merge(progress,$3),updated_at=now() WHERE id=$1 AND lease_owner=$2 AND state='running' RETURNING id", [job.id, this.workerId, JSON.stringify(value)])
+      controller.signal.throwIfAborted()
+      const rows = await jobQuery("UPDATE jobs SET progress=jsonb_merge(progress,$3),updated_at=now() WHERE id=$1 AND lease_owner=$2 AND state='running' RETURNING id", [job.id, this.workerId, JSON.stringify(value)])
       if (!rows.length) { controller.abort(); controller.signal.throwIfAborted() }
     }
     try {
@@ -182,7 +200,7 @@ export class JobRunner {
         }
       } else throw new MemoryError(422, 'Tipo de trabajo desconocido')
       await progress({ finished_at: new Date().toISOString() })
-      await this.store.db.query("UPDATE jobs SET state='completed',lease_until=NULL,lease_owner=NULL,error=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2", [job.id, this.workerId])
+      await jobQuery("UPDATE jobs SET state='completed',lease_until=NULL,lease_owner=NULL,error=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2", [job.id, this.workerId])
     } catch (error) {
       // The stored message is user-facing and generic; worker.log keeps the stack for the job's failure report.
       const diagnostic = error instanceof Error ? error.stack ?? error.message : String(error)
@@ -192,7 +210,7 @@ export class JobRunner {
       // An overloaded model provider needs minutes, not seconds: 1, 2, 4 and 8 minutes after the in-request retries.
       const seconds = error instanceof ProviderError && error.retryAfter > 0 ? error.retryAfter
         : error instanceof MemoryError && error.transient ? Math.min(1800, 60 * 2 ** Math.max(0, job.attempts - 1)) : Math.min(300, 2 ** job.attempts * 5)
-      await this.store.db.query(`UPDATE jobs SET state=$3,error=$4,lease_until=NULL,lease_owner=NULL,available_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||$5||' seconds'),updated_at=now()
+      await jobQuery(`UPDATE jobs SET state=$3,error=$4,lease_until=NULL,lease_owner=NULL,available_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||$5||' seconds'),updated_at=now()
         WHERE id=$1 AND lease_owner=$2`, [job.id, this.workerId, retry ? 'waiting' : 'failed', message, seconds]).catch(() => undefined)
       if (job.kind === 'sync' || job.kind === 'gmail') await this.store.db.query('UPDATE connectors SET last_error=$2 WHERE id=$1', [job.payload.connector_id, job.kind === 'gmail' ? `Gmail: ${message}` : job.payload.since ? `Período histórico: ${message}` : message]).catch(() => undefined)
     } finally { clearInterval(heartbeat); signal.removeEventListener('abort', abort) }

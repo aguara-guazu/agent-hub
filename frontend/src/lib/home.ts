@@ -129,7 +129,7 @@ function pendingRows({ connections: c, agents: a, memory: m }: Omit<PendingInbox
     + a.decisions.length + (a.unreadOther > 0 ? 1 : 0)
     + m.duplicates.length + m.identities.length + m.suggestions.length + m.facts.length
     + (m.unresolvedPeople > 0 ? 1 : 0) + (m.unassignedSources > 0 ? 1 : 0)
-    + (m.recording && m.recording.phase !== "idle" ? 1 : 0) + (m.recording?.offers.length ?? 0) + m.voices.length
+    + (m.recording && m.recording.phase !== "idle" ? 1 : 0) + (m.recording?.calendar ? 1 : 0) + (m.recording?.offers.length ?? 0) + m.voices.length
 }
 
 /**

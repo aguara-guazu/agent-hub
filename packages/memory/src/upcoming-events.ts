@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import type { Connector } from "./connectors/types.js"
-import { ProviderHttp } from "./connectors/http.js"
+import { pages, ProviderHttp } from "./connectors/http.js"
 import type { GoogleAuth } from "./google-auth.js"
 import type { RecordingEvent } from "./recordings.js"
 import type { MemoryStore } from "./store.js"
@@ -15,12 +15,12 @@ import type { MemoryStore } from "./store.js"
 
 const LOOKAHEAD_MS = 12 * 60 * 60_000
 /** A meeting that already started is still offered for a while; the desktop decides how long. */
-const LOOKBEHIND_MS = 60 * 60_000
-const CACHE_MS = 5 * 60_000
-const RETRY_MS = 60_000
+const LOOKBEHIND_MS = 3 * 60 * 60_000
+const CACHE_MS = 60_000
+const RETRY_MS = 30_000
 
 const PLATFORMS: readonly [RegExp, string][] = [
-  [/teams\.(microsoft|live)\.com/i, "Microsoft Teams"],
+  [/\bteams\.(?:(?:microsoft|live)\.com|cloud\.microsoft)(?=[/:?#\s"'<>]|$)/i, "Microsoft Teams"],
   [/([a-z0-9-]+\.)?zoom\.us\//i, "Zoom"],
   [/webex\.com/i, "Webex"],
   [/meet\.jit\.si/i, "Jitsi"],
@@ -35,13 +35,15 @@ const entryPoints = (event: any): string[] => (event.conferenceData?.entryPoints
 
 function platformOf(event: any): string | null {
   const text = [event.location, event.description, ...entryPoints(event)].filter(Boolean).join("\n")
-  return PLATFORMS.find(([pattern]) => pattern.test(text))?.[1] ?? null
+  const videoConference = event.conferenceData?.entryPoints?.some((entry: any) => entry.entryPointType === "video" && entry.uri)
+  return PLATFORMS.find(([pattern]) => pattern.test(text))?.[1] ??
+    (videoConference ? String(event.conferenceData.conferenceSolution?.name || "Video").slice(0, 40) : null)
 }
 
 /** An event qualifies when it is a real meeting with other people and Google Meet will not transcribe it. */
 export function recordable(event: any): boolean {
   if (event.status === "cancelled" || !event.start?.dateTime || !event.end?.dateTime || SKIPPED_TYPES.has(event.eventType)) return false
-  if (event.hangoutLink || entryPoints(event).some(uri => /meet\.google\.com/i.test(uri))) return false
+  if (event.hangoutLink || [event.location, event.description, ...entryPoints(event)].some(value => /\bmeet\.google\.com\//i.test(value ?? ""))) return false
   const attendees: any[] = event.attendees ?? []
   if (attendees.some(attendee => attendee.self && attendee.responseStatus === "declined")) return false
   const others = attendees.filter(attendee => !attendee.self && !attendee.resource).length
@@ -63,6 +65,7 @@ export function upcomingEvent(connectorId: string, calendar: string, event: any)
 }
 
 export class UpcomingEvents {
+  verifiedCalendars: { connector_id: string; calendar: string }[] = []
   private cached: { at: number; events: UpcomingEvent[] } | null = null
   private loading: Promise<UpcomingEvent[]> | null = null
 
@@ -73,6 +76,7 @@ export class UpcomingEvents {
     if (this.cached && Date.now() - this.cached.at < CACHE_MS) return this.cached.events
     this.loading ??= this.load().then(events => { this.cached = { at: Date.now(), events }; return events })
       .catch(() => {
+        this.verifiedCalendars = []
         // A failed read is retried after a minute, not on every poll of the desktop app.
         this.cached = { at: Date.now() - CACHE_MS + RETRY_MS, events: this.cached?.events ?? [] }
         return this.cached.events
@@ -83,22 +87,39 @@ export class UpcomingEvents {
   private async load(): Promise<UpcomingEvent[]> {
     const store = await this.store(), events: UpcomingEvent[] = [], http = new ProviderHttp(this.fetcher)
     const connectors = (await store.db.query<Connector>("SELECT * FROM connectors WHERE provider='google' AND enabled=1")).filter(connector => connector.config.calendar_enabled !== false)
-    let read = 0
+    const from = new Date(Date.now() - LOOKBEHIND_MS).toISOString(), to = new Date(Date.now() + LOOKAHEAD_MS).toISOString()
+    const verified: typeof this.verifiedCalendars = []
     for (const connector of connectors) {
-      // One account with a revoked token or a removed calendar must not hide the meetings of the others.
-      try {
-        const headers = { Authorization: `Bearer ${await this.google.token(connector.id)}` }
-        for (const calendar of (connector.config.calendars?.length ? connector.config.calendars : ["primary"]) as string[]) {
+      const token = this.google.token(connector.id).catch(() => null)
+      for (const calendar of (connector.config.calendars?.length ? connector.config.calendars : ["primary"]) as string[]) {
+        try {
+          const access = await token
+          if (!access) throw new Error("calendar unavailable")
           const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar)}/events`)
-          url.searchParams.set("singleEvents", "true"); url.searchParams.set("orderBy", "startTime"); url.searchParams.set("maxResults", "50")
-          url.searchParams.set("timeMin", new Date(Date.now() - LOOKBEHIND_MS).toISOString()); url.searchParams.set("timeMax", new Date(Date.now() + LOOKAHEAD_MS).toISOString())
-          const page = await http.json(url.toString(), headers)
-          for (const event of page.items ?? []) if (recordable(event)) events.push(upcomingEvent(connector.id, calendar, event))
+          url.searchParams.set("singleEvents", "true"); url.searchParams.set("orderBy", "startTime"); url.searchParams.set("maxResults", "250")
+          url.searchParams.set("timeMin", from); url.searchParams.set("timeMax", to)
+          const live: UpcomingEvent[] = []
+          for await (const event of pages(http, url.toString(), { Authorization: `Bearer ${access}` }, "items")) {
+            if (recordable(event)) live.push(upcomingEvent(connector.id, calendar, event))
+          }
+          events.push(...live)
+          verified.push({ connector_id: connector.id, calendar })
+        } catch {
+          const fallback = new Map((this.cached?.events ?? []).filter(e => e.connector_id === connector.id && e.calendar === calendar && e.end && e.end > from).map(e => [e.event_id, e]))
+          const rows = await store.db.query<{ id: string; version: string; status: string }>(`SELECT e.data->>'event_id' AS id,s.current_version_id AS version,e.data->>'status' AS status
+            FROM sources s JOIN entities e ON e.id=s.entity_id WHERE s.provider='google' AND s.account=$1 AND e.kind='event' AND e.data->>'calendar'=$2
+            AND julianday(e.data->'scheduled_end'->>'dateTime')>julianday($3) AND julianday(e.data->'scheduled_start'->>'dateTime')<julianday($4)`, [connector.id, calendar, from, to])
+          for (const row of rows) {
+            if (row.status === "cancelled") { fallback.delete(row.id); continue }
+            if (fallback.has(row.id)) continue
+            const saved = await store.original(row.version).catch(() => null) as { original?: Record<string, unknown> } | null
+            if (saved?.original && recordable(saved.original)) fallback.set(row.id, upcomingEvent(connector.id, calendar, saved.original))
+          }
+          events.push(...fallback.values())
         }
-        read++
-      } catch { /* the regular sync reports this connector's error */ }
+      }
     }
-    if (connectors.length && !read) throw new Error("no calendar could be read")
+    this.verifiedCalendars = verified
     return events.sort((a, b) => (a.start ?? "").localeCompare(b.start ?? ""))
   }
 }
