@@ -54,10 +54,11 @@ export class GoogleAuth {
     const granted = this.vault.read(connector)?.scope
     return typeof granted === 'string' && granted.split(' ').includes(scope)
   }
-  async token(connector: string): Promise<string> {
+  async token(connector: string, rejectedToken?: string): Promise<string> {
     const tokens = this.vault.read(connector)
     check(tokens?.access_token, 'Conectá la cuenta de Google para sincronizar', 409)
-    if (Number(tokens.expires_at) > Date.now() + 60_000) return tokens.access_token as string
+    // Another request may already have replaced the token that Google just rejected.
+    if (tokens.access_token !== rejectedToken && Number(tokens.expires_at) > Date.now() + 60_000) return tokens.access_token as string
     if (!this.refreshes.has(connector)) {
       const promise = this.refresh(connector).finally(() => this.refreshes.delete(connector))
       this.refreshes.set(connector, promise)
@@ -79,4 +80,8 @@ export class GoogleAuth {
     check(typeof result.access_token === 'string', 'Google no devolvió un token de acceso', 502)
     return result
   }
+}
+
+export function googleBearer(google: GoogleAuth, connector: string) {
+  return (rejectedToken?: string) => google.token(connector, rejectedToken)
 }

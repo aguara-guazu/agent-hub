@@ -1,18 +1,17 @@
 import { GOOGLE_WINDOW_DAYS, type Connector, type ConnectorContext } from './types.js'
-import { pages, ProviderError } from './http.js'
+import { pages, ProviderError, type ProviderHeaders } from './http.js'
 import type { ImportInput } from '../contracts.js'
 import { GooglePeople } from './google-people.js'
 import { parseGoogleDocument } from './google-document.js'
 import { importGmailRange } from './gmail.js'
-import { GMAIL_SCOPE } from '../google-auth.js'
+import { GMAIL_SCOPE, googleBearer } from '../google-auth.js'
 
 const encoded = encodeURIComponent
 const sourceBase = (connector: Connector) => ({ provider: 'google' as const, account: connector.id, connector_id: connector.id, project_ids: connector.project_ids })
 
 export async function syncGoogle(connector: Connector, ctx: ConnectorContext): Promise<void> {
   const { store, http } = ctx
-  const token = await ctx.google.token(connector.id)
-  const headers = { Authorization: `Bearer ${token}` }
+  const headers = googleBearer(ctx.google, connector.id)
   const people = new GooglePeople(ctx, headers)
   const base = sourceBase(connector)
   const since = new Date(Date.now() - GOOGLE_WINDOW_DAYS * 86400_000).toISOString()
@@ -91,7 +90,7 @@ export async function syncGoogle(connector: Connector, ctx: ConnectorContext): P
  * recurring series without timeMax can materialize decades of future events, a syncToken cannot carry timeMax,
  * and it misses unchanged occurrences entering a moving window. `done` runs after each calendar's last page.
  */
-async function syncCalendar(connector: Connector, ctx: ConnectorContext, headers: Record<string, string>, since: string, until: string,
+async function syncCalendar(connector: Connector, ctx: ConnectorContext, headers: ProviderHeaders, since: string, until: string,
   done?: (calendar: string) => Promise<void>): Promise<number> {
   const base = sourceBase(connector)
   const calendars: string[] = connector.config.calendars?.length ? connector.config.calendars : ['primary']
@@ -141,7 +140,7 @@ async function syncCalendar(connector: Connector, ctx: ConnectorContext, headers
  * The regular cursors are not modified.
  */
 export async function syncGoogleRange(connector: Connector, ctx: ConnectorContext, since: string, until: string): Promise<void> {
-  const headers = { Authorization: `Bearer ${await ctx.google.token(connector.id)}` }
+  const headers = googleBearer(ctx.google, connector.id)
   const imported = connector.config.calendar_enabled !== false ? await syncCalendar(connector, ctx, headers, since, until) : 0
   let mail = 0
   if (connector.config.gmail_enabled !== false) {
@@ -152,9 +151,9 @@ export async function syncGoogleRange(connector: Connector, ctx: ConnectorContex
 }
 
 export async function importGoogleDocument(connector: Connector, ctx: ConnectorContext, documentId: string, relatedId?: string, cachedDocument?: any) {
-  const token = await ctx.google.token(connector.id)
+  const headers = googleBearer(ctx.google, connector.id)
   let document: any
-  try { document = cachedDocument ?? await ctx.http.json(`https://docs.googleapis.com/v1/documents/${encoded(documentId)}?includeTabsContent=true`, { Authorization: `Bearer ${token}` }) }
+  try { document = cachedDocument ?? await ctx.http.json(`https://docs.googleapis.com/v1/documents/${encoded(documentId)}?includeTabsContent=true`, headers) }
   catch (error) {
     if (!(error instanceof ProviderError && !error.rateLimited && [403,404].includes(error.httpStatus))) throw error
     await ctx.store.db.query("UPDATE sources SET status='inaccessible' WHERE provider='google' AND account=$1 AND external_id=$2", [connector.id, `docs:${documentId}`])
@@ -187,7 +186,7 @@ export async function importGoogleDocument(connector: Connector, ctx: ConnectorC
 
 /** Repairs retained data too: Meet's transcript retention must not limit identity repair. */
 export async function repairGoogle(connector: Connector, ctx: ConnectorContext) {
-  const token = await ctx.google.token(connector.id), people = new GooglePeople(ctx, { Authorization: `Bearer ${token}` })
+  const people = new GooglePeople(ctx, googleBearer(ctx.google, connector.id))
   const identities = await ctx.store.db.query("SELECT external_id,display_name AS name,verified AS identity_verified FROM identities WHERE provider='google' AND account=$1 AND external_id LIKE 'users/%'", [connector.id])
   let resolved = 0
   await ctx.progress({ stage: 'identities', identities_total: identities.length, identities_completed: 0 })

@@ -40,22 +40,38 @@ async function errorDetail(response: Response): Promise<ErrorDetail> {
 export class ProviderHttp {
   constructor(private fetcher: typeof fetch = fetch, private signal?: AbortSignal) {}
   /** Rate-limited responses are retried with exponential backoff (1, 2, 4, 8 s, or the provider's Retry-After) before failing. */
-  async json(url: string, headers: Record<string, string>, body?: unknown): Promise<any> {
-    for (let attempt = 0; ; attempt++) {
+  async json(url: string, headers: ProviderHeaders, body?: unknown): Promise<any> {
+    let rejectedToken: string | undefined
+    let renewed = false
+    for (let attempt = 0; ; ) {
+      this.signal?.throwIfAborted()
+      const token = typeof headers === 'function' ? await headers(rejectedToken) : undefined
+      const requestHeaders = typeof headers === 'function' ? { Authorization: `Bearer ${token}` } : headers
+      rejectedToken = undefined
       const response = await this.fetcher(url, { method: body === undefined ? 'GET' : 'POST',
-        headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        headers: { ...requestHeaders, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000),
         redirect: 'error',
       })
       if (response.ok) return response.json()
+      if (response.status === 401 && token && body === undefined && !renewed) {
+        await response.body?.cancel()
+        rejectedToken = token
+        renewed = true
+        continue
+      }
       const error = new ProviderError(response.status, Number(response.headers.get('retry-after')) || 0, await errorDetail(response))
       if (!error.rateLimited || attempt >= MAX_RATE_LIMIT_RETRIES) throw error
       await sleep(Math.max(error.retryAfter * 1000, 1000 * 2 ** attempt) + Math.random() * 500, undefined, this.signal ? { signal: this.signal } : {})
+      attempt++
     }
   }
 }
-export async function* pages(http: ProviderHttp, initial: string, headers: Record<string, string>, field: string) {
+/** Resolve an OAuth bearer on every attempt, including after a wait for quota. */
+export type ProviderHeaders = Record<string, string> | ((rejectedToken?: string) => Promise<string>)
+
+export async function* pages(http: ProviderHttp, initial: string, headers: ProviderHeaders, field: string) {
   let token = ''
   const seen = new Set<string>()
   do {

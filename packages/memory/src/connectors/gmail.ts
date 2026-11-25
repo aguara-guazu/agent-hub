@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { check, type ImportInput } from '../contracts.js'
 import { fileMime, fileText } from '../attachments.js'
-import { GMAIL_SCOPE } from '../google-auth.js'
+import { GMAIL_SCOPE, googleBearer } from '../google-auth.js'
 import { CONTROL_HEADER, isExcludedAny, referencedMessageIds } from '../decisions/exclusions.js'
 import { redactSecrets, SECRET_FILE } from '../secrets.js'
 import { splitText } from '../transcript.js'
-import { ProviderError } from './http.js'
+import { ProviderError, type ProviderHeaders } from './http.js'
 import { GOOGLE_WINDOW_DAYS, type Connector, type ConnectorContext } from './types.js'
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
@@ -30,7 +30,7 @@ interface GmailState { mailbox?: string; history_id?: string; backfill?: { histo
  */
 export async function syncGmail(connector: Connector, ctx: ConnectorContext): Promise<void> {
   check(ctx.google.granted(connector.id, GMAIL_SCOPE), 'Reconectá Google y autorizá la lectura de Gmail', 409)
-  const headers = { Authorization: `Bearer ${await ctx.google.token(connector.id)}` }
+  const headers = googleBearer(ctx.google, connector.id)
   const state: GmailState = { ...(connector.cursor.gmail ?? {}) }
   const save = async () => { await ctx.checkpoint({ ...connector.cursor, gmail: state }) }
   const profile = async () => {
@@ -85,7 +85,7 @@ export async function syncGmail(connector: Connector, ctx: ConnectorContext): Pr
 
 /** Imports the messages of an older period on request; the incremental history cursor is not modified. */
 export async function importGmailRange(connector: Connector, ctx: ConnectorContext, since: string, until: string): Promise<number> {
-  const headers = { Authorization: `Bearer ${await ctx.google.token(connector.id)}` }
+  const headers = googleBearer(ctx.google, connector.id)
   const mailbox: string = connector.cursor.gmail?.mailbox ?? String((await ctx.http.json(`${API}/profile`, headers)).emailAddress ?? '').toLowerCase()
   let imported = 0, pageToken: string | undefined
   do {
@@ -101,7 +101,7 @@ export async function importGmailRange(connector: Connector, ctx: ConnectorConte
 const searchQuery = (since: string, until?: string) => [`after:${Math.floor(Date.parse(since) / 1000)}`,
   ...(until ? [`before:${Math.floor(Date.parse(until) / 1000)}`] : []), LIST_QUERY].join(' ')
 
-async function listMessages(ctx: ConnectorContext, headers: Record<string, string>, query: string, pageToken?: string): Promise<{ ids: string[]; next?: string }> {
+async function listMessages(ctx: ConnectorContext, headers: ProviderHeaders, query: string, pageToken?: string): Promise<{ ids: string[]; next?: string }> {
   const url = new URL(`${API}/messages`)
   url.searchParams.set('q', query); url.searchParams.set('maxResults', '500')
   if (pageToken) url.searchParams.set('pageToken', pageToken)
@@ -110,7 +110,7 @@ async function listMessages(ctx: ConnectorContext, headers: Record<string, strin
 }
 
 /** Gmail messages do not change content, so an already stored ID is never fetched again. */
-async function importNew(connector: Connector, ctx: ConnectorContext, headers: Record<string, string>, ids: string[], mailbox: string): Promise<number> {
+async function importNew(connector: Connector, ctx: ConnectorContext, headers: ProviderHeaders, ids: string[], mailbox: string): Promise<number> {
   const known = new Set((await ctx.store.db.query(`SELECT external_id FROM sources WHERE provider='google' AND account=$1
     AND external_id IN (SELECT value FROM json_each($2))`, [connector.id, ids.map(id => `gmail:${id}`)])).map(row => row.external_id as string))
   let imported = 0
@@ -135,7 +135,7 @@ async function isDecisionControl(ctx: ConnectorContext, mailbox: string, message
   return isExcludedAny(ctx.store.db, 'gmail', mailbox, refs)
 }
 
-async function importMessage(connector: Connector, ctx: ConnectorContext, headers: Record<string, string>, id: string, mailbox: string): Promise<boolean> {
+async function importMessage(connector: Connector, ctx: ConnectorContext, headers: ProviderHeaders, id: string, mailbox: string): Promise<boolean> {
   let message: any
   try { message = await ctx.http.json(`${API}/messages/${encodeURIComponent(id)}?format=full`, headers) }
   catch (error) { if (error instanceof ProviderError && error.httpStatus === 404) return false; throw error }
@@ -197,7 +197,7 @@ async function importMessage(connector: Connector, ctx: ConnectorContext, header
 interface MailFile { filename: string; mime_type: string; size: number; status: 'imported' | 'skipped_secret' | 'skipped_format' | 'skipped_size'; data?: Buffer }
 
 /** Collects the readable body (text/plain preferred, HTML as fallback) and downloads PDF and plain-text attachments. */
-async function readParts(ctx: ConnectorContext, headers: Record<string, string>, messageId: string, root: any): Promise<{ text: string; files: MailFile[] }> {
+async function readParts(ctx: ConnectorContext, headers: ProviderHeaders, messageId: string, root: any): Promise<{ text: string; files: MailFile[] }> {
   const plain: string[] = [], html: string[] = [], files: MailFile[] = []
   const data = async (part: any): Promise<Buffer> => {
     if (typeof part.body?.data === 'string') return Buffer.from(part.body.data, 'base64url')

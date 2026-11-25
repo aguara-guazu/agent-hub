@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { ImportInput } from '../contracts.js'
 import type { ConnectorContext } from './types.js'
-import { ProviderError } from './http.js'
+import { ProviderError, type ProviderHeaders } from './http.js'
 
 type Person = ImportInput['participants'][number]
 export function selectGoogleEmail(profile: any, attendeeEmails: string[] = []) {
@@ -15,7 +15,7 @@ export function selectGoogleEmail(profile: any, attendeeEmails: string[] = []) {
 /** Google user IDs provide identity; a matching display name alone never does. */
 export class GooglePeople {
   private profiles = new Map<string, Promise<any>>()
-  constructor(private ctx: ConnectorContext, private headers: Record<string, string>) {}
+  constructor(private ctx: ConnectorContext, private headers: ProviderHeaders) {}
   async resolve(person: Person, attendeeEmails: string[] = []): Promise<Person> {
     if (!/^users\/[^/]+$/.test(person.external_id)) return { ...person, email_status: 'missing' }
     const resource = person.external_id.replace(/^users\//, 'people/')

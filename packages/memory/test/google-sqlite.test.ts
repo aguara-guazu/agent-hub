@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,6 +40,51 @@ describe('Google con SQLite real', () => {
       }) }
   })
   afterEach(async () => { await db.close(); await rm(directory, { recursive: true, force: true }) })
+
+  it.each(['expiry', 'early 401'] as const)('renueva el acceso durante la paginación de Calendar (%s)', async failure => {
+    const started = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(started)
+    try {
+      connector.config.meet_enabled = false
+      ctx.vault.save('google-client', { client_id: 'fixture' })
+      ctx.vault.save(connector.id, { access_token: 'first', expires_at: started + 120_000, refresh_token: 'offline' })
+      const exchange = vi.fn(async () => Response.json({ access_token: 'next', expires_in: 3600 }))
+      ctx.google = new GoogleAuth(ctx.vault, 'http://localhost/callback', exchange)
+      const requests: string[] = []
+      ctx.http = new ProviderHttp(async (input, options) => {
+        const page = new URL(String(input)).searchParams.get('pageToken')
+        const bearer = new Headers(options?.headers).get('authorization')
+        requests.push(`${page ?? 'first-page'} ${bearer}`)
+        if (!page) {
+          if (failure === 'expiry') clock.mockReturnValue(started + 130_000)
+          return Response.json({ items: [], nextPageToken: 'page2' })
+        }
+        return bearer === 'Bearer next' ? Response.json({ items: [] }) : Response.json({}, { status: 401 })
+      })
+      await syncGoogle(connector, ctx)
+      expect(requests).toEqual(['first-page Bearer first', ...(failure === 'early 401' ? ['page2 Bearer first'] : []), 'page2 Bearer next'])
+      expect(exchange).toHaveBeenCalledTimes(1)
+      expect(ctx.vault.read(connector.id)?.refresh_token).toBe('offline')
+    } finally { clock.mockRestore() }
+  })
+
+  it.each([[401, 2], [403, 1]])('propaga un rechazo persistente %i después de %i lecturas', async (status, attempts) => {
+    const read = vi.fn(async () => Response.json({}, { status }))
+    ctx.http = new ProviderHttp(read)
+    await expect(syncGoogle(connector, ctx)).rejects.toMatchObject({ httpStatus: status })
+    expect(read).toHaveBeenCalledTimes(attempts)
+  })
+
+  it('comparte la renovación entre rechazos simultáneos y reutiliza el acceso para un rechazo tardío', async () => {
+    ctx.vault.save('google-client', { client_id: 'fixture' })
+    ctx.vault.save(connector.id, { access_token: 'old', refresh_token: 'offline', expires_at: Date.now() + 600_000 })
+    const exchange = vi.fn(async () => Response.json({ access_token: 'fresh', expires_in: 3600 }))
+    const auth = new GoogleAuth(ctx.vault, 'http://localhost/callback', exchange)
+    const rejected = () => auth.token(connector.id, 'old')
+    expect(await Promise.all([rejected(), rejected()])).toEqual(['fresh', 'fresh'])
+    expect(await rejected()).toBe('fresh')
+    expect(exchange).toHaveBeenCalledTimes(1)
+  })
 
   it('sincroniza Calendar y Meet, importa Docs con el hablante existente y repara sin duplicar', async () => {
     await syncGoogle(connector, ctx)
