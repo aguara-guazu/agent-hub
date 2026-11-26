@@ -26,11 +26,10 @@ it('opens the owner inbox headless, gates it when disabled and restores it indep
     expect(created.statusCode).toBe(200)
     const project = created.json().id
     const path = '/api/assistants/projects/' + project
-    expect(
-      (
-        await app.fastify.inject({ method: 'PUT', url: path, headers, payload: { version: 0, config: { active: true, timezone: 'UTC' } } })
-      ).json(),
-    ).toMatchObject({ version: 1 })
+    const config = { active: true, timezone: 'UTC', style: 'Respuestas breves' }
+    const save = (version: number) => app.fastify.inject({ method: 'PUT', url: path, headers, payload: { version, config } })
+    expect((await save(0)).json()).toMatchObject({ version: 1, config })
+    expect((await save(1)).json()).toMatchObject({ version: 1, config })
     expect((await post(path + '/scan', {})).json()).toMatchObject({ version: 1, last_error: null })
     const policy = (await get('/api/assistants/settings')).json()
     expect(policy.config.delay_minutes).toBe(10)

@@ -169,22 +169,26 @@ it('resuelve un asunto anterior sin issue_key desde su URL y diferencia ausencia
   expect(await read()).toMatchObject({ status: 'unavailable', evidence: [] })
 })
 
-it('Slack consulta primero a Jira, usa memoria ante falta de evidencia y revalida antes de enviar', async () => {
+async function enableSlack() {
   await db.query("INSERT INTO connectors(id,provider,name,config,project_ids,enabled) VALUES($1,'slack','Slack',$2,$3,1)", [
     watch.connector_id,
     { channel_ids: [watch.channel] },
     [project],
   ])
-  const config = profile.parse({ active: true, timezone: 'UTC', slack: [watch] })
-  await resident.save(project, config, 1)
+  const current = await resident.settings(project)
+  return resident.save(project, { ...current.config, slack: [watch] }, current.version)
+}
+
+it('Slack consulta primero a Jira, usa memoria ante falta de evidencia y revalida antes de enviar', async () => {
+  const { config, version } = await enableSlack()
   issues = [issue('NIN-87')]
-  const observe = () => resident.attention.observe(project, config, 2, thread.signal!, resident.signal(project), thread)
+  const observe = () => resident.attention.observe(project, config, version, thread.signal!, resident.signal(project), thread)
   const item = await observe()
   expect(order).toEqual(['jira', 'model'])
   expect(item?.evidence[0]?.url).toBe(site + '/browse/NIN-87')
   issues = []
   order = []
-  await expect(resident.attention.approve(item!.id, item!.revision, config, 2, resident.signal(project))).rejects.toThrow(/cambi[oó]/i)
+  await expect(resident.attention.approve(item!.id, item!.revision, config, version, resident.signal(project))).rejects.toThrow(/cambi[oó]/i)
   expect(order[0]).toBe('jira')
   order = []
   memory = [
@@ -260,21 +264,15 @@ it('un ticket descartado que desapareció de la última revisión no se reactiva
 })
 
 it('completa una lectura de Jira con memoria sólo si la evidencia inicial resulta insuficiente para el borrador', async () => {
-  await db.query("INSERT INTO connectors(id,provider,name,config,project_ids,enabled) VALUES($1,'slack','Slack',$2,$3,1)", [
-    watch.connector_id,
-    { channel_ids: [watch.channel] },
-    [project],
-  ])
-  const config = profile.parse({ active: true, timezone: 'UTC', slack: [watch] })
-  await resident.save(project, config, 1)
+  const { config, version } = await enableSlack()
   issues = [issue('NIN-87')]
   requiresAgreement = true
   memory = [{ id: 'agreement', title: 'Acuerdo', text: 'Fecha acordada con Acme', url: '/#/memory', at: now.toISOString(), remote: true }]
-  const observed = await resident.attention.observe(project, config, 2, thread.signal!, resident.signal(project), thread)
+  const observed = await resident.attention.observe(project, config, version, thread.signal!, resident.signal(project), thread)
   expect(order).toEqual(['jira', 'model', 'memory', 'model'])
   expect(observed?.draft).toBeTruthy()
   order = []
-  await resident.attention.approve(observed!.id, observed!.revision, config, 2, resident.signal(project))
+  await resident.attention.approve(observed!.id, observed!.revision, config, version, resident.signal(project))
   expect(order).toEqual(['jira', 'memory'])
 })
 
