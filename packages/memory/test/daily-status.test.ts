@@ -189,6 +189,8 @@ describe('espejo de Jira', () => {
     await ops.call('sync_tasks', { issues: [raw({ assignee: { accountId: 'acc-1', displayName: 'Persona' }, duedate: '2026-10-30' })], site_url: 'https://empresa.atlassian.net', source: 'mcp_mirror' })
     expect(await read()).toEqual({ assignee_account_id: 'acc-1', due_at: '2026-10-30' })
     await ops.call('sync_tasks', { issues: [raw({ updated: '2026-10-29T12:00:00Z', assignee: { accountId: 'acc-2', displayName: 'Otra' } })], site_url: 'https://empresa.atlassian.net', source: 'mcp_mirror' })
+    expect(await read()).toEqual({ assignee_account_id: 'acc-2', due_at: '2026-10-30' })
+    await ops.call('sync_tasks', { issues: [raw({ updated: '2026-10-29T13:00:00Z', assignee: { accountId: 'acc-2', displayName: 'Otra' }, duedate: null })], site_url: 'https://empresa.atlassian.net', source: 'mcp_mirror' })
     expect(await read()).toEqual({ assignee_account_id: 'acc-2', due_at: null })
   })
 })

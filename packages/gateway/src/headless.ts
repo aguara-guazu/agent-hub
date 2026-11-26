@@ -105,6 +105,7 @@ export function buildHeadlessGateway(options: HeadlessOptions): { gateway: Gatew
     }).catch(() => undefined)
   } : undefined
   const gateway = new GatewayServer(options.agentInstanceId, store, pool, {
+    ...(options.controlPlaneUrl ? { hubUrl: options.controlPlaneUrl } : {}),
     outbox: new MemoryOutbox(integrationDirectory(join(dirname(options.snapshotPath), '..'), options.agentInstanceId)),
     ...(reporter ? { reporter } : {}),
     ...(refreshPolicy ? { refreshPolicy } : {}),

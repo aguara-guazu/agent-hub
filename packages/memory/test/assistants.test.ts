@@ -15,6 +15,8 @@ import { retrieve, projectModel, assessment, type AgentModel } from '../src/assi
 import { inspectThread, channelAccess, type SlackRead } from '../src/assistants/slack.js'
 import { Resident } from '../src/assistants/runtime.js'
 import { projectSignals, pullRequests } from '../src/assistants/signals.js'
+import { WorkQueue } from '../src/assistants/work.js'
+import { normalizeJiraIssue } from '../src/projects/tasks.js'
 import { channelWithinProject, discoverBindings } from '../src/assistants/portfolio.js'
 import { compareClose } from '../src/assistants/close-shadow.js'
 import { exportMemory, readBackup, restoreMemory } from '../src/backup.js'
@@ -221,7 +223,7 @@ it('respeta la espera, conserva pendientes nocturnos y permite ensayar sin efect
   expect(sends).toEqual([])
   expect(localClock({ ...p.config, start: '22:00', end: '06:00', weekdays: [3] }, new Date('2026-11-26T02:00:00Z')).working).toBe(true)
 })
-it('incluye decisiones confirmadas, descarta notas obsoletas y respeta privacidad y presupuesto por proyecto', async () => {
+it('incluye decisiones confirmadas, descarta notas obsoletas y respeta la privacidad en turnos concurrentes', async () => {
   await store.create({
     kind: 'fact',
     title: 'Decisión Atlas',
@@ -252,9 +254,9 @@ it('incluye decisiones confirmadas, descarta notas obsoletas y respeta privacida
   const extract = vi.fn(async () => ({ value: {}, usage: { model: 'fixture', input_tokens: 10, output_tokens: 12 } }))
   vi.spyOn(ai, 'forJob').mockReturnValue({ extract } as unknown as MemoryAI)
   const call = () => model.run('secretary', project, p, '', {}, assessment, true, new AbortController().signal)
-  expect((await Promise.allSettled([call(), call()])).filter((r) => r.status === 'fulfilled')).toHaveLength(1)
-  expect(extract).toHaveBeenCalledTimes(1)
-  expect(await resident.work.estimates(project)).toMatchObject([{ samples: 1, median_tokens: null }])
+  await Promise.all([call(), call()])
+  expect(extract).toHaveBeenCalledTimes(2)
+  expect(await resident.work.estimates(project)).toMatchObject([{ samples: 2, median_tokens: null }])
 })
 
 it('recupera un envío interrumpido y restaura historial sin activar perfiles o microtareas antiguas', async () => {
@@ -285,28 +287,18 @@ it('recupera un envío interrumpido y restaura historial sin activar perfiles o 
   }
 })
 it('identifica dependencias de Jira en su dirección y quita reuniones canceladas', async () => {
-  const key = async (k: string, owner: string) =>
-    db.query(
-      `INSERT INTO tasks(id,project_id,kind,title,status,external_key,assignee_account_id,due_at,created_by,updated_by) VALUES($1,$2,'jira',$3,'in_progress',$3,$4,'2026-11-24','test','test')`,
-      [randomUUID(), project, k, owner],
-    )
-  await key('DEV-1', 'me')
-  await key('OPS-2', 'another')
-  await store.ingest({
-    kind: 'issue',
-    external_id: 'DEV-1',
-    title: 'DEV-1',
-    text: 'Dependencias',
-    metadata: {
-      key: 'DEV-1',
-      issue_links: [
-        { type: { inward: 'is blocked by' }, inwardIssue: { key: 'OPS-2' } },
-        { type: { inward: 'is blocked by' }, inwardIssue: { key: 'EXT-3' } },
-        { type: { inward: 'is blocked by' }, inwardIssue: { key: 'OLD-4', fields: { status: { statusCategory: { key: 'done' } } } } },
-      ],
-    },
-    project_ids: [project],
+  const ticket = (key: string, owner: string, links: unknown[] = []) => ({
+    ...normalizeJiraIssue({ key, fields: { summary: key, status: 'En curso', duedate: '2026-11-24', assignee: { accountId: owner },
+      issuelinks: links } }, 'https://atlas.atlassian.net')!, remote: true,
   })
+  const tickets = [
+    ticket('DEV-1', 'me', [
+      { type: { inward: 'is blocked by' }, inwardIssue: { key: 'DEV-2' } },
+      { type: { inward: 'is blocked by' }, inwardIssue: { key: 'EXT-3' } },
+      { type: { inward: 'is blocked by' }, inwardIssue: { key: 'OLD-4', fields: { status: { statusCategory: { key: 'done' } } } } },
+    ]),
+    ticket('DEV-2', 'another'),
+  ]
   await store.ingest({
     kind: 'event',
     external_id: 'review',
@@ -316,9 +308,9 @@ it('identifica dependencias de Jira en su dirección y quita reuniones cancelada
     project_ids: [project],
   })
   const p = profile.parse({ jira_owner: 'me', timezone: 'UTC' }),
-    signals = await projectSignals(db, project, p, date)
-  expect(signals.find((s) => s.title.startsWith('OPS-2'))?.reasons).toContain('Bloquea tus tareas DEV-1')
-  expect(signals.find((s) => s.title.startsWith('DEV-1'))?.reasons).toContain('Jira marca como dependencias de tu tarea EXT-3, OPS-2')
+    signals = await projectSignals(db, project, p, date, tickets)
+  expect(signals.find((s) => s.title.startsWith('DEV-2'))?.reasons).toContain('Bloquea tus tareas DEV-1')
+  expect(signals.find((s) => s.title.startsWith('DEV-1'))?.reasons).toContain('Jira marca como dependencias de tu tarea DEV-2, EXT-3')
   expect(signals.find((s) => s.kind === 'meeting')?.score).toBe(8)
   await db.query("UPDATE entities SET data=json_set(data,'$.status','cancelled') WHERE kind='event'")
   expect((await projectSignals(db, project, p, date)).some((s) => s.kind === 'meeting')).toBe(false)
@@ -447,6 +439,21 @@ it('mantiene un compromiso propio como microtarea y deduplica las lecturas suces
   await resident.scan(project)
   expect(await resident.attention.get(item.id)).toMatchObject({ state: 'handled', draft: null })
   expect(await db.query("SELECT id FROM assistant_work WHERE request_key LIKE 'followup/%'")).toHaveLength(1)
+})
+it('ofrece al modelo sólo identificadores de fuentes verificadas para las citas de una microtarea', async () => {
+  const source = { id: 'jira/https://atlas.atlassian.net/AT-2', title: 'AT-2', text: 'En curso', url: 'https://atlas.atlassian.net/browse/AT-2', at: date.toISOString(), remote: true }
+  const model = vi.spyOn(resident.model, 'run')
+  const queue = new WorkQueue(db, resident.model, async () => [source], directory)
+  const p = await resident.settings(project)
+  const job = await queue.enqueue(project, p.config, p.version, { role: 'pm', objective: 'Revisar la entrega', key: 'attention/test' }, resident.signal(project))
+  const reply = { summary: 'En curso', criteria: [], missing: [], citations: [source.id], delegate: [] }
+  respond = () => reply
+  await queue.next(project, p.config, p.version, resident.signal(project))
+  const schema = model.mock.lastCall![5]
+  expect(schema.safeParse(reply).success).toBe(true)
+  expect(schema.safeParse({ ...reply, citations: [source.url] }).success).toBe(false)
+  expect((await db.query('SELECT state,result FROM assistant_work WHERE id=$1', [job!.id]))[0])
+    .toMatchObject({state: 'done', result: {evidence: [source]}})
 })
 it('el comparador reutiliza una sola captura del cierre sin crear entregas ni intenciones', async () => {
   const activated = vi.fn(async () => [{ project_id: project, ref: project, summary: 'Atlas', at: date.toISOString() }])
@@ -611,4 +618,80 @@ it.each([true, false])('al desarchivar revisa una mención antigua una sola vez 
   await setProjectArchive(store, project, {state:'active',version:1})
   await resident.scan(project)
   expect(await resident.notices()).toEqual(alerts)
+})
+
+it('contesta las dos entradas de chat sobre el asunto elegido sin consultar otros pendientes', async () => {
+  const issue = async (key: string) => {
+    const id = randomUUID()
+    await db.query(`INSERT INTO assistant_cases(id,project_id,source_key,kind,title,score,reason,state,source,fingerprint,notify_after,updated_at)
+      VALUES($1,$2,$3,'jira',$4,7,'Motivo observado','open',$5,'f',now(),now())`,
+      [id, project, 'jira/' + id, key + ' · Entrega', { url: 'https://atlas.atlassian.net/browse/' + key, issue_key: key }])
+    return id
+  }
+  const focus = await issue('NIN-87')
+  const other = await issue('NIN-86')
+  await db.query(`INSERT INTO assistant_overview_messages(role,body,projects,case_id,created_at)
+    VALUES('owner','Otra pregunta sobre NIN-86',$1,$2,now())`, [[project], other])
+  const inputs: any[] = []
+  respond = input => { inputs.push(input); return { reply: 'Consulté NIN-87.' } }
+  expect((await resident.overview({ text: '¿Qué pasó con este pendiente?', caseId: focus })).messages.at(-1)?.body).toBe('Consulté NIN-87.')
+  expect((await resident.chat(project, focus, '¿Quién figura asignado?', 'chat')).messages.at(-1)?.body).toBe('Consulté NIN-87.')
+  for (const input of inputs) {
+    expect(JSON.stringify(input)).toContain('https://atlas.atlassian.net/browse/NIN-87')
+    expect(JSON.stringify(input)).not.toContain('NIN-86')
+    expect(input.case.id).toBe(focus)
+  }
+  respond = () => { throw Error('La terminal no respondió') }
+  for (const answer of [await resident.overview({ text: '¿Y ahora?', caseId: focus }), await resident.chat(project, focus, '¿Y ahora?', 'chat')]) {
+    expect(answer.messages.at(-1)?.body).toContain('La terminal no respondió')
+    expect(answer.messages.at(-1)?.body).toContain('NIN-87')
+    expect(answer.messages.at(-1)?.body).not.toContain('NIN-86')
+  }
+})
+
+it('la microtarea seleccionada conserva su propio contexto aunque no tenga un asunto de origen', async () => {
+  agents = true
+  const target = await resident.settings(project)
+  const make = (objective: string) => resident.work.enqueue(project, target.config, target.version,
+    { key: randomUUID(), role: 'pm', objective }, resident.signal(project))
+  const job = await make('Confirmar la entrega de Atlas')
+  await make('Un trabajo ajeno a la consulta')
+  let input: any
+  respond = value => { input = value; return { reply: 'La microtarea está en cola.' } }
+  const answer = await resident.overview({ text: '¿En qué quedó esto?', workId: job!.id })
+  expect(input.work).toMatchObject({ id: job!.id, objective: job!.objective, state: 'queued' })
+  expect(JSON.stringify(input)).not.toContain('Un trabajo ajeno')
+  expect(answer.messages.at(-2)).toMatchObject({ work_id: job!.id, case_title: job!.objective })
+})
+
+it('un perfil y una política antiguos permiten superar los 24 turnos del día y conservan la contabilidad', async () => {
+  await db.query("INSERT INTO settings(key,value) VALUES('ai',$1)", [{ ...defaultAI, extraction: 'ollama' }])
+  const model = projectModel(db, ai, () => true)
+  const p = profile.parse({ daily_turns: 1 })
+  vi.spyOn(ai, 'forJob').mockReturnValue({ extract: async () => ({
+    value: { reply: 'Respuesta' }, usage: { model: 'fixture', input_tokens: 8, output_tokens: 3 }
+  }) } as unknown as MemoryAI)
+  const run = (owner: boolean) => model.run('secretary', project, p, 'Consulta', {}, assessment, true, resident.signal(project), { owner })
+  await db.query("INSERT INTO assistant_portfolio_policy(singleton,value) VALUES(1,$1)", [{version: 1, config: {daily_turns: 24}}])
+  for (let turn = 0; turn < 25; turn++) await run(false)
+  await expect(run(true)).resolves.toMatchObject({ reply: 'Respuesta' })
+  await expect(run(false)).resolves.toMatchObject({ reply: 'Respuesta' })
+  expect(await db.query('SELECT owner_turn,count(*) AS n FROM assistant_usage GROUP BY owner_turn ORDER BY owner_turn'))
+    .toEqual([{owner_turn: false, n: 26}, {owner_turn: true, n: 1}])
+  expect((await resident.policy()).config).not.toHaveProperty('daily_turns')
+  expect(await resident.modelStatus()).not.toHaveProperty('budget_spent')
+})
+
+it('resuelve en Jira la clave escrita en el chat aunque el ticket ya no esté en la bandeja', async () => {
+  await db.query("UPDATE entities SET data=json_set(data,'$.jira_project_key','NIN') WHERE id=$1", [project])
+  await store.create({ kind: 'project', title: 'Otro proyecto', data: { jira_project_key: 'OTHER', remote_processing: false } })
+  const live = vi.spyOn(resident, 'liveEvidence').mockResolvedValue({
+    status: 'not_visible', evidence: [], detail: 'NIN-87 no figura entre los tickets visibles en Jira.', remote: true,
+  })
+  let input: any
+  respond = value => { input = value; return { reply: value.verification?.detail ?? 'Sin consulta' } }
+  const result = await resident.overview('¿Sigue existiendo NIN-87?')
+  expect(result.messages.at(-1)).toMatchObject({ body: expect.stringContaining('no figura'), case_title: 'NIN-87' })
+  expect(live).toHaveBeenCalledWith(project, null, expect.stringContaining('NIN-87'), expect.any(AbortSignal))
+  expect(JSON.stringify(input)).not.toContain('Otro proyecto')
 })

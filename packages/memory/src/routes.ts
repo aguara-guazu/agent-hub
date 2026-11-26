@@ -1,4 +1,4 @@
-import { moduleStates, type ModuleEnabled, type ModuleId } from '@agenthub/shared/modules'
+import { moduleStates, operationModules, type ModuleEnabled, type ModuleId } from '@agenthub/shared/modules'
 import { registerUpdateDrain, updateSecretAuthorizer } from './update-drain.js'
 import { sharingRoutes } from './sharing/routes.js'
 import { interhubRoutes } from './interhub/routes.js'
@@ -18,6 +18,7 @@ import { registerDecisionRoutes } from './decision-routes.js'
 import { registerProjectAutomationRoutes } from './schedules/project-automation-routes.js'
 import { registerUpdateHintRoutes } from './sharing/update-hint.js'
 import { registerAgentRuntime } from './agents/routes.js'
+import { registerResidentTeams } from './assistants/teams.js'
 import { registerAssistants } from './assistants/routes.js'
 import { registerConnections } from './connectors/routes.js'
 import { registerProjectRoutes } from './projects/routes.js'
@@ -70,7 +71,10 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl, () => moduleStates(enabled))
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }
   const agents = registerAgentRuntime(app, service, auth, options, enabled, collaborationEnabled, requireCollaboration)
-  const assistants = registerAssistants(app, service, auth, enabled, () => options.scheduleEffects?.jira)
+  const openResidentTeams = registerResidentTeams(app, { backend: async () => (await service.get()).operations.teams,
+    available: () => operationModules('resident_team').every(enabled) && collaborationEnabled(),
+    baseUrl: options.baseUrl, admission: service.admission })
+  const assistants = registerAssistants(app, service, auth, enabled, () => options.scheduleEffects?.jira, openResidentTeams, options.residentReadTools)
   const credentialReference = registerMemoryMcp(app, service, enabled, collaborationEnabled)
   registerConnections(app, service, auth, enabled)
   registerProjectRoutes(app, service, auth, enabled, assistants.trackingChanged)

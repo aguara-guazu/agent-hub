@@ -115,7 +115,7 @@ export class MemoryService {
   private initializing: Promise<NonNullable<MemoryService['current']>> | null = null
   private admissionDb: MemoryDatabase | null = null
   constructor(readonly directory: string, redirectUrl: string, private fetcher: typeof fetch = fetch,
-    private jiraMcp?: import('./projects/tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true,
+    readonly jiraMcp?: import('./projects/tasks.js').JiraTaskReader, private orchestrationOwner = false, private collaborationEnabled: () => boolean = () => true,
     private automation: ScheduleAutomation = { enabled: () => true }, private startupTransaction?: string,
     private legacyGateways?: () => Promise<import("./update-drain.js").LegacyGatewayScan>) {
     this.nativeEmbeddings = new NativeEmbeddingPool(directory)

@@ -4,6 +4,16 @@ import { cliProcess,localChatHook } from './local-chat-hook.js'
 import { inspectNativeProcess,orcaWorkspaceId } from '@agenthub/gateway'
 vi.mock('@agenthub/gateway',()=>({inspectNativeProcess:vi.fn(),orcaWorkspaceId:vi.fn(),orcaTerminalHandle:vi.fn()}))
 afterEach(()=>{vi.resetAllMocks();vi.unstubAllGlobals();vi.useRealTimers()})
+it('el turno residente usa su equipo sin el alta interactiva ni el watcher de una terminal abierta', async () => {
+  const state = { loadCredentials: vi.fn() } as unknown as DaemonState
+  vi.stubEnv('AGENTHUB_RESIDENT_TURN', '1')
+  try {
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'Watch']) {
+      expect(await localChatHook(state, 'claude', 'claude_code', { session_id: 'resident', cwd: '/work' }, event)).toEqual({})
+    }
+    expect(state.loadCredentials).not.toHaveBeenCalled()
+  } finally { vi.unstubAllEnvs() }
+})
 it('no inspecciona procesos de clientes sin identificación compatible',async()=>{
   expect(await cliProcess('gemini_cli')).toBeUndefined()
   expect(inspectNativeProcess).not.toHaveBeenCalled()

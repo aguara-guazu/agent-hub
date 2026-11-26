@@ -90,3 +90,29 @@ SELECT id,date(updated_at,'localtime'),1,updated_at FROM assistant_cases WHERE s
 export const overviewCaseMigration = `
 ALTER TABLE assistant_overview_messages ADD COLUMN case_id TEXT;
 `
+
+export const assistantSessionMigration = `
+ALTER TABLE assistant_usage ADD COLUMN owner_turn BOOLEAN NOT NULL DEFAULT 0;
+ALTER TABLE assistant_overview_messages ADD COLUMN work_id TEXT;
+ALTER TABLE assistant_overview_messages ADD COLUMN jira_key TEXT;
+CREATE INDEX assistant_overview_focus ON assistant_overview_messages(case_id,work_id,seq);
+CREATE TABLE assistant_terminal_sessions(
+  project_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE, conversation TEXT NOT NULL,
+  provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, cwd TEXT NOT NULL, native_id TEXT NOT NULL,
+  PRIMARY KEY(project_id,conversation)
+);
+`
+
+export const retireAssistantTurnLimit = `
+UPDATE assistant_profiles SET config=json_remove(config,'$.daily_turns')
+WHERE json_type(config,'$.daily_turns') IS NOT NULL;
+UPDATE assistant_portfolio_policy SET value=json_remove(value,'$.config.daily_turns')
+WHERE json_type(value,'$.config.daily_turns') IS NOT NULL;
+UPDATE assistant_work SET state='queued',result=NULL,lease_pid=NULL
+WHERE state='blocked' AND result->>'summary' IN (
+  'Se alcanzó el presupuesto diario del asistente',
+  'Se alcanzó el presupuesto diario de turnos del proyecto',
+  'Se alcanzó el presupuesto diario de turnos automáticos del asistente'
+) AND project_id IN (SELECT project_id FROM assistant_profiles WHERE config->>'active'=1)
+AND project_id NOT IN (SELECT project_id FROM archived_projects);
+`

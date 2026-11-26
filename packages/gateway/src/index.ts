@@ -7,6 +7,7 @@ export * from './server.js'
 export * from './audit.js'
 export * from './headless.js'
 export * from './memory-outbox.js'
+export { residentReadAnnotations } from './memory-bridge.js'
 export * from './memory-lifecycle.js'
 export * from './legacy-gateways.js'
 

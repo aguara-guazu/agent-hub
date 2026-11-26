@@ -46,7 +46,7 @@ import { CLI_FILE_SKILLS, isRunProfileCliKind, profileAllowsTool, RUN_PROFILE_DE
 import type { ExposedSkill, PolicyStore, SnapshotView } from './policy.js'
 import { DECISION_ALLOW, DECISION_DENY, argsDigest, denialMessage, serverOffMessage, unknownToolMessage } from './policy.js'
 import { ConnectionPool, UpstreamError, resultText, type CallResult, type UpstreamSpec } from './runtime.js'
-import { JIRA_REREADS, MEMORY_META_KEY, isJiraTool, isJiraWrite, isMemorySpec, issuesIn, rereadArgs, siteFromArgs, writtenKey } from './memory-bridge.js'
+import { JIRA_REREADS, MEMORY_META_KEY, isJiraTool, isJiraWrite, isMemorySpec, issuesIn, rereadArgs, residentReadAnnotations, siteFromArgs, writtenKey } from './memory-bridge.js'
 import { MemoryOutbox } from './memory-outbox.js'
 import { nativeSession, sessionForCall, type NativeSession } from './memory-lifecycle.js'
 import type { FSWatcher } from 'node:fs'
@@ -204,6 +204,7 @@ export class GatewayServer {
   private readonly server: Server
   private readonly onListed: ((hash: string) => void) | undefined
   private readonly refreshPolicy: (() => Promise<void>) | undefined
+  private readonly hubUrl: string | undefined
   private lastListedHashValue = ''
   private connected = false
   /** Una sesion por proceso de gateway: es lo que la memoria llama sesion de agente. */
@@ -219,7 +220,7 @@ export class GatewayServer {
     agentInstanceId: string,
     store: PolicyStore,
     pool: ConnectionPool,
-    options: { reporter?: ToolCallReporter; onListed?: (hash: string) => void; refreshPolicy?: () => Promise<void>; serverName?: string; version?: string; outbox?: MemoryOutbox } = {},
+    options: { reporter?: ToolCallReporter; onListed?: (hash: string) => void; refreshPolicy?: () => Promise<void>; hubUrl?: string; serverName?: string; version?: string; outbox?: MemoryOutbox } = {},
   ) {
     if (store.agentInstanceId !== agentInstanceId) {
       throw new Error('el store de politica es de otro agent_instance')
@@ -230,6 +231,7 @@ export class GatewayServer {
     this.reporter = options.reporter
     this.onListed = options.onListed
     this.refreshPolicy = options.refreshPolicy
+    this.hubUrl = options.hubUrl
     this.outbox = options.outbox
     this.server = new Server(
       { name: options.serverName ?? SERVER_NAME, version: options.version ?? SERVER_VERSION },
@@ -401,6 +403,7 @@ export class GatewayServer {
       name: tool.exposedName,
       ...(tool.title ? { title: tool.title } : {}),
       ...(tool.description ? { description: tool.description } : {}),
+      annotations: residentReadAnnotations(view.specFor(tool.serverSlug), tool.toolName, this.hubUrl),
       inputSchema: clientToolSchema(tool.inputSchema,view.cliKind) as { type: 'object'; [k: string]: unknown },
     }))
     const skillTool = skillToolFor(view)

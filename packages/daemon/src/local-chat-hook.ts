@@ -28,6 +28,8 @@ export async function cliProcess(kind: string): Promise<{ process_id: number; pr
 }
 
 export async function localChatHook(state: DaemonState, agentId: string, kind: string, raw: Record<string, any>, override?: string, observedAt=new Date().toISOString()): Promise<{ output?: Record<string, unknown>; error?: string; code?: number }> {
+  // Residents coordinate through their project-scoped team. The interactive onboarding and idle watcher belong to a person's terminal.
+  if (process.env.AGENTHUB_RESIDENT_TURN === '1') return {}
   if(process.env.AGENTHUB_TUI_SESSION && process.env.AGENTHUB_TUI_AGENT===agentId)return {}
   const credentials = state.loadCredentials(), snapshot = state.loadSnapshot(agentId)
   if (!credentials || !snapshot) return {}

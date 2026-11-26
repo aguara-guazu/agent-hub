@@ -54,6 +54,8 @@ it('opens the owner inbox headless, gates it when disabled and restores it indep
     expect((await get('/api/assistants/projects/' + second.json().id)).json().config).toMatchObject({ active: true, threshold: 7 })
     expect((await get('/api/assistants/chat')).json().messages).toEqual([])
     expect((await get('/api/assistants/inbox?state=history&limit=1')).json().has_more).toBe(false)
+    const general = await post('/api/assistants/chat', { text: '¿Qué pendientes hay?' })
+    expect(general.json().messages.at(-1).body).toContain('Configurá un modelo')
     const consumer = randomUUID()
     const putSettings = async (config: Record<string, unknown>) => {
       const current = (await get('/api/assistants/settings')).json()
@@ -103,7 +105,11 @@ it('opens the owner inbox headless, gates it when disabled and restores it indep
         .statusCode,
     ).toBe(200)
     expect((await claim()).json().items).toEqual([])
+    const selectedId = notice.entries.find((entry: { kind: string }) => entry.kind === 'meeting').id
+    const focused = () => post('/api/assistants/chat', { case_id: selectedId, text: '¿Qué reunión es esta?' })
+    expect((await focused()).json().messages.at(-1)).toMatchObject({ case_id: selectedId, body: expect.stringContaining('Revisión') })
     await toggle('assistants', false)
+    expect((await focused()).json().code).toBe('module_disabled')
     expect((await claim()).statusCode).toBe(409)
     expect((await get('/api/assistants/notices/' + notice.delivery_id)).statusCode).toBe(409)
     for (const url of ['/api/assistants/settings', '/api/assistants/chat', '/api/assistants/work'])
@@ -113,6 +119,7 @@ it('opens the owner inbox headless, gates it when disabled and restores it indep
     expect((await get('/api/memory/schedules')).statusCode).toBe(200)
     expect((await post(path + '/scan', {})).json()).toMatchObject({ code: 'module_disabled' })
     await toggle('assistants', true)
+    expect((await focused()).json().messages.at(-1).case_id).toBe(selectedId)
     expect((await claim()).statusCode).toBe(200)
     expect((await get('/api/assistants/settings')).json().config.threshold).toBe(7)
     expect((await post('/api/assistants/scan', {})).statusCode).toBe(200)

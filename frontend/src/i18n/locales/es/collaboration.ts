@@ -53,6 +53,7 @@ const collaboration = {
     unknown: "Sin estado",
   },
   approval: {
+    resident: "Asistente residente de notificaciones",
     coordinator: "Aprobado en la terminal del coordinador",
     delegation: "Aprobado por delegación permanente",
     legacy: "Registro anterior",

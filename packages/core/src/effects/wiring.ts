@@ -130,7 +130,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
         deliveries: createDeliveryAdapters({
           store, artifacts, exclusions, gmail, slack: new SlackSelfDelivery({ store, tools, exclusions }),
           briefEmailReminders: () => options.moduleEnabled?.('assistants') === false || options.moduleEnabled?.('memory') === false
-            ? Promise.resolve('') : briefEmailReminders(db, new Date(), options.moduleEnabled?.('connections') !== false),
+            ? Promise.resolve('') : briefEmailReminders(db, new Date(), options.moduleEnabled?.('connections') !== false, options.moduleEnabled?.('mcp') !== false),
         }),
         actions: new CoreActionExecutor({ decisions: service, adapters: typeof options.adapters === 'function' ? options.adapters({ db }) : options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
         decisions: service,

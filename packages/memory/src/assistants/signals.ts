@@ -4,28 +4,32 @@ import { occupiesCalendar } from '../connectors/calendar-window.js'
 import type { Sql } from '../database.js'
 import { localClock, type Profile, type Signal } from './contracts.js'
 import { digest } from './slack.js'
+import { mapJiraStatus } from '../projects/tasks.js'
+import { caseIssueKey, issueEvidence, type JiraCase, type LiveIssue } from './jira.js'
 
 const day = 86_400_000
-/**
- * Jira and calendar signals of a project, read from the local mirror. `confirmed` tells whether that mirror was
- * checked against Jira recently; without it the time since the last update is not evidence of a stale task.
- */
-export async function projectSignals(db: Sql, project: string, p: Profile, now: Date, confirmed = false): Promise<Signal[]> {
+/** The mirror contributes stable links to existing cases. Every field used to judge a ticket comes from this read of Jira. */
+export async function projectSignals(db: Sql, project: string, p: Profile, now: Date, issues: LiveIssue[] = []): Promise<Signal[]> {
   const today = localClock(p, now).date
-  const tasks = await db.query(
-    `SELECT t.*, (SELECT e.data->'issue_links' FROM entities e JOIN links l ON l.from_id=e.id
-    JOIN sources s ON s.entity_id=e.id WHERE l.to_id=t.project_id AND l.type='project' AND s.status='active'
-    AND e.kind='issue' AND e.data->>'key'=t.external_key LIMIT 1) AS "links:json"
-    FROM tasks t WHERE project_id=$1 AND kind='jira' AND status NOT IN ('done','dropped')`,
-    [project],
-  )
-  const owned = (t: Record<string, any>) => !!p.jira_owner && [t.assignee_account_id, t.assignee].includes(p.jira_owner)
-  const mine = new Set(tasks.filter(owned).map((t) => t.external_key))
-  const closed = new Set(
-    (await db.query("SELECT external_key FROM tasks WHERE project_id=$1 AND kind='jira' AND status IN ('done','dropped')", [project])).map(
-      (t) => t.external_key,
-    ),
-  )
+  const taskRows = issues.length ? await db.query(
+    "SELECT external_key,external_site,id FROM tasks WHERE project_id=$1 AND kind='jira'", [project]) : []
+  const previous = issues.length ? await db.query<JiraCase>(
+    "SELECT kind,title,source,source_key FROM assistant_cases WHERE project_id=$1 AND kind='jira'", [project]) : []
+  const taskIds = new Map(taskRows.map(t => [(t.external_site || '') + '/' + t.external_key, t.id as string]))
+  const previousKeys = new Map(previous.map(c => {
+    let site = ''
+    try { site = new URL(c.source.url).origin } catch { /* Older local-only cases may lack a Jira URL. */ }
+    return [site + '/' + caseIssueKey(c), c.source_key]
+  }))
+  const tasks = issues.map(issue => {
+    const ref = issue.site + '/' + issue.key
+    const id = taskIds.get(ref) ?? taskIds.get('/' + issue.key)
+    return { ...issue, id, external_key: issue.key, title: issue.summary, state: mapJiraStatus(issue.status, issue.category),
+      caseKey: previousKeys.get(ref) ?? previousKeys.get('/' + issue.key) ?? ('jira/' + (id ?? ref)) }
+  })
+  const owned = (t: LiveIssue) => !!p.jira_owner && [t.assignee_account_id, t.assignee].includes(p.jira_owner)
+  const mine = new Set(tasks.filter(t => owned(t) && !['done','dropped'].includes(t.state)).map(t => t.key))
+  const closed = new Set(tasks.filter(t => ['done','dropped'].includes(t.state)).map(t => t.key))
   const dependents = new Map<string, Set<string>>()
   const prerequisites = new Map<string, Set<string>>()
   function blocks(key: string, dependent: string) {
@@ -37,7 +41,8 @@ export async function projectSignals(db: Sql, project: string, p: Profile, now: 
     prerequisites.set(dependent, upstream)
   }
   for (const t of tasks) {
-    for (const link of t.links ?? []) {
+    if (closed.has(t.key)) continue
+    for (const link of t.links) {
       const linked = link.outwardIssue ?? link.inwardIssue
       if (!linked?.key || closed.has(linked.key) || linked.fields?.status?.statusCategory?.key === 'done') continue
       const verb = String(link.outwardIssue ? link.type?.outward : link.type?.inward).trim()
@@ -47,6 +52,7 @@ export async function projectSignals(db: Sql, project: string, p: Profile, now: 
   }
   const signals: Signal[] = []
   for (const t of tasks) {
+    if (closed.has(t.key)) continue
     const due = String(t.due_at ?? '').slice(0, 10)
     const late = !!due && due < today
     const priority = String(t.priority ?? '').trim()
@@ -55,14 +61,14 @@ export async function projectSignals(db: Sql, project: string, p: Profile, now: 
       : /^(high|alta)$/i.test(priority)
         ? 2
         : 0
-    const stale = confirmed && now.getTime() - Date.parse(t.external_updated_at || t.updated_at) >= 5 * day
+    const stale = t.updated && now.getTime() - Date.parse(t.updated) >= 5 * day
     const downstream = [...(dependents.get(t.external_key) ?? [])].sort()
     const upstream = [...(prerequisites.get(t.external_key) ?? [])].sort()
     const reasons = [
       late && 'Venció el ' + due,
       due === today && 'Vence hoy',
       priorityWeight > 0 && 'Jira indica prioridad ' + priority,
-      t.status === 'blocked' && 'Figura bloqueada en Jira',
+      t.state === 'blocked' && 'Figura bloqueada en Jira',
       stale && 'Lleva al menos cinco días sin actualización',
       downstream.length && 'Bloquea tus tareas ' + downstream.join(', '),
       upstream.length && 'Jira marca como dependencias de tu tarea ' + upstream.join(', '),
@@ -70,29 +76,35 @@ export async function projectSignals(db: Sql, project: string, p: Profile, now: 
     if (!reasons.length) continue
     if (owned(t)) reasons.push('Está asignada a vos')
     const title = t.external_key + ' · ' + t.title
-    const url = t.external_url || '/#/projects/' + project + '?tab=tareas'
+    const evidence = issueEvidence(t)
+    const url = evidence.url
     const score = Math.min(
       10,
       3 +
         Number(owned(t)) * 2 +
         (late ? 2 : Number(due === today)) +
         priorityWeight +
-        Number(t.status === 'blocked') +
+        Number(t.state === 'blocked') +
         (downstream.length ? 3 : 0),
     )
     signals.push({
-      key: 'jira/' + t.id,
+      key: t.caseKey,
       kind: 'jira',
       title,
       text: [title, t.description, ...reasons].join('\n'),
-      at: t.updated_at,
+      at: t.updated ?? now.toISOString(),
       url,
       score,
       reasons,
-      fingerprint: digest([t.updated_at, t.status, reasons]),
+      fingerprint: digest([evidence, reasons]),
+      evidence: [evidence],
       source: {
         url,
-        task_id: t.id,
+        task_id: t.id ?? null,
+        jira_verification: 'verified',
+        jira_scope_key: t.key.split('-')[0],
+        jira_scope_site: t.site,
+        status: t.state,
         issue_key: t.external_key,
         due_at: t.due_at,
         priority,

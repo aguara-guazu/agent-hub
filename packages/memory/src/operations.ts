@@ -11,6 +11,7 @@ import { consumptionDefinitions, consumptionReadOperations } from './agents/usag
 import { LocalChat, chatDefinitions, chatReadOperations } from './agents/local-chat.js'
 import { createInterhubServices } from './interhub/services.js'
 import { InterhubTools, interhubDefinitions, interhubReadOperations, isInterhubOperation, type InterhubServices } from './interhub/tools.js'
+import { requireResidentProject } from './assistants/teams.js'
 import { TeamOrchestration, teamDefinitions, teamReadOperations } from './agents/team-orchestration.js'
 import { callScheduleTool, scheduleDefinitions, scheduleReadOperations } from './schedules/schedule-tools.js'
 import { callProjectAutomationTool, projectAutomationDefinitions, projectAutomationReadOperations } from './schedules/project-automation-tools.js'
@@ -113,7 +114,11 @@ export class MemoryOperations {
     this.usage = new UsageQuotas(store.db)
     this.usageNotices = new UsageNotices(this.chat)
     this.fleet = typeof teamRuntime?.orca === 'function' ? teamRuntime.orca(this.chat) : teamRuntime?.orca
-    this.teams = teamRuntime && this.fleet ? new TeamOrchestration(this.chat, teamRuntime.catalog, this.fleet, this.usage, () => this.collaborationEnabled()) : undefined
+    this.teams = teamRuntime && this.fleet ? new TeamOrchestration(this.chat, teamRuntime.catalog, this.fleet, this.usage, () => this.collaborationEnabled(), async (sql, projectId, delegate) => {
+      check(operationModules('resident_team').every(this.moduleEnabled) && this.collaborationEnabled(),
+        'Los equipos del asistente están pausados.', 409)
+      await requireResidentProject(sql, projectId, delegate)
+    }) : undefined
     this.projectAutomation = new ProjectAutomationService({ db: store.db, chat: this.chat, teams: () => this.teams, schedules: () => this.schedules })
   }
   private async isSharedProject(id: string) {

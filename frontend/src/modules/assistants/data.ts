@@ -64,7 +64,7 @@ export interface InboxPage {
   urgent: number
   important: number
 }
-/** `local`: followed projects hold material that an external model may not read; `disabled`: no model at all. */
+/** `disabled`: no model at all; `local`: an external model and projects that keep their material on this machine. */
 export interface ModelStatus {
   gap: "disabled" | "local" | null
   projects: number

@@ -7,7 +7,7 @@ export const assistants = {
   routes: ['/api/assistants'],
   destinations: ['/assistants'],
   requires: ['memory'],
-  operations: [],
+  operations: ['resident_team'],
   operationPrefixes: [],
   jobs: [],
 } as const satisfies ModuleDefinition

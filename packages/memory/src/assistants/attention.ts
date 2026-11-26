@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import type { MemoryDatabase } from '../database.js'
 import { check, MemoryError } from '../contracts.js'
-import { assessment, assistantInstruction, type AgentModel } from './context.js'
+import { assessment, assistantInstruction, citationIds, shareable, type AgentModel } from './context.js'
 import type { CaseRow, Evidence, Profile, Signal, Watch } from './contracts.js'
 import { abandonedAtStartup } from './contracts.js'
 import { digest, type ChannelAccess, type SlackRead } from './slack.js'
+import { presentCase, recentJira, type JiraCase, type LiveEvidence } from './jira.js'
 
-export type Lookup = (project: string, text: string, exclude?: { channel?: string; root?: string; key?: string }) => Promise<Evidence[]>
+export type Lookup = (project: string, text: string, exclude?: { channel?: string; root?: string; key?: string; jira?: boolean }) => Promise<Evidence[]>
 export type Access = (project: string, w: Watch, signal: AbortSignal) => Promise<ChannelAccess>
 export function watcher(p: Profile, row: CaseRow) {
   return p.slack.find(
@@ -18,6 +19,8 @@ export function watcher(p: Profile, row: CaseRow) {
   )
 }
 export const evidenceHash = (evidence: Evidence[]) => digest([...evidence].sort((a, b) => a.id.localeCompare(b.id)))
+const contextHashOf = (evidence: Evidence[], jira?: LiveEvidence) => jira && jira.status !== 'not_applicable'
+  ? digest([jira.status, jira.detail, jira.remote, evidenceHash(evidence)]) : evidenceHash(evidence)
 const sameCase = 'El hilo o su contexto cambió. Volvé a abrir la sugerencia.'
 /** A whole message that only asks to send the reviewed draft. */
 export const acceptance = /^(?:aceptar|mandalo|envialo|enviálo|enviar|send it|approve)[.!]?$/iu
@@ -31,12 +34,16 @@ export class Attention {
     readonly access: Access,
     readonly now: () => Date,
     readonly current: (project: string, version: number) => Promise<boolean>,
+    readonly liveEvidence: (project: string, row: JiraCase, text: string, signal: AbortSignal) => Promise<LiveEvidence>,
+    readonly jiraEnabled: () => boolean,
   ) {}
 
   async get(id: string) {
-    const [row] = await this.db.query<CaseRow>('SELECT * FROM assistant_cases WHERE id=$1', [id])
+    const [row] = await this.db.query<CaseRow & {current_source: number}>(
+      `SELECT c.*,($3=1 AND ${recentJira('$2')}) AS current_source FROM assistant_cases c WHERE c.id=$1`,
+      [id, this.now().toISOString(), this.jiraEnabled()])
     check(row, 'El asunto no existe', 404)
-    return row
+    return presentCase(row)
   }
   /**
    * Owner dismissal. The case leaves the inbox and its pending work stops; `observe` reopens it
@@ -61,10 +68,11 @@ export class Attention {
   async restore(ids: string[]) {
     return this.db.transaction(async (sql) => {
       const rows = await sql.query<{ id: string }>(
-        `UPDATE assistant_cases SET state='open',revision=revision+1,source=json_remove(source,'$.owner_dismissed'),updated_at=now()
+        `UPDATE assistant_cases AS c SET state='open',revision=revision+1,source=json_remove(source,'$.owner_dismissed'),updated_at=now()
         WHERE id IN (SELECT value FROM json_each($1)) AND state='closed' AND source->>'owner_dismissed'=1
+        AND (kind<>'jira' OR ($2=1 AND ${recentJira('$3')}))
         AND project_id NOT IN (SELECT project_id FROM archived_projects) RETURNING id`,
-        [ids],
+        [ids, this.jiraEnabled(), this.now().toISOString()],
       )
       const open = rows.map((r) => r.id)
       await sql.query(
@@ -131,7 +139,7 @@ export class Attention {
     if (s.kind !== 'slack' && existing?.state === 'open' && existing.fingerprint === s.fingerprint && !existing.source.refresh) return
     const after = s.kind === 'slack' ? Date.parse(s.at) + p.delay_minutes * 60_000 : this.now().getTime()
     if (this.now().getTime() < after && !existing) return
-    const query =
+    const threadQuery =
       s.kind === 'slack' && thread
         ? [
             s.text,
@@ -144,8 +152,17 @@ export class Attention {
             .join('\n')
             .slice(0, 5000)
         : s.text
-    const evidence = await this.lookup(project, query, { channel: s.source.channel, root: s.source.root, key: s.key })
-    const contextHash = evidenceHash(evidence)
+    const query = instruction ? threadQuery + '\n' + instruction : threadQuery
+    const live = s.kind === 'slack' ? await this.sharedJira(project, { ...s, source_key: s.key }, query, signal) : undefined
+    const jiraHash = live && contextHashOf(live.evidence, live)
+    const memory = async () => {
+      const hits = await this.lookup(project, query, { channel: s.source.channel, root: s.source.root, key: s.key, jira: true })
+      return s.kind === 'slack' ? shareable(this.model, hits) : hits
+    }
+    let usedMemory = s.kind !== 'jira' && (!live?.evidence.length ||
+      (existing?.fingerprint === s.fingerprint && existing?.source.jira_hash === jiraHash && existing?.source.used_memory === true))
+    let evidence = [...(s.evidence ?? live?.evidence ?? []), ...(usedMemory ? await memory() : [])]
+    let contextHash = contextHashOf(evidence, live)
     const unchanged = existing?.fingerprint === s.fingerprint && existing.source.context_hash === contextHash
     if (
       unchanged &&
@@ -159,7 +176,7 @@ export class Attention {
       draft: string | null = null,
       retry = false,
       relevant = true
-    const remote = s.kind !== 'slack' || (await this.permitsRemote(s.source))
+    const remote = s.kind === 'slack' ? live?.remote !== false && await this.permitsRemote(s.source) : evidence.every(e => e.remote)
     if (s.kind === 'slack' && !defer) {
       const w = p.slack.find((w) => w.connector_id === s.source.connector_id && w.channel === s.source.channel)
       check(w, 'Canal fuera del perfil', 409)
@@ -167,13 +184,14 @@ export class Attention {
       if (!s.source.mention && !s.source.question && !evidence.length) return
       try {
         const examples = await this.style(project, w)
-        const answer = await this.model.run(
+        const assess = () => this.model.run(
           'secretary',
           project,
           p,
           assistantInstruction,
           {
             message: s.text,
+            jira: live?.status !== 'not_applicable' ? live && { status: live.status, detail: live.detail, citations: live.evidence.map(e => e.id) } : undefined,
             thread: thread?.messages.slice(-8).map((m) => ({ speaker: m.user, text: m.text?.slice(0, 600) })),
             evidence,
             style: p.style,
@@ -181,15 +199,31 @@ export class Attention {
             examples,
             instruction: instruction || null,
           },
-          assessment,
+          assessment.extend({ citations: citationIds(evidence) }),
           remote && evidence.every((e) => e.remote),
           signal,
+          { owner: !!instruction },
         )
-        const cited = answer.citations.every((id) => evidence.some((e) => e.id === id))
+        let answer = await assess()
+        const supported = () => answer.status === 'supported' && answer.citations.every(id => evidence.some(e => e.id === id)) &&
+          (!contextual || answer.citations.length > 0)
+        if (!usedMemory && !supported()) {
+          const additional = await memory()
+          usedMemory = true
+          if (additional.length) {
+            evidence = [...evidence, ...additional]
+            contextHash = contextHashOf(evidence, live)
+            answer = await assess()
+          }
+        }
+        const asksState = /\b(estado|status|sigue|abiert[oa]|cerrad[oa]|asignad[oa]|vencimiento|bloquead[oa]|existe|vence|due|closed|open)\b/i.test(query) &&
+          /\b(?:[A-Z][A-Z0-9_]*-\d+|jira|tickets?|issues?|tareas?)\b/i.test(query)
+        const unverified = asksState && live && (!live.evidence.length || live.status !== 'verified')
+        const currentCitation = !asksState || !live?.evidence.length || answer.citations.some(id => live.evidence.some(e => e.id === id))
         relevant = !!s.source.mention || answer.relevant
         score = Math.max(s.score, answer.urgency)
-        reason += '. ' + answer.explanation
-        if (answer.status === 'supported' && cited && (!contextual || answer.citations.length)) draft = answer.draft.trim() || null
+        reason += '. ' + (unverified ? live.detail : answer.explanation)
+        if (supported() && currentCitation && !unverified) draft = answer.draft.trim() || null
         if (answer.status === 'supported' && !draft) reason += '. Falta una fuente vigente que respalde la respuesta.'
       } catch (e) {
         signal.throwIfAborted()
@@ -206,6 +240,8 @@ export class Attention {
       at: s.at,
       query,
       context_hash: contextHash,
+      jira_hash: jiraHash,
+      used_memory: usedMemory,
       retry,
       deferred: defer,
       remote,
@@ -245,6 +281,10 @@ export class Attention {
       return row
     })
   }
+  private async sharedJira(project: string, row: JiraCase, query: string, signal: AbortSignal) {
+    const live = await this.liveEvidence(project, row, query, signal)
+    return {...live, evidence: await shareable(this.model, live.evidence)}
+  }
   async permitsRemote(source: Signal['source']) {
     const [restricted] = await this.db.query(
       `SELECT 1 FROM connectors c WHERE c.id=$1 AND (c.config->>'remote_processing' IN (0,'false') OR
@@ -280,9 +320,14 @@ export class Attention {
     const row = await this.get(id)
     if (row.state === 'sent' && row.receipt && row.source.approved_revision === revision) return row
     check(row.state === 'open' && row.revision === revision && row.draft, sameCase, 409)
-    const evidence = await this.lookup(row.project_id, row.source.query, { channel: row.source.channel, root: row.source.root })
     const { channel, thread } = await this.live(row, p, signal)
-    if (!thread.signal || thread.fingerprint !== row.fingerprint || evidenceHash(evidence) !== row.source.context_hash) {
+    const live = await this.sharedJira(row.project_id, row, row.source.query ?? row.title, signal)
+    const evidence = [...live.evidence]
+    if (row.source.used_memory !== false || !live.evidence.length)
+      evidence.push(...await shareable(this.model, await this.lookup(row.project_id, row.source.query ?? row.title, {
+        channel: row.source.channel, root: row.source.root, key: row.source_key, jira: true,
+      })))
+    if (!thread.signal || thread.fingerprint !== row.fingerprint || contextHashOf(evidence, live) !== row.source.context_hash) {
       await this.db.query(
         "UPDATE assistant_cases SET draft=NULL,revision=revision+1,source=json_set(source,'$.context_hash',''),updated_at=now() WHERE id=$1 AND state='open' AND revision=$2",
         [id, revision],

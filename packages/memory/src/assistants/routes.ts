@@ -2,12 +2,14 @@ import type { FastifyInstance } from 'fastify'
 import type { ModuleEnabled, ModuleId } from '@agenthub/shared/modules'
 import { z } from 'zod'
 import type { MemoryService } from '../service.js'
-import type { OwnerGuard } from '../http.js'
+import { upsertJiraIssues } from '../projects/tasks.js'
+import type { OwnerGuard, MemoryRouteOptions } from '../http.js'
 import { check, id, parse } from '../contracts.js'
 import { portfolioPolicy, profile, role, textInput } from './contracts.js'
 import { projectModel, retrieve } from './context.js'
 import { channelAccess, connectedSlackIdentity, readSlackName } from './slack.js'
 import { calendarAvailability } from '../connectors/calendar-window.js'
+import type { OpenResidentTeams } from './teams.js'
 import { Resident } from './runtime.js'
 import { compareClose, compareInput } from './close-shadow.js'
 import type { JiraGuard } from '../schedules/schedule-contract.js'
@@ -16,7 +18,7 @@ const projectParam = z.object({ project: id })
 const caseParam = z.object({ id })
 const revision = z.number().int().positive()
 const overviewBody = z
-  .object({ text: textInput, case_id: id.nullable().default(null), mode: z.enum(['chat', 'rewrite']).default('chat'), revision: revision.optional() })
+  .object({ text: textInput, case_id: id.nullable().default(null), work_id: id.optional(), mode: z.enum(['chat', 'rewrite']).default('chat'), revision: revision.optional() })
   .strict()
 const caseIds = z.object({ ids: z.array(id).min(1).max(300) }).strict()
 const chatBody = z
@@ -35,6 +37,8 @@ export function registerAssistants(
   authorize: OwnerGuard,
   enabled: ModuleEnabled,
   jira: () => JiraGuard | undefined,
+  openTeams?: OpenResidentTeams,
+  readTools?: MemoryRouteOptions['residentReadTools'],
 ) {
   const guard = { preHandler: authorize }
   const available = () => enabled('assistants') && enabled('memory') && !service.admission.isClosed()
@@ -46,7 +50,7 @@ export function registerAssistants(
     check(available() && !closed, 'El asistente está pausado', 409)
     if (!resident)
       resident = (async () => {
-        const { db, ai } = await service.get()
+        const { db, ai, store } = await service.get()
         const identifiers = new Map<string, { until: number; value: string | null }>()
         async function cached(key: string, read: () => Promise<string | null>) {
           const current = identifiers.get(key)
@@ -58,7 +62,7 @@ export function registerAssistants(
         let jiraIdentity: { until: number; value: string | null } | undefined
         const r = new Resident(
           db,
-          projectModel(db, ai, available),
+          projectModel(db, ai, available, { openTeams, readTools, kiroKey: () => service.vault.read<{ api_key: string }>('kiro')?.api_key }),
           (p, t, x) => retrieve(db, ai, p, t, x),
           (p, w, s) => channelAccess(db, service.vault, p, w, () => available() && enabled('connections'), s),
           (module) => !closed && enabled(module),
@@ -90,6 +94,7 @@ export function registerAssistants(
                 return typeof accountId === 'string' && accountId.length <= 180 ? accountId : null
               }),
             jira: async () => {
+              if (!enabled('mcp')) return null
               if (!jiraIdentity || jiraIdentity.until <= Date.now()) {
                 const value = (await jira()?.ownerAccountId()) ?? null
                 jiraIdentity = { value, until: Date.now() + (value ? 300000 : 60000) }
@@ -98,7 +103,8 @@ export function registerAssistants(
             },
           },
           calendarAvailability(db, service.google),
-          (project, sinceMinutes) => service.refreshJiraTasks(project, sinceMinutes),
+          service.jiraMcp,
+          (project, issues) => upsertJiraIssues(store, issues, 'assistant:jira-sync', project),
         )
         await Promise.all([r.work.recover(), r.attention.recover()])
         return r
@@ -153,7 +159,7 @@ export function registerAssistants(
   app.post('/api/assistants/chat', guard, async (req) => {
     const body = parse(overviewBody, req.body)
     if (body.mode === 'rewrite') check(body.case_id && enabled('connections'), 'Elegí un asunto de Slack para ajustar su borrador', 409)
-    return run((r) => r.overview({ text: body.text, caseId: body.case_id, mode: body.mode, revision: body.revision }))
+    return run((r) => r.overview({ text: body.text, caseId: body.case_id, workId: body.work_id, mode: body.mode, revision: body.revision }))
   })
   app.get('/api/assistants/work', guard, async () => {
     const { db } = await instance()
@@ -186,7 +192,11 @@ export function registerAssistants(
   app.put('/api/assistants/projects/:project', guard, async (req) => {
     const { project } = parse(projectParam, req.params)
     const body = parse(z.object({ version: z.number().int().min(0), config: profile }).strict(), req.body)
-    return run((r) => r.save(project, body.config, body.version))
+    return run(async r => {
+      const saved = await r.save(project, body.config, body.version)
+      if (!saved.config.active) await (await service.get()).operations.teams?.closeResidentTeams(project)
+      return saved
+    })
   })
   app.post('/api/assistants/projects/:project/scan', guard, async (req) => {
     const { project } = parse(projectParam, req.params)
@@ -321,11 +331,14 @@ export function registerAssistants(
   return {
     async trackingChanged(project: string) {
       if (resident) (await resident)?.trackingChanged(project)
+      const { db, operations } = await service.get()
+      if ((await db.query('SELECT 1 FROM archived_projects WHERE project_id=$1', [project])).length) await operations.teams?.closeResidentTeams(project)
       wake()
     },
     async update(id: ModuleId) {
-      if (['assistants', 'memory', 'connections', 'agents'].includes(id)) {
+      if (['assistants', 'memory', 'connections', 'agents', 'mcp', 'skills'].includes(id)) {
         await stop()
+        if (['assistants', 'memory', 'agents', 'mcp'].includes(id) && !enabled(id)) await (await service.get()).operations.teams?.closeResidentTeams()
         if (app.server.listening) start()
       }
     },

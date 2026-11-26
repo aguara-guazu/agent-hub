@@ -1,6 +1,7 @@
 export { HttpError } from './modules/http.js'
 import { HttpError, isAdmin, isObject, requireObject, rejectUnknown, requireString, optionalString } from './modules/http.js'
 import { registerAgentsRoutes } from './modules/agents/routes.js'
+import { assistantReadTools } from './modules/assistants/terminal-tools.js'
 import { registerMcpRoutes } from './modules/mcp/routes.js'
 import { registerExternalSkillSync } from './modules/skills/sync.js'
 import { registerSkillsRoutes } from './modules/skills/routes.js'
@@ -327,6 +328,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       automationsEnabled: () => automationsEnabled(store),
       scheduleEffects,
       jiraMcp: createJiraTaskReader(store, owner.id, jiraPool, oauthStore),
+      residentReadTools: provider => assistantReadTools(store, owner.id, hostname(), provider, baseUrl),
       usageAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='usage_status')),
       chatAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='chat_join') && s.tools.some(t=>t.name==='chat_inbox')),
       authorizeUsageAgent: async (request, agentId) => {

@@ -98,14 +98,47 @@ describe('GatewayServer — invariante del producto', () => {
     await pool?.close()
   })
 
-  async function wire(store: PolicyStore, records: ToolCallRecord[]): Promise<Client> {
+  async function wire(store: PolicyStore, records: ToolCallRecord[], hubUrl?: string): Promise<Client> {
     pool = new ConnectionPool({ [TRANSPORT_STDIO]: new HostProcessRuntime(), [TRANSPORT_HTTP]: new RemoteHttpRuntime() })
-    gateway = new GatewayServer(AGENT, store, pool, { reporter: collectingReporter(records) })
+    gateway = new GatewayServer(AGENT, store, pool, { reporter: collectingReporter(records), ...(hubUrl ? { hubUrl } : {}) })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     client = new Client({ name: 'cli-de-prueba', version: '0.0.0' })
     await Promise.all([gateway.connect(serverTransport), client.connect(clientTransport)])
     return client
   }
+
+  it('anuncia lecturas del Hub y de Rovo por su origen y respeta herramientas apagadas en la sesión', async () => {
+    const store = new PolicyStore(AGENT)
+    const server = (slug: string, url: string, names: string[]) => ({
+      id: slug, slug, transport: 'http', url,
+      tools: names.map(name => ({ id: name, name, exposed_name: slug + '_' + name.toLowerCase(), input_schema: { type: 'object' } })),
+    })
+    const apply = (hash: string, enabled: boolean) => {
+      const snapshotData = snapshot({ hash, restartOn: true })
+      snapshotData.servers = [...snapshotData.servers as unknown[],
+        server('local', 'http://127.0.0.1:4040/api/memory/mcp', enabled ? ['get_task', 'save_task'] : []),
+        server('renamed', 'https://mcp.atlassian.com/v1/mcp/authv2', enabled ? ['getJiraIssue', 'searchJiraIssuesUsingJql', 'editJiraIssue'] : []),
+        server('lookalike', 'https://mcp.atlassian.com.example.test/v1/mcp', ['getJiraIssue', 'get_task']),
+        server('otherlocal', 'http://127.0.0.1:5050/api/memory/mcp', ['get_task']),
+      ]
+      store.apply(snapshotData)
+    }
+    apply('on', true)
+    const c = await wire(store, [], 'http://127.0.0.1:4040/api')
+    const offered = async () => Object.fromEntries((await c.listTools()).tools.map(tool => [tool.name, tool.annotations]))
+    const initial = await offered()
+    expect(initial.local_get_task).toMatchObject({ readOnlyHint: true })
+    expect(initial.renamed_getjiraissue).toMatchObject({ readOnlyHint: true, openWorldHint: true })
+    expect(initial.renamed_searchjiraissuesusingjql).toMatchObject({ readOnlyHint: true, openWorldHint: true })
+    for (const name of ['ops_restart_service', 'lookalike_getjiraissue', 'lookalike_get_task', 'otherlocal_get_task', 'local_save_task', 'renamed_editjiraissue'])
+      expect(initial[name]).toBeUndefined()
+    apply('off', false)
+    expect(await offered()).not.toHaveProperty('renamed_getjiraissue')
+    expect((await c.callTool({ name: 'renamed_getjiraissue', arguments: {} })).isError).toBe(true)
+    expect((await c.callTool({ name: 'ops_check_status', arguments: { service: 'api' } })).isError).toBeFalsy()
+    apply('again', true)
+    expect((await offered()).renamed_getjiraissue).toMatchObject({ readOnlyHint: true, openWorldHint: true })
+  })
 
   it(
     'apaga restart_service en la MISMA sesion: la llamada siguiente se deniega y el upstream no crece',

@@ -5,6 +5,7 @@ import type { ModuleEnabled } from '@agenthub/shared/modules'
 import { check } from '../contracts.js'
 import { localClock, profile } from './contracts.js'
 import { readPolicy } from './portfolio.js'
+import { recentJira } from './jira.js'
 import { notificationAgenda, proximity, type ReadCalendar, type Upcoming } from './agenda.js'
 
 const minute = 60_000
@@ -36,12 +37,12 @@ const oneLine = (s: unknown, max = 200) =>
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max)
-async function slackDeadlines(sql: Sql, rows: Row[], day: string) {
+async function slackDeadlines(sql: Sql, rows: Row[], day: string, asOf: string) {
   const keysByCase = new Map<string, string[]>(),
     keys = new Set<string>()
   for (const row of rows)
     if (row.kind === 'slack') {
-      const matches = String(row.source.text ?? '').match(/\b[A-Z][A-Z0-9_]{1,18}-\d+\b/g) ?? []
+      const matches = String(row.source.text ?? '').match(/\b[A-Z][A-Z0-9_]{0,19}-\d{1,9}\b/g) ?? []
       if (matches.length) {
         keysByCase.set(row.id, matches)
         for (const key of matches) keys.add(key)
@@ -50,10 +51,11 @@ async function slackDeadlines(sql: Sql, rows: Row[], day: string) {
   const result = new Map<string, string>()
   if (!keys.size) return result
   const tasks = await sql.query(
-    `SELECT project_id,external_key,status,due_at FROM tasks WHERE kind='jira'
-    AND external_key IN (SELECT value FROM json_each($1)) AND status NOT IN ('done','dropped')
-    AND (status='blocked' OR substr(due_at,1,10)<=$2)`,
-    [[...keys], day],
+    `SELECT c.project_id,c.source->>'issue_key' AS external_key,c.source->>'status' AS status,c.source->>'due_at' AS due_at
+    FROM assistant_cases c WHERE c.kind='jira' AND c.state='open' AND ${recentJira('$3')}
+    AND c.source->>'issue_key' IN (SELECT value FROM json_each($1))
+    AND (c.source->>'status'='blocked' OR substr(c.source->>'due_at',1,10)<=$2)`,
+    [[...keys], day, asOf],
   )
   for (const row of rows) {
     const matches = keysByCase.get(row.id)
@@ -137,13 +139,14 @@ function describe(entries: NoticeEntry[], members: Member[], pending: number, de
   }
 }
 
-async function attentionRows(sql: Sql, work: boolean, date: string, ids?: string[]) {
-  const where = ids ? ' AND c.id IN (SELECT value FROM json_each($2))' : ''
-  const params = ids ? [date, ids] : [date]
+async function attentionRows(sql: Sql, work: boolean, date: string, asOf: string, jira: boolean, ids?: string[]) {
+  const where = ids ? ' AND c.id IN (SELECT value FROM json_each($4))' : ''
+  const params = ids ? [date, asOf, jira, ids] : [date, asOf, jira]
   const rows = await sql.query(
     `SELECT c.*,e.title AS project,p.config,d.presentations,d.last_at FROM assistant_cases c
     JOIN assistant_profiles p ON p.project_id=c.project_id JOIN entities e ON e.id=c.project_id
     LEFT JOIN assistant_notice_days d ON d.item_id=c.id AND d.local_day=$1 WHERE ${tracked}
+    AND (c.kind<>'jira' OR ($3=1 AND ${recentJira('$2')}))
     AND c.state IN ('open','sent','uncertain') AND coalesce(c.source->>'dismissed',0)=0 ${ids ? '' : "AND (c.state='open' OR c.notified_revision<c.revision)"} ${where}`,
     params,
   )
@@ -154,7 +157,10 @@ async function attentionRows(sql: Sql, work: boolean, date: string, ids?: string
     'work' AS kind,CASE WHEN c.state='blocked' THEN 6 ELSE 4 END AS score,c.updated_at AS notify_after,
     coalesce(c.result->>'summary',c.objective) AS reason,'{}' AS "source:json",e.title AS project,p.config,d.presentations,d.last_at
     FROM assistant_work c JOIN assistant_profiles p ON p.project_id=c.project_id JOIN entities e ON e.id=c.project_id
-    LEFT JOIN assistant_notice_days d ON d.item_id=c.id AND d.local_day=$1 WHERE ${tracked} AND c.state IN ('done','blocked') ${ids ? '' : 'AND c.notified_attempt<c.attempts'} ${where}`,
+    LEFT JOIN assistant_notice_days d ON d.item_id=c.id AND d.local_day=$1 WHERE ${tracked}
+    AND NOT EXISTS(SELECT 1 FROM assistant_cases origin WHERE origin.id=c.case_id AND origin.kind='jira'
+      AND (origin.state<>'open' OR $3=0 OR NOT (${recentJira('$2','origin')})))
+    AND c.state IN ('done','blocked') ${ids ? '' : 'AND c.notified_attempt<c.attempts'} ${where}`,
         params,
       )),
     )
@@ -199,8 +205,9 @@ export class NotificationQueue {
       )
       const since = recent?.last_at ? (+now - Date.parse(recent.last_at)) / minute : Infinity
       const candidates: Candidate[] = []
-      const rows = await attentionRows(sql, this.enabled('agents'), day)
-      const deadlines = await slackDeadlines(sql, rows, day)
+      const jira = this.enabled('connections') && this.enabled('mcp')
+      const rows = await attentionRows(sql, this.enabled('agents'), day, iso, jira)
+      const deadlines = jira ? await slackDeadlines(sql, rows, day, iso) : new Map<string, string>()
       for (const row of rows) {
         if ((row.kind === 'slack' || row.kind === 'pr') && !this.enabled('connections')) continue
         const p = profile.parse(row.config),
@@ -293,16 +300,16 @@ export class NotificationQueue {
   async detail(id: string) {
     const [batch] = await this.db.query('SELECT members FROM assistant_notice_batches WHERE id=$1', [id])
     check(batch, 'Aviso inexistente', 404)
+    const now = this.now(), jira = this.enabled('connections') && this.enabled('mcp')
     const members = batch.members as Member[],
       rows = await attentionRows(
         this.db,
         this.enabled('agents'),
-        members[0]?.day ?? '',
+        members[0]?.day ?? '', now.toISOString(), jira,
         members.map((m) => m.id),
       )
-    const now = this.now(),
-      agenda = await this.agenda(now),
-      deadlines = await slackDeadlines(this.db, rows, members[0]?.day ?? '')
+    const agenda = await this.agenda(now),
+      deadlines = jira ? await slackDeadlines(this.db, rows, members[0]?.day ?? '', now.toISOString()) : new Map<string,string>()
     const byId = new Map(
       rows
         .filter((r) => !['slack', 'pr'].includes(r.kind) || this.enabled('connections'))
@@ -313,16 +320,17 @@ export class NotificationQueue {
 }
 
 /** Only the owner's Gmail daily brief reads these rows. Resolved or archived work drops out at delivery time. */
-export async function briefEmailReminders(db: Sql, now: Date, connections = true) {
+export async function briefEmailReminders(db: Sql, now: Date, connections = true, mcp = true) {
   const rows = await db.query(
     `SELECT c.id,c.title,c.reason,c.kind,c.source,c.score,e.title AS project FROM assistant_cases c
     JOIN entities e ON e.id=c.project_id JOIN assistant_profiles p ON p.project_id=e.id
-    WHERE ${tracked} AND c.state='open' AND coalesce(c.source->>'dismissed',0)=0 AND ($2=1 OR c.kind NOT IN ('pr','slack'))
+    WHERE ${tracked} AND c.state='open' AND coalesce(c.source->>'dismissed',0)=0 AND ($2=1 OR c.kind NOT IN ('pr','slack','jira'))
+    AND (c.kind<>'jira' OR ($3=1 AND ${recentJira('$1')}))
     AND EXISTS(SELECT 1 FROM assistant_notice_days d WHERE d.item_id=c.id AND d.capped_at<=$1 AND d.capped_at>coalesce((
       SELECT max(sd.updated_at) FROM schedule_deliveries sd JOIN schedule_runs r ON r.id=sd.run_id
       JOIN schedules s ON s.id=r.schedule_id WHERE s.template='daily_brief' AND sd.target='gmail_self' AND sd.state='sent'),''))
     ORDER BY c.score DESC,c.title,c.id`,
-    [now.toISOString(), connections],
+    [now.toISOString(), connections, mcp],
   )
   if (!rows.length) return ''
   const safe = (value: unknown, length: number) => oneLine(value, length).replace(/([\\*_[\]<>`])/g, '\\$1')

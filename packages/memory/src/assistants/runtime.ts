@@ -2,29 +2,30 @@ import { NotificationQueue } from './notifications.js'
 import { proximity, type ReadCalendar } from './agenda.js'
 import { isArchived } from '../projects/archive.js'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { z } from 'zod'
+import { randomUUID } from 'node:crypto'
+import { answerAbout, chatAnswer, mentionedTicket } from './focused-chat.js'
 import type { ModuleEnabled } from '@agenthub/shared/modules'
 import type { MemoryDatabase, Sql } from '../database.js'
 import { check, MemoryError } from '../contracts.js'
 import { requireEntity } from '../store.js'
 import { acceptance, Attention, watcher, type Lookup, type Access } from './attention.js'
 import { historyAllowsRemote, localModelRequired, modelRequired, terms, type AgentModel, type ModelGap } from './context.js'
-import { localClock, profile, role, type PortfolioPolicy, type Profile, type CaseRow, type Signal } from './contracts.js'
+import { localClock, profile, type PortfolioPolicy, type Profile, type CaseRow, type Signal } from './contracts.js'
 import { projectSignals, pullRequests } from './signals.js'
+import { AssistantJira, caseIssueKey, issueEvidence, presentCase, recentJira, type JiraCase, type LiveIssue } from './jira.js'
+import type { JiraTaskReader } from '../projects/tasks.js'
 import { digest } from './slack.js'
 import { WorkQueue } from './work.js'
 
 import { channelWithinProject, discoverBindings, enroll, readPolicy, type Bindings, type Identities } from './portfolio.js'
 import { overviewChat, type OverviewInput } from './overview.js'
 
-const jiraMirror = 'jira/mirror'
 const jiraInterval = 300_000
-// Past this age an unconfirmed mirror no longer supports alerts derived from elapsed time.
-const jiraFreshness = 900_000
 
-// $1 project, $2 view, $3 search text. `dismissed` marks cases the model judged irrelevant; owner dismissals stay listed as history.
+const currentSource = `(c.kind<>'jira' OR c.state<>'open' OR ($5=1 AND ${recentJira('$4')}))`
+// $1 project, $2 view, $3 search text, $4 verification time, $5 Jira availability. `dismissed` marks cases the model judged irrelevant; owner dismissals stay listed as history.
 const listed = `coalesce(e.data->>'memory_state','')<>'archived' AND e.id NOT IN (SELECT project_id FROM archived_projects)
-  AND ($1 IS NULL OR c.project_id=$1) AND coalesce(c.source->>'dismissed',0)=0
+  AND ($2<>'attention' OR ${currentSource}) AND ($1 IS NULL OR c.project_id=$1) AND coalesce(c.source->>'dismissed',0)=0
   AND ($2='all' OR (c.state IN ('open','uncertain','sending'))=($2='attention'))
   AND ($3='' OR ilike(c.title,'%'||$3||'%') OR ilike(c.reason,'%'||$3||'%') OR ilike(e.title,'%'||$3||'%'))`
 
@@ -32,8 +33,9 @@ export class Resident {
   readonly notifications: NotificationQueue
   readonly attention: Attention
   readonly work: WorkQueue
+  readonly jira: AssistantJira
   private readonly controllers = new Map<string, AbortController>()
-  private readonly scans = new Map<string, Promise<void>>()
+  private readonly scans = new Map<string, { operation: Promise<void>; force: boolean }>()
   private readonly effects = new Set<Promise<unknown>>()
   private readonly jiraAttempts = new Map<string, { at: number; error: string | null }>()
   private readonly gaps = new Map<string, ModelGap>()
@@ -48,15 +50,17 @@ export class Resident {
     readonly prs = pullRequests,
     readonly identities: Identities = { slack: async () => null, jira: async () => null },
     calendar?: ReadCalendar,
-    /** Brings a project's Jira mirror up to date; resolves false when the project has nothing to confirm in Jira. */
-    readonly confirmTasks?: (project: string, sinceMinutes: number | undefined) => Promise<boolean>,
+    jiraReader?: JiraTaskReader,
+    readonly mirrorJira?: (project: string, issues: LiveIssue[]) => Promise<unknown>,
   ) {
+    this.jira = new AssistantJira(db, enabled, jiraReader)
     this.notifications = new NotificationQueue(db, now, enabled, calendar)
     this.attention = new Attention(db, model, lookup, access, now, async (project, version) => {
       const p = await this.settings(project)
       return this.on() && p.config.active && p.version === version
-    })
-    this.work = new WorkQueue(db, model, lookup, db.directory)
+    }, (project, row, text, signal) => this.liveEvidence(project, row, text, signal),
+      () => this.enabled('connections') && this.enabled('mcp'))
+    this.work = new WorkQueue(db, model, lookup, db.directory, (project, row, text, signal) => this.liveEvidence(project, row, text, signal))
   }
   on() {
     return this.enabled('assistants') && this.enabled('memory')
@@ -122,11 +126,11 @@ export class Resident {
       return true
     })
     if (!changed) return this.settings(project)
-    this.controllers.get(project)?.abort()
-    this.controllers.delete(project)
+    this.trackingChanged(project)
     return this.settings(project)
   }
   trackingChanged(project: string) {
+    this.jiraAttempts.delete(project)
     this.controllers.get(project)?.abort()
     this.controllers.delete(project)
   }
@@ -201,10 +205,7 @@ export class Resident {
         changed.push(r.project_id)
       }
     })
-    for (const id of changed) {
-      this.controllers.get(id)?.abort()
-      this.controllers.delete(id)
-    }
+    for (const id of changed) this.trackingChanged(id)
     return this.policy()
   }
   async overview(input?: string | OverviewInput) {
@@ -220,17 +221,18 @@ export class Resident {
   }
   async stop() {
     this.epoch++
+    this.jiraAttempts.clear()
     for (const c of this.controllers.values()) c.abort()
     this.controllers.clear()
     this.awake?.kill()
     this.awake = null
-    await Promise.allSettled([...this.scans.values(), ...this.effects])
+    await Promise.allSettled([...Array.from(this.scans.values(), (scan) => scan.operation), ...this.effects])
   }
   private cycle: Promise<void> | undefined
   private epoch = 0
-  async tick() {
+  async tick(force = false) {
     if (!this.cycle)
-      this.cycle = this.scanPortfolio(this.epoch).finally(() => {
+      this.cycle = this.scanPortfolio(this.epoch, force).finally(() => {
         this.cycle = undefined
       })
     return this.cycle
@@ -238,9 +240,9 @@ export class Resident {
   async scanNow() {
     // A running cycle may have enumerated projects before this explicit request.
     await this.cycle
-    return this.tick()
+    return this.tick(true)
   }
-  private async scanPortfolio(epoch: number) {
+  private async scanPortfolio(epoch: number, force: boolean) {
     if (epoch !== this.epoch || !this.on()) return
     await enroll(this.db)
     await this.reconcileHomebrew()
@@ -255,10 +257,7 @@ export class Resident {
         await this.applyConfig(sql, row.id, row.previous, next, row.version)
         return true
       })
-      if (changed) {
-        this.controllers.get(row.id)?.abort()
-        this.controllers.delete(row.id)
-      }
+      if (changed) this.trackingChanged(row.id)
     }
     const active = await this.db
       .query(`SELECT p.project_id,p.config,coalesce((SELECT max(c.score) FROM assistant_cases c WHERE c.project_id=p.project_id AND c.state='open'),0) AS urgency FROM assistant_profiles p JOIN entities e ON e.id=p.project_id
@@ -288,7 +287,7 @@ export class Resident {
         for (const p of waiting) {
           if (epoch !== this.epoch || !this.on()) return
           try {
-            await this.scan(p.project_id)
+            await this.scan(p.project_id, force)
           } catch (e) {
             await this.db.query('UPDATE assistant_profiles SET last_error=$2 WHERE project_id=$1', [
               p.project_id,
@@ -327,22 +326,26 @@ export class Resident {
         )
         return true
       })
-      if (changed) {
-        this.controllers.get(row.project_id)?.abort()
-        this.controllers.delete(row.project_id)
-      }
+      if (changed) this.trackingChanged(row.project_id)
     }
   }
-  scan(project: string) {
+  scan(project: string, force = true): Promise<void> {
     const pending = this.scans.get(project)
-    if (pending) return pending
-    const next = this.scanOnce(project).finally(() => {
+    if (pending) {
+      if (!force || pending.force) return pending.operation
+      const attempt = this.jiraAttempts.get(project), epoch = this.epoch
+      return pending.operation.then(() => {
+        check(this.on() && this.epoch === epoch, 'El asistente está pausado', 409)
+        if (this.jiraAttempts.get(project) === attempt) return this.scan(project, true)
+      })
+    }
+    const next = this.scanOnce(project, force).finally(() => {
       this.scans.delete(project)
     })
-    this.scans.set(project, next)
+    this.scans.set(project, { operation: next, force })
     return next
   }
-  private async scanOnce(project: string) {
+  private async scanOnce(project: string, force: boolean) {
     const { config: p, version } = await this.settings(project)
     check(this.on() && p.active, 'El asistente está pausado', 409)
     const signal = this.signal(project),
@@ -353,6 +356,7 @@ export class Resident {
     // Without a model that can read this project, its automatic tasks would only pile up as blocked.
     const gap = (await this.model.gap?.(project)) ?? null
     this.gaps.set(project, gap)
+    const canCollectWork = !gap && this.enabled('agents')
     if (gap)
       await this.db.query(
         `UPDATE assistant_work SET state='cancelled',lease_pid=NULL,updated_at=now() WHERE project_id=$1 AND state='blocked'
@@ -380,8 +384,25 @@ export class Resident {
         errors.push(e instanceof Error ? e.message.slice(0, 320) : 'Error de lectura')
       }
     }
-    const confirmedAt = await this.confirmJira(project, cursors.get(jiraMirror) ?? 0, now, signal, errors, () => advance(jiraMirror))
-    const currentSignals = await projectSignals(this.db, project, p, now, now.getTime() - confirmedAt < jiraFreshness)
+    const last = this.jiraAttempts.get(project)
+    let issues: LiveIssue[] | null = null
+    const readJira = force || !last || +now - last.at >= jiraInterval
+    if (readJira) {
+      let error: string | null = null
+      try {
+        issues = await this.jira.projectIssues(project, signal)
+        if (issues?.length) await this.mirrorJira?.(project, issues)
+      } catch (e) {
+        signal.throwIfAborted()
+        issues = null
+        error = 'Jira sin confirmar · ' + (e instanceof Error ? e.message.slice(0, 240) : 'Error de lectura')
+      }
+      this.jiraAttempts.set(project, {at: +now, error})
+      if (error) errors.push(error)
+    } else if (last.error) errors.push(last.error)
+    const currentSignals = await projectSignals(this.db, project, p, now, issues ?? [])
+    signal.throwIfAborted()
+    if (readJira) await this.reconcileJira(project, version, issues, currentSignals, this.jiraAttempts.get(project)?.error)
     const closeMissing = async (kind: string, keys: string[], repo?: string) => {
       await this.db.query(
         `UPDATE assistant_cases SET state='closed',draft=NULL,revision=revision+1,source=json_remove(source,'$.refresh'),updated_at=now() WHERE project_id=$1 AND kind=$2 AND state='open'
@@ -389,11 +410,7 @@ export class Resident {
         [project, kind, keys, repo ?? null],
       )
     }
-    for (const kind of ['jira', 'meeting'])
-      await closeMissing(
-        kind,
-        currentSignals.map((s) => s.key),
-      )
+    await closeMissing('meeting', currentSignals.filter(s => s.kind === 'meeting').map(s => s.key))
     if (this.enabled('connections'))
       for (const repo of p.github_repos)
         await collect(async () => {
@@ -408,8 +425,13 @@ export class Resident {
           await advance('gh/' + repo)
         })
     const record = async (s: Signal, thread?: Parameters<Attention['observe']>[5]) => {
-      const row = await this.attention.observe(project, p, version, s, signal, thread, undefined, s.kind === 'slack' && !infer)
-      if (row && row.state === 'open' && row.score >= p.threshold && this.enabled('agents') && !gap) {
+      const observed = await this.attention.observe(project, p, version, s, signal, thread, undefined, s.kind === 'slack' && !infer)
+      if (!canCollectWork) return
+      const row = observed ?? (await this.db.query<CaseRow>(
+        "SELECT * FROM assistant_cases WHERE project_id=$1 AND source_key=$2 AND fingerprint=$3 AND state='open' AND score>=$4",
+        [project, s.key, s.fingerprint, p.threshold],
+      ))[0]
+      if (row && row.state === 'open' && row.score >= p.threshold) {
         await this.work.enqueue(
           project,
           p,
@@ -425,6 +447,7 @@ export class Resident {
       }
     }
     for (const s of currentSignals) await collect(() => record(s))
+    if (readJira && issues !== null) await advance('jira/verified')
     if (this.enabled('connections'))
       for (const w of p.slack)
         await collect(async () => {
@@ -465,7 +488,7 @@ export class Resident {
                 WHERE project_id=$1 AND source_key=$2 AND source->>'archive_recheck'=1`,
                   [project, ['slack', w.team, w.channel, root].join('/')],
                 )
-              if (thread.handled && this.enabled('agents') && !gap) {
+              if (thread.handled && canCollectWork) {
                 const own = thread.messages.at(-1)
                 if (
                   own?.user === w.owner &&
@@ -505,59 +528,65 @@ export class Resident {
       version,
     ])
   }
-  /** Model gap seen by the latest scan of the followed projects, and how many of them it affects. */
+  /** Reports which followed projects need a compatible model. */
   async modelStatus() {
     const gaps = (await this.projects()).filter((p) => p.active).flatMap((p) => this.gaps.get(String(p.id)) ?? [])
-    return { gap: (gaps.includes('disabled') ? 'disabled' : gaps.includes('local') ? 'local' : null) as ModelGap, projects: gaps.length }
+    return {
+      gap: (gaps.includes('disabled') ? 'disabled' : gaps.includes('local') ? 'local' : null) as ModelGap,
+      projects: gaps.length,
+    }
   }
-  /**
-   * Task alerts follow Jira's own state: the mirror is refreshed with what Jira changed since the last confirmation
-   * (or since the last full sync, or entirely on the first run). Returns the time of the latest confirmation, 0 if none.
-   * A failed attempt is not repeated before `jiraInterval` and its message stays in the scan errors meanwhile.
-   */
-  private async confirmJira(project: string, last: number, now: Date, signal: AbortSignal, errors: string[], advance: () => Promise<unknown>) {
-    if (!this.confirmTasks || !this.enabled('connections') || now.getTime() - last < jiraInterval) return last
-    const attempt = this.jiraAttempts.get(project)
-    if (attempt && now.getTime() - attempt.at < jiraInterval) {
-      if (attempt.error) errors.push(attempt.error)
-      return last
-    }
-    try {
-      const synced = Date.parse((await requireEntity(this.db, project, 'project')).data.jira_synced_at ?? '')
-      const base = last || (Number.isFinite(synced) ? synced : 0)
-      const applies = await this.confirmTasks(project, base ? (now.getTime() - base) / 60_000 + 5 : undefined)
-      signal.throwIfAborted()
-      this.jiraAttempts.set(project, { at: now.getTime(), error: null })
-      if (!applies) return last
-      await advance()
-      return now.getTime()
-    } catch (e) {
-      signal.throwIfAborted()
-      const error = 'Jira sin confirmar · ' + (e instanceof Error ? e.message.slice(0, 240) : 'Error de lectura')
-      this.jiraAttempts.set(project, { at: now.getTime(), error })
-      errors.push(error)
-      return last
-    }
+  liveEvidence(project: string, row: JiraCase | null, question: string, signal: AbortSignal) {
+    return this.jira.evidence(project, row, question, signal)
+  }
+
+  private async reconcileJira(project: string, version: number, issues: LiveIssue[] | null, signals: Signal[], error?: string | null) {
+    const active = new Set(signals.filter(s => s.kind === 'jira').map(s => s.key))
+    const byKey = new Map(issues?.map(issue => [issue.key, issue]))
+    await this.db.transaction(async sql => {
+      if (!issues) await sql.query(`DELETE FROM assistant_source_cursors WHERE project_id=$1 AND source_key='jira/verified'
+        AND EXISTS(SELECT 1 FROM assistant_profiles WHERE project_id=$1 AND version=$2)`, [project, version])
+      const rows = await sql.query<CaseRow>(`SELECT c.* FROM assistant_cases c JOIN assistant_profiles p ON p.project_id=c.project_id
+        WHERE c.project_id=$1 AND p.version=$2 AND c.kind='jira' AND (c.state='open' OR
+          ($3=1 AND c.state='closed' AND c.source->>'owner_dismissed'=1))`, [project, version, issues !== null])
+      for (const row of rows) {
+        if (active.has(row.source_key)) continue
+        const key = caseIssueKey(row)
+        const candidate = key && byKey.get(key)
+        const site = String(row.source.url ?? '').match(/^(https:\/\/[^/]+)\/browse\//i)?.[1]
+        const issue = candidate && (!site || site === candidate.site) ? candidate : undefined
+        const status = !issues ? 'unavailable' : issue ? 'verified' : 'not_visible'
+        const reason = !issues ? error || 'Jira sin confirmar. El proyecto no tiene una clave de Jira vinculada.' :
+          issue ? 'Jira indica «' + issue.status + '». La lectura actual no confirmó el motivo del aviso anterior.' :
+          'El ticket ya no figura entre los resultados visibles de Jira para este proyecto.'
+        if (row.source.jira_verification === status && row.reason === reason) continue
+        await sql.query(`UPDATE assistant_cases SET state=$2,score=0,reason=$3,draft=NULL,evidence=$4,revision=revision+1,fingerprint='',
+          source=json_set(json_remove(source,'$.refresh','$.owner_dismissed','$.text','$.status','$.due_at','$.downstream','$.priority','$.owned','$.assignee','$.query'),'$.jira_verification',$5),
+          updated_at=now() WHERE id=$1 AND revision=$6`, [row.id, issues ? 'closed' : 'open', reason,
+          issue ? [issueEvidence(issue)] : [], status, row.revision])
+      }
+    })
   }
   async inbox(project?: string, state: 'attention' | 'history' | 'all' = 'all', limit = 300, offset = 0, search = '') {
     const { upcoming } = await this.notifications.agenda()
     const weights = Object.fromEntries([...upcoming].map(([id, event]) => [id, proximity(event)]))
-    return this.db.query<CaseRow>(
-      `SELECT c.*,e.title AS project_title FROM assistant_cases c JOIN entities e ON e.id=c.project_id
+    const rows = await this.db.query<CaseRow & {current_source: number}>(
+      `SELECT c.*,e.title AS project_title,${currentSource} AS current_source FROM assistant_cases c JOIN entities e ON e.id=c.project_id
       WHERE ${listed}
       ORDER BY CASE WHEN state IN ('open','uncertain','sending') THEN 0 ELSE 1 END,
-        (c.score*10 + coalesce((SELECT value FROM json_each($6) WHERE key=c.project_id),0)
+        (CASE WHEN ${currentSource} THEN c.score*10 ELSE 0 END + coalesce((SELECT value FROM json_each($8) WHERE key=c.project_id),0)
         + CASE WHEN c.kind='slack' AND c.source->>'question'=1 THEN 3 ELSE 0 END
-        + CASE WHEN json_array_length(c.source,'$.downstream')>0 THEN 3 ELSE 0 END) DESC,c.updated_at DESC,c.id LIMIT $4 OFFSET $5`,
-      [project ?? null, state, search, limit, offset, weights],
+        + CASE WHEN json_array_length(c.source,'$.downstream')>0 THEN 3 ELSE 0 END) DESC,c.updated_at DESC,c.id LIMIT $6 OFFSET $7`,
+      [project ?? null, state, search, this.now().toISOString(), this.enabled('connections') && this.enabled('mcp'), limit, offset, weights],
     )
+    return rows.map(presentCase)
   }
   /** Size of an inbox view and of its urgency bands (8–10 and 5–7), independent of paging. */
   async inboxTotals(project?: string, state: 'attention' | 'history' | 'all' = 'all', search = '') {
     const [row] = await this.db.query<{ total: number; urgent: number; important: number }>(
-      `SELECT count(*) AS total,coalesce(sum(c.score>=8),0) AS urgent,coalesce(sum(c.score BETWEEN 5 AND 7),0) AS important
+      `SELECT count(*) AS total,coalesce(sum(c.score>=8 AND ${currentSource}),0) AS urgent,coalesce(sum((c.score BETWEEN 5 AND 7) AND ${currentSource}),0) AS important
       FROM assistant_cases c JOIN entities e ON e.id=c.project_id WHERE ${listed}`,
-      [project ?? null, state, search],
+      [project ?? null, state, search, this.now().toISOString(), this.enabled('connections') && this.enabled('mcp')],
     )
     return { total: Number(row?.total ?? 0), urgent: Number(row?.urgent ?? 0), important: Number(row?.important ?? 0) }
   }
@@ -579,6 +608,7 @@ export class Resident {
         body,
         evidence,
       ])
+    const ticket = !row && mode === 'chat' ? await mentionedTicket(this.db, text, [project]) : undefined
     const history = await this.db.query(
       'SELECT role,body FROM assistant_messages WHERE project_id=$1 AND case_id IS $2 ORDER BY seq DESC LIMIT 14',
       [project, caseId],
@@ -593,8 +623,15 @@ export class Resident {
       check(next, 'La sugerencia cambió', 409)
       await add('owner', text, [])
       await add('secretary', next.draft ?? next.reason, next.evidence)
+    } else if (row || ticket) {
+      const previous = ticket ? [] : history.map(m => ({ role: m.role, body: m.body })).reverse()
+      const answer = await answerAbout(this, project, text, row, undefined, previous, requestId ?? randomUUID(), ticket?.key)
+      await this.db.transaction(async () => {
+        await add('owner', text, [])
+        await add('secretary', answer.reply, answer.evidence)
+      })
     } else {
-      const evidence = await this.lookup(project, [row?.title, text, ...history.slice(0, 2).map((m) => m.body)].filter(Boolean).join(' '))
+      const evidence = await this.lookup(project, [text, ...history.slice(0, 2).map((m) => m.body)].filter(Boolean).join(' '))
       const items = (await this.inbox(project)).slice(0, 12)
       const tasks = await this.db.query(
         'SELECT role,objective,state,result FROM assistant_work WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',
@@ -616,28 +653,18 @@ export class Resident {
             text,
             history: history.reverse(),
             remembered,
-            case: row,
             attention: items.map((r) => ({ title: r.title, state: r.state, reason: r.reason })),
             tasks,
             evidence,
           },
-          z.object({
-            reply: z.string().min(1).max(5000),
-            delegate: z
-              .object({ role, objective: z.string().min(3).max(1000) })
-              .nullable()
-              .optional(),
-          }),
+          chatAnswer,
           evidence.every((e) => e.remote) && (await historyAllowsRemote(this.db, project)),
           signal,
+          { owner: true, conversation: 'project' },
         )
         .catch((error) => {
           signal.throwIfAborted()
-          const facts = [
-            ...evidence.slice(0, 3).map((e) => e.title + ' · ' + e.text.slice(0, 160)),
-            ...items.slice(0, 3).map((c) => c.score + '/10 · ' + c.title + ' · ' + c.reason),
-          ]
-          return { reply: [error instanceof Error ? error.message : 'El modelo no respondió', ...facts].join('\n'), delegate: null }
+          return { reply: error instanceof Error ? error.message : 'La terminal no respondió.', delegate: null }
         })
       signal.throwIfAborted()
       let body = answer.reply

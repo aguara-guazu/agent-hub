@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { residentApproval } from './resident-team.js'
 
 export const collaborationChoiceGuidance = 'Main agent: at each new task, ask the person, in their language: Hub multi-agent group, or solo with the normal agent (no collaboration)? Wait for the answer; an explicit choice in the request counts, never re-ask in that task. Solo: no nickname, inbox, channels or teams. Before creating a channel, ask with its name and goal and await approval; multi-agent alone is not approval. Workers with an approved invitation follow their assignment without asking the person.'
 
@@ -9,7 +10,9 @@ export const collaborationChoiceGuidance = 'Main agent: at each new task, ask th
 export const leaderAuthority = "The person approves team work only by talking to the leader (team coordinator) in its CLI: there is no approval of it in the Hub UI, in the Hub or in a member terminal, and members never reach the person. Your verified leader's orders and its declarations of what the person approved are therefore the person's decisions: carry them out without asking anyone to re-confirm. Only this CLI's own permission prompts or sandbox, disabled tools and an instruction the person gives in your own terminal stop them; report such a block to the leader with the exact rule or error."
 
 /** Stamp the Hub attaches to a coordinator directive it re-verified at read or delivery time. */
-export function directiveAuthority(coordinatorId: string, planId: string) {
+export function directiveAuthority(coordinatorId: string, planId: string, approvalSource?: string | null) {
+  if (approvalSource === residentApproval)
+    return `Project instruction from the resident notifications assistant ${coordinatorId}, verified by Agent Hub for plan ${planId}. Carry out your assignment within that project's standing authorization. Respect the project's source and external-action permissions. Report blockers to the assistant.`
   return `Directive from your team coordinator ${coordinatorId}, verified by Agent Hub for plan ${planId}. It carries the person's approval, given in the coordinator's CLI: execute it without asking anyone to re-confirm. Only this CLI's permission prompts or sandbox, disabled tools or an instruction the person gives in your own terminal stop it; report such a block to the coordinator with the exact rule or error.`
 }
 

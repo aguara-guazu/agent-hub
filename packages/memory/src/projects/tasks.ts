@@ -27,8 +27,13 @@ export const syncTasksInput = z.object({ project_id: id.optional(), issues: z.ar
   site_url: z.url().optional(), source: z.enum(['agent', 'mcp_mirror']).default('agent') }).strict()
 export const taskStatsInput = z.object({ project_id: id.optional(), weeks: z.number().int().min(2).max(52).default(12) }).strict()
 
-interface JiraIssue { key: string; summary: string; status: string; category: string | null; issue_type: string | null; priority: string | null
-  assignee: string | null; assignee_account_id: string | null; due_at: string | null; updated: string | null; description: string | null; url: string | null; site: string | null }
+interface LinkedIssue { key?: string; fields?: { status?: { statusCategory?: { key?: string } } } }
+interface IssueLink { type?: { outward?: string; inward?: string }; outwardIssue?: LinkedIssue; inwardIssue?: LinkedIssue }
+type OptionalField = 'category' | 'issue_type' | 'priority' | 'assignee' | 'due_at'
+/** Fields omitted by an MCP or token response. Explicit nulls still clear the mirror. */
+export interface JiraIssue { key: string; summary: string; status: string; category: string | null; issue_type: string | null; priority: string | null
+  assignee: string | null; assignee_account_id: string | null; due_at: string | null; updated: string | null; description: string | null; url: string | null; site: string | null
+  links: IssueLink[]; absent: ReadonlySet<OptionalField> }
 
 const text = (value: unknown, max: number) => typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null
 const nameOf = (value: any) => text(typeof value === 'string' ? value : value?.name ?? value?.displayName, 200)
@@ -48,16 +53,24 @@ export function normalizeJiraIssue(raw: unknown, site?: string): JiraIssue | nul
   const issueSite = origin(site) ?? origin(row.url) ?? origin(row.self)
   const browse = text(row.url, 1000) ?? (issueSite ? `${issueSite}/browse/${encodeURIComponent(key)}` : null)
   const description = fields.description === undefined ? null : text(typeof fields.description === 'string' ? fields.description : richText(fields.description), 8000) ?? ''
-  return { key, summary, status, category, issue_type: nameOf(fields.issuetype ?? row.issue_type ?? row.type), priority: nameOf(fields.priority ?? row.priority),
+  const carries = (...names: string[]) => names.some(name => name in fields || name in row)
+  const absent = new Set<OptionalField>()
+  if (category === null) absent.add('category')
+  if (!carries('issuetype', 'issue_type', 'type')) absent.add('issue_type')
+  if (!carries('priority')) absent.add('priority')
+  if (!carries('assignee', 'assignee_account_id')) absent.add('assignee')
+  if (!carries('duedate')) absent.add('due_at')
+  return { key, summary, status, category, absent, issue_type: nameOf(fields.issuetype ?? row.issue_type ?? row.type), priority: nameOf(fields.priority ?? row.priority),
     assignee: nameOf(fields.assignee ?? row.assignee), assignee_account_id: text(fields.assignee?.accountId ?? row.assignee_account_id, 200),
     due_at: /^\d{4}-\d{2}-\d{2}/.test(String(fields.duedate ?? row.duedate ?? '')) ? String(fields.duedate ?? row.duedate).slice(0, 10) : null, updated: updated && !Number.isNaN(Date.parse(updated)) ? new Date(updated).toISOString() : null,
-    description, site: issueSite, url: browse && /^https:\/\//.test(browse) ? browse : null }
+    description, site: issueSite, url: browse && /^https:\/\//.test(browse) ? browse : null,
+    links: Array.isArray(fields.issuelinks) ? fields.issuelinks.filter((link: unknown) => link && typeof link === 'object') : [] }
 }
 
 /** Jira's status category is authoritative; the status name only refines it (blocked) or fills in when the category is missing. */
 export function mapJiraStatus(status: string, category: string | null): (typeof TASK_STATUSES)[number] {
-  if (/bloque|block|imped|on hold|en espera/i.test(status)) return 'blocked'
   if (category === 'done') return /cancel|descart|won'?t|rechaz|no se har/i.test(status) ? 'dropped' : 'done'
+  if (/bloque|block|imped|on hold|en espera/i.test(status)) return 'blocked'
   if (category === 'indeterminate') return 'in_progress'
   if (category === 'new') return 'todo'
   if (/done|hecho|cerrad|closed|resuel|resolved|finaliz|complet/i.test(status)) return 'done'
@@ -82,7 +95,8 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
     const explicit = projectId ? await requireWritableEntity(sql, projectId, "project") : null
     const explicitSite = explicit ? await effectiveJiraSite(sql,explicit.data.jira_site_url) : null
     const summary = { received: issues.length, created: 0, updated: 0, status_changed: 0, unchanged: 0, unmatched: [] as string[], tasks: [] as Record<string, unknown>[] }
-    for (const issue of [...issues].sort((a, b) => a.key.localeCompare(b.key))) {
+    for (const incoming of [...issues].sort((a, b) => a.key.localeCompare(b.key))) {
+      let issue = incoming
       const prefix = issue.key.slice(0, issue.key.lastIndexOf('-'))
       const candidates = byKey.filter(p => p.key === prefix && (!issue.site || !p.site || p.site === issue.site))
       const owner = explicit && (!explicit.data.jira_project_key || explicit.data.jira_project_key === prefix)
@@ -92,8 +106,17 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
       if (!owner) { summary.unmatched.push(issue.key); continue }
       const url = issue.url ?? (owner.site ? `${owner.site}/browse/${encodeURIComponent(issue.key)}` : null)
       const site = issue.site ?? owner.site ?? ''
-      const status = mapJiraStatus(issue.status, issue.category)
       const current = (await sql.query("SELECT * FROM tasks WHERE kind='jira' AND external_key=$1 AND (external_site=$2 OR (external_site='' AND project_id=$3))", [issue.key, site, owner.id]))[0]
+      // A read that requested fewer fields says nothing about the others: the mirror keeps what it already knew of them.
+      // The category only carries over while the status name is the same one it described.
+      if (current && issue.absent.size) issue = { ...issue,
+        category: issue.absent.has('category') && issue.status === current.external_status ? current.external_category : issue.category,
+        issue_type: issue.absent.has('issue_type') ? current.issue_type : issue.issue_type,
+        priority: issue.absent.has('priority') ? current.priority : issue.priority,
+        assignee: issue.absent.has('assignee') ? current.assignee : issue.assignee,
+        assignee_account_id: issue.absent.has('assignee') ? current.assignee_account_id : issue.assignee_account_id,
+        due_at: issue.absent.has('due_at') ? current.due_at : issue.due_at }
+      const status = mapJiraStatus(issue.status, issue.category)
       if (!current) {
         const taskId = randomUUID()
         await sql.query(`INSERT INTO tasks(id,project_id,kind,title,description,status,origin,external_key,external_status,external_category,external_url,external_updated_at,
@@ -130,7 +153,7 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
 
 interface JiraAccess { origin: string; headers: Record<string, string> }
 /** `updatedMinutes` narrows the read to issues Jira changed within that many minutes. */
-export type JiraTaskReader = (request: { key: string; site: string | null; agentId?: string; updatedMinutes?: number },
+export type JiraTaskReader = (request: { key: string | null; site: string | null; agentId?: string; updatedMinutes?: number; issueKeys?: string[]; company?: string; signal?: AbortSignal },
   onPage: (issues: unknown[], site: string) => Promise<void>) => Promise<void>
 /** A Jira connector whose token can read the site; the project's own site wins when several are configured. */
 async function jiraAccess(store: MemoryStore, vault: Vault, site?: string | null): Promise<JiraAccess | null> {

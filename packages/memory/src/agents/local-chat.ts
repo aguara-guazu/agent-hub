@@ -12,6 +12,7 @@ import { check, id, parse, MemoryError } from '../contracts.js'
 import { projectForPath, orcaWorkspaceSchema, type AgentContext } from '../agents.js'
 import type { MemoryStore } from '../store.js'
 import type { Sql } from '../database.js'
+import { residentAgent } from './resident-team.js'
 import { directiveAuthority, teamGuidance, teamGuidanceVersion } from './local-chat-team.js'
 import { canReadChannel, readAccessDefinitions, readDecide, readDenied, readInterest, readNoticeValid, readRequest, readRevoke, readScope, sweepReadAccess,
   READ_GRANT_LIVENESS_GRACE_MS, personReadGrants, personReadRequests, type ReadScope } from './chat-read-access.js'
@@ -437,6 +438,7 @@ export class LocalChat {
     return {session:{...publicSession(session),role:team.leader_id===session.id?'leader':'member'},channel:{...channel,leader_id:team.leader_id},team,...(sessionKey ? {session_key:sessionKey}:{})}
   }
   async register(agent: AgentContext, sessionKey: string, nativeId: string | null = null, active=true) {
+    check(agent.agent_id!==residentAgent,'La identidad del asistente la registra el Hub.',403)
     await this.assertNotRemoved(agent,sessionKey)
     // A routing key is bound to its conversation and channel, including migrated history.
     // Old gateways and resumed clients may not carry the workspace metadata yet.
@@ -519,6 +521,7 @@ export class LocalChat {
       registration_required:true, next_action:'memory_chat_set_nick'}
   }
   async requireNickname(agent:AgentContext,sessionKey?:string) {
+    check(agent.agent_id!==residentAgent,'La identidad residente requiere su autorización de ejecución.',403)
     const rows=await this.db.query(sessionKey
       ? 'SELECT * FROM chat_sessions WHERE agent_id=$1 AND key_hash=$2'
       : 'SELECT * FROM chat_sessions WHERE agent_id=$1 AND (id=$2 OR gateway_session_id=$2)',
@@ -528,7 +531,7 @@ export class LocalChat {
     return rows[0]!
   }
   async identity(agent: AgentContext | undefined, sessionKey?: string) {
-    check(agent, 'Sólo los agentes pueden participar en la colaboración local', 403)
+    check(agent && agent.agent_id!==residentAgent, 'La colaboración local requiere la sesión de un agente registrado.', 403)
     const s = (await this.db.query(sessionKey ? 'SELECT * FROM chat_sessions WHERE key_hash=$1 AND agent_id=$2' : 'SELECT * FROM chat_sessions WHERE id=$1 AND agent_id=$2',
       [sessionKey ? hash(sessionKey) : agent.session_id, agent.agent_id]))[0]
     check(s, 'Registrate con chat_join o usá la session_key que recibiste al iniciar. No se puede adivinar la sesión.', 409)
@@ -1184,6 +1187,10 @@ export class LocalChat {
       if(input.state==='resolved')check(!(await this.db.query('SELECT 1 FROM chat_deliveries d JOIN chat_messages m ON m.id=d.message_id WHERE m.thread_id=$1 AND d.response_required=1 AND d.response_message_id IS NULL AND d.cancelled_at IS NULL',[thread.id])).length,'Hay pedidos pendientes de respuesta en este hilo.',409)
       return (await this.db.query('UPDATE chat_threads SET state=$2,updated_at=now() WHERE id=$1 RETURNING *',[input.thread_id,input.state]))[0]
     }
+    return this.sendMessage(who,input,receipt)
+  }
+
+  async sendMessage(who:Record<string,any>,input:z.infer<typeof chatDefinitions.chat_send[1]>,receipt?:{turn_id:string;receivedAt:number}) {
     // Single-channel sessions keep the original upfront check; a session that leads other channels, or takes part in an
     // inter-hub channel as a local agent of this hub, is checked per target below.
     const leadsElsewhere=(await this.db.query('SELECT 1 FROM chat_channels WHERE leader_id=$1 AND id<>$2 AND closed_at IS NULL AND deleted_at IS NULL LIMIT 1',[who.id,who.channel_id])).length>0
@@ -1313,13 +1320,15 @@ export class LocalChat {
   private async directiveFields<T extends Record<string,any>>(items:T[],readerId?:string):Promise<T[]> {
     const plans=[...new Set(items.map(item=>item.directive_plan_id).filter((value):value is string=>typeof value==="string"))]
     if(!plans.length || !readerId)return items
-    const rows=await this.db.query(`SELECT t.id,t.created_by FROM chat_team_plans t JOIN chat_channels master ON master.id=t.master_channel_id
+    const rows=await this.db.query(`SELECT t.id,t.created_by,t.approval_source FROM chat_team_plans t JOIN chat_channels master ON master.id=t.master_channel_id
       JOIN chat_sessions leader ON leader.id=t.created_by WHERE t.id IN (SELECT value FROM json_each($1)) AND t.state IN (SELECT value FROM json_each($2))
       AND master.closed_at IS NULL AND master.leader_id=t.created_by AND leader.closed_at IS NULL AND leader.removed_at IS NULL
       AND EXISTS(SELECT 1 FROM chat_team_members m WHERE m.team_id=t.id AND m.session_id=$3 AND m.state='joined')`,[JSON.stringify(plans),JSON.stringify(ACTIVE_TEAM_STATES),readerId])
-    const coordinators=new Map(rows.map(row=>[String(row.id),String(row.created_by)]))
-    return items.map(item=>item.directive_plan_id && coordinators.get(item.directive_plan_id)===item.author_id
-      ? {...item,authority:directiveAuthority(item.author_id,item.directive_plan_id)} : item)
+    const coordinators=new Map(rows.map(row=>[String(row.id),row]))
+    return items.map(item=>{
+      const plan=coordinators.get(item.directive_plan_id)
+      return plan && plan.created_by===item.author_id ? {...item,authority:directiveAuthority(item.author_id,item.directive_plan_id,plan.approval_source)} : item
+    })
   }
   private async teamForThread(sql:Sql,who:Record<string,any>,thread:Record<string,any>) {
     return (await sql.query(`SELECT t.* FROM chat_team_plans t

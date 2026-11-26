@@ -1,3 +1,4 @@
+import { residentApproval, residentAgent } from './resident-team.js'
 import { hubLog } from "../report.js"
 import { unavailableActivity, type FleetActivity } from './fleet-activity.js'
 import { execFile, spawn } from 'node:child_process'
@@ -96,6 +97,7 @@ export class HubTeamRuntime implements TeamOrca {
   readonly provider = 'hub' as const
   readonly supportsProfiles: boolean = false
   private readonly manager: FleetProcessManager
+  requireResidentProject?: (projectId: string) => Promise<void>
   onUnjoinedIdle?: (memberId: string, generation: string) => Promise<void>
   private readonly generations = new Map<string, string>()
   private readonly nextGenerations = new Map<string, string>()
@@ -553,21 +555,27 @@ export class HubTeamRuntime implements TeamOrca {
     if (!owned || this.generations.get(handle) !== runtime.generation) return { ...runtime, state: 'unknown', error_code: 'fleet_process_not_owned' }
     return { ...runtime }
   }
-  /** Same guards as a delivery: live plan, human instruction, current leader, open channels and the member's own workspace. */
+  /** Same guards as a delivery: live plan, recorded authorization, current leader, open channels and the member's own workspace. */
   private async assertAuthorized(handle: string, sessionId: string, allowClosedSession = false): Promise<void> {
-    const authorized = (await this.chat.db.query(`SELECT m.id FROM chat_team_members m
+    const authorized = (await this.chat.db.query(`SELECT m.id,t.approval_source,master.project_id FROM chat_team_members m
         JOIN chat_team_plans t ON t.id=m.team_id
         JOIN chat_channels master ON master.id=t.master_channel_id
         JOIN chat_sessions leader ON leader.id=t.created_by
         JOIN chat_sessions participant ON participant.id=m.session_id
         JOIN chat_channels child ON child.id=m.channel_id
         WHERE m.id=$1 AND m.session_id=$2 AND m.state='joined'
-        AND t.state NOT IN ('paused','cancelled','completed','prepared') AND t.human_instruction IS NOT NULL
+        AND t.state NOT IN ('paused','cancelled','completed','prepared')
+        AND (t.human_instruction IS NOT NULL OR (t.approval_source=$4 AND leader.agent_id=$5 AND leader.capability='resident_assistant'
+          AND master.project_id=t.plan->>'resident_project_id' AND master.path=t.parent->>'path' AND master.scope_key='assistant:notifications:'||master.project_id))
         AND master.closed_at IS NULL AND master.leader_id=t.created_by
         AND leader.channel_id=master.id AND leader.closed_at IS NULL AND leader.removed_at IS NULL
         AND participant.channel_id=child.id AND (participant.closed_at IS NULL OR $3=1) AND participant.removed_at IS NULL
-        AND child.closed_at IS NULL AND child.path=m.workspace_path`, [handle, sessionId, allowClosedSession ? 1 : 0]))[0]
+        AND child.closed_at IS NULL AND child.path=m.workspace_path`, [handle, sessionId, allowClosedSession ? 1 : 0, residentApproval, residentAgent]))[0]
     check(authorized, 'El equipo o sus sesiones ya no están autorizados para recibir el aviso.', 403)
+    if (authorized.approval_source === residentApproval) {
+      check(this.requireResidentProject, 'Los equipos del asistente están pausados.', 409)
+      await this.requireResidentProject(authorized.project_id)
+    }
   }
   /**
    * Delivery readiness from the process this Hub owns, never from the persisted session row, which can lag a state change.

@@ -14,7 +14,8 @@ delete process.env.AGENTHUB_CONTROL_FD
 // Scripts run on process.execPath and need ELECTRON_RUN_AS_NODE; a native CLI would pass it on to any Electron app it opens.
 const child = spawn(isScript ? process.execPath : executable,
   isScript ? process.argv.slice(2) : process.argv.slice(3), {
-    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: !windows, env: isScript ? process.env : childEnv(),
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: !windows, env: isScript ? process.env :
+      childEnv({ AGENTHUB_RESIDENT_TURN: process.env.AGENTHUB_RESIDENT_TURN === '1' ? '1' : undefined }),
   })
 if (Number.isInteger(controlFd) && controlFd > 2 && child.pid) try { writeSync(controlFd, JSON.stringify({ cli_pid: child.pid }) + '\n') } catch { /* the parent does not listen */ }
 // Windows locks a process's current directory: the run folder stays removable while this host (or a taskkill it starts) lives.

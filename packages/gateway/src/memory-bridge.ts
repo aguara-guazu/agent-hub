@@ -22,8 +22,10 @@ const JIRA_WRITES = new Set(['createjiraissue', 'editjiraissue', 'transitionjira
 /** Lectura de un issue con la que se relee el estado despues de una escritura. */
 export const JIRA_REREADS = ['getjiraissue', 'jira_get_issue']
 const REREAD_FIELDS = ['summary', 'description', 'status', 'issuetype', 'priority', 'assignee', 'updated', 'project']
+const MEMORY_READS = new Set(['context', 'search', 'get_entity', 'get_task', 'list_tasks', 'task_stats', 'skill_reference'])
+const ATLASSIAN_READS = new Set(['getAccessibleAtlassianResources', 'atlassianUserInfo', 'getJiraIssue', 'searchJiraIssuesUsingJql', 'getVisibleJiraProjects'])
 
-export function isMemorySpec(spec: UpstreamSpec): boolean {
+export function isMemorySpec(spec: Pick<UpstreamSpec, 'url'>): boolean {
   if (!spec.url) return false
   try {
     const url = new URL(spec.url)
@@ -31,6 +33,20 @@ export function isMemorySpec(spec: UpstreamSpec): boolean {
   } catch {
     return false
   }
+}
+
+/** Only identify operations we know at their actual endpoints. A server's name or a similar tool name is insufficient. */
+export function residentReadAnnotations(spec: Pick<UpstreamSpec, 'transport' | 'url'> | undefined, toolName: string, hubUrl?: string) {
+  if (!spec || spec.transport !== 'http') return undefined
+  try {
+    const url = new URL(spec.url)
+    if (url.username || url.password || url.search || url.hash) return undefined
+    if (hubUrl && MEMORY_READS.has(toolName) && isMemorySpec(spec) && url.origin === new URL(hubUrl).origin)
+      return { readOnlyHint: true }
+    if (ATLASSIAN_READS.has(toolName) && url.origin === 'https://mcp.atlassian.com' && /^\/v1\/(?:sse|mcp(?:\/authv2)?)\/?$/.test(url.pathname))
+      return { readOnlyHint: true, openWorldHint: true }
+  } catch { /* Invalid endpoints have no known operations. */ }
+  return undefined
 }
 
 export function isJiraTool(toolName: string): boolean {

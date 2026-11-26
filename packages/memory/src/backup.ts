@@ -21,8 +21,8 @@ const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 
   "usage_session_links", "usage_consumption_hourly", "usage_consumption_hourly_origin",
   'assistant_profiles','assistant_cases','assistant_work','assistant_messages','assistant_usage','assistant_portfolio_policy','assistant_overview_messages','project_archive_state','assistant_notice_days','assistant_notice_batches'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–30 restore. Version 30 adds notification receipts and daily limits. */
-const BACKUP_SCHEMA_VERSION = 30
+/** Data-model version of agenthub-memory-v1; backups from 1–31 restore. Version 31 distinguishes owner turns and focused microtasks. */
+const BACKUP_SCHEMA_VERSION = 31
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 

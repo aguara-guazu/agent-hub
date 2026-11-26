@@ -83,7 +83,7 @@ export default function Inbox() {
   const selectedWork = taskId && !id ? work.data?.items.find((w) => w.id === taskId) : undefined
 
   const items = projects.data?.items ?? []
-  const model = projects.data?.model
+  const noModel = projects.data?.model?.gap === "disabled"
   const tracked = items.filter((p) => p.active)
   const name = (projectId: string) => items.find((p) => p.id === projectId)?.title ?? ""
   const failing = (project ? tracked.filter((p) => p.id === project) : tracked).filter((p) => p.last_error)
@@ -271,21 +271,21 @@ export default function Inbox() {
           />
         </div>
       </header>
-      {(model?.gap || failing.length > 0) && (
+      {(noModel || failing.length > 0) && (
         <Banner
           tone="warn"
           action={
-            model?.gap ? (
+            noModel ? (
               <Button small onClick={() => go("/settings?section=memory")}>
                 {t("configureModel")}
               </Button>
             ) : undefined
           }
         >
-          {model?.gap && (
+          {noModel && (
             <>
-              <strong>{t(model.gap === "local" ? "localModelMissing" : "modelMissing")}</strong>
-              <span className="t2 clamp2">{model.gap === "local" ? plural("localModelDetail", model.projects) : t("modelMissingDetail")}</span>
+              <strong>{t("modelMissing")}</strong>
+              <span className="t2 clamp2">{t("modelMissingDetail")}</span>
             </>
           )}
           {failing.length > 0 && (
@@ -421,6 +421,8 @@ export default function Inbox() {
         <AssistantPanel
           tracked={tracked.length}
           issue={id ? selected.data : null}
+          issueId={id}
+          workId={taskId}
           issueProject={selected.data ? name(selected.data.project_id) : ""}
           issueActive={!!selected.data && tracked.some((p) => p.id === selected.data!.project_id)}
           issueError={id && !selected.data ? selected.error : null}

@@ -132,3 +132,37 @@ it('abre la bandeja, el chat y los ajustes generales sin elegir el primer proyec
     get.mockRestore()
   }
 })
+
+it('envía el identificador abierto aunque todavía esté cargando el detalle y también al abrir una microtarea', async () => {
+  const { AssistantPanel } = await import('./AssistantPanel')
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true
+  const get = vi.spyOn(api, 'get').mockResolvedValue({ item: null, messages: [] })
+  const post = vi.spyOn(api, 'post').mockResolvedValue({ item: null, messages: [] })
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const host = document.body.appendChild(document.createElement('div'))
+  const app = createRoot(host)
+  try {
+    for (const selection of [{ issueId: 'case-a' }, { workId: 'work-b' }]) {
+      await act(async () => app.render(
+        <QueryClientProvider client={cache}><ToastProvider><MemoryRouter>
+          <AssistantPanel {...selection} tracked={1} issue={undefined} work={undefined} issueProject="" issueActive
+            issueError={null} connections busy={false} onClose={() => {}} onDismiss={() => {}} onRestore={() => {}} onRetry={() => {}} />
+        </MemoryRouter></ToastProvider></QueryClientProvider>,
+      ))
+      const input = host.querySelector('textarea')!
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '¿Qué pasó?')
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => { host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+      expect(post.mock.lastCall).toEqual(['/assistants/chat', { text: '¿Qué pasó?', mode: 'chat',
+        ...(selection.issueId ? { case_id: 'case-a' } : { work_id: 'work-b' }) }])
+    }
+  } finally {
+    await act(async () => app.unmount())
+    host.remove()
+    cache.clear()
+    get.mockRestore()
+    post.mockRestore()
+  }
+})

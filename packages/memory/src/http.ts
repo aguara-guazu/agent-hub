@@ -13,6 +13,7 @@ export interface MemoryRouteOptions {
   updateTransaction?: string
   /** Scan of gateways started from a bundle older than the versioned runtime; logged by an update stop, never blocking. */
   legacyGateways?(): Promise<LegacyGatewayScan>
+  residentReadTools?: import('./assistants/sessions.js').AssistantTerminalPorts['readTools']
   collaborationEnabled?(): boolean
   chatAgentEnabled?(agentId: string): boolean
   usageAgentEnabled?(agentId: string): boolean

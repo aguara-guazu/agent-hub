@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { beforeEach, afterEach, it, expect } from 'vitest'
 import { MemoryDatabase } from '../src/database.js'
 import { MemoryStore } from '../src/store.js'
+import { normalizeJiraIssue } from '../src/projects/tasks.js'
 import { NotificationQueue, briefEmailReminders } from '../src/assistants/notifications.js'
 import { profile, portfolioPolicy } from '../src/assistants/contracts.js'
 import { setProjectArchive } from '../src/projects/archive.js'
@@ -21,12 +22,18 @@ async function project(title: string) {
   ])
   return p.id
 }
+async function advanceWithJiraChecks(date: Date) {
+  at = date
+  await db.query("UPDATE assistant_source_cursors SET scanned_at=$1 WHERE source_key='jira/verified'", [date.toISOString()])
+}
 async function issue(projectId: string, score: number, key: string) {
   const id = randomUUID(),
     now = at.toISOString()
+  await db.query(`INSERT INTO assistant_source_cursors(project_id,source_key,scanned_at) VALUES($1,'jira/verified',$2)
+    ON CONFLICT(project_id,source_key) DO UPDATE SET scanned_at=excluded.scanned_at`, [projectId, now])
   await db.query(
     "INSERT INTO assistant_cases(id,project_id,source_key,kind,title,score,reason,state,source,fingerprint,notify_after,updated_at) VALUES($1,$2,$1,'jira',$3,$4,'Bloquea la entrega','open',$5,'v1',$6,$6)",
-    [id, projectId, key, score, { url: 'https://example.atlassian.net/browse/' + key }, now],
+    [id, projectId, key, score, { url: 'https://example.atlassian.net/browse/' + key, issue_key: key, jira_verification: 'verified' }, now],
   )
   return id
 }
@@ -82,7 +89,7 @@ it('retiene los normales en una reunión independiente, permite alta severidad y
   expect(n?.entries.map((e) => e.id)).toEqual([urgent])
   await q.seen(n!.id, n!.revision, n!.delivery_id)
   await db.query("UPDATE assistant_cases SET state='handled' WHERE id=$1", [normal])
-  at = new Date('2026-11-26T10:41:00Z')
+  await advanceWithJiraChecks(new Date('2026-11-26T10:41:00Z'))
   const later = await q.next(desktop)
   expect(later.flatMap((n) => n.entries.map((e) => e.id))).not.toContain(normal)
 })
@@ -101,13 +108,13 @@ it('espacia los reavisos, mantiene el cupo por asunto entre reinicios y lo reini
     [90, true],
     [300, false],
   ] as const) {
-    at = new Date(Date.parse('2026-11-26T10:00:00Z') + minutes * 60000)
+    await advanceWithJiraChecks(new Date(Date.parse('2026-11-26T10:00:00Z') + minutes * 60000))
     q = new NotificationQueue(db, clock, () => true)
     if (eligible) await present()
     else expect(await q.next(desktop)).toEqual([])
   }
   expect(await briefEmailReminders(db, at)).toContain('ATL-4')
-  at = new Date('2026-11-27T10:00:00Z')
+  await advanceWithJiraChecks(new Date('2026-11-27T10:00:00Z'))
   await present()
   await setProjectArchive(store, a, { state: 'archived', version: 0 })
   expect(await briefEmailReminders(db, at)).not.toContain('ATL-4')
@@ -160,11 +167,11 @@ it('permite silenciar incluso severidad 10 y conserva el cupo tras revisiones de
   await event('Reunión personal', '2026-11-26T09:00:00Z', '2026-11-26T10:05:00Z')
   const id = await issue(a, 10, 'ATL-17')
   expect(await q.next(desktop)).toEqual([])
-  at = new Date('2026-11-26T10:06:00Z')
+  await advanceWithJiraChecks(new Date('2026-11-26T10:06:00Z'))
   const [n] = await q.next(desktop)
   await q.seen(n!.id, n!.revision, n!.delivery_id)
   await db.query("UPDATE assistant_cases SET revision=revision+1,title='Cambio en ATL-17' WHERE id=$1", [id])
-  at = new Date('2026-11-26T17:00:00Z')
+  await advanceWithJiraChecks(new Date('2026-11-26T17:00:00Z'))
   expect(await q.next(cli)).toEqual([])
   expect(await briefEmailReminders(db, at)).toContain('Cambio en ATL-17')
   await db.query("UPDATE assistant_cases SET state='handled' WHERE id=$1", [id])
@@ -184,6 +191,9 @@ it('prioriza el hilo de Slack que pide una respuesta por un ticket bloqueado del
     "INSERT INTO tasks(id,project_id,kind,title,status,external_key,created_by,updated_by) VALUES($1,$2,'jira','Entrega','blocked','ATL-31','test','test')",
     [randomUUID(), a],
   )
+  expect((await q.next())[0]?.entries.map(e => e.id)).toEqual([unrelated, stale])
+  const live = await issue(a, 2, 'ATL-31')
+  await db.query("UPDATE assistant_cases SET source=json_set(source,'$.status','blocked') WHERE id=$1", [live])
   const [notice] = await q.next(desktop)
   expect(notice?.entries.map((e) => e.id)).toEqual([stale, unrelated])
   expect(notice?.entries[0]).toMatchObject({ source: 'Slack · cliente', reason: expect.stringMatching(/ATL-31.*bloqueada/) })
@@ -193,16 +203,10 @@ it('prioriza el hilo de Slack que pide una respuesta por un ticket bloqueado del
 it('explica y distingue un ticket crítico que vence hoy y descarta eventos que figuran como libres', async () => {
   const { projectSignals } = await import('../src/assistants/signals.js')
   await event('Reserva libre', '2026-11-26T10:25:00Z', '2026-11-26T11:00:00Z', a, { transparency: 'transparent' })
-  for (const [key, priority] of [
-    ['ATL-32', 'Highest'],
-    ['ATL-34', 'Low'],
-  ]) {
-    await db.query(
-      "INSERT INTO tasks(id,project_id,kind,title,status,external_key,due_at,priority,created_by,updated_by) VALUES($1,$2,'jira','Entrega','todo',$3,'2026-11-26',$4,'test','test')",
-      [randomUUID(), a, key, priority],
-    )
-  }
-  const signals = await projectSignals(db, a, profile.parse({ timezone: 'UTC' }), at)
+  const tickets = [['ATL-32', 'Highest'], ['ATL-34', 'Low']].map(([key, priority]) => ({
+    ...normalizeJiraIssue({ key, summary:'Entrega', status:'To Do', duedate:'2026-11-26', priority }, 'https://atlas.atlassian.net')!, remote: true,
+  }))
+  const signals = await projectSignals(db, a, profile.parse({ timezone: 'UTC' }), at, tickets)
   const critical = signals.find((s) => s.title.includes('ATL-32'))!,
     low = signals.find((s) => s.title.includes('ATL-34'))!
   expect(critical.score).toBeGreaterThan(low.score)
@@ -217,14 +221,22 @@ it('alarga la pausa tras una tanda numerosa y permite desactivar esa adaptación
   await q.seen(batch!.id, batch!.revision, batch!.delivery_id)
   await db.query("UPDATE assistant_cases SET state='handled' WHERE project_id=$1", [a])
   await issue(b, 7, 'DEL-91')
-  at = new Date('2026-11-26T10:15:00Z')
+  await advanceWithJiraChecks(new Date('2026-11-26T10:15:00Z'))
   expect(await q.next(cli)).toEqual([])
-  at = new Date('2026-11-26T10:30:00Z')
+  await advanceWithJiraChecks(new Date('2026-11-26T10:30:00Z'))
   const [second] = await q.next(cli)
   expect(second?.entries[0]?.title).toBe('DEL-91')
   await q.seen(second!.id, second!.revision, second!.delivery_id)
   await db.query("UPDATE assistant_portfolio_policy SET value=json_set(value,'$.config.notifications.adaptive_cooldown',json('false'))")
   await issue(a, 7, 'ATL-92')
-  at = new Date('2026-11-26T10:45:00Z')
+  await advanceWithJiraChecks(new Date('2026-11-26T10:45:00Z'))
   expect((await q.next(desktop))[0]?.entries[0]?.title).toBe('ATL-92')
+})
+
+it('espera una lectura vigente de Jira antes de repetir un aviso o mostrarlo en el detalle', async () => {
+  await issue(a, 8, 'ATL-22')
+  const [notice] = await q.next(desktop)
+  at = new Date(+at + 16 * 60_000)
+  expect(await q.next(desktop)).toEqual([])
+  expect(await q.detail(notice!.delivery_id)).toEqual({entries: []})
 })

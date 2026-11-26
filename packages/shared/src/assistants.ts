@@ -39,7 +39,6 @@ const profileFields = z
     threshold: z.number().int().min(1).max(10).default(5),
     night_work: z.boolean().default(true),
     keep_awake: z.boolean().default(false),
-    daily_turns: z.number().int().min(1).max(500).default(24),
     slack: z.array(watch).max(30).default([]),
     github_repos: z
       .array(z.string().regex(/^[\w-]+\/[\w.-]+$/))
@@ -54,7 +53,15 @@ const profileFields = z
   .strict()
 const differentHours = (p: { start: string; end: string }) => p.start !== p.end
 const hoursMessage = 'El horario debe tener un inicio y un fin distintos'
-export const profile = profileFields.refine(differentHours, hoursMessage)
+// Older clients and backups can still send the retired daily limit.
+function readPreviousSettings(value: unknown) {
+  if (value && typeof value === 'object' && 'daily_turns' in value) {
+    const { daily_turns: _retired, ...settings } = value
+    return settings
+  }
+  return value
+}
+export const profile = z.preprocess(readPreviousSettings, profileFields.refine(differentHours, hoursMessage))
 export const noticeSettings = z
   .object({
     pause_in_meetings: z.boolean().default(true),
@@ -65,7 +72,7 @@ export const noticeSettings = z
     daily_limit: z.number().int().min(1).max(4).default(3),
   })
   .strict()
-export const portfolioPolicy = profileFields
+const portfolioFields = profileFields
   .pick({
     delay_minutes: true,
     threshold: true,
@@ -75,11 +82,11 @@ export const portfolioPolicy = profileFields
     weekdays: true,
     night_work: true,
     keep_awake: true,
-    daily_turns: true,
     style: true,
   })
   .extend({ notifications: noticeSettings.prefault({}) })
   .refine(differentHours, hoursMessage)
+export const portfolioPolicy = z.preprocess(readPreviousSettings, portfolioFields)
 export type PortfolioPolicy = z.infer<typeof portfolioPolicy>
 export type Profile = z.infer<typeof profile>
 export const textInput = z.string().trim().min(1).max(4000)
@@ -102,6 +109,7 @@ export interface Signal {
   reasons: string[]
   fingerprint: string
   source: Record<string, any>
+  evidence?: Evidence[]
 }
 export interface CaseRow {
   id: string

@@ -30,6 +30,8 @@ export interface AssistantPanelProps {
   tracked: number
   /** Issue on screen: it travels with every message as the subject of the conversation. */
   issue: Issue | null | undefined
+  issueId?: string | undefined
+  workId?: string | undefined
   issueProject: string
   issueActive: boolean
   issueError: unknown
@@ -44,7 +46,7 @@ export interface AssistantPanelProps {
 
 /** The assistant column: the element on screen as context, the single conversation and its composer. */
 export function AssistantPanel(props: AssistantPanelProps) {
-  const { tracked, issue, issueProject, issueActive, issueError, work, connections, onClose } = props
+  const { tracked, issue, issueId, workId, issueProject, issueActive, issueError, work, connections, onClose } = props
   const { t, plural } = useT("assistants")
   const cache = useQueryClient()
   const fail = useFailure()
@@ -52,8 +54,8 @@ export function AssistantPanel(props: AssistantPanelProps) {
   const [text, setText] = useState("")
   const ready = !!issue && issue.state === "open" && issue.kind === "slack" && issueActive && connections
   const send = useMutation({
-    mutationFn: (input: { text: string; mode: "chat" | "rewrite" }) =>
-      api.post<Discussion>("/assistants/chat", { ...input, ...(issue ? { case_id: issue.id, revision: issue.revision } : {}) }),
+    mutationFn: (input: { text: string; mode: "chat" | "rewrite"; case_id?: string; work_id?: string; revision?: number }) =>
+      api.post<Discussion>("/assistants/chat", input),
     onSuccess: (discussion) => {
       cache.setQueryData(["assistants", "chat"], discussion)
       setText("")
@@ -63,7 +65,7 @@ export function AssistantPanel(props: AssistantPanelProps) {
   })
   const submit = (mode: "chat" | "rewrite") => {
     const body = text.trim()
-    if (body && !send.isPending) send.mutate({ text: body, mode })
+    if (body && !send.isPending) send.mutate({ text: body, mode, ...(issueId ? { case_id: issueId } : workId ? { work_id: workId } : {}), ...(issue ? { revision: issue.revision } : {}) })
   }
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return
@@ -97,9 +99,9 @@ export function AssistantPanel(props: AssistantPanelProps) {
           submit("chat")
         }}
       >
-        {issue && (
-          <span className="xs t3 trunc" title={issue.title}>
-            {t("about", { title: issue.title })}
+        {(issue || work) && (
+          <span className="xs t3 trunc" title={issue?.title ?? work?.objective}>
+            {t("about", { title: issue?.title ?? work!.objective })}
           </span>
         )}
         <Textarea

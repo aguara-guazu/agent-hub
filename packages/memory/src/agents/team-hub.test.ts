@@ -68,7 +68,7 @@ function mockChat() {
     if (sql.includes('leader.closed_at,leader.removed_at')) return [{ closed_at: leaderClosed ? new Date().toISOString() : null, removed_at: null }]
     if (sql.includes('p.delegation_project_id IS NOT NULL')) return derived.has(String(params[0])) ? [{ '1': 1 }] : []
     if (sql.includes('FROM process_incidents')) return incidents.has(`${params[0]}:${params[1]}`) ? [{ id: 'incident' }] : []
-    if (sql.startsWith('SELECT m.id FROM chat_team_members')) return authorized && rows.get(String(params[0]))?.session_id === params[1] ? [{ id: params[0] }] : []
+    if (sql.includes("m.state='joined'") && sql.includes('t.human_instruction IS NOT NULL')) return authorized && rows.get(String(params[0]))?.session_id === params[1] ? [{ id: params[0] }] : []
     if (sql.startsWith('SELECT id,session_id,runtime') && sql.includes('WHERE session_id=$1')) return [...rows.values()].filter(row => row.session_id === params[0]).map(row => ({ ...row }))
     if (sql.startsWith('SELECT id,session_id,runtime')) {
       const value = rows.get(String(params[0])); return value ? [{ ...value }] : []
@@ -449,7 +449,7 @@ describe('HubTeamRuntime lifecycle', () => {
     await expect(backend.wake('joined', 'PRIVATE notice')).rejects.toThrow('ya no están autorizados')
     expect((await backend.status(id))?.state).toBe('idle')
     expect(launched).toHaveBeenCalledTimes(1)
-    const validation = query.mock.calls.find(call => call[0].startsWith('SELECT m.id FROM chat_team_members'))![0]
+    const validation = query.mock.calls.find(call => call[0].includes("m.state='joined'") && call[0].includes('t.human_instruction IS NOT NULL'))![0]
     expect(validation).toContain('master.leader_id=t.created_by')
     expect(validation).toContain('leader.removed_at IS NULL')
     expect(validation).toContain('participant.removed_at IS NULL')

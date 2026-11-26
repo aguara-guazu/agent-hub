@@ -8,8 +8,12 @@ import { ensureLocalOwner } from '../src/local.js'
 
 const dirs: string[] = []
 const apps: CoreApp[] = []
-afterEach(() => {
-  for (const app of apps.splice(0)) app.db.close()
+async function close(app: CoreApp) {
+  await app.fastify.close()
+  app.db.close()
+}
+afterEach(async () => {
+  for (const app of apps.splice(0)) await close(app)
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -55,13 +59,13 @@ describe('catálogo inicial', () => {
     expect(app.store.setting(STARTER_CATALOG_SETTING)).toBe(String(STARTER_CATALOG_VERSION))
   })
 
-  it('no duplica al volver a arrancar ni repone lo que la persona borró', () => {
+  it('no duplica al volver a arrancar ni repone lo que la persona borró', async () => {
     const db = freshDb()
     const first = open(db, true)
     const owner = ensureLocalOwner(first.store)
     const notion = first.store.serverBySlug(owner.id, 'notion')!
     first.store.deleteServer(notion.id)
-    first.db.close()
+    await close(first)
     apps.splice(apps.indexOf(first), 1)
 
     const second = open(db, true)

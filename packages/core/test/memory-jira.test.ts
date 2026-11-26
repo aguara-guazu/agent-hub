@@ -4,6 +4,7 @@ import { runMigrations } from '../src/db/migrations.js'
 import { Store } from '../src/store.js'
 import { ensureLocalOwner } from '../src/local.js'
 import { createJiraTaskReader } from '../src/memory-jira.js'
+import { assistantReadTools } from '../src/modules/assistants/terminal-tools.js'
 import type { ConnectionPool, OAuthStore } from '@agenthub/gateway'
 
 let db: Database, store: Store, ownerId: string, serverId: string, searchId: string
@@ -59,4 +60,53 @@ it('no anuncia éxito si Jira repite el cursor o entrega una página inválida',
   await expect(reader(call)(request, async () => {})).rejects.toThrow('repitió un cursor')
   call.mockReset().mockResolvedValueOnce(response([resource()])).mockResolvedValue(response({ message: 'invalid' }))
   await expect(reader(call)(request, async () => {})).rejects.toThrow('página de issues válida')
+})
+
+it('consulta la clave exacta en el sitio del proyecto y acepta una búsqueda completa sin resultados', async () => {
+  const call = vi.fn().mockResolvedValueOnce(response([resource()])).mockResolvedValueOnce(response({issues: [], isLast: true}))
+  const pages = vi.fn(async () => {})
+  await reader(call)({...request, issueKeys:['EGA-87']}, pages)
+  expect(call.mock.calls.at(-1)?.[3]).toMatchObject({jql:'project = "EGA" AND key IN ("EGA-87") ORDER BY key ASC',cloudId:'example-cloud'})
+  expect(pages).toHaveBeenCalledWith([],request.site)
+})
+
+it('la empresa sin proyecto se limita a una frase literal, también cuando contiene puntuación de JQL', async () => {
+  const call = vi.fn().mockResolvedValueOnce(response([resource()])).mockResolvedValueOnce(response({issues:[],isLast:true}))
+  await reader(call)({key:null,site:request.site,company:'Acme " / Partners'}, async()=>{})
+  expect(call.mock.calls.at(-1)?.[3].jql).toBe('text ~ '+JSON.stringify('"Acme Partners"')+' ORDER BY key ASC')
+  await expect(reader(call)({key:null,site:null}, async()=>{})).rejects.toThrow(/proyecto|empresa/i)
+})
+
+it.each([
+  {issues: Array.from({length:100}, () => ({}))},
+  {issues: [], total:7, startAt:0},
+  {issues: [], isLast:false},
+  {issues: [], isLast:true,nextPageToken:'another-page'},
+  {issues: [], isLast:true, warningMessages:['Project is not accessible']},
+])('una respuesta paginada o de acceso incompleta nunca confirma una ausencia', async page => {
+  const call = vi.fn().mockResolvedValueOnce(response([resource()])).mockResolvedValueOnce(response(page))
+  await expect(reader(call)({...request,issueKeys:['EGA-87']}, async()=>{})).rejects.toMatchObject({statusCode: 502})
+})
+
+it('un rechazo de permisos queda distinguido de una interrupción de la conexión', async () => {
+  const call = vi.fn().mockResolvedValueOnce(response([resource()])).mockResolvedValueOnce({
+    is_error:true,content:[{type:'text',text:JSON.stringify({statusCode:403,message:'Forbidden'})}],
+  })
+  await expect(reader(call)(request,async()=>{})).rejects.toMatchObject({statusCode:403,message:expect.stringMatching(/permisos/i)})
+})
+
+it('autoriza las lecturas del residente según el servidor, la terminal y las reglas de esta máquina', () => {
+  const machine = store.insertMachine({ user_id: ownerId, hostname: 'local', os: 'test', daemon_version: 'test' })
+  const agent = store.insertAgent({ machine_id: machine.id, cli_kind: 'claude_code', cli_version: 'test', config_path: '' })
+  const reads = (host = 'local') => assistantReadTools(store, ownerId, host, 'claude_code', 'http://127.0.0.1:8765')
+  expect(reads()).toEqual([])
+  store.updateServer(serverId, { url: 'https://mcp.atlassian.com/v1/mcp' })
+  expect(reads()).toContain('jira_' + SEARCH)
+  expect(reads('otra')).toEqual([])
+  store.setSetting('module_mcp_enabled', '0')
+  expect(reads()).toEqual([])
+  store.setSetting('module_mcp_enabled', '1')
+  expect(reads()).toContain('jira_' + SEARCH)
+  deny(searchId, agent.id)
+  expect(reads()).not.toContain('jira_' + SEARCH)
 })

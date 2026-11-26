@@ -49,7 +49,7 @@ function PolicyEditor({ data }: { data: PortfolioSettings }) {
     mutationFn: () => api.put('/assistants/settings', { config: p, version: data.version }),
     onSuccess: () => cache.invalidateQueries({ queryKey: ['assistants'] }),
   })
-  const num = (key: 'delay_minutes' | 'daily_turns' | 'threshold', label: 'delay' | 'budget' | 'threshold', max: number) => (
+  const num = (key: 'delay_minutes' | 'threshold', label: 'delay' | 'threshold', max: number) => (
     <Field label={t(label)}>
       <Input required type="number" min={1} max={max} value={p[key]} onChange={(e) => change(key, e.target.valueAsNumber)} />
     </Field>
@@ -65,7 +65,6 @@ function PolicyEditor({ data }: { data: PortfolioSettings }) {
       <div className="assistant-grid">
         {num('delay_minutes', 'delay', 240)}
         {num('threshold', 'threshold', 10)}
-        {num('daily_turns', 'budget', 500)}
       </div>
       <fieldset>
         <legend>{t('notice')}</legend>
