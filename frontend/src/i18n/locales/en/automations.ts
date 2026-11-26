@@ -201,6 +201,7 @@ const automations = {
     moduleDisabled: "{{module}} is turned off",
     skip: {
       overlap: "The previous run was still going",
+      project_archived: "Project archived",
       misfire_out_of_grace: "Agent Hub was closed",
       automations_off: "Automations turned off",
       schedule_cancelled: "Automation cancelled",

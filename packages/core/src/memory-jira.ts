@@ -65,7 +65,7 @@ export function createJiraTaskReader(store: Store, ownerId: string, pool: Connec
     const chosen = choices[0]!, seen = new Set<string>()
     let next: string | undefined
     do {
-      const page = await call(chosen.serverId, SEARCH, { cloudId: chosen.cloud, jql: `project = "${request.key}" ORDER BY key ASC`, fields, maxResults: 100,
+      const page = await call(chosen.serverId, SEARCH, { cloudId: chosen.cloud, jql: `project = "${request.key}"${request.updatedMinutes ? ` AND updated >= -${Math.max(1, Math.ceil(request.updatedMinutes))}m` : ''} ORDER BY key ASC`, fields, maxResults: 100,
         ...(next ? { nextPageToken: next } : {}) })
       if (!Array.isArray(page.issues)) throw new MemoryError(502, 'Jira no devolvió una página de issues válida')
       await onPage(page.issues, chosen.site)

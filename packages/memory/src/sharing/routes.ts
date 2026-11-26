@@ -32,7 +32,7 @@ export function sharingRoutes(app: FastifyInstance, service: MemoryService, auth
       case 'status': return { identity: publicIdentity(await sharing.identity()), network: await network.status(),
         projects: await db.query(`SELECT s.id,e.title,s.enabled,s.conflict,
           COALESCE(json_array_length(e.data,'$.folders'),0)=0 AS "folderless:bool"
-          FROM shared_projects s JOIN entities e ON e.id=s.id`),
+          FROM shared_projects s JOIN entities e ON e.id=s.id WHERE s.id NOT IN (SELECT project_id FROM archived_projects)`),
         peers: await db.query('SELECT id,name,last_seen_at FROM shared_peers ORDER BY last_seen_at DESC LIMIT 100') }
       case 'rename': return sharing.rename(input.name)
       case 'network': return network.configure(input.settings)

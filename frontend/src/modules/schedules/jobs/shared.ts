@@ -15,7 +15,7 @@ export const RUN_TONES: Record<RunState, ChipTone> = {
 export const TEMPLATES = ["daily_brief", "daily_close", "project_status", "reminder", "custom_synthesis", "team_health"] as const
 export const ARTIFACTS = ["brief", "close", "notice", "status", "report"] as const
 export type Artifact = typeof ARTIFACTS[number]
-const SKIP_REASONS = ["overlap", "misfire_out_of_grace", "automations_off", "schedule_cancelled", "remote_processing_excluded"] as const
+const SKIP_REASONS = ["overlap", "project_archived", "misfire_out_of_grace", "automations_off", "schedule_cancelled", "remote_processing_excluded"] as const
 const DEFERRED_REASONS = ["quota", "automations_off", "delivery_unavailable"] as const
 const CHANNEL_REASONS = ["not_connected", "scope_missing", "identity_unverified", "identity_is_bot", "tool_off"] as const
 

@@ -1,3 +1,4 @@
+import { createContext, useContext } from "react"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useToast } from "../../components/ui/Toast"
 import { useT } from "../../i18n/useT"
@@ -50,8 +51,16 @@ export interface TranscriptPage extends Page<Fragment> { speakers: Speaker[] }
 
 export const memoryKey = (operation: string, input: unknown = {}) => ["memory", operation, input] as const
 
+export const ArchiveProjectContext = createContext<string | null>(null)
+const scopedDetailReads = new Set(["get_entity", "get_evidence", "list_versions", "transcript", "list_records", "list_rules", "search"])
+function useDetailInput(operation: string, input: Record<string, unknown>) {
+  const project = useContext(ArchiveProjectContext)
+  return project && scopedDetailReads.has(operation) ? { ...input, archive_project_id: project } : input
+}
+
 /** Lectura de la memoria. Sondea cada 5 s porque los agentes escriben mientras la vista está abierta. */
-export function useMemoryQuery<T>(operation: string, input: unknown = {}, enabled = true) {
+export function useMemoryQuery<T>(operation: string, raw: Record<string, unknown> = {}, enabled = true) {
+  const input = useDetailInput(operation, raw)
   return useQuery({
     queryKey: memoryKey(operation, input),
     queryFn: () => memoryCall<T>(operation, input),
@@ -62,7 +71,8 @@ export function useMemoryQuery<T>(operation: string, input: unknown = {}, enable
 }
 
 /** Lista con carga progresiva por `offset`. Sin sondeo: refrescar todas las páginas cada 5 s sería caro. */
-export function useMemoryPages<T>(operation: string, input: Record<string, unknown>, limit: number, enabled = true, initialOffset = 0) {
+export function useMemoryPages<T>(operation: string, raw: Record<string, unknown>, limit: number, enabled = true, initialOffset = 0) {
+  const input = useDetailInput(operation, raw)
   return useInfiniteQuery({
     queryKey: ["memory", operation, "pages", input, limit, initialOffset],
     queryFn: ({ pageParam }) => memoryCall<Page<T> & Record<string, any>>(operation, { ...input, limit, offset: pageParam }),

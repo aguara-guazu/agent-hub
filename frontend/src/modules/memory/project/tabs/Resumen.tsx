@@ -48,7 +48,7 @@ function RecentActivity({ projectId }: { projectId: string }) {
               {timeline.data.items.map(item => (
                 <RowLink
                   key={item.id}
-                  to={entityPath(item)}
+                  to={entityPath(item, projectId)}
                   lead={<span style={{ width: 96, display: "flex", flex: "none" }}><Tag>{kindLabel(item)}</Tag></span>}
                   title={item.title}
                   sub={entityDetail(item)}

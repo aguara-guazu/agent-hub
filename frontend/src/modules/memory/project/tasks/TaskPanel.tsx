@@ -192,7 +192,7 @@ function TaskHistory({ detail }: { detail: TaskDetail }) {
         <h3 className="h3">{t("tasks.panel.evidence")}</h3>
         <List>
           {detail.evidence.map(fragment => (
-            <RowLink key={fragment.id} to={`/memory/entities/${fragment.entity_id}?version=${fragment.version_id}&fragment=${fragment.id}`} title={fragment.title} sub={fragment.text.slice(0, 200)} />
+            <RowLink key={fragment.id} to={`/memory/entities/${fragment.entity_id}?${detail.task.project_id ? "archive_project_id=" + detail.task.project_id + "&" : ""}version=${fragment.version_id}&fragment=${fragment.id}`} title={fragment.title} sub={fragment.text.slice(0, 200)} />
           ))}
         </List>
       </section>

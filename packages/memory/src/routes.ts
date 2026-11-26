@@ -18,6 +18,7 @@ import { registerDecisionRoutes } from './decision-routes.js'
 import { registerProjectAutomationRoutes } from './schedules/project-automation-routes.js'
 import { registerUpdateHintRoutes } from './sharing/update-hint.js'
 import { registerAgentRuntime } from './agents/routes.js'
+import { registerAssistants } from './assistants/routes.js'
 import { registerConnections } from './connectors/routes.js'
 import { registerProjectRoutes } from './projects/routes.js'
 import { registerMemoryMcp } from './mcp/routes.js'
@@ -69,9 +70,10 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const worker = new WorkerSupervisor(options.directory, service.google.redirectUrl, () => moduleStates(enabled))
   const auth = async (request: FastifyRequest) => { await options.authorize(request) }
   const agents = registerAgentRuntime(app, service, auth, options, enabled, collaborationEnabled, requireCollaboration)
+  const assistants = registerAssistants(app, service, auth, enabled, () => options.scheduleEffects?.jira)
   const credentialReference = registerMemoryMcp(app, service, enabled, collaborationEnabled)
   registerConnections(app, service, auth, enabled)
-  registerProjectRoutes(app, service, auth, enabled)
+  registerProjectRoutes(app, service, auth, enabled, assistants.trackingChanged)
   registerTranscriptions(app, service, auth, options, enabled)
   interhubRoutes(app, service, options.authorize, requireCollaboration)
   app.addHook('onListen', async () => { void service.startSchedules().catch(() => {}) })
@@ -126,7 +128,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   app.addHook("onClose", async () => {
     clearInterval(defaultsTimer)
     const failures: unknown[] = []
-    for (const step of [() => agents.close(), () => service.defaults.stop(), () => worker.stop(), () => service.close()]) {
+    for (const step of [() => assistants.close(), () => agents.close(), () => service.defaults.stop(), () => worker.stop(), () => service.close()]) {
       try { await step() } catch (error) { failures.push(error) }
     }
     if (failures.length) throw failures[0]
@@ -136,6 +138,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   function modulesChanged(id: ModuleId) {
     worker.updateModules()
     const next = transition.then(async () => {
+      await assistants.update(id)
       if (id === 'agents') await agents.update()
       if ((id === 'sharing' || id === 'memory') && options.worker && app.server.listening) {
         await service.refreshSharingNetwork()

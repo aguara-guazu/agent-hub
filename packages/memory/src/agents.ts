@@ -1,3 +1,4 @@
+import { visibleProject } from './projects/archive.js'
 import { sessionProjectId } from "./agents/chat-access.js"
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -78,7 +79,7 @@ export async function projectForAgent(sql: Sql, agent: AgentContext): Promise<Ag
 
 export async function sharedProjectsWithoutFolder(sql: Sql): Promise<Array<{ id: string; title: string }>> {
   return sql.query(`SELECT e.id,e.title FROM shared_projects shared JOIN entities e ON e.id=shared.id
-    WHERE e.data->>'merged_into' IS NULL AND COALESCE(json_array_length(e.data,'$.folders'),0)=0
+    WHERE ${visibleProject("e.id")} AND e.data->>'merged_into' IS NULL AND COALESCE(json_array_length(e.data,'$.folders'),0)=0
     ORDER BY e.updated_at DESC,e.id`)
 }
 
@@ -161,7 +162,7 @@ export async function listNotes(store: MemoryStore, raw: unknown) {
   if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
   await sweepNotes(store.db)
   const params = [input.project_id ?? null, input.scope, input.include_finished]
-  const where = `(($1 IS NOT NULL AND n.project_id=$1) OR ($1 IS NULL AND ($2='all' OR ($2='unassigned' AND n.project_id IS NULL))))
+  const where = `${visibleProject("n.project_id")} AND (($1 IS NOT NULL AND n.project_id=$1) OR ($1 IS NULL AND ($2='all' OR ($2='unassigned' AND n.project_id IS NULL))))
     AND ($3 OR n.state<>'done')`
   const items = await store.db.query(`SELECT n.*,p.title AS project_title,t.title AS task_title,t.external_key AS task_key,
     s.last_seen_at,s.ended_at,(n.state='working') AS "active:bool" FROM agent_notes n LEFT JOIN entities p ON p.id=n.project_id

@@ -1,3 +1,4 @@
+import { setProjectArchive } from '../src/projects/archive.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from 'node:os'
@@ -234,6 +235,16 @@ describe('proyectos compartidos cifrados', () => {
     expect(Date.parse(renewed.expires_at!) - Date.now()).toBe(14 * 86_400_000)
     vi.setSystemTime(realNow + 23 * 86_400_000)
     await expect(a.sharing.renew(id, target)).rejects.toThrow('venció')
+  })
+  it('archivar en un Hub conserva la recepción de aportes y el seguimiento independiente del otro', async () => {
+    const { a, b, id } = await fixture()
+    await setProjectArchive(b.store, id, { state: 'archived', version: 0 })
+    const source = await a.store.ingest({ kind: 'meeting', title: 'Continuación', external_id: 'continuacion', project_ids: [id], text: 'Segunda etapa' })
+    await a.sharing.publish(id, source.entity_id)
+    await copy(a, b, id)
+    expect((await a.ops.call('list_entities', { kind: 'project' }, 'mcp')).items.map((p: any) => p.id)).toContain(id)
+    expect((await b.ops.call('list_entities', { kind: 'project' }, 'mcp')).items.map((p: any) => p.id)).not.toContain(id)
+    expect((await b.ops.call('list_entities', { kind: 'meeting', project_id: id, project_state: 'archived' }, 'mcp')).items).toMatchObject([{ title: 'Continuación' }])
   })
   it('replica una fuente una sola vez, preserva la fuente local y rechaza datos alterados', async () => {
     const { a, b, id } = await fixture()

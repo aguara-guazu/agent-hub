@@ -1,6 +1,6 @@
 import { Loading, ErrorState } from "./ui/display"
 import { Suspense, useCallback, useEffect, useState } from "react"
-import { destinationModule } from '@agenthub/shared/modules'
+import { dependencies, destinationModule } from '@agenthub/shared/modules'
 import { useModules } from '../modules/state'
 import { Navigate, Outlet, useLocation } from "react-router-dom"
 import { useDesktopNavigation } from "../lib/desktop"
@@ -38,7 +38,7 @@ export function Layout() {
       <main className="main">
         {owner && modules.isPending ? <Loading />
           : owner && modules.isError && !modules.data ? <ErrorState error={modules.error} onRetry={() => void modules.refetch()} />
-          : owner && modules.data?.[owner] === false
+          : owner && (modules.data?.[owner] === false || dependencies(owner).some(id=>modules.data?.[id]===false))
           ? <Navigate replace to={'/settings?section=' + owner} />
           : <Suspense fallback={<Loading />}><Outlet /></Suspense>}
       </main>

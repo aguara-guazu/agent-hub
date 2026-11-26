@@ -1,3 +1,4 @@
+import { visibleProject } from './archive.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { Sql } from '../database.js'
@@ -128,7 +129,8 @@ export async function upsertJiraIssues(store: MemoryStore, issues: JiraIssue[], 
 }
 
 interface JiraAccess { origin: string; headers: Record<string, string> }
-export type JiraTaskReader = (request: { key: string; site: string | null; agentId?: string },
+/** `updatedMinutes` narrows the read to issues Jira changed within that many minutes. */
+export type JiraTaskReader = (request: { key: string; site: string | null; agentId?: string; updatedMinutes?: number },
   onPage: (issues: unknown[], site: string) => Promise<void>) => Promise<void>
 /** A Jira connector whose token can read the site; the project's own site wins when several are configured. */
 async function jiraAccess(store: MemoryStore, vault: Vault, site?: string | null): Promise<JiraAccess | null> {
@@ -159,40 +161,64 @@ export async function syncTasks(store: MemoryStore, vault: Vault, raw: unknown, 
   for (const project of projects) {
     const key = project.data.jira_project_key
     check(key, `Configura la clave de Jira del proyecto «${project.title}» en su sección de tareas`, 409)
-    const site = await effectiveJiraSite(store.db,project.data.jira_site_url)
-    const access = await jiraAccess(store, vault, site)
-    if (!access && jiraMcp) {
-      let received = 0
-      await jiraMcp({ key, site, ...(agentId ? { agentId } : {}) }, async (page, site) => {
-        const issues = page.map(issue => normalizeJiraIssue(issue, site))
-        check(issues.every(issue => issue !== null), 'Jira devolvió un issue incompleto; vuelve a sincronizar', 502)
-        const result = await upsertJiraIssues(store, issues as JiraIssue[], `${actor}:jira-sync`, project.id)
-        for (const field of ['received', 'created', 'updated', 'status_changed', 'unchanged'] as const) totals[field] += result[field]
-        totals.unmatched.push(...result.unmatched); received += result.received
-      })
-      totals.projects.push({ id: project.id, title: project.title, key, received, connection: 'mcp' })
-      await store.db.query("UPDATE entities SET data=jsonb_merge(data,json_object('jira_synced_at',now())) WHERE id=$1", [project.id])
-      continue
-    }
-    if (!access) throw noAccess(key)
-    const http = new ProviderHttp(fetcher), issues: JiraIssue[] = []
-    let next = ''
-    const seen = new Set<string>()
-    do {
-      const result = await http.json(`${access.origin}/rest/api/3/search/jql`, access.headers, { jql: `project = "${key}" ORDER BY updated DESC`, maxResults: 100,
-        fields: ['summary', 'status', 'issuetype', 'priority', 'assignee', 'duedate', 'updated'], ...(next ? { nextPageToken: next } : {}) })
-      for (const issue of result.issues ?? []) { const normalized = normalizeJiraIssue(issue, access.origin); if (normalized) issues.push(normalized) }
-      next = result.isLast ? '' : result.nextPageToken ?? ''
-      check(!next || !seen.has(next), 'Jira repitió un cursor de búsqueda', 502)
-      seen.add(next)
-    } while (next)
-    const result = await upsertJiraIssues(store, issues, `${actor}:jira-sync`, project.id)
+    const result = await pullProjectIssues(store, vault, project, actor, fetcher, jiraMcp, agentId)
     for (const field of ['received', 'created', 'updated', 'status_changed', 'unchanged'] as const) totals[field] += result[field]
     totals.unmatched.push(...result.unmatched)
-    totals.projects.push({ id: project.id, title: project.title, key, received: result.received })
+    totals.projects.push({ id: project.id, title: project.title, key, received: result.received, ...(result.connection === 'mcp' ? { connection: 'mcp' } : {}) })
     await store.db.query("UPDATE entities SET data=jsonb_merge(data,json_object('jira_synced_at',now())) WHERE id=$1", [project.id])
   }
   return totals
+}
+
+/**
+ * Reads one project's issues from Jira (token connector first, the owner's MCP reader otherwise) and upserts their mirror.
+ * `sinceMinutes` limits the read to issues Jira changed in that window; JQL relative dates avoid the account's time zone.
+ */
+async function pullProjectIssues(store: MemoryStore, vault: Vault, project: Record<string, any>, actor: string, fetcher: typeof fetch,
+  jiraMcp?: JiraTaskReader, agentId?: string, sinceMinutes?: number) {
+  const key = project.data.jira_project_key
+  const site = await effectiveJiraSite(store.db,project.data.jira_site_url)
+  const access = await jiraAccess(store, vault, site)
+  const window = sinceMinutes ? Math.max(1, Math.ceil(sinceMinutes)) : undefined
+  const totals = { received: 0, created: 0, updated: 0, status_changed: 0, unchanged: 0, unmatched: [] as string[], connection: access ? 'token' : 'mcp' }
+  const add = (result: Awaited<ReturnType<typeof upsertJiraIssues>>) => {
+    for (const field of ['received', 'created', 'updated', 'status_changed', 'unchanged'] as const) totals[field] += result[field]
+    totals.unmatched.push(...result.unmatched)
+  }
+  if (!access && jiraMcp) {
+    await jiraMcp({ key, site, ...(agentId ? { agentId } : {}), ...(window ? { updatedMinutes: window } : {}) }, async (page, site) => {
+      const issues = page.map(issue => normalizeJiraIssue(issue, site))
+      check(issues.every(issue => issue !== null), 'Jira devolvió un issue incompleto; vuelve a sincronizar', 502)
+      add(await upsertJiraIssues(store, issues as JiraIssue[], `${actor}:jira-sync`, project.id))
+    })
+    return totals
+  }
+  if (!access) throw noAccess(key)
+  const http = new ProviderHttp(fetcher), issues: JiraIssue[] = []
+  let next = ''
+  const seen = new Set<string>()
+  do {
+    const result = await http.json(`${access.origin}/rest/api/3/search/jql`, access.headers, { jql: `project = "${key}"${window ? ` AND updated >= -${window}m` : ''} ORDER BY updated DESC`, maxResults: 100,
+      fields: ['summary', 'status', 'issuetype', 'priority', 'assignee', 'duedate', 'updated'], ...(next ? { nextPageToken: next } : {}) })
+    for (const issue of result.issues ?? []) { const normalized = normalizeJiraIssue(issue, access.origin); if (normalized) issues.push(normalized) }
+    next = result.isLast ? '' : result.nextPageToken ?? ''
+    check(!next || !seen.has(next), 'Jira repitió un cursor de búsqueda', 502)
+    seen.add(next)
+  } while (next)
+  add(await upsertJiraIssues(store, issues, `${actor}:jira-sync`, project.id))
+  return totals
+}
+
+/**
+ * Brings a project's Jira mirror up to date before something decides on task state. Without `sinceMinutes` every issue is read.
+ * Returns false when the project has no Jira key, so there is nothing to confirm.
+ */
+export async function refreshProjectTasks(store: MemoryStore, vault: Vault, projectId: string, actor: string,
+  options: { fetcher?: typeof fetch | undefined; jiraMcp?: JiraTaskReader | undefined; sinceMinutes?: number | undefined } = {}) {
+  const project = await requireWritableEntity(store.db, projectId, 'project')
+  if (!project.data.jira_project_key) return false
+  await pullProjectIssues(store, vault, project, actor, options.fetcher ?? fetch, options.jiraMcp, undefined, options.sinceMinutes)
+  return true
 }
 
 /** Pushes a transition or comment with the connector token, then refreshes the mirror from Jira. */
@@ -275,7 +301,7 @@ export async function listTasks(store: MemoryStore, raw: unknown) {
   const input = parse(listTasksInput, raw)
   if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
   const params = [input.project_id ?? null, input.kind ?? null, input.status === 'open' ? OPEN : input.status ? [input.status] : null, input.query ?? '']
-  const where = `($1 IS NULL OR t.project_id=$1) AND ($2 IS NULL OR t.kind=$2) AND ($3 IS NULL OR t.status IN (SELECT value FROM json_each($3)))
+  const where = `${visibleProject("t.project_id")} AND ($1 IS NULL OR t.project_id=$1) AND ($2 IS NULL OR t.kind=$2) AND ($3 IS NULL OR t.status IN (SELECT value FROM json_each($3)))
     AND ($4='' OR ilike(t.title,'%'||$4||'%') OR ilike(t.external_key,$4||'%') OR ilike(t.description,'%'||$4||'%'))`
   const items = await store.db.query(`SELECT t.*,p.title AS project_title,src.title AS source_title,
     (SELECT count(*) FROM task_evidence te WHERE te.task_id=t.id) AS evidence_count,
@@ -283,7 +309,7 @@ export async function listTasks(store: MemoryStore, raw: unknown) {
     FROM tasks t LEFT JOIN entities p ON p.id=t.project_id LEFT JOIN entities src ON src.id=t.source_entity_id WHERE ${where}
     ORDER BY CASE t.status WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END,t.updated_at DESC,t.id LIMIT $5 OFFSET $6`, [...params, input.limit, input.offset])
   const total = (await store.db.query(`SELECT count(*) AS total FROM tasks t WHERE ${where}`, params))[0]!.total
-  const counts = await store.db.query(`SELECT kind,status,count(*) AS count FROM tasks t WHERE ($1 IS NULL OR t.project_id=$1) GROUP BY kind,status`, [input.project_id ?? null])
+  const counts = await store.db.query(`SELECT kind,status,count(*) AS count FROM tasks t WHERE ${visibleProject("t.project_id")} AND ($1 IS NULL OR t.project_id=$1) GROUP BY kind,status`, [input.project_id ?? null])
   return { items, total, limit: input.limit, offset: input.offset, counts }
 }
 
@@ -305,26 +331,26 @@ export async function taskStats(store: MemoryStore, raw: unknown) {
   if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
   const scope = [input.project_id ?? null]
   const [byStatus, weekly, leadTime, stale, assignees, origins, agents, recent] = await Promise.all([
-    store.db.query('SELECT kind,status,count(*) AS count FROM tasks WHERE ($1 IS NULL OR project_id=$1) GROUP BY kind,status ORDER BY kind,status', scope),
+    store.db.query(`SELECT kind,status,count(*) AS count FROM tasks WHERE ${visibleProject("project_id")} AND ($1 IS NULL OR project_id=$1) GROUP BY kind,status ORDER BY kind,status`, scope),
     // Weeks start on Monday 00:00 UTC; date(x,'weekday 0','-6 days') is the Monday of x's week.
     store.db.query(`WITH RECURSIVE weeks(week,n) AS (SELECT date('now','weekday 0','-6 days'),1 UNION ALL SELECT date(week,'-7 days'),n+1 FROM weeks WHERE n<$2)
       SELECT strftime('%Y-%m-%dT%H:%M:%fZ',w.week) AS week,
-        (SELECT count(*) FROM task_events ev JOIN tasks t ON t.id=ev.task_id WHERE ($1 IS NULL OR t.project_id=$1) AND ev.action='created' AND date(ev.created_at,'weekday 0','-6 days')=w.week) AS created,
-        (SELECT count(*) FROM task_events ev JOIN tasks t ON t.id=ev.task_id WHERE ($1 IS NULL OR t.project_id=$1) AND ev.status_after IN ('done','dropped')
+        (SELECT count(*) FROM task_events ev JOIN tasks t ON t.id=ev.task_id WHERE ${visibleProject("t.project_id")} AND ($1 IS NULL OR t.project_id=$1) AND ev.action='created' AND date(ev.created_at,'weekday 0','-6 days')=w.week) AS created,
+        (SELECT count(*) FROM task_events ev JOIN tasks t ON t.id=ev.task_id WHERE ${visibleProject("t.project_id")} AND ($1 IS NULL OR t.project_id=$1) AND ev.status_after IN ('done','dropped')
           AND COALESCE(ev.status_before,'') NOT IN ('done','dropped') AND date(ev.created_at,'weekday 0','-6 days')=w.week) AS closed
       FROM weeks w ORDER BY w.week`, [...scope, input.weeks]),
     store.db.query(`SELECT kind,round(avg(julianday(closed_at)-julianday(created_at)),1) AS avg_days,count(*) AS closed
-      FROM tasks WHERE ($1 IS NULL OR project_id=$1) AND status='done' AND closed_at IS NOT NULL GROUP BY kind`, scope),
-    store.db.query(`SELECT id,kind,title,external_key,status,updated_at,count(*) OVER() AS total FROM tasks WHERE ($1 IS NULL OR project_id=$1) AND status IN (SELECT value FROM json_each($2))
+      FROM tasks WHERE ${visibleProject("project_id")} AND ($1 IS NULL OR project_id=$1) AND status='done' AND closed_at IS NOT NULL GROUP BY kind`, scope),
+    store.db.query(`SELECT id,kind,title,external_key,status,updated_at,count(*) OVER() AS total FROM tasks WHERE ${visibleProject("project_id")} AND ($1 IS NULL OR project_id=$1) AND status IN (SELECT value FROM json_each($2))
       AND updated_at<strftime('%Y-%m-%dT%H:%M:%fZ','now','-21 days') ORDER BY updated_at LIMIT 20`, [...scope, OPEN]),
     store.db.query(`SELECT COALESCE(assignee,'Sin asignar') AS assignee,count(*) FILTER(WHERE status IN (SELECT value FROM json_each($2))) AS open,count(*) FILTER(WHERE status='done') AS done
-      FROM tasks WHERE ($1 IS NULL OR project_id=$1) AND kind='jira' GROUP BY 1 ORDER BY 2 DESC,1 LIMIT 20`, [...scope, OPEN]),
+      FROM tasks WHERE ${visibleProject("project_id")} AND ($1 IS NULL OR project_id=$1) AND kind='jira' GROUP BY 1 ORDER BY 2 DESC,1 LIMIT 20`, [...scope, OPEN]),
     store.db.query(`SELECT origin,count(*) FILTER(WHERE status IN (SELECT value FROM json_each($2))) AS open,count(*) FILTER(WHERE status='done') AS done
-      FROM tasks WHERE ($1 IS NULL OR project_id=$1) AND kind='pending' GROUP BY 1 ORDER BY 2 DESC`, [...scope, OPEN]),
+      FROM tasks WHERE ${visibleProject("project_id")} AND ($1 IS NULL OR project_id=$1) AND kind='pending' GROUP BY 1 ORDER BY 2 DESC`, [...scope, OPEN]),
     store.db.query(`SELECT agent_label,cli_kind,count(*) AS notes,max(updated_at) AS last_note FROM agent_notes
-      WHERE ($1 IS NULL OR project_id=$1) AND created_at>strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days') GROUP BY 1,2 ORDER BY 4 DESC LIMIT 20`, scope),
+      WHERE ${visibleProject("project_id")} AND ($1 IS NULL OR project_id=$1) AND created_at>strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days') GROUP BY 1,2 ORDER BY 4 DESC LIMIT 20`, scope),
     store.db.query(`SELECT ev.action,ev.actor,ev.status_before,ev.status_after,ev.created_at,t.title,t.external_key,t.kind FROM task_events ev JOIN tasks t ON t.id=ev.task_id
-      WHERE ($1 IS NULL OR t.project_id=$1) ORDER BY ev.id DESC LIMIT 30`, scope),
+      WHERE ${visibleProject("t.project_id")} AND ($1 IS NULL OR t.project_id=$1) ORDER BY ev.id DESC LIMIT 30`, scope),
   ])
   const count = (kind: string | null, statuses: string[]) => byStatus.filter(r => (!kind || r.kind === kind) && statuses.includes(r.status)).reduce((sum, r) => sum + r.count, 0)
   const lastTwoWeeks = weekly.slice(-2)

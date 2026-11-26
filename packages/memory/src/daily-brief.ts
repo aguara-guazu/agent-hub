@@ -1,3 +1,4 @@
+import { visibleEntity, visibleProject } from './projects/archive.js'
 import { hash } from './store.js'
 import type { PublicItem } from './schedules/schedule-contract.js'
 import type { DailyDeps, ProposedEffect, ProposedItem } from './daily-types.js'
@@ -16,7 +17,7 @@ export interface LatestSnapshot {
 }
 export interface BriefProject { project_id: string; title: string; snapshot: LatestSnapshot | null }
 export interface AttentionEntry { rank: 'a' | 'b' | 'c' | 'd' | 'e' | 'f'; project_id: string | null; project: string | null; text: string; since: string | null; evidence: string | null }
-export interface AgendaEntry { id: string; title: string; at: string; project: string | null }
+export interface AgendaEntry { project_id?: string | null; id: string; title: string; at: string; project: string | null }
 export interface DueEntry { key: string; title: string; project: string | null }
 export interface BriefPackage {
   scheduled_for: string; generated_at: string; covered_since: string | null
@@ -44,8 +45,9 @@ async function agenda(deps: DailyDeps, scheduledFor: string): Promise<AgendaEntr
   const since = startOfLocalDay(scheduledFor).toISOString(), until = endOfLocalDay(scheduledFor).toISOString()
   const at = "strftime('%Y-%m-%dT%H:%M:%fZ',e.data->>'occurred_at')"
   return deps.store.db.query<AgendaEntry>(`SELECT e.id,e.title,${at} AS at,
-      (SELECT p.title FROM links l JOIN entities p ON p.id=l.to_id AND p.kind='project' WHERE l.from_id=e.id AND l.type='project' ORDER BY p.title LIMIT 1) AS project
-    FROM entities e WHERE e.kind='event' AND COALESCE(e.data->>'status','')<>'cancelled' AND ${at}>=$1 AND ${at}<$2 ORDER BY at,e.id`, [since, until])
+      (SELECT p.id FROM links l JOIN entities p ON p.id=l.to_id AND p.kind='project' WHERE ${visibleProject("p.id")} AND l.from_id=e.id AND l.type='project' ORDER BY p.title,p.id LIMIT 1) AS project_id,
+      (SELECT p.title FROM links l JOIN entities p ON p.id=l.to_id AND p.kind='project' WHERE ${visibleProject("p.id")} AND l.from_id=e.id AND l.type='project' ORDER BY p.title,p.id LIMIT 1) AS project
+    FROM entities e WHERE ${visibleEntity("e.id")} AND e.kind='event' AND COALESCE(e.data->>'status','')<>'cancelled' AND ${at}>=$1 AND ${at}<$2 ORDER BY at,e.id`, [since, until])
 }
 
 /**
@@ -76,7 +78,8 @@ async function mirrorAttention(deps: DailyDeps, account: string | null, projectI
  * Nothing is read from sources again, and no model is involved. A reader that is not wired leaves its block out and is listed in `gaps`.
  */
 export async function collectBrief(deps: DailyDeps, input: { scheduledFor: string; coveredSince: string | null; trigger?: BriefPackage['context']['trigger']; deferredUntil?: string | null }): Promise<BriefPackage> {
-  const ids = await deps.statusProjects()
+  const archived = new Set((await deps.store.db.query('SELECT project_id FROM archived_projects')).map(p => String(p.project_id)))
+  const ids = (await deps.statusProjects()).filter(id => !archived.has(id))
   const rows = ids.length ? await deps.store.db.query<{ id: string; title: string }>('SELECT id,title FROM entities WHERE kind=\'project\' AND id IN (SELECT value FROM json_each($1)) ORDER BY title,id', [JSON.stringify(ids)]) : []
   const snapshots = await latestSnapshots(deps, rows.map(row => row.id))
   const titles = new Map(rows.map(row => [row.id, row.title]))
@@ -100,11 +103,11 @@ export async function collectBrief(deps: DailyDeps, input: { scheduledFor: strin
     ...uncertain.map(line('e', 'en reconciliación: el Hub no pudo confirmar si se ejecutó; revísalo en Entregas — ')),
     ...overdue.map(line('e', 'cierre vencido sin respuesta: no se escribió nada en Jira — ')),
     ...mirror.entries.filter(entry => entry.rank === 'f'),
-  ].sort((a, b) => a.rank.localeCompare(b.rank))
+  ].filter(entry => !entry.project_id || !archived.has(entry.project_id)).sort((a, b) => a.rank.localeCompare(b.rank))
   const carryover = deps.attention?.carryover_items ? await deps.attention.carryover_items().catch(() => { gaps.push('pendientes arrastrados'); return [] as ProposedItem[] }) : []
   return { scheduled_for: input.scheduledFor, generated_at: deps.now().toISOString(), covered_since: input.coveredSince,
     context: { trigger: input.trigger ?? 'clock', deferred_until: input.deferredUntil ?? null }, due_today: mirror.dueToday,
-    projects: rows.map(row => ({ project_id: row.id, title: row.title, snapshot: snapshots.get(row.id) ?? null })), attention, agenda: await agenda(deps, input.scheduledFor), carryover, gaps }
+    projects: rows.map(row => ({ project_id: row.id, title: row.title, snapshot: snapshots.get(row.id) ?? null })), attention, agenda: await agenda(deps, input.scheduledFor), carryover: carryover.filter(item => !archived.has(item.project_id)), gaps }
 }
 
 const stamp = (value: string | null, generatedAt: string) => !value ? null : localDate(value) === localDate(generatedAt) ? localTime(value) : `${localDate(value).slice(8)}/${localDate(value).slice(5, 7)} ${localTime(value)}`

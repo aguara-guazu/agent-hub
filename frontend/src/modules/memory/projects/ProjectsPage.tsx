@@ -1,3 +1,4 @@
+import { ArchiveButton } from "../project/ArchiveButton"
 import { useModules } from "../../state"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import type { CSSProperties } from "react"
@@ -7,37 +8,34 @@ import {
   hasBlockingLayer, hueFor, initials, type MenuItem,
 } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
-import type { MemoryEntity } from "../../../lib/memory"
-import { projectActivity, projectStage, useAllProjects, useCompanies, type ProjectWithSummary } from "../api"
+import "./projects.css"
+import { STAGE_CHOICES, projectActivity, projectStage, useAllProjects, useCompanies, type ProjectWithSummary } from "../api"
 import { ListDate, StageChip, useNarrow } from "../project/shared"
 import { NewProjectDialog } from "./NewProjectDialog"
 import { SharedProjectDialog, type SharedMode } from "../../sharing/project/SharedProjectDialog"
 import { SuggestionDialog, usePendingSuggestions } from "./SuggestionDialog"
 
-type View = "active" | "completed" | "all"
+type View = "active" | "archived"
 type Sort = "recent" | "name"
 const NO_COMPANY = "none"
 /** tokens.css (previo al rediseño) define `.col` como columna flex; se fija la dirección para que los chips no se estiren. */
 const col = (width: number, end = false): CSSProperties => ({ width, display: "flex", flexDirection: "row", alignItems: "center", gap: 0, justifyContent: end ? "flex-end" : "flex-start" })
-
-/** Etapa «completada»: el resto (incluida «pausado») cuenta como activo. */
-function isCompleted(project: MemoryEntity) {
-  return projectStage(project) === "completed"
-}
 
 /** Proyectos · plantilla A sin panel: las filas abren la ficha. Atiende `?new=project`. */
 export default function ProjectsPage() {
   const sharing = useModules().data?.sharing !== false
   const { t } = useT("projects")
   const [params, setParams] = useSearchParams()
-  const view = (["active", "completed", "all"] as const).find(value => value === params.get("view")) ?? "active"
+  const view: View = params.get("view") === "archived" ? "archived" : "active"
+  const stage = params.get("stage") ?? (params.get("view") === "completed" ? "completed" : "")
+  const stages = useT("status").t
   const sort: Sort = params.get("sort") === "name" ? "name" : "recent"
   const query = params.get("q") ?? ""
   const companyFilter = params.get("company") ?? ""
   const [creating, setCreating] = useState(params.get("new") === "project")
   const [shared, setShared] = useState<SharedMode | null>(null)
   const [suggesting, setSuggesting] = useState(false)
-  const projects = useAllProjects()
+  const projects = useAllProjects(view)
   const companies = useCompanies()
   const suggestions = usePendingSuggestions()
   const narrow = useNarrow()
@@ -88,11 +86,7 @@ export default function ProjectsPage() {
     return list.sort((a, b) => sort === "name" ? a.title.localeCompare(b.title) : projectActivity(b).localeCompare(projectActivity(a)))
   }, [items, query, companyFilter, sort, companyOf])
 
-  const counts = useMemo(() => {
-    const completed = filtered.filter(isCompleted).length
-    return { active: filtered.length - completed, completed, all: filtered.length }
-  }, [filtered])
-  const visible = filtered.filter(project => view === "all" || (view === "completed") === isCompleted(project))
+  const visible = stage ? filtered.filter(project => projectStage(project) === stage) : filtered
 
   const companyOptions = useMemo(() => {
     const used = new Set(items.map(project => project.data.company_id).filter((id): id is string => typeof id === "string"))
@@ -107,7 +101,7 @@ export default function ProjectsPage() {
     ] : []),
     ...(suggestions.data?.total ? [{ label: t("actions.fromSuggestion"), icon: "sparkles" as const, onSelect: () => setSuggesting(true) }] : []),
   ]
-  const clear = () => update({ q: "", company: "" })
+  const clear = () => update({ q: "", company: "", stage: "", view })
 
   return (
     <div className="page">
@@ -129,11 +123,12 @@ export default function ProjectsPage() {
           value={view}
           onChange={value => update({ view: value === "active" ? "" : value })}
           options={[
-            { value: "active", label: t("filter.active"), count: projects.data ? counts.active : undefined },
-            { value: "completed", label: t("filter.completed"), count: projects.data ? counts.completed : undefined },
-            { value: "all", label: t("filter.all"), count: projects.data ? counts.all : undefined },
+            { value: "active", label: t("filter.active") },
+            { value: "archived", label: t("filter.archived") },
           ]}
         />
+        <Select label={t("columns.stage")} value={stage} onChange={value => update({ stage: value, view: view === "archived" ? view : "" })}
+          options={[{ value: "", label: t("filter.allStages") }, ...STAGE_CHOICES.map(value => ({ value, label: stages(`stage.${value}`) }))]} />
         <SearchInput label={t("filter.search")} value={query} onChange={event => update({ q: event.target.value })} />
         <Select label={t("filter.company")} value={companyFilter} options={companyOptions} onChange={value => update({ company: value })} />
         <div style={{ marginLeft: "auto" }}>
@@ -144,8 +139,9 @@ export default function ProjectsPage() {
 
       {projects.isPending ? <SkeletonRows label={t("states.loading")} />
         : projects.error ? <List><ErrorState error={projects.error} title={t("states.errorTitle")} onRetry={() => void projects.refetch()} /></List>
+        : items.length === 0 && view === "archived" ? <List><Empty icon="projects" title={t("states.noArchived")} /></List>
         : items.length === 0 ? <List><Empty icon="projects" title={t("states.emptyTitle")} detail={t("states.emptyDetail")} action={<Button small icon="add" onClick={() => setCreating(true)}>{t("states.emptyAction")}</Button>} /></List>
-        : visible.length === 0 ? <List><EmptyFiltered text={query.trim() ? t("states.filteredQuery", { query: query.trim() }) : t("states.filtered")} onClear={() => { clear(); update({ view: "all" }) }} /></List>
+        : visible.length === 0 ? <List><EmptyFiltered text={query.trim() ? t("states.filteredQuery", { query: query.trim() }) : t("states.filtered")} onClear={clear} /></List>
         : (
           <List>
             <RowHead>
@@ -170,7 +166,7 @@ function ProjectRow({ project, company, showContent, showPeople }: { project: Pr
   const { t } = useT("projects")
   const summary = project.summary?.project
   return (
-    <RowLink
+    <div className="project-archive-row"><RowLink
       to={`/projects/${project.id}`}
       lead={<Avatar name={project.title} />}
       title={project.title}
@@ -181,7 +177,7 @@ function ProjectRow({ project, company, showContent, showPeople }: { project: Pr
         {showPeople && <span className="col" style={col(84)}><People summary={summary} /></span>}
         <span className="col" style={col(96, true)}><ListDate value={projectActivity(project)} /></span>
       </>}
-    />
+    /><ArchiveButton project={project} small /></div>
   )
 }
 

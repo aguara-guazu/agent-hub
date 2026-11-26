@@ -1,6 +1,7 @@
+import { calendarEvents } from '../connectors/calendar-window.js'
 import { createHash } from "node:crypto"
 import type { Connector } from "../connectors/types.js"
-import { pages, ProviderHttp } from "../connectors/http.js"
+import { ProviderHttp } from "../connectors/http.js"
 import type { GoogleAuth } from "../connectors/google-auth.js"
 import type { RecordingEvent } from "./recordings.js"
 import type { MemoryStore } from "../store.js"
@@ -95,11 +96,8 @@ export class UpcomingEvents {
         try {
           const access = await token
           if (!access) throw new Error("calendar unavailable")
-          const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar)}/events`)
-          url.searchParams.set("singleEvents", "true"); url.searchParams.set("orderBy", "startTime"); url.searchParams.set("maxResults", "250")
-          url.searchParams.set("timeMin", from); url.searchParams.set("timeMax", to)
           const live: UpcomingEvent[] = []
-          for await (const event of pages(http, url.toString(), { Authorization: `Bearer ${access}` }, "items")) {
+          for await (const event of calendarEvents(http,access,calendar,from,to)) {
             if (recordable(event)) live.push(upcomingEvent(connector.id, calendar, event))
           }
           events.push(...live)

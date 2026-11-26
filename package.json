@@ -21,6 +21,7 @@
     "node": "^22.18.0 || >=24.0.0"
   },
   "scripts": {
+    "assistants": "node packages/core/dist/modules/assistants/cli.js",
     "memory:dev": "npm run build && node scripts/memory.mjs dev",
     "memory:up": "npm run build --workspace @agenthub/memory && node scripts/memory.mjs up",
     "memory:down": "node scripts/memory.mjs down",

@@ -60,7 +60,8 @@ export async function collectClose(deps: DailyDeps, input: { scheduledFor: strin
   const window = { since, until }
   const activated = deps.attention?.activated_projects ? await deps.attention.activated_projects().catch(() => { gaps.push('proyectos activados'); return [] as string[] }) : (gaps.push('proyectos activados'), [] as string[])
   const live = new Set(await deps.statusProjects())
-  const ids = activated.filter(id => live.has(id))
+  const archived = new Set((await deps.store.db.query('SELECT project_id FROM archived_projects')).map(p => String(p.project_id)))
+  const ids = activated.filter(id => live.has(id) && !archived.has(id))
   const account = await deps.jira?.ownerAccountId().catch(() => null) ?? null
   if (!account) gaps.push('identidad de Jira del dueño')
   const rows = ids.length ? await deps.store.db.query<{ id: string; title: string; site: string | null }>(

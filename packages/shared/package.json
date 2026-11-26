@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./dist/index.js",
+    "./assistants": "./dist/assistants.js",
     "./modules": "./dist/modules/index.js"
   },
   "types": "./dist/index.d.ts",

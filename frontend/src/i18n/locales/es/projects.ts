@@ -1,6 +1,12 @@
 const projects = {
   title: "Proyectos",
   actions: {
+    archive: "Archivar proyecto",
+    unarchive: "Desarchivar",
+    archiveNamed: "Archivar {{name}}",
+    restoreNamed: "Desarchivar {{name}}",
+    archived: "{{name}} pasó a Archivados",
+    restored: "{{name}} volvió a Activos",
     create: "Nuevo proyecto",
     moreCreate: "Más formas de agregar un proyecto",
     join: "Unirme con una invitación",
@@ -8,6 +14,8 @@ const projects = {
     fromSuggestion: "Crear desde una sugerencia",
   },
   filter: {
+    archived: "Archivados",
+    allStages: "Todas las etapas",
     label: "Estado",
     active: "Activos",
     completed: "Completados",
@@ -59,6 +67,7 @@ const projects = {
     },
   },
   states: {
+    noArchived: "Todavía no hay proyectos archivados",
     loading: "Cargando proyectos",
     emptyTitle: "Todavía no hay proyectos",
     emptyDetail: "Creá uno y sumale reuniones, documentos y notas.",

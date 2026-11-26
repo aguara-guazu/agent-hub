@@ -1,3 +1,7 @@
+import { availabilityMigration } from './connectors/calendar-window.js'
+import { scheduleArchiveMigration } from './schedules/project-archive.js'
+import { archiveMigration } from './projects/archive.js'
+import { assistantArchiveMigration, assistantMigration, portfolioMigration, notificationMigration, overviewCaseMigration } from './assistants/schema.js'
 // SQLite schema. Equivalent to PostgreSQL schema version 4 (see legacy-postgres.ts for the import).
 // Conventions: ids are TEXT uuids; timestamps are ISO-8601 UTC TEXT ('YYYY-MM-DDTHH:MM:SS.sssZ') so they
 // compare as strings; JSON/BOOLEAN declared types drive result conversion in database-engine.ts.
@@ -1094,4 +1098,4 @@ ALTER TABLE schedule_runs ADD COLUMN new_skip_reason TEXT CHECK(
 UPDATE schedule_runs SET new_skip_reason=skip_reason WHERE skip_reason IS NOT NULL;
 ALTER TABLE schedule_runs DROP COLUMN skip_reason;
 ALTER TABLE schedule_runs RENAME COLUMN new_skip_reason TO skip_reason;
-`]
+`, assistantMigration, portfolioMigration, archiveMigration + assistantArchiveMigration + scheduleArchiveMigration, notificationMigration + availabilityMigration, overviewCaseMigration]

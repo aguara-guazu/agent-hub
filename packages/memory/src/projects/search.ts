@@ -1,3 +1,4 @@
+import { visibleEntity, visibleFragment, visibleProject } from './archive.js'
 import { fullTextMatches, substringMatch } from '../full-text.js'
 import { queryVector, type MemoryDatabase } from '../database.js'
 import { check, parse, searchInput, type SearchInput, MemoryError } from '../contracts.js'
@@ -10,6 +11,7 @@ export async function searchMemory(db: MemoryDatabase, ai: MemoryAI, raw: unknow
   if (input.person_id) await requireEntity(db, input.person_id, 'person')
   check(!(input.project_id && input.unassigned), 'Usa project_id o unassigned, no ambos')
   const filters = filterSql(input)
+  const select = selectFields()
   let semantic: Record<string, any>[] = [], semanticStatus = input.mode === 'text' || !input.query ? 'not_requested' : 'unavailable'
   if (input.query && input.mode !== 'text') {
     try {
@@ -53,9 +55,9 @@ export async function searchMemory(db: MemoryDatabase, ai: MemoryAI, raw: unknow
   for (const results of [lexical, semantic]) results.forEach((r, rank) => scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (60 + rank + 1)))
   const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
   const page = ranked.slice(input.offset, input.offset + input.limit)
-  const rows = page.length ? await db.query(`${select} ${joins} WHERE f.id IN (SELECT value FROM json_each($1))`, [page.map(([fragmentId]) => fragmentId)]) : []
+  const rows = page.length ? await db.query(`${select} ${joins} WHERE f.id IN (SELECT value FROM json_each($1)) AND ${visibleFragment("f.id")} AND ${visibleEntity("e.id")}`, [page.map(([fragmentId]) => fragmentId)]) : []
   const byId = new Map(rows.map(row => [row.id, row]))
-  return { items: page.map(([fragmentId, score]) => ({ ...citation(byId.get(fragmentId)!), score })), total: ranked.length,
+  return { items: page.flatMap(([fragmentId, score]) => { const row = byId.get(fragmentId); return row ? [{ ...citation(row), score }] : [] }), total: ranked.length,
     limit: input.limit, offset: input.offset, semantic_status: semanticStatus, exhaustive: false,
     coverage: 'Resultados ordenados por relevancia; para recorrer todos los registros usá filtros sin texto o una colección' }
 }
@@ -64,14 +66,14 @@ const currentJoins = `FROM sources s JOIN entities e ON e.id=s.entity_id
   CROSS JOIN fragments f ON f.version_id=s.current_version_id`
 const joins = `FROM fragments f JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id
   JOIN entities e ON e.id=s.entity_id LEFT JOIN entities p ON p.id=f.speaker_id`
-const select = `SELECT f.*,e.id AS entity_id,e.title,e.kind,e.data->>'occurred_at' AS occurred_at,
+const selectFields = () => `SELECT f.*,e.id AS entity_id,e.title,e.kind,e.data->>'occurred_at' AS occurred_at,
   s.url,s.provider,p.title AS speaker_name,p.data->>'email' AS speaker_email,
-  COALESCE((SELECT json_group_array(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS "project_ids:json"`
+  COALESCE((SELECT json_group_array(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id AND ${visibleProject("fp.project_id")}),'[]') AS "project_ids:json"`
 const occurredAt = `COALESCE(f.start_time,ts(e.data->>'occurred_at'),e.created_at)`
 function filterSql(input: SearchInput) {
   return {
     params: [input.project_id ?? null, input.person_id ?? null, input.kind ?? null, input.provider ?? null, input.from ?? null, input.to ?? null, 'active'],
-    where: `s.current_version_id=f.version_id AND s.status=$7
+    where: `${visibleEntity("e.id")} AND ${visibleFragment("f.id")} AND s.current_version_id=f.version_id AND s.status=$7
       AND ($1 IS NULL OR EXISTS(SELECT 1 FROM fragment_projects fp WHERE fp.fragment_id=f.id AND fp.project_id=$1))
       AND ($2 IS NULL OR f.speaker_id=$2) AND ($3 IS NULL OR e.kind=$3) AND ($4 IS NULL OR s.provider=$4)
       AND ($5 IS NULL OR ${occurredAt}>=ts($5))

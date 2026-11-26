@@ -1,9 +1,10 @@
+import { ArchiveButton } from "./ArchiveButton"
 import { useModules } from "../../state"
 import { Suspense, lazy, useEffect, useRef, useState } from "react"
 import type { CSSProperties, KeyboardEvent } from "react"
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import {
-  Avatar, Banner, Button, Chip, ConfirmDialog, Dl, ErrorState, Input, Menu, MoreMenu, SkeletonRows, TabPanel, Tabs, useToast,
+  Avatar, Banner, Button, Chip, ConfirmDialog, Dl, ErrorState, Input, Menu, MoreMenu, SkeletonRows, Switch, TabPanel, Tabs, useToast,
   type MenuItem, type TabItem,
 } from "../../../components/ui"
 import { useFormat, useT } from "../../../i18n"
@@ -152,12 +153,13 @@ function ProjectView({ detail }: { detail: ProjectDetail }) {
                 <InlineTitle project={project} />
                 <div className="xs t3" style={{ display: "flex", alignItems: "center", gap: "var(--sp-3)", flexWrap: "wrap" }}>
                   <StageMenu project={project} />
-                  {company && <Link to={entityPath(company)}>{company.title}</Link>}
+                  {company && <Link to={entityPath(company, project.id)}>{company.title}</Link>}
                   <span title={format.date(updated, "datetime")}>{t("header.updated", { when: listDate(updated, format.language, format.relative) })}</span>
                 </div>
               </div>
             </div>
             <div className="ph-actions">
+              <ArchiveButton project={project} />
               {modules?.sharing !== false && <Button icon="collaboration" onClick={() => openPanel("share")}>{t("header.share")}</Button>}
               <Menu
                 items={addItems}
@@ -294,6 +296,7 @@ function ProjectAside({ detail, company, narrow, onPanel }: { detail: ProjectDet
   const { t, plural } = useT("project")
   const status = useT("status").t
   const modules = useModules().data
+  const update = useMemoryAction("update_entity")
   const [all, setAll] = useState(false)
   const folders: string[] = Array.isArray(project.data.folders) ? project.data.folders : []
   const connections = detail.links.filter((link: EntityLink) => link.type !== "project" || link.from_id === project.id)
@@ -303,12 +306,16 @@ function ProjectAside({ detail, company, narrow, onPanel }: { detail: ProjectDet
       <section className="section">
         <h2 className="h3">{t("header.aside.details")}</h2>
         <Dl items={[
-          { label: t("header.aside.company"), value: company ? <Link to={entityPath(company)}>{company.title}</Link> : null },
+          { label: t("header.aside.company"), value: company ? <Link to={entityPath(company, project.id)}>{company.title}</Link> : null },
           { label: t("header.aside.stage"), value: status(`stage.${projectStage(project)}`) },
           { label: t("header.aside.folders"), value: folders.length ? <span style={{ display: "flex", flexDirection: "column" }}>{folders.map(folder => <span key={folder} className="mono trunc" title={folder}>{folder}</span>)}</span> : null },
           { label: t("header.aside.remote"), value: project.data.remote_processing === false ? t("header.aside.remoteBlocked") : t("header.aside.remoteAllowed") },
         ]} />
         <Button small variant="ghost" style={{ alignSelf: "flex-start", marginLeft: "calc(var(--sp-2) * -1)" }} onClick={() => onPanel("details")}>{t("header.editDetails")}</Button>
+        <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--sp-3)" }}>
+          <span>{t("header.aside.homebrew")}</span>
+          <Switch checked={project.data.homebrew === true} label={t("header.aside.homebrew")} disabled={update.isPending} onChange={homebrew => update.mutate({ id: project.id, data: { homebrew } })} />
+        </label>
       </section>
       <hr className="divider" />
       {modules?.schedules !== false && <><AutomationBlock projectId={project.id} onConfigure={() => onPanel("automation")} /><hr className="divider" /></>}
@@ -320,7 +327,7 @@ function ProjectAside({ detail, company, narrow, onPanel }: { detail: ProjectDet
         {connections.length === 0 ? <span className="t3">{t("header.aside.noConnections")}</span> : (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-2)" }}>
             {shown.map(link => (
-              <Link key={link.id} to={entityPath(link.entity)} style={{ display: "flex", alignItems: "center", gap: "var(--sp-2)", color: "var(--text)", minWidth: 0 }}>
+              <Link key={link.id} to={entityPath(link.entity, project.id)} style={{ display: "flex", alignItems: "center", gap: "var(--sp-2)", color: "var(--text)", minWidth: 0 }}>
                 <Avatar name={link.entity.title} small round={link.entity.kind === "person"} />
                 <span className="trunc" style={{ flex: 1 }} title={link.entity.title}>{link.entity.title}</span>
                 <span className="xs t3">{isRelation(link.type) ? status(`relation.${link.type}`) : link.type}</span>

@@ -1,0 +1,309 @@
+/* Ajustes del módulo */
+.assistant-pane,
+.assistant-form,
+.assistant-watch {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+.assistant-pane {
+  align-content: start;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.assistant-pane h2,
+.assistant-pane h3,
+.assistant-pane p {
+  margin: 0;
+}
+.assistant-pane p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.assistant-pane summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.assistant-actions,
+.assistant-switch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.assistant-grid {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+}
+.assistant-form fieldset {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.assistant-form legend {
+  padding-inline: var(--sp-2);
+}
+.assistant-form > .btn,
+.assistant-watch > .btn {
+  justify-self: start;
+}
+
+/* Bandeja: asuntos a la izquierda y el asistente a la derecha. El alto sale de .page-fill y cada columna scrollea sola. */
+.assistant-board {
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.assistant-list {
+  flex: 1.2 1 360px;
+  min-width: 352px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  container-type: inline-size;
+}
+.assistant-bar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+.assistant-bar .search {
+  min-width: 0;
+  flex: 1 1 160px;
+}
+.assistant-bulk {
+  flex-shrink: 0;
+  margin: var(--sp-2) var(--sp-3);
+}
+.assistant-grow {
+  flex: 1;
+}
+.assistant-list > .list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 0;
+}
+.assistant-list > .empty {
+  flex: 1 1 0;
+  justify-content: center;
+}
+/* Las cabeceras de grupo quedan fijas mientras scrollean sus filas. */
+.assistant-rows .row-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.assistant-rows [role='group'] + [role='group'] > .row-head {
+  border-top: 1px solid var(--border);
+}
+.assistant-check-slot {
+  width: var(--sp-4);
+  flex: none;
+}
+.assistant-score {
+  min-width: calc(var(--sp-7) + var(--sp-2));
+  justify-content: center;
+}
+.assistant-col-time {
+  width: calc(var(--sp-7) + var(--sp-5));
+  text-align: right;
+}
+.assistant-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+/* El título es un botón para el teclado; conserva la elipsis de .row-title. */
+.assistant-rows .row-title > button {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assistant-col-state {
+  display: flex;
+}
+.assistant-sub-state {
+  display: none;
+}
+/* Columna angosta: se ocultan el tipo y la hora, y el estado pasa al detalle como texto. */
+@container (max-width: 520px) {
+  .assistant-col-tag,
+  .assistant-col-time,
+  .assistant-col-state {
+    display: none;
+  }
+  .assistant-sub-state {
+    display: inline;
+  }
+}
+@media (max-width: 1100px) {
+  .assistant-page {
+    padding-inline: var(--sp-5);
+  }
+}
+
+/* El asistente: contexto del elemento elegido, conversación única y compositor. */
+.assistant-chat {
+  flex: 1 1 380px;
+  max-width: calc(var(--panel-w) + var(--sp-7) + var(--sp-6));
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.assistant-chat-h {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: calc(var(--control-h) + var(--sp-5));
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+.assistant-chat-h .h3 {
+  flex: 1;
+}
+.assistant-chat .msgs .empty {
+  margin: auto 0;
+}
+.assistant-thread {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+}
+.assistant-about {
+  min-width: 0;
+  max-width: 100%;
+}
+.assistant-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.assistant-break {
+  overflow-wrap: anywhere;
+}
+
+/* Tarjeta de contexto: el asunto o la microtarea sobre la que se conversa. Alto acotado con scroll propio. */
+.assistant-ctx {
+  flex: 0 1 auto;
+  max-height: 45%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+.assistant-ctx-h {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2) var(--sp-4);
+}
+.assistant-ctx-b {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-4) var(--sp-3);
+}
+.assistant-ctx-chips,
+.assistant-ctx-f {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.assistant-ctx-f {
+  flex-shrink: 0;
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+.assistant-draft,
+.assistant-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.assistant-draft {
+  padding: var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+}
+.assistant-sources summary {
+  cursor: pointer;
+}
+.assistant-sources ul {
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.assistant-sources li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.assistant-source-h {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.assistant-source-h time {
+  flex: none;
+}
+.assistant-cost {
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+
+/* Compositor del chat */
+.assistant-composer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+.assistant-composer textarea.input {
+  height: auto;
+  min-height: calc(var(--control-h) * 2);
+  padding: var(--sp-2) var(--sp-3);
+  line-height: 1.45;
+  resize: none;
+}
+.assistant-composer-f {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}

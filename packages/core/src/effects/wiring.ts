@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import type { ConnectionPool } from '@agenthub/gateway'
-import { type ActionTickResult, createDerivedPorts, DecisionService, DecisionStore, DerivedDispatcher, GmailSelfSender, MemoryExclusionSink, pollGmailReplies, type DecisionAuthorityReader, type DerivedTeams, type DerivedTick, type GoogleAuth, type ReplyPollResult, type ScheduleEffects, type Vault } from '@agenthub/memory'
+import { type ActionTickResult, briefEmailReminders, createDerivedPorts, DecisionService, DecisionStore, DerivedDispatcher, GmailSelfSender, MemoryExclusionSink, pollGmailReplies, type DecisionAuthorityReader, type DerivedTeams, type DerivedTick, type GoogleAuth, type ReplyPollResult, type ScheduleEffects, type Vault } from '@agenthub/memory'
 import type { Store } from '../store.js'
 import { CoreActionExecutor, type ActionAdapter } from './executor.js'
 import { createDeliveryAdapters, type DeliveryArtifacts } from './delivery.js'
@@ -28,7 +28,7 @@ export interface EffectsHost {
   load(): Promise<{
     db: { query<T = Record<string, any>>(sql: string, params?: unknown[]): Promise<T[]> }
     /** Espejo público por ítem, lector de autoridad del artefacto y lectura del artefacto de un run. */
-    schedules: { set(entry: any): Promise<void>; replaceDecisionRef(runId: string, oldRef: string, newRef: string): Promise<boolean>; artifactAuthority: DecisionAuthorityReader; artifactOfRun(runId: string): Promise<{ id: string; title: string; body_md: string; decision_request_ref: string | null } | undefined> }
+    schedules: { set(entry: any): Promise<void>; replaceDecisionRef(runId: string, oldRef: string, newRef: string): Promise<boolean>; artifactAuthority: DecisionAuthorityReader; artifactOfRun(runId: string): Promise<{ id: string; kind?: string; title: string; body_md: string; decision_request_ref: string | null } | undefined> }
     /** Orquestación de equipos del servicio de memoria; sin ella los planes derivados no se despachan. */
     teams?: DerivedTeams
   }>
@@ -114,7 +114,7 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
       const exclusions = new MemoryExclusionSink(db)
       const artifacts: DeliveryArtifacts = { load: async ({ run_id, artifact_id }) => {
         const artifact = await schedules.artifactOfRun(run_id)
-        return artifact && artifact.id === artifact_id ? { title: artifact.title, body_md: artifact.body_md, decision_request_ref: artifact.decision_request_ref } : null
+        return artifact?.id === artifact_id ? artifact : null
       } }
       const googleSources = () => db.query<{ id: string; config: Record<string, any>; mailbox: unknown }>("SELECT id, config, json_extract(cursor,'$.gmail.mailbox') AS mailbox FROM connectors WHERE provider = 'google' AND enabled = 1 ORDER BY created_at")
       const reads = (row: { config: Record<string, any> }) => row.config?.['gmail_enabled'] !== false
@@ -127,7 +127,11 @@ export function createCoreScheduleEffects(options: CoreEffectsOptions): Schedule
           return source ? { account: typeof source.mailbox === 'string' && source.mailbox ? source.mailbox : null } : null
         } }
       const effects = createScheduleEffects({
-        deliveries: createDeliveryAdapters({ store, artifacts, exclusions, gmail, slack: new SlackSelfDelivery({ store, tools, exclusions }) }),
+        deliveries: createDeliveryAdapters({
+          store, artifacts, exclusions, gmail, slack: new SlackSelfDelivery({ store, tools, exclusions }),
+          briefEmailReminders: () => options.moduleEnabled?.('assistants') === false || options.moduleEnabled?.('memory') === false
+            ? Promise.resolve('') : briefEmailReminders(db, new Date(), options.moduleEnabled?.('connections') !== false),
+        }),
         actions: new CoreActionExecutor({ decisions: service, adapters: typeof options.adapters === 'function' ? options.adapters({ db }) : options.adapters ?? [], automationsEnabled: options.automationsEnabled, tools }),
         decisions: service,
         ownerId: options.ownerId,

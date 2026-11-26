@@ -8,6 +8,8 @@
  */
 
 const ROUTE_PATTERNS: readonly RegExp[] = [
+  /^\/assistants\?notice=[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/,
+  /^\/assistants(?:\/|\?project=)[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/,
   /^\/deliveries$/,
   /^\/deliveries\/[A-Za-z0-9_-]{1,80}$/,
   /^\/schedules(\?focus=[A-Za-z0-9_-]{1,80})?$/,

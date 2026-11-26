@@ -3,6 +3,7 @@ const nav = {
   label: "Navegación principal",
   search: "Buscar o ir a…",
   home: "Inicio",
+  assistants: "Asistentes",
   groupWork: "Trabajo",
   projects: "Proyectos",
   memory: "Memoria",

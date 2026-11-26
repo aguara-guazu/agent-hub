@@ -68,7 +68,7 @@ export function DecisionsTab({ project }: { project: MemoryEntity }) {
                 </Button>
               )}
             </>}
-      {panel.value && <DecisionPanel key={panel.value} factId={panel.value} onClose={panel.close} />}
+      {panel.value && <DecisionPanel key={panel.value} projectId={project.id} factId={panel.value} onClose={panel.close} />}
     </div>
   )
 }
@@ -102,12 +102,12 @@ function DecisionRow({ fact, selected, onOpen }: { fact: FactRow; selected: bool
 }
 
 /** Detalle de solo lectura: texto completo, fuente (`derived_from`) y fragmentos citados como evidencia. */
-function DecisionPanel({ factId, onClose }: { factId: string; onClose: () => void }) {
+function DecisionPanel({ factId, projectId, onClose }: { factId: string; projectId: string; onClose: () => void }) {
   const { t } = useT("project")
   const status = useT("status").t
   const format = useFormat()
   const navigate = useNavigate()
-  const detail = useMemory<FactDetail>("get_entity", { id: factId })
+  const detail = useMemory<FactDetail>("get_entity", { id: factId, archive_project_id: projectId })
   const fact = detail.data?.entity
   const source = detail.data?.links.find(link => link.type === "derived_from" && link.from_id === factId)?.entity
   const review: unknown = fact?.data?.review_state
@@ -118,7 +118,7 @@ function DecisionPanel({ factId, onClose }: { factId: string; onClose: () => voi
         <PanelHeader
           title={fact ? factText(fact) : t("decisions.panel.label")}
           status={fact ? <CategoryChip fact={fact} /> : undefined}
-          actions={fact ? <MoreMenu small ghost items={[{ label: t("decisions.panel.openMemory"), icon: "memory", onSelect: () => navigate(`/memory/entities/${fact.id}`) }]} /> : undefined}
+          actions={fact ? <MoreMenu small ghost items={[{ label: t("decisions.panel.openMemory"), icon: "memory", onSelect: () => navigate(entityPath(fact, projectId)) }]} /> : undefined}
         />
         <PanelBody>
           {detail.isPending ? <Loading />
@@ -127,7 +127,7 @@ function DecisionPanel({ factId, onClose }: { factId: string; onClose: () => voi
                 <p className="t2 prose" style={{ whiteSpace: "pre-wrap" }}>{factText(fact)}</p>
                 <Dl items={[
                   { label: t("decisions.panel.date"), value: format.date(entityDate(fact)) },
-                  { label: t("decisions.panel.source"), value: source ? <Link to={entityPath(source)} className="trunc" title={source.title}>{source.title}</Link> : null },
+                  { label: t("decisions.panel.source"), value: source ? <Link to={entityPath(source, projectId)} className="trunc" title={source.title}>{source.title}</Link> : null },
                   { label: t("decisions.panel.review"), value: reviewLabel },
                   { label: t("decisions.panel.model"), value: typeof fact.data.model === "string" ? <span className="mono">{fact.data.model}</span> : null },
                 ]} />
@@ -138,7 +138,7 @@ function DecisionPanel({ factId, onClose }: { factId: string; onClose: () => voi
                       {detail.data.evidence.map(fragment => (
                         <RowLink
                           key={fragment.id}
-                          to={`/memory/entities/${fragment.entity_id}?version=${fragment.version_id}&fragment=${fragment.id}`}
+                          to={`/memory/entities/${fragment.entity_id}?archive_project_id=${projectId}&version=${fragment.version_id}&fragment=${fragment.id}`}
                           title={fragment.text}
                           sub={source && fragment.entity_id === source.id ? source.title : undefined}
                         />

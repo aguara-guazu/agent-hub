@@ -1,3 +1,4 @@
+import { visibleEntity, visibleProject } from './archive.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { lenientItems, type MemoryAI } from '../ai.js'
@@ -178,7 +179,7 @@ export async function reviewProjectSuggestion(store: MemoryStore, raw: unknown, 
 
 /** Pending suggestions with what a person needs to decide: the source, its people, what was extracted and the candidate. */
 export async function listProjectSuggestions(store: MemoryStore, input: { state: string; limit: number; offset: number }) {
-  const where = `e.kind='fact' AND e.data->>'category'='project_match' AND e.data->>'review_state'=$1`
+  const where = `${visibleEntity("src.id")} AND ${visibleProject("e.data->>'candidate_project_id'")} AND e.kind='fact' AND e.data->>'category'='project_match' AND e.data->>'review_state'=$1`
   const items = await store.db.query(`SELECT e.*,src.title AS source_title,src.kind AS source_kind,src.data->>'occurred_at' AS occurred_at,
     (SELECT json_group_array(json_object('id',p.id,'title',p.title,'email',p.data->>'email') ORDER BY p.title) FROM links l JOIN entities p ON p.id=l.to_id
       WHERE l.from_id=src.id AND l.type='participant') AS "participants:json",

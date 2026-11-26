@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { destinationModule, type ModuleStates } from '@agenthub/shared/modules'
+import { dependencies, destinationModule, type ModuleStates } from '@agenthub/shared/modules'
 import { api } from '../lib/api'
 
 export type ModuleSettingsResponse = ModuleStates & { can_manage?: boolean }
@@ -9,5 +9,5 @@ export function useModules() {
 }
 export function visibleDestination(path: string, states: ModuleStates | undefined) {
   const owner = destinationModule(path)
-  return !owner || states?.[owner] !== false
+  return !owner || (states?.[owner] !== false && dependencies(owner).every(id=>states?.[id]!==false))
 }

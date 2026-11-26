@@ -1,3 +1,4 @@
+import { projectReadEntities, visibleEntity, visibleFragment, visibleProject, type ProjectState } from './projects/archive.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -46,9 +47,11 @@ export async function assertWritableEntityTargets(sql: Sql, raw: unknown): Promi
 
 export async function uniqueProjectTitle(sql: Sql, title: string, projectId: string | null = null) {
   const normalized = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim()
-  const projects = await sql.query<Entity>("SELECT * FROM entities WHERE kind='project' AND data->>'merged_into' IS NULL AND ($1 IS NULL OR id<>$1)", [projectId])
+  const projects = await sql.query<Entity & { archived: boolean }>("SELECT e.*,EXISTS(SELECT 1 FROM archived_projects a WHERE a.project_id=e.id) AS archived FROM entities e WHERE kind='project' AND data->>'merged_into' IS NULL AND ($1 IS NULL OR id<>$1)", [projectId])
   const matches = projects.filter(project => normalized(project.title) === normalized(title))
-  check(!matches.length, `Ya existe un proyecto con título equivalente: ${matches.map(project => `${project.title} (${project.id})`).join(", ")}. Reutiliza su id; para asociar la carpeta usa memory_update_entity con data.folders (rutas absolutas, conservando las existentes). Si es otro proyecto, usa allow_duplicate:true.`, 409)
+  const active = matches.filter(project => !project.archived)
+  check(!matches.length || active.length, 'Hay un proyecto archivado con ese título. Podés buscarlo en Archivados o crear otro con allow_duplicate:true.', 409)
+  check(!active.length, `Ya existe un proyecto con título equivalente: ${active.map(project => `${project.title} (${project.id})`).join(", ")}. Reutiliza su id; para asociar la carpeta usa memory_update_entity con data.folders (rutas absolutas, conservando las existentes). Si es otro proyecto, usa allow_duplicate:true.`, 409)
 }
 
 export async function validateProjects(sql: Sql, ids: string[], access: "read" | "write" = "write"): Promise<void> {
@@ -188,18 +191,22 @@ export class MemoryStore {
   }
 
   /** `unassigned` keeps sources, notes and facts that belong to no project; projects, companies, people and collections are excluded from that scope. `include: ["summary"]` adds `summary` (EntitySummary) to each item. */
-  async list(input: { kind?: EntityKind; project_id?: string; query?: string; unassigned?: boolean; limit?: number; offset?: number; include?: EntityListInclude[] } = {}) {
+  async list(input: { project_state?: ProjectState; kind?: EntityKind; project_id?: string; query?: string; unassigned?: boolean; limit?: number; offset?: number; include?: EntityListInclude[] } = {}) {
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200), offset = Math.max(input.offset ?? 0, 0)
     if (input.project_id) await requireEntity(this.db, input.project_id, 'project')
     const params = [input.kind ?? null, input.project_id ?? null, input.query ?? '', Boolean(input.unassigned), limit, offset]
-    const where = `e.data->>'memory_state' IS NOT 'archived' AND ($1 IS NULL OR e.kind=$1) AND ($2 IS NULL OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='project'))
+    const visible = input.kind === 'project' && input.project_state === 'archived'
+      ? 'e.id IN (SELECT project_id FROM archived_projects)' : visibleEntity('e.id')
+    const where = `${visible} AND e.data->>'memory_state' IS NOT 'archived' AND ($1 IS NULL OR e.kind=$1) AND ($2 IS NULL OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.to_id=$2 AND l.type='project'))
       AND ($3='' OR ilike(e.title,'%' || $3 || '%') OR (e.kind='project' AND EXISTS(
         SELECT 1 FROM entities company WHERE company.id=e.data->>'company_id' AND ilike(company.title,'%' || $3 || '%'))))
       AND (NOT $4 OR (e.kind IN ('meeting','document','message','issue','note','fact','event')
         AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project')))`
-    const rows = await this.db.query<Entity>(`SELECT e.* FROM entities e WHERE ${where} ORDER BY COALESCE(e.data->>'occurred_at',e.created_at) DESC,e.id LIMIT $5 OFFSET $6`, params)
+    const rows = await this.db.query<Entity>(`SELECT e.*,coalesce(a.version,0) AS archive_version,a.archived_at FROM entities e
+      LEFT JOIN project_archive_state a ON a.project_id=e.id WHERE ${where} ORDER BY COALESCE(e.data->>'occurred_at',e.created_at) DESC,e.id LIMIT $5 OFFSET $6`, params)
     const count = (await this.db.query(`SELECT count(*) AS total FROM entities e WHERE ${where}`, params.slice(0, 4)))[0]!
-    const items = input.include?.includes("summary") ? await this.withSummaries(rows) : rows
+    const readable = await projectReadEntities(this.db, rows)
+    const items = input.include?.includes("summary") ? await this.withSummaries(readable) : readable
     return { items, total: count.total as number, limit, offset }
   }
 
@@ -222,8 +229,8 @@ export class MemoryStore {
         SELECT m.project_id,m.person_id,p.title,count(DISTINCT m.via) AS shared FROM member m JOIN entities p ON p.id=m.person_id
         GROUP BY m.project_id,m.person_id,p.title ORDER BY m.project_id,shared DESC,p.title,m.person_id`, [projects]) : [],
       facts.length ? this.db.query(`SELECT l.from_id AS fact_id,e.id,e.kind,e.title FROM links l JOIN entities e ON e.id=l.to_id
-        WHERE l.type='derived_from' AND l.from_id IN (SELECT value FROM json_each($1)) ORDER BY l.created_at,l.id`, [facts.map(row => row.id)]) : [],
-      facts.some(row => row.data.source_entity_id) ? this.db.query("SELECT id,kind,title FROM entities WHERE id IN (SELECT value FROM json_each($1))",
+        WHERE l.type='derived_from' AND ${visibleEntity('e.id')} AND l.from_id IN (SELECT value FROM json_each($1)) ORDER BY l.created_at,l.id`, [facts.map(row => row.id)]) : [],
+      facts.some(row => row.data.source_entity_id) ? this.db.query(`SELECT id,kind,title FROM entities e WHERE e.id IN (SELECT value FROM json_each($1)) AND ${visibleEntity('e.id')}`,
         [[...new Set(facts.map(row => row.data.source_entity_id).filter((value): value is string => typeof value === "string" && value !== ""))]]) : [],
     ])
     const companyById = new Map(companies.map(row => [row.id as string, { id: row.id as string, title: row.title as string }]))
@@ -255,15 +262,19 @@ export class MemoryStore {
     })
   }
 
-  async detail(entityId: string) {
+  async detail(entityId: string, publicRead = false) {
     const entity = await requireEntity(this.db, entityId)
-    const [links, sources, evidence, changes] = await Promise.all([
-      this.db.query(`SELECT l.*,json_object('id',e.id,'kind',e.kind,'title',e.title,'data',json(e.data),'created_at',e.created_at,'updated_at',e.updated_at) AS "entity:json" FROM links l JOIN entities e ON e.id=CASE WHEN l.from_id=$1 THEN l.to_id ELSE l.from_id END WHERE l.from_id=$1 OR l.to_id=$1 ORDER BY l.created_at DESC LIMIT 300`, [entityId]),
+    const [links, sources, evidence, changes, archive] = await Promise.all([
+      this.db.query(`SELECT l.*,json_object('id',e.id,'kind',e.kind,'title',e.title,'data',json(e.data),'created_at',e.created_at,'updated_at',e.updated_at) AS "entity:json" FROM links l JOIN entities e ON e.id=CASE WHEN l.from_id=$1 THEN l.to_id ELSE l.from_id END WHERE (l.from_id=$1 OR l.to_id=$1) AND ${publicRead ? visibleEntity("e.id") : "1"} ORDER BY l.created_at DESC LIMIT 300`, [entityId]),
       this.db.query('SELECT s.*,(SELECT count(*) FROM versions v WHERE v.source_id=s.id) AS version_count FROM sources s WHERE entity_id=$1', [entityId]),
-      this.db.query(`SELECT f.*,s.entity_id,s.url,s.current_version_id,(s.current_version_id=f.version_id) AS "current:bool" FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE ev.entity_id=$1 ORDER BY f.ordinal`, [entityId]),
+      this.db.query(`SELECT f.*,s.entity_id,s.url,s.current_version_id,(s.current_version_id=f.version_id) AS "current:bool" FROM evidence ev JOIN fragments f ON f.id=ev.fragment_id JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE ev.entity_id=$1 AND ${publicRead ? visibleFragment("f.id") : "1"} ORDER BY f.ordinal`, [entityId]),
       this.db.query('SELECT id,action,actor,created_at FROM changes WHERE entity_id=$1 ORDER BY id DESC LIMIT 30', [entityId]),
+      entity.kind === 'project' ? this.db.query('SELECT version,archived_at FROM project_archive_state WHERE project_id=$1',[entityId]) : [],
     ])
-    return { entity, links, sources, evidence, changes }
+    const [current, ...related] = publicRead ? await projectReadEntities(this.db, [entity, ...links.map(l => l.entity)]) : [entity]
+    return { entity: archive[0] ? { ...current, archive_version: archive[0].version, archived_at: archive[0].archived_at } : current,
+      links: publicRead ? links.map((link,i) => ({ ...link, entity: related[i] })) : links, sources, evidence, changes }
+
   }
 
   async link(raw: unknown, actor = 'user', transaction?: Sql) {
@@ -478,12 +489,12 @@ export class MemoryStore {
   async fragments(entityId: string, opts: { version_id?: string; person_id?: string; project_id?: string; limit?: number; offset?: number } = {}) {
     await requireEntity(this.db, entityId)
     const limit = Math.min(Math.max(opts.limit ?? 100, 1), 200), offset = Math.max(opts.offset ?? 0, 0)
-    const where = `s.entity_id=$1 AND f.version_id=COALESCE($2,s.current_version_id)
+    const where = `${visibleFragment("f.id")} AND s.entity_id=$1 AND f.version_id=COALESCE($2,s.current_version_id)
       AND ($3 IS NULL OR f.speaker_id=$3)
       AND ($4 IS NULL OR EXISTS(SELECT 1 FROM fragment_projects fp WHERE fp.fragment_id=f.id AND fp.project_id=$4))`
     const params = [entityId, opts.version_id ?? null, opts.person_id ?? null, opts.project_id ?? null]
     const items = await this.db.query(`SELECT f.*,p.title AS speaker_name,p.data->>'email' AS speaker_email,p.data->>'email_status' AS speaker_email_status,
-      COALESCE((SELECT json_group_array(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id),'[]') AS "project_ids:json",
+      COALESCE((SELECT json_group_array(fp.project_id) FROM fragment_projects fp WHERE fp.fragment_id=f.id AND ${visibleProject("fp.project_id")}),'[]') AS "project_ids:json",
       s.entity_id,s.url,(s.current_version_id=f.version_id) AS "current:bool" FROM fragments f JOIN versions v ON v.id=f.version_id
       JOIN sources s ON s.id=v.source_id LEFT JOIN entities p ON p.id=f.speaker_id WHERE ${where} ORDER BY f.ordinal LIMIT $5 OFFSET $6`, [...params, limit, offset])
     const total = (await this.db.query(`SELECT count(*) AS total FROM fragments f JOIN versions v ON v.id=f.version_id JOIN sources s ON s.id=v.source_id WHERE ${where}`, params))[0]!.total

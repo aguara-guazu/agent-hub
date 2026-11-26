@@ -1,4 +1,5 @@
 import { createDesktopSchedules } from './modules/schedules/desktop.js'
+import { assistantFeed } from './modules/assistants/desktop.js'
 import { createDesktopRecording } from './modules/transcriptions/desktop.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -347,14 +348,15 @@ function showRetained(notification: Notification): void {
 }
 
 /** Notificación del sistema cuyo clic abre la ventana en una ruta de la consola (ver `navigation.ts`). */
-function notifyOpening(notice: Notice): void {
+function notifyOpening(notice: Notice): boolean {
   try {
-    if (!Notification.isSupported()) return
+    if (!Notification.isSupported()) return false
     const notification = new Notification({ title: notice.title, body: notice.body })
     notification.on('click', () => openRoute(notice.route))
     showRetained(notification)
+    return true
   } catch {
-    // Sin centro de notificaciones el contenido sigue disponible en la consola.
+    return false
   }
 }
 
@@ -443,6 +445,7 @@ const schedules = createDesktopSchedules({
   canPoll: () => !quitting && coreSupervisor.state === 'running',
   offerAutostart: async events => { if (!isolatedInstance) await autostartOffer.consider(events) },
 })
+const assistants = assistantFeed(coreFetch, notifyOpening, () => !quitting && coreSupervisor.state === 'running')
 
 let updateReport: UpdateReport = { phase: 'idle' }
 function setUpdateReport(next: UpdateReport): void {
@@ -1555,6 +1558,7 @@ async function quit(): Promise<void> {
   updateHints.stop()
   await recordings.stopForQuit()
   schedules.close()
+  assistants.close()
   // Si algo se cuelga al cerrar, la app sale igual: un proceso que no termina obliga a
   // forzar el cierre y dejaba core y daemon huérfanos bloqueando el próximo arranque.
   const deadline = setTimeout(() => {
@@ -1629,9 +1633,10 @@ else {
     if (app.isPackaged && overrideSafe) updateHints.start()
     setInterval(() => void pollPendingRestarts(), PENDING_RESTART_POLL_MS).unref()
     schedules.start()
+    assistants.start()
     recordings.start()
     // `resume` sale de la suspensión; `unlock-screen` sólo existe en macOS y Windows.
-    powerMonitor.on('resume', () => { recordings.onWake(true); schedules.wake() })
+    powerMonitor.on('resume', () => { recordings.onWake(true); schedules.wake(); void assistants.poll() })
     powerMonitor.on('unlock-screen', () => { recordings.onWake(false); schedules.wake() })
   }).catch(async (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)

@@ -8,10 +8,15 @@ import { extractionClis, validCliModel } from '../cli-extraction.js'
 import { reasoningEffortSchema } from '../reasoning.js'
 import { check, id, MemoryError, parse } from '../contracts.js'
 import { restoreMemory, streamBackup } from '../backup.js'
+import { setProjectArchive } from './archive.js'
 import { globalSearch } from './global-search.js'
 import type { OwnerGuard } from '../http.js'
 
-export function registerProjectRoutes(app: FastifyInstance, service: MemoryService, auth: OwnerGuard, enabled: ModuleEnabled) {
+export function registerProjectRoutes(app: FastifyInstance, service: MemoryService, auth: OwnerGuard, enabled: ModuleEnabled, trackingChanged?: (project: string) => Promise<void>) {
+  app.put('/api/memory/projects/:id/archive', { preHandler: auth }, async request => {
+    const { id: project } = parse(z.object({ id }), request.params)
+    return setProjectArchive((await service.get()).store, project, request.body, trackingChanged)
+  })
   app.post('/api/memory/search', { preHandler: auth }, async (request, reply) => {
     const controller = new AbortController(), abort = () => controller.abort()
     reply.raw.once('close', abort)

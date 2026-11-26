@@ -72,7 +72,8 @@ const dailyBrief: ScheduleTemplateDefinition<Record<string, never>> = {
   grace_policy: 'until_local_time', grace_until: '23:59', admission_note: 'plantilla brief: agrega el último status de cada proyecto activado, sin modelo; entrega solo a ti',
   async collect(ctx, deps) {
     const pkg = await collectBrief(dailyDeps(deps), { scheduledFor: ctx.scheduled_for, coveredSince: ctx.covered_since, trigger: ctx.trigger, deferredUntil: ctx.deferred_until })
-    return packageOf(pkg.projects.map(project => project.project_id), [section('brief', 'Brief', pkg, pkg.generated_at)], true)
+    const scope = [...new Set([...pkg.projects, ...pkg.agenda, ...pkg.attention, ...pkg.carryover].flatMap(item => item.project_id ? [item.project_id] : []))]
+    return packageOf(scope, [section('brief', 'Brief', pkg, pkg.generated_at)], true)
   },
   render(ctx, pkg) {
     const draft = renderBrief(dataOf<BriefPackage>(pkg, 'brief'), ctx.run_id)

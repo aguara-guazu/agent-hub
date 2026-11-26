@@ -1,3 +1,4 @@
+import { isArchived, projectReadScope } from './projects/archive.js'
 import { scheduleContext } from './schedules/context.js'
 import { mediaCapabilities } from './transcriptions/context.js'
 import { ConnectionOperations, connectionDefinitions, connectionReadOperations } from './connectors/operations.js'
@@ -45,7 +46,14 @@ const definitions = {
 } satisfies Record<string, [string, z.ZodType]>
 
 // MCP requires an object at the root, including for discriminated unions (which Zod emits as oneOf).
-export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => ({ name, description, inputSchema: { ...z.toJSONSchema(schema), type: 'object' } as Record<string, unknown> }))
+const scopedReads = new Set<string>([...projectReadOperations, ...sharingReadOperations, ...transcriptionReadOperations, ...projectAutomationReadOperations, ...scheduleReadOperations])
+export const memoryTools = Object.entries(definitions).map(([name, [description, schema]]) => {
+  const inputSchema = { ...z.toJSONSchema(schema), type: 'object' } as Record<string, any>
+  if (scopedReads.has(name)) inputSchema.properties = { ...inputSchema.properties,
+    project_state: { type: 'string', enum: ['active','archived'], description: 'Choose archived only for an explicit archive lookup.' },
+    archive_project_id: { type: 'string', format: 'uuid', description: 'Project returned by an archived projects search, for reads of its contents.' } }
+  return { name, description, inputSchema }
+})
 export const READ_OPERATIONS = new Set<string>([
   ...projectReadOperations, ...connectionReadOperations, ...transcriptionReadOperations, ...sharingReadOperations,
   ...systemReadOperations, ...referenceReadOperations, ...quotaReadOperations, ...consumptionReadOperations,
@@ -131,7 +139,7 @@ export class MemoryOperations {
         if (projects.length === 1) project = projects[0]!.to_id
       }
     }
-    if (!project || !(await this.store.db.query('SELECT id FROM shared_projects WHERE id=$1', [project])).length) return null
+    if (!project || await isArchived(this.store.db, project) || !(await this.store.db.query('SELECT id FROM shared_projects WHERE id=$1', [project])).length) return null
     try { return await this.sharing.notice(project, agent) } catch { return null }
   }
   /** `agent` identifies the calling agent session (from the gateway); it attributes notes and keeps the session alive for the notes board. */
@@ -140,6 +148,12 @@ export class MemoryOperations {
     if (operation === 'save_task' && (raw as { jira?: unknown } | null)?.jira) required.push('connections')
     const disabled = required.find(id => !this.moduleEnabled(id))
     if (disabled) throw new MemoryError(409, 'El módulo «' + moduleDefinition(disabled).label + '» está desactivado en Ajustes', false, 'module_disabled')
+    if (scopedReads.has(operation))
+      return projectReadScope(this.store.db, operation, raw, actor !== 'mcp', input => this.dispatch(operation, input, actor, agent, signal))
+    return this.dispatch(operation, raw, actor, agent, signal)
+  }
+
+  private async dispatch(operation: string, raw: unknown, actor: string, agent?: AgentContext, signal?: AbortSignal): Promise<any> {
     // Cleanup remains allowed and deletion keeps its original lifecycle lock ordering.
     if (!READ_OPERATIONS.has(operation) && !["delete_entity", "unlink_entities"].includes(operation)) await assertWritableEntityTargets(this.store.db, raw)
     if (isCollaborationTool(operation) || (operation === 'skill_reference' && (raw as { section?: unknown } | null)?.section !== 'memory-tools'))

@@ -470,6 +470,9 @@ export async function runQuitFlow(deps: QuitFlowDeps): Promise<"proceed" | "canc
       deps.activeUpdate.cancel("superseded_by_quit")
       if (await Promise.race([deps.activeUpdate.done, system]) === "system") return await cancelForSignal(deps.activeUpdate)
     }
+    // A system shutdown or local installer can signal us before a user quit exists.
+    // Starting a new stop here can leave a drain behind when the process is replaced.
+    if (deps.forced()) return "proceed"
     const run = deps.startQuit()
     deps.onRun?.(run)
     const result = await Promise.race([run.done, system])

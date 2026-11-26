@@ -1,3 +1,4 @@
+import { containsHiddenFragments, visibleEntity, visibleFragment, visibleProject } from './archive.js'
 import { fullTextMatches } from '../full-text.js'
 import { z } from 'zod'
 import { id, instant, kindSchema, MemoryError, parse } from '../contracts.js'
@@ -11,24 +12,26 @@ export const globalSearchInput = z.object({ query: z.string().trim().max(2000).d
 
 // One document per entity plus its source fragments. Filters ($1 kind, $2 project, $3 from) are applied inside
 // each branch, before ranking in both retrieval paths. `fts_rid` maps the row to entities_fts or fragments_fts.
-const corpus = `WITH corpus AS (
+const visibleCorpus = () => `WITH corpus AS (
   SELECT 'entity:'||e.id AS key,e.id AS entity_id,NULL AS fragment_id,NULL AS version_id,e.title,e.kind,
     memory_entity_text(e.title,e.data) AS content,e.rid AS fts_rid,e.data,e.updated_at,NULL AS speaker_name
-  FROM entities e WHERE e.data->>'merged_into' IS NULL AND e.data->>'review_state' IS NOT 'rejected'
+  FROM entities e WHERE ${visibleEntity("e.id")} AND e.data->>'merged_into' IS NULL AND e.data->>'review_state' IS NOT 'rejected'
     AND NOT EXISTS(SELECT 1 FROM sources s WHERE s.entity_id=e.id AND s.status<>'active')
+    AND NOT EXISTS(SELECT 1 FROM sources s WHERE s.entity_id=e.id AND ${containsHiddenFragments("s.current_version_id")})
     AND ($1 IS NULL OR e.kind=$1) AND ($3 IS NULL OR e.updated_at>=ts($3))
     AND ($2 IS NULL OR (e.kind='project' AND e.id=$2) OR EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project' AND l.to_id=$2))
   UNION ALL
   SELECT 'fragment:'||f.id,e.id,f.id,f.version_id,e.title,e.kind,f.text,f.rid,e.data,e.updated_at,p.title
   FROM fragments f JOIN sources s ON s.current_version_id=f.version_id AND s.status='active'
     JOIN entities e ON e.id=s.entity_id LEFT JOIN entities p ON p.id=f.speaker_id
-  WHERE ($1 IS NULL OR e.kind=$1) AND ($3 IS NULL OR e.updated_at>=ts($3))
+  WHERE ${visibleEntity("e.id")} AND ${visibleFragment("f.id")} AND ($1 IS NULL OR e.kind=$1) AND ($3 IS NULL OR e.updated_at>=ts($3))
     AND ($2 IS NULL OR EXISTS(SELECT 1 FROM fragment_projects fp WHERE fp.fragment_id=f.id AND fp.project_id=$2))
 )`
 
 export async function globalSearch(db: MemoryDatabase, ai: MemoryAI, raw: unknown, signal?: AbortSignal) {
   const input = parse(globalSearchInput, raw)
   if (input.project_id) await requireEntity(db, input.project_id, 'project')
+  const corpus = visibleCorpus()
   const params = [input.kind ?? null, input.project_id ?? null, input.from ?? null]
   let status = 'not_requested', coverage: Record<string, any> | null | undefined = null
   const scores = new Map<string, number>()
@@ -81,7 +84,7 @@ export async function globalSearch(db: MemoryDatabase, ai: MemoryAI, raw: unknow
   const rows = ranked.length ? await db.query(`${corpus} SELECT key,entity_id,fragment_id,version_id,title,kind,substr(CASE WHEN fragment_id IS NULL THEN COALESCE(NULLIF(data->>'text',''),NULLIF(data->>'description',''),data->>'email','') ELSE content END,1,1200) AS preview,
     data->>'category' AS category,data->>'review_state' AS review_state,
     CASE WHEN (data->>'stale') IN (1,'true') THEN 'true' WHEN (data->>'stale') IN (0,'false') THEN 'false' END AS stale,updated_at,speaker_name,
-    (SELECT COALESCE(json_group_array(json_object('id',p.id,'title',p.title) ORDER BY p.title),'[]') FROM entities p WHERE p.id IN (
+    (SELECT COALESCE(json_group_array(json_object('id',p.id,'title',p.title) ORDER BY p.title),'[]') FROM entities p WHERE ${visibleProject("p.id")} AND p.id IN (
       SELECT fp.project_id FROM fragment_projects fp WHERE c.fragment_id IS NOT NULL AND fp.fragment_id=c.fragment_id
       UNION SELECT l.to_id FROM links l WHERE c.fragment_id IS NULL AND l.from_id=c.entity_id AND l.type='project'
       UNION SELECT c.entity_id WHERE c.fragment_id IS NULL AND c.kind='project')) AS "projects:json"

@@ -1,3 +1,4 @@
+import assistants from "./assistants"
 import common from "./common"
 import nav from "./nav"
 import home from "./home"
@@ -16,6 +17,7 @@ import status from "./status"
 
 /** Diccionario completo del idioma, un objeto por namespace. */
 const resources = {
+  assistants,
   common,
   nav,
   home,

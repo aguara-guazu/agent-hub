@@ -1,3 +1,4 @@
+import { visibleProject } from '../projects/archive.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type { MemoryDatabase } from '../database.js'
 import { MemoryError } from '../contracts.js'
@@ -47,7 +48,7 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   }
   async schedule(id: string): Promise<ScheduleRow | undefined> { return (await this.db.query<ScheduleRow>('SELECT * FROM schedules WHERE id=$1', [id]))[0] }
   async listSchedules(filter: { project_id?: string | undefined; state?: ScheduleState | undefined; created_by_agent?: string | undefined; limit: number; offset: number }) {
-    const where = ['($1 IS NULL OR project_id=$1)', '($2 IS NULL OR state=$2)', '($3 IS NULL OR created_by_agent=$3)']
+    const where = [visibleProject('schedules.project_id'), '($1 IS NULL OR project_id=$1)', '($2 IS NULL OR state=$2)', '($3 IS NULL OR created_by_agent=$3)']
     const params = [filter.project_id ?? null, filter.state ?? null, filter.created_by_agent ?? null]
     const count = (await this.db.query<{ count: number }>(`SELECT count(*) AS count FROM schedules WHERE ${where.join(' AND ')}`, params))[0]!.count
     const items = await this.db.query<ScheduleRow>(`SELECT * FROM schedules WHERE ${where.join(' AND ')} ORDER BY (state='active') DESC,next_run_at IS NULL,next_run_at,created_at DESC LIMIT $4 OFFSET $5`,
@@ -79,7 +80,7 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   async dailySchedules() { return this.db.query<ScheduleRow>("SELECT * FROM schedules WHERE state='active' AND json_extract(recurrence,'$.type')='daily'") }
   /** Projects with a live project_status schedule, for owner-level templates. */
   async statusProjects(): Promise<string[]> {
-    return (await this.db.query<{ project_id: string }>("SELECT DISTINCT project_id FROM schedules WHERE template='project_status' AND state IN ('active','paused') AND project_id IS NOT NULL")).map(row => row.project_id)
+    return (await this.db.query<{ project_id: string }>("SELECT DISTINCT project_id FROM schedules WHERE template='project_status' AND state IN ('active','paused') AND project_id IS NOT NULL AND project_id NOT IN (SELECT project_id FROM archived_projects)")).map(row => row.project_id)
   }
 
   // --- human constraints -------------------------------------------------------------------------------------------------------------------------
@@ -124,7 +125,9 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   async maxSeq(): Promise<number> { return Number((await this.db.query<{ seq: number | null }>('SELECT max(seq) AS seq FROM schedule_events'))[0]?.seq ?? 0) }
   async eventsAfter(after: number, limit = 200) {
     return this.db.query<Row>(`SELECT e.seq,e.type,e.actor_kind,e.schedule_id,e.run_id,e.payload,e.created_at,s.title,s.project_id,a.kind AS artifact_kind
-      FROM schedule_events e LEFT JOIN schedules s ON s.id=e.schedule_id LEFT JOIN schedule_artifacts a ON a.run_id=e.run_id WHERE e.seq>$1 ORDER BY e.seq LIMIT $2`, [after, limit])
+      FROM schedule_events e LEFT JOIN schedules s ON s.id=e.schedule_id LEFT JOIN schedule_artifacts a ON a.run_id=e.run_id WHERE e.seq>$1 AND (s.project_id IS NULL OR NOT EXISTS(
+        SELECT 1 FROM project_archive_state a WHERE a.project_id=s.project_id AND (a.archived_at IS NOT NULL OR a.resumed_at>=e.created_at)))
+      ORDER BY e.seq LIMIT $2`, [after, limit])
   }
 
   // --- runs --------------------------------------------------------------------------------------------------------------------------------------
@@ -191,8 +194,8 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
     return (await this.db.query(`UPDATE schedule_runs SET state='skipped',phase='done',skip_reason=$2,finished_at=$3,updated_at=$3,next_attempt_at=NULL,generation=generation+1
       WHERE schedule_id=$1 AND state IN ('pending','deferred','interrupted') RETURNING id`, [scheduleId, skipReason, now])).length
   }
-  async listRuns(filter: { schedule_id?: string | undefined; project_id?: string | undefined; state?: RunState | undefined; unread?: boolean | undefined; kind?: string | undefined; limit: number; offset: number }) {
-    const where = '($1 IS NULL OR r.schedule_id=$1) AND ($2 IS NULL OR s.project_id=$2) AND ($3 IS NULL OR r.state=$3) AND ($4 IS NULL OR ($4=1 AND a.id IS NOT NULL AND a.read_at IS NULL) OR ($4=0 AND a.read_at IS NOT NULL)) AND ($5 IS NULL OR a.kind=$5)'
+  async listRuns(filter: { visibleProjectsOnly?: boolean; schedule_id?: string | undefined; project_id?: string | undefined; state?: RunState | undefined; unread?: boolean | undefined; kind?: string | undefined; limit: number; offset: number }) {
+    const where = '($1 IS NULL OR r.schedule_id=$1) AND ($2 IS NULL OR s.project_id=$2) AND ($3 IS NULL OR r.state=$3) AND ($4 IS NULL OR ($4=1 AND a.id IS NOT NULL AND a.read_at IS NULL) OR ($4=0 AND a.read_at IS NOT NULL)) AND ($5 IS NULL OR a.kind=$5)' + (filter.visibleProjectsOnly ? ' AND ' + visibleProject('s.project_id') : '')
     const params = [filter.schedule_id ?? null, filter.project_id ?? null, filter.state ?? null, filter.unread === undefined ? null : filter.unread ? 1 : 0, filter.kind ?? null]
     const count = (await this.db.query<{ count: number }>(`SELECT count(*) AS count FROM schedule_runs r JOIN schedules s ON s.id=r.schedule_id LEFT JOIN schedule_artifacts a ON a.run_id=r.id WHERE ${where}`, params))[0]!.count
     const items = await this.db.query<Row>(`SELECT r.id,r.schedule_id,r.scheduled_for,r.trigger,r.state,r.phase,r.skip_reason,r.deferred_reason,r.next_attempt_at,r.error_code,r.continuity,r.started_at,r.finished_at,
@@ -375,7 +378,7 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   async incidents(filter: { run_id?: string; schedule_id?: string; project_id?: string; sinceDays?: number }) {
     const since = new Date(Date.now() - (filter.sinceDays ?? 7) * 86_400_000).toISOString()
     return this.db.query<Row>(`SELECT subject_kind,subject_id,generation,schedule_id,run_id,team_id,member_id,project_id,cause,action,observed_at FROM process_incidents
-      WHERE observed_at>=$4 AND ($1 IS NULL OR run_id=$1) AND ($2 IS NULL OR schedule_id=$2) AND ($3 IS NULL OR project_id=$3) ORDER BY observed_at DESC LIMIT 50`,
+      WHERE ${visibleProject('process_incidents.project_id')} AND observed_at>=$4 AND ($1 IS NULL OR run_id=$1) AND ($2 IS NULL OR schedule_id=$2) AND ($3 IS NULL OR project_id=$3) ORDER BY observed_at DESC LIMIT 50`,
     [filter.run_id ?? null, filter.schedule_id ?? null, filter.project_id ?? null, since])
   }
 
@@ -385,7 +388,7 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   }
   async uncertainDeliveries(projectId?: string) {
     return this.db.query<Row>(`SELECT d.id,d.run_id,d.target,d.updated_at,s.project_id FROM schedule_deliveries d JOIN schedule_runs r ON r.id=d.run_id JOIN schedules s ON s.id=r.schedule_id
-      WHERE d.state='uncertain' AND ($1 IS NULL OR s.project_id=$1) ORDER BY d.updated_at DESC`, [projectId ?? null])
+      WHERE d.state='uncertain' AND ${visibleProject('s.project_id')} AND ($1 IS NULL OR s.project_id=$1) ORDER BY d.updated_at DESC`, [projectId ?? null])
   }
   /** End-of-day closes lost beyond their grace in the last days; the next brief reports them. */
   async overdueCloses(sinceDays = 3) {
@@ -394,7 +397,7 @@ export class ScheduleStore implements PublicStateSink, ArtifactAuthorityReader {
   }
   async unreadDeliveries(projectId?: string) {
     return this.db.query<Row>(`SELECT r.id AS run_id,a.id AS artifact_id,a.kind,a.title,r.scheduled_for FROM schedule_deliveries d JOIN schedule_runs r ON r.id=d.run_id JOIN schedule_artifacts a ON a.run_id=r.id
-      JOIN schedules s ON s.id=r.schedule_id WHERE d.target='hub_inbox' AND d.state='sent' AND d.read_at IS NULL AND ($1 IS NULL OR s.project_id=$1 OR s.project_id IS NULL) ORDER BY r.scheduled_for DESC LIMIT 20`, [projectId ?? null])
+      JOIN schedules s ON s.id=r.schedule_id WHERE (s.project_id IS NULL OR s.project_id NOT IN (SELECT project_id FROM archived_projects)) AND d.target='hub_inbox' AND d.state='sent' AND d.read_at IS NULL AND ($1 IS NULL OR s.project_id=$1 OR s.project_id IS NULL) ORDER BY r.scheduled_for DESC LIMIT 20`, [projectId ?? null])
   }
   /** Last run whose app delivery was sent: the lower bound of what the next owner-level brief must cover. */
   async lastDeliveredRun(scheduleId: string) {

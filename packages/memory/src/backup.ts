@@ -18,10 +18,11 @@ const laterTables = ['tasks', 'task_evidence', 'task_events', 'agent_sessions', 
   'schedules', 'schedule_constraints', 'schedule_runs', 'schedule_run_attempts', 'schedule_run_phases', 'schedule_deliveries', 'schedule_artifacts', 'schedule_item_states', 'schedule_events', 'process_incidents',
   "decision_exclusions", "liveness_incidents", "progress_checkpoints", "project_automation", "project_delegations", "project_repositories", "push_candidates", "project_status_snapshots", "hour_estimates", "interhub_thread_staging",
   "hub_stops", "hub_stop_targets", "hub_stop_member_receipts", "hub_stop_events",
-  "usage_session_links", "usage_consumption_hourly", "usage_consumption_hourly_origin"] as const
+  "usage_session_links", "usage_consumption_hourly", "usage_consumption_hourly_origin",
+  'assistant_profiles','assistant_cases','assistant_work','assistant_messages','assistant_usage','assistant_portfolio_policy','assistant_overview_messages','project_archive_state','assistant_notice_days','assistant_notice_batches'] as const
 const tables = [...requiredTables, ...laterTables] as const
-/** Data-model version of agenthub-memory-v1; backups from 1–26 restore. Version 26 adds the consumption tables. */
-const BACKUP_SCHEMA_VERSION = 26
+/** Data-model version of agenthub-memory-v1; backups from 1–30 restore. Version 30 adds notification receipts and daily limits. */
+const BACKUP_SCHEMA_VERSION = 30
 const backupSchema = z.object({ format: z.literal('agenthub-memory-v1'), schema_version: z.number().int(), exported_at: z.string(),
   tables: z.record(z.string(), z.array(z.record(z.string(), z.json()))), originals: z.record(z.string(), z.string()) }).strict()
 
@@ -90,8 +91,12 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
     await sql.query('PRAGMA defer_foreign_keys=ON')
     for (const table of tables) {
       const columns = await sql.query<{ name: string; type: string }>(`SELECT name,type FROM pragma_table_info('${table}') WHERE name<>'rid'`)
-      const rows = (backup.tables[table] ?? []).map(row => {
+      const rows = (backup.tables[table] ?? []).map((row): Record<string,unknown> => {
         const value = table === 'chat_channels' && backup.schema_version < 7 ? {...row,scope_key:`git:${row.path}`,orca_workspace_id:null} : row
+        if (table === 'assistant_notice_batches') return {...value,consumer:null,lease_until:null}
+        if (table === 'assistant_profiles') return {...value,config:{...value.config as Record<string,unknown>,active:false},version:Number(value.version)+1}
+        if (table === 'assistant_cases' && ['open','sending','uncertain'].includes(String(value.state))) return {...value,state:value.send_id?'uncertain':'closed',draft:null,revision:Number(value.revision)+1}
+        if (table === 'assistant_work' && ['running','queued','blocked','paused'].includes(String(value.state))) return {...value,state:'cancelled',lease_pid:null}
         // Restored sessions cannot authenticate as the former virtual leader. Preserve history and release the folder for explicit recreation.
         if (table === 'usage_quota_notices') return {...value,read_at:backup.exported_at,notified_at:backup.exported_at}
         if (table === 'usage_quota_pools') return {...value,active:false}
@@ -129,6 +134,11 @@ async function restoreOriginals(store: MemoryStore, raw: unknown) {
         WHERE m.thread_id=chat_threads.id AND (s.agent_id<>'agenthub-system' OR s.cli_kind<>'hub'))`)
     await sql.query('UPDATE chat_status_notices SET cancelled_at=COALESCE(cancelled_at,$1),error=\'Aviso histórico restaurado\'', [backup.exported_at])
     await sql.query("UPDATE chat_sessions SET label='Sin nick todavía' WHERE nickname IS NULL AND cli_kind<>'hub'")
+    if (backup.schema_version < 29) {
+      await sql.query(`INSERT OR IGNORE INTO project_archive_state SELECT id,updated_at,NULL,1 FROM entities
+        WHERE kind='project' AND data->>'memory_state'='archived' AND data->>'merged_into' IS NULL`)
+      await sql.query("UPDATE entities SET data=json_remove(data,'$.memory_state') WHERE id IN (SELECT project_id FROM project_archive_state)")
+    }
     // A copy proves no ownership of processes, grants or decision requests on this host: schedules wait for a human, no occurrence is caught up,
     // imported PIDs are never signalled, and items without verifiable authority stay blocked.
     await sql.query("UPDATE schedules SET state='paused',paused_by='system',next_run_at=NULL WHERE state='active'")

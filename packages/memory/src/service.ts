@@ -37,6 +37,7 @@ import './daily-templates.js'
 import { createFleetRecovery } from './agents/fleet-recovery.js'
 import { HubStopCoordinator } from "./hub-stop.js"
 import { exportMemory } from "./backup.js"
+import { refreshProjectTasks } from "./projects/tasks.js"
 import { backfillLinks } from "./agents/usage-consumption/links.js"
 
 const REPLY_TICK_MS = 60_000
@@ -123,6 +124,11 @@ export class MemoryService {
     this.vault = new Vault(directory)
     this.cliExtraction = new CliExtractionRuntime(directory, { kiroApiKey: () => this.vault.read<{ api_key: string }>('kiro')?.api_key })
     this.google = new GoogleAuth(this.vault, redirectUrl, fetcher)
+  }
+  /** Refreshes one project's Jira mirror with the same connector or MCP reader as sync_tasks. */
+  async refreshJiraTasks(projectId: string, sinceMinutes?: number) {
+    const { store } = await this.get()
+    return refreshProjectTasks(store, this.vault, projectId, 'assistant', { fetcher: this.fetcher, jiraMcp: this.jiraMcp, sinceMinutes })
   }
   async get() {
     if (this.current) return this.current

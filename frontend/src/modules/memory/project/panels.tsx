@@ -213,7 +213,7 @@ export function LinkPanel({ project, links, onClose }: { project: MemoryEntity; 
                 <div className="row" key={item.id}>
                   <Avatar name={item.entity.title} small round={item.entity.kind === "person"} />
                   <div className="row-main">
-                    <Link className="row-title" to={entityPath(item.entity)} title={item.entity.title}>{item.entity.title}</Link>
+                    <Link className="row-title" to={entityPath(item.entity, project.id)} title={item.entity.title}>{item.entity.title}</Link>
                     <span className="row-sub">{relationLabel(item.type)}</span>
                   </div>
                   <IconButton icon="close" small variant="ghost" label={t("header.linking.remove", { name: item.entity.title })} disabled={unlink.isPending} onClick={() => remove(item)} />

@@ -25,6 +25,7 @@ const settings = {
     skills: "Administrar skills",
   },
   moduleHints: {
+    assistants: "Secretaría, seguimiento de proyectos y desarrollo en segundo plano.",
     connections: "Cuentas, fuentes externas y sincronización con servicios.",
     agents: "Clientes, equipos, colaboración local y cuotas.",
     memory: "Proyectos, documentos, búsqueda y procesamiento de conocimiento.",
@@ -35,6 +36,7 @@ const settings = {
     sharing: "Red entre hubs y sincronización de proyectos compartidos.",
   },
   sections: {
+    assistants: "Asistentes",
     connections: "Conexiones a servicios",
     agents: "Agentes",
     memory: "Proyectos y memoria",

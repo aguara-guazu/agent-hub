@@ -118,7 +118,7 @@ async function syncCalendar(connector: Connector, ctx: ConnectorContext, headers
           ...(event.htmlLink ? { url: event.htmlLink } : {}), ...(event.start?.dateTime ? { occurred_at: event.start.dateTime } : {}),
           text: [event.summary, event.description, ...(event.attendees ?? []).map((a: any) => `${a.displayName ?? ''} ${a.email ?? ''} (${a.responseStatus ?? 'needsAction'})`)].filter(Boolean).join('\n'),
           metadata: { event_id: event.id, calendar, status: event.status, scheduled_start: event.start ?? null, scheduled_end: event.end ?? null,
-            organizer: event.organizer ?? null, attendees: event.attendees ?? [], recurrence_id: event.recurringEventId ?? null,
+            transparency: event.transparency ?? 'opaque', eventType: event.eventType ?? 'default', organizer: event.organizer ?? null, attendees: event.attendees ?? [], recurrence_id: event.recurringEventId ?? null,
             original_start: event.originalStartTime ?? null, meet_url: event.hangoutLink ?? null, conference_data: event.conferenceData ?? null, attachments: event.attachments ?? [] }, original: event }, 'connector:google')
         // Explicit document attachments provide a path to historical transcripts, even after Meet entries expire.
         for (const attachment of event.attachments ?? []) if (attachment.fileId && attachment.mimeType === 'application/vnd.google-apps.document') {

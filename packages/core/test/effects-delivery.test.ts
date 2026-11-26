@@ -11,10 +11,10 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 const text = (value: unknown): CallResult => ({ is_error: false, content: [{ type: 'text', text: JSON.stringify(value) }] })
 
 let store: DecisionStore, exclusions: Exclusion[], artifact: DeliveryArtifact | null, granted: boolean, connector: string | null, pending: { account: string | null } | null
-let gmailCalls: Array<{ url: string; method?: string | undefined }>, slackCalls: Array<{ name: string; args: Record<string, unknown> }>, slackServers: Map<string, Set<string>>
+let gmailCalls: Array<{ url: string; method?: string | undefined; body?: string | undefined }>, slackCalls: Array<{ name: string; args: Record<string, unknown> }>, slackServers: Map<string, Set<string>>
 
 const fetcher = (async (url: string, init?: RequestInit) => {
-  gmailCalls.push({ url: String(url), method: init?.method })
+  gmailCalls.push({ url: String(url), method: init?.method,body:typeof init?.body==='string'?init.body:undefined })
   return String(url).endsWith('/profile') ? json({ emailAddress: ACCOUNT }) : json({ id: 'gm-1', threadId: 'th-1' })
 }) as unknown as typeof fetch
 const sender = () => new GmailSelfSender({ granted: () => granted, token: async () => 't' } as never, fetcher)
@@ -25,9 +25,9 @@ const tools: EffectToolResolver = {
     return name === 'slack_read_user_profile' ? text({ user_id: USER, team_id: 'T1' }) : text({ ts: '1760000000.000100', channel: DM })
   } }),
 }
-const adapters = () => {
+const adapters = (briefEmailReminders?:()=>Promise<string>) => {
   const sink = { async add(entries: Exclusion[]) { exclusions.push(...entries) } }
-  return createDeliveryAdapters({ store, exclusions: sink, artifacts: { load: async () => artifact }, slack: new SlackSelfDelivery({ store, tools, exclusions: sink }),
+  return createDeliveryAdapters({ ...(briefEmailReminders ? {briefEmailReminders} : {}), store, exclusions: sink, artifacts: { load: async () => artifact }, slack: new SlackSelfDelivery({ store, tools, exclusions: sink }),
     gmail: { sender: sender(), connectorId: async () => connector, sendPending: async () => pending } })
 }
 const sends = () => gmailCalls.filter(call => call.method === 'POST')
@@ -41,6 +41,21 @@ beforeEach(() => {
 })
 
 describe('entregas por canal propio', () => {
+  it('añade los asuntos silenciados exclusivamente al correo del brief del dueño', async () => {
+    let reads=0
+    const delivery=adapters(async()=>{reads++;return 'Jira ATL-7 sigue bloqueada'})
+    artifact!.kind='brief'
+    expect((await delivery.executeDelivery(input('slack_self'))).state).toBe('sent')
+    expect(reads).toBe(0)
+    expect(JSON.stringify(slackCalls)).not.toContain('ATL-7')
+    expect((await delivery.executeDelivery(input('gmail_self'))).state).toBe('sent')
+    expect(reads).toBe(1)
+    const mime=Buffer.from(JSON.parse(sends()[0]!.body!).raw,'base64url').toString()
+    expect(mime).toContain(Buffer.from('Resumen\r\n\r\nJira ATL-7 sigue bloqueada').toString('base64'))
+    artifact!.kind='close'
+    await delivery.executeDelivery(input('gmail_self'))
+    expect(reads).toBe(1)
+  })
   it('available refleja conexión, scope, identidad y herramientas', async () => {
     expect(await adapters().available()).toEqual({ gmail_self: { available: true, destination: ACCOUNT }, slack_self: { available: true } })
     granted = false; slackServers = new Map()

@@ -49,14 +49,14 @@ export type ProjectWithSummary = MemoryEntity & { summary?: EntitySummary }
 
 /** Todos los proyectos (hasta 2000) con su resumen (empresa, contenido por tipo, personas) calculado en lote por página.
  *  El filtrado, los contadores y el orden se hacen en el cliente. */
-export function useAllProjects() {
+export function useAllProjects(state: "active" | "archived" = "active") {
   return useQuery({
-    queryKey: ["memory", "projects-all"],
+    queryKey: ["memory", "projects-all", state],
     queryFn: async () => {
       const items: ProjectWithSummary[] = []
       let total = 0
       do {
-        const page = await memoryCall<Page<ProjectWithSummary>>("list_entities", { kind: "project", include: ["summary"], limit: PROJECT_PAGE, offset: items.length })
+        const page = await memoryCall<Page<ProjectWithSummary>>("list_entities", { kind: "project", project_state: state, include: ["summary"], limit: PROJECT_PAGE, offset: items.length })
         items.push(...page.items)
         total = page.total
         if (page.items.length === 0) break

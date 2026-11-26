@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
 import { useToast } from '../components/Toast'
 
-export interface MemoryEntity { id: string; kind: string; title: string; data: Record<string, any>; created_at: string; updated_at: string }
+export interface MemoryEntity { archived_at?: string | null; archive_version?: number; id: string; kind: string; title: string; data: Record<string, any>; created_at: string; updated_at: string }
 export interface Page<T = any> { items: T[]; total: number; limit: number; offset: number }
 export const memoryCall = <T = any,>(operation: string, input: unknown = {}) => api.post<T>('/memory/call', { operation, input })
 export const MEMORY_REFRESH_MS = 5000
@@ -25,4 +25,7 @@ export function useMemoryStatus() {
   return useQuery({ queryKey: ['memory-status'], queryFn: () => api.get<any>('/memory/status'),
     refetchInterval: query => query.state.data?.state === 'migrating' ? 2_000 : 10_000 })
 }
-export function entityPath(entity: { id: string; kind: string }) { return entity.kind === 'project' ? `/projects/${entity.id}` : `/memory/entities/${entity.id}` }
+export function entityPath(entity: { id: string; kind: string }, project?: string) {
+  if (entity.kind === 'project') return `/projects/${entity.id}`
+  return `/memory/entities/${entity.id}${project ? '?archive_project_id=' + encodeURIComponent(project) : ''}`
+}

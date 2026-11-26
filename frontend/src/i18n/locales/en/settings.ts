@@ -27,6 +27,7 @@ const settings = {
     skills: "Manage skills",
   },
   moduleHints: {
+    assistants: "Background assistance, project tracking and development.",
     connections: "Accounts, external sources and service synchronization.",
     agents: "Clients, teams, local collaboration and quotas.",
     memory: "Projects, documents, search and knowledge processing.",
@@ -37,6 +38,7 @@ const settings = {
     sharing: "Hub networking and shared project synchronization.",
   },
   sections: {
+    assistants: "Assistants",
     connections: "Service connections",
     agents: "Agents",
     memory: "Projects and memory",

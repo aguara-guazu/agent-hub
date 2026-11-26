@@ -7,6 +7,7 @@ La unidad de trabajo es una función del producto. Un módulo puede aportar una 
 | Módulo | Identificador | Implementación principal |
 | --- | --- | --- |
 | Conexiones a servicios | `connections` | `packages/memory/src/connectors`, incluidas las rutas, las herramientas y los trabajos de sincronización |
+| [Asistentes residentes](asistentes.md) | `assistants` | `packages/memory/src/assistants` para el reloj, fuentes, chat y microtareas, cliente headless en `packages/core/src/modules/assistants` y avisos en `desktop/src/modules/assistants` |
 | Agentes | `agents` | `packages/core/src/modules/agents` y `packages/memory/src/agents`, clientes del daemon, equipos, chat y cuotas de uso |
 | Proyectos y memoria | `memory` | `packages/memory/src/projects`, incluidas las rutas, las herramientas, la búsqueda y los trabajos de inferencia |
 | Servidores MCP | `mcp` | `packages/core/src/modules/mcp` para el catálogo, `packages/memory/src/mcp` para el servidor integrado y `packages/gateway` para el transporte |

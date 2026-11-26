@@ -326,7 +326,7 @@ export class ScheduleAdmin {
   }
   /** The page of runs with each run's deliveries and decision summary, read in batches. */
   async runList(filter: Parameters<ScheduleStore['listRuns']>[0]) {
-    const page = await this.store.listRuns(filter), ids = page.items.map(row => String(row.id))
+    const page = await this.store.listRuns({ ...filter, visibleProjectsOnly: true }), ids = page.items.map(row => String(row.id))
     const [deliveries, decisions] = await Promise.all([this.store.deliveriesForRuns(ids), this.store.decisionSummaries(ids)])
     return { total: page.total, items: page.items.map(row => ({ ...row, deliveries: deliveries.get(String(row.id)) ?? [], decision: decisions.get(String(row.id)) })) }
   }

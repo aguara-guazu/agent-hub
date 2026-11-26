@@ -1,3 +1,4 @@
+import { assistants } from './assistants.js'
 import { connections } from './connections.js'
 import { agents } from './agents.js'
 import { memory } from './memory.js'
@@ -8,7 +9,7 @@ import { schedules } from './schedules.js'
 import { sharing } from './sharing.js'
 import type { ModuleDefinition } from './definition.js'
 
-export const appModules = [connections, agents, memory, mcp, skills, transcriptions, schedules, sharing] as const
+export const appModules = [connections, agents, memory, mcp, skills, transcriptions, schedules, sharing, assistants] as const
 export type ModuleId = (typeof appModules)[number]['id']
 export type ModuleEnabled = (id: ModuleId) => boolean
 export type ModuleStates = Record<ModuleId, boolean>

@@ -1,3 +1,4 @@
+import { aggregateRun, archivedOccurrence, archiveRevision, scopedRevision } from './project-archive.js'
 import { EventEmitter } from 'node:events'
 import { execFile } from 'node:child_process'
 import { realpath } from 'node:fs/promises'
@@ -310,13 +311,14 @@ export class ScheduleRuntime {
     if (blocked) return this.finish(run, 'skipped', { skip_reason: 'module_disabled:' + blocked })
     const template = scheduleTemplate(run.definition.template)
     if (!template) return this.finish(run, 'failed', { error_code: 'collect_failed' })
+    if (await archivedOccurrence(this.o.db, run)) return this.finish(run, 'skipped', { skip_reason: 'project_archived' })
     if (meta.wasInterrupted && this.pastGrace(run)) return this.finish(run, 'skipped', { skip_reason: 'misfire_out_of_grace' })
     await this.store.addEvent({ type: 'run.started', schedule_id: run.schedule_id, run_id: run.id, actor_kind: 'system', payload: { generation } })
     try {
       if (!await this.store.pendingEffects(run.id) && await this.produce(run, template, controller, meta) === 'stop') return
       this.checkModules(run)
-      if (await this.decide(run) === 'blocked') return
-      await this.deliver(run)
+      if (await this.refreshAggregate(run, controller) === 'blocked' || await this.decide(run) === 'blocked') return
+      await this.deliver(run, controller)
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('module_disabled:')) return this.finish(run, 'skipped', { skip_reason: error.message })
       const reason = controller.signal.aborted ? String((controller.signal.reason as Error | undefined)?.message ?? '') : ''
@@ -353,6 +355,7 @@ export class ScheduleRuntime {
   private async produce(run: RunRow, template: ScheduleTemplateDefinition<any>, controller: AbortController, meta: RunMeta): Promise<'persisted' | 'stop'> {
     const generation = run.generation, ctx = this.context(run, controller, meta.deferredUntil)
     await this.store.recordPhase({ run_id: run.id, phase: 'collect', generation, state: 'started' })
+    const archiveStamp = aggregateRun(run) ? await archiveRevision(this.o.db) : ''
     let pkg: RunPackage
     try { pkg = await template.collect(ctx, { store: this.o.memory, now: () => new Date(this.now()), statusProjects: () => this.store.statusProjects(), ...this.o.deps?.() } as CollectDeps) }
     catch (error) { await this.store.recordPhase({ run_id: run.id, phase: 'collect', generation, state: 'failed', receipt: { error_code: 'collect_failed' } }); throw Object.assign(error as object, { phase: 'collect', recorded: true }) }
@@ -374,7 +377,7 @@ export class ScheduleRuntime {
     }
     const draft = template.render(ctx, pkg, synthesis, { ...(model ? { model } : {}) })
     this.checkModules(run)
-    await this.persist(run, pkg, draft, { ...receipt, generation })
+    await this.persist(run, pkg, draft, { ...receipt, generation }, archiveStamp)
     return 'persisted'
   }
 
@@ -445,13 +448,14 @@ export class ScheduleRuntime {
 
   // --- persist, decision and delivery ------------------------------------------------------------------------------------------------------
   /** Artifact, snapshots, writers and the synthesize receipt commit together; the artifact then exists whatever happens next. */
-  private async persist(run: RunRow, pkg: RunPackage, draft: ArtifactDraft, receipt: Record<string, unknown>) {
+  private async persist(run: RunRow, pkg: RunPackage, draft: ArtifactDraft, receipt: Record<string, unknown>, archiveStamp: string) {
     const generation = run.generation, artifactId = randomUUID()
     await this.o.db.transaction(async sql => {
       const refs = [...draft.snapshot_refs]
       for (const snapshot of draft.snapshots ?? []) refs.push({ project_id: snapshot.project_id, version: await snapshot.write(sql) })
       for (const writer of draft.writers ?? []) await writer.write(sql)
       await this.store.insertArtifact({ id: artifactId, run_id: run.id, kind: draft.kind, title: draft.title, body_md: draft.body_md, items: draft.items, snapshot_refs: refs, effects: draft.proposed_effects ?? [] })
+      if (aggregateRun(run)) await sql.query('UPDATE schedule_artifacts SET archive_revision=$2,archive_scope=$3 WHERE id=$1', [artifactId, scopedRevision(archiveStamp, pkg.project_ids), pkg.project_ids])
       await this.store.recordPhase({ run_id: run.id, phase: 'synthesize', generation, state: receipt.error_code ? 'skipped' : 'done', receipt })
       await this.store.recordPhase({ run_id: run.id, phase: 'persist', generation, state: 'started', receipt: { items: draft.items.length, project_ids: pkg.project_ids } })
       await this.store.setRun(run.id, generation, { artifact_id: artifactId, phase: 'persist' })
@@ -496,7 +500,56 @@ export class ScheduleRuntime {
     return 'ready'
   }
 
-  private async deliver(run: RunRow) {
+  /** Recollect a queued digest after a tracking change, including the agenda and projects that entered through another reader. */
+  private async refreshAggregate(run: RunRow, controller: AbortController): Promise<'ready' | 'blocked'> {
+    if (!aggregateRun(run)) return 'ready'
+    const [artifact] = await this.o.db.query('SELECT id,archive_revision,archive_scope,authority FROM schedule_artifacts WHERE run_id=$1', [run.id])
+    if (!artifact || artifact.authority !== 'live') return 'ready'
+    const template = scheduleTemplate(run.definition.template)!
+    for (;;) {
+      controller.signal.throwIfAborted()
+      const stamp = await archiveRevision(this.o.db)
+      if (artifact.archive_revision === scopedRevision(stamp, artifact.archive_scope)) return 'ready'
+      const ctx = this.context(run, controller, null)
+      const pkg = await template.collect(ctx, { store: this.o.memory, now: () => new Date(this.now()), statusProjects: () => this.store.statusProjects(), ...this.o.deps?.() } as CollectDeps)
+      const draft = template.render(ctx, pkg, null)
+      const saved = await this.o.db.transaction(async sql => {
+        if (await archiveRevision(sql) !== stamp) return false
+        const [started] = await sql.query("SELECT 1 FROM schedule_deliveries WHERE run_id=$1 AND (attempts>0 OR state IN ('sending','sent','uncertain')) LIMIT 1", [run.id])
+        // A recipient may already have seen the previous numbered choices. Never reuse those ordinals for a different action.
+        const items = started ? draft.items.filter(item => item.kind === 'info') : draft.items
+        if (!started) for (const writer of draft.writers ?? []) await writer.write(sql)
+        await sql.query(`UPDATE schedule_artifacts SET title=$2,body_md=$3,items=$4,snapshot_refs=$5,effects=$6,decision_request_ref=NULL,archive_revision=$7,archive_scope=$8
+          WHERE id=$1 AND authority='live'`, [artifact.id,draft.title,draft.body_md,items,draft.snapshot_refs,started ? [] : draft.proposed_effects ?? [],scopedRevision(stamp,pkg.project_ids),pkg.project_ids])
+        return true
+      })
+      if (saved) return this.decide(run)
+    }
+  }
+
+  /** Claim the send in the same transaction that checks whether the project and the prepared digest are still current. */
+  private async claimDelivery(run: RunRow, controller: AbortController, id: string, state: 'sent' | 'sending', attempts: number) {
+    for (;;) {
+      controller.signal.throwIfAborted()
+      const result = await this.o.db.transaction(async sql => {
+        if (await archivedOccurrence(sql, run)) return 'archived'
+        if (aggregateRun(run)) {
+          const [artifact] = await sql.query("SELECT archive_revision,archive_scope FROM schedule_artifacts WHERE run_id=$1 AND authority='live'", [run.id])
+          if (artifact && artifact.archive_revision !== scopedRevision(await archiveRevision(sql), artifact.archive_scope)) return 'refresh'
+        }
+        await this.store.setDelivery(id, { state, attempts })
+        return 'claimed'
+      })
+      if (result === 'claimed') return true
+      if (result === 'archived') {
+        await this.finish(run, 'skipped', { skip_reason: 'project_archived' })
+        return false
+      }
+      if (await this.refreshAggregate(run, controller) === 'blocked') return false
+    }
+  }
+
+  private async deliver(run: RunRow, controller: AbortController) {
     const generation = run.generation, artifact = (await this.store.artifactOfRun(run.id))!, adapters = this.o.automation.effects?.deliveries
     await this.store.recordPhase({ run_id: run.id, phase: 'deliver', generation, state: 'started' })
     const targets = run.definition.delivery
@@ -505,10 +558,17 @@ export class ScheduleRuntime {
       const delivery = await this.store.ensureDelivery(run.id, target)
       if (delivery.state === 'sent' || delivery.state === 'skipped' || delivery.state === 'failed' || delivery.state === 'uncertain') continue
       if (delivery.state === 'sending') { await this.store.setDelivery(delivery.id, { state: 'uncertain', error_code: 'delivery_uncertain' }); continue }
-      if (target === 'hub_inbox' || target === 'app_window') { await this.store.setDelivery(delivery.id, { state: 'sent', attempts: 1 }); continue }
+      if (target === 'hub_inbox' || target === 'app_window') {
+        if (!await this.claimDelivery(run, controller, delivery.id, 'sent', 1)) return
+        continue
+      }
       const available = adapters ? (await adapters.available())[target] : undefined
-      if (!adapters || !available?.available) { await this.store.setDelivery(delivery.id, { state: 'failed', error_code: 'delivery_unavailable' }); continue }
-      await this.store.setDelivery(delivery.id, { state: 'sending', attempts: delivery.attempts + 1 })
+      if (!adapters || !available?.available) {
+        if (await archivedOccurrence(this.o.db, run)) return this.finish(run, 'skipped', { skip_reason: 'project_archived' })
+        await this.store.setDelivery(delivery.id, { state: 'failed', error_code: 'delivery_unavailable' })
+        continue
+      }
+      if (!await this.claimDelivery(run, controller, delivery.id, 'sending', delivery.attempts + 1)) return
       const receipt = await adapters.executeDelivery({ delivery_id: delivery.id, run_id: run.id, artifact_id: artifact.id, target, expected_generation: generation }).catch((): DeliveryReceipt => ({ state: 'uncertain', error_code: 'delivery_uncertain' }))
       await this.store.setDelivery(delivery.id, { state: receipt.state, outbox_ref: receipt.outbox_ref ?? null, error_code: receipt.error_code ?? null })
     }

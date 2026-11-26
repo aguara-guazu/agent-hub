@@ -1,3 +1,4 @@
+import { visibleProject } from './archive.js'
 import { z } from 'zod'
 import { check, id, parse } from '../contracts.js'
 import { hash, requireEntity, requireWritableEntity, type MemoryStore } from "../store.js"
@@ -27,7 +28,7 @@ export async function requestTidy(store: MemoryStore, raw: unknown, actor: strin
 export async function listMemories(store: MemoryStore, raw: unknown) {
   const input = parse(listMemoriesInput, raw)
   if (input.project_id) await requireEntity(store.db, input.project_id, 'project')
-  const where = `e.data->>'agent_memory' IN (1,'true') AND ($1 IS NULL OR e.data->>'memory_project_id'=$1)
+  const where = `${visibleProject("e.data->>'memory_project_id'")} AND e.data->>'agent_memory' IN (1,'true') AND ($1 IS NULL OR e.data->>'memory_project_id'=$1)
     AND ($2='all' OR COALESCE(e.data->>'memory_state','active')=$2)
     AND ($3='' OR ilike(e.title,'%'||$3||'%') OR ilike(e.data->>'text','%'||$3||'%'))`
   const params = [input.project_id ?? null, input.state, input.query]

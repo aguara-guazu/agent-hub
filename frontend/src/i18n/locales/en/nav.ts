@@ -5,6 +5,7 @@ const nav = {
   label: "Main navigation",
   search: "Search or go to…",
   home: "Home",
+  assistants: "Assistants",
   groupWork: "Work",
   projects: "Projects",
   memory: "Memory",

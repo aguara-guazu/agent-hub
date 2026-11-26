@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 /** Rutas que el proceso principal puede pedir; la misma lista blanca valida en `desktop/src/navigation.ts`. */
-const DESKTOP_ROUTES: readonly RegExp[] = [/^\/deliveries$/, /^\/deliveries\/[A-Za-z0-9_-]{1,80}$/, /^\/schedules(\?focus=[A-Za-z0-9_-]{1,80})?$/, /^\/settings$/, /^\/home$/]
+const DESKTOP_ROUTES: readonly RegExp[] = [/^\/assistants(?:\/|\?project=)[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/, /^\/deliveries$/, /^\/deliveries\/[A-Za-z0-9_-]{1,80}$/, /^\/schedules(\?focus=[A-Za-z0-9_-]{1,80})?$/, /^\/settings$/, /^\/home$/]
 
 export function isDesktopRoute(route: string): boolean {
   return DESKTOP_ROUTES.some(pattern => pattern.test(route))

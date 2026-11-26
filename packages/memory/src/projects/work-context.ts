@@ -1,3 +1,4 @@
+import { isArchived, visibleProject } from './archive.js'
 import { z } from 'zod'
 import { parse } from '../contracts.js'
 import { requireEntity, type MemoryStore } from '../store.js'
@@ -18,7 +19,8 @@ export async function workContext(store: MemoryStore, raw: unknown, extras: Cont
   if (agent) await touchSession(store, agent)
   const path = input.path ?? agent?.cwd ?? null
   const byPath = input.path ? await projectForPath(store.db, input.path) : null
-  const match: AgentProject | null = input.path ? (byPath ? { ...byPath, source: "folder", shared: await sharedProject(store.db, byPath.id) } : null) : agent ? await projectForAgent(store.db, agent) : null
+  const assigned: AgentProject | null = input.path ? (byPath ? { ...byPath, source: "folder", shared: await sharedProject(store.db, byPath.id) } : null) : agent ? await projectForAgent(store.db, agent) : null
+  const match = assigned && !await isArchived(store.db, assigned.id) ? assigned : null
   await sweepNotes(store.db)
   const project = match ? await requireEntity(store.db, match.id, 'project') : null
   const scope = [match?.id ?? null]
@@ -29,7 +31,7 @@ export async function workContext(store: MemoryStore, raw: unknown, extras: Cont
     store.db.query(`SELECT id,agent_label,text,state,finish_reason,updated_at FROM agent_notes WHERE state<>'working' AND project_id IS $1 ORDER BY updated_at DESC LIMIT 10`, scope),
     match ? Promise.resolve([]) : store.db.query(`SELECT e.id,e.title,e.data->'folders' AS "folders:json",e.data->>'jira_project_key' AS jira_project_key,
       EXISTS(SELECT 1 FROM shared_projects shared WHERE shared.id=e.id) AS "shared:bool"
-      FROM entities e WHERE e.kind='project' AND e.data->>'merged_into' IS NULL ORDER BY e.updated_at DESC LIMIT 30`),
+      FROM entities e WHERE e.kind='project' AND ${visibleProject("e.id")} AND e.data->>'merged_into' IS NULL ORDER BY e.updated_at DESC LIMIT 30`),
     match ? Promise.resolve([]) : sharedProjectsWithoutFolder(store.db),
   ])
   const memories = await store.db.query(`SELECT id,title,substr(data->>'text',1,1200) AS text,data->>'memory_category' AS category,

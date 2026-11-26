@@ -3,12 +3,13 @@ import { deliverDecisionByGmail, renderSelfEmail, type DecisionStore, type Deliv
 import type { SlackSelfDelivery } from './slack-self.js'
 
 /** Artefacto que el runtime del scheduler persistió para un run. `decision_request_ref` es el id opaco de la solicitud de decisión, si el artefacto propone acciones. */
-export interface DeliveryArtifact { title: string; body_md: string; decision_request_ref: string | null }
+export interface DeliveryArtifact { kind?: string; title: string; body_md: string; decision_request_ref: string | null }
 export interface DeliveryArtifacts { load(input: { run_id: string; artifact_id: string }): Promise<DeliveryArtifact | null> }
 
 export interface DeliveryDeps {
   store: DecisionStore
   artifacts: DeliveryArtifacts
+  briefEmailReminders?(): Promise<string>
   exclusions: ExclusionSink
   slack: SlackSelfDelivery
   /**
@@ -55,8 +56,10 @@ export function createDeliveryAdapters(deps: DeliveryDeps): DeliveryAdapters {
 
     async executeDelivery(input) {
       if (!ROUTE[input.target]) return { state: 'failed', error_code: 'target_not_allowed' }
-      const artifact = await deps.artifacts.load({ run_id: input.run_id, artifact_id: input.artifact_id })
-      if (!artifact) return { state: 'failed', error_code: 'artifact_missing' }
+      const stored = await deps.artifacts.load({ run_id: input.run_id, artifact_id: input.artifact_id })
+      if (!stored) return { state: 'failed', error_code: 'artifact_missing' }
+      const reminders = input.target === 'gmail_self' && stored.kind === 'brief' ? await deps.briefEmailReminders?.() : ''
+      const artifact = reminders ? { ...stored, body_md: stored.body_md + '\n\n' + reminders } : stored
       const text = `${artifact.title}\n\n${artifact.body_md}`
       const requestId = artifact.decision_request_ref
       if (input.target === 'gmail_self') {

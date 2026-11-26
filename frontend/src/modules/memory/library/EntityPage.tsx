@@ -9,7 +9,7 @@ import { Field, Input, Select } from "../../../components/ui/fields"
 import type { MenuItem } from "../../../components/ui/Menu"
 import { useToast } from "../../../components/ui/Toast"
 import { useFormat, useT } from "../../../i18n/useT"
-import { isEntityKind, useMemoryAction, useMemoryPages, useMemoryQuery, type EntityDetail, type Fragment, type MemoryEntity, type SourceVersion } from "../memory-view"
+import { ArchiveProjectContext, isEntityKind, useMemoryAction, useMemoryPages, useMemoryQuery, type EntityDetail, type Fragment, type MemoryEntity, type SourceVersion } from "../memory-view"
 import { Attachment } from "./Attachment"
 import { AddColumnDialog, CollectionRecords, CollectionRules, NewRuleDialog, RecordPanel, type CollectionRecord } from "./Collection"
 import { EntityAside } from "./EntityAside"
@@ -28,10 +28,13 @@ const PROPOSAL_CATEGORIES = ["identity_match", "person_duplicate", "project_matc
 
 export default function EntityPage() {
   const { id } = useParams()
+  const [params] = useSearchParams()
   const { t } = useT("memory")
   return (
     <MemoryGate>
-      {id ? <EntityLoader key={id} id={id} /> : <div className="page"><Empty title={t("entity.missing")} /></div>}
+      <ArchiveProjectContext.Provider value={params.get("archive_project_id")}>
+        {id ? <EntityLoader key={id} id={id} /> : <div className="page"><Empty title={t("entity.missing")} /></div>}
+      </ArchiveProjectContext.Provider>
     </MemoryGate>
   )
 }

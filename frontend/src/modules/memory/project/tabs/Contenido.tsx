@@ -77,7 +77,7 @@ export default function Contenido({ project }: { project: Entity }) {
                 {items.map(item => (
                   <RowLink
                     key={item.id}
-                    to={entityPath(item)}
+                    to={entityPath(item, project.id)}
                     lead={<span style={{ width: 96, display: "flex", flex: "none" }}><Tag>{kindLabel(item)}</Tag></span>}
                     title={item.title}
                     sub={entityDetail(item)}

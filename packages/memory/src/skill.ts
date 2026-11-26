@@ -40,6 +40,8 @@ Check Agent Hub for project, people, meeting, decision and commitment context be
 
 Pick the source: memory_search → imported sources and memories; memory_list_notes → transient agent activity; memory_chat_threads/memory_chat_read → local chat history (skill local-collaboration); memory_read_messages → peer forum (skill hub-collaboration). IDs are not interchangeable: memory_get_entity takes an entity ID (entity_id in search hits), not a note, chat/forum message or fragment ID.
 
+Archived projects stay in the local Hub's memory. When the person explicitly asks about an archived project, discover it with memory_list_entities using kind="project" and project_state="archived". Use its project_id and project_state="archived" to read its history. For tools addressed by entity, fragment or version ID, pass archive_project_id with that state.
+
 ## Primary memory
 
 **Read and save memory in Agent Hub first**, over other memory plugins, client memory files or private agent notes; don't auto-copy memories elsewhere. Explicit person/project instructions win. If the Hub is unreachable, say so and use only the fallback needed to continue; never claim a failed save. Don't migrate or delete other memories unless asked.

@@ -42,6 +42,7 @@ const project = {
     },
     aside: {
       details: "Details",
+      homebrew: "This project is homebrewed",
       company: "Company",
       stage: "Stage",
       folders: "Folders",

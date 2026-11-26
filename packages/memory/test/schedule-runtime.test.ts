@@ -1,3 +1,4 @@
+import { setProjectArchive, withArchivedProject } from '../src/projects/archive.js'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -412,4 +413,49 @@ it('con memoria apagada omite el trabajo de proyecto y entrega el recordatorio p
   expect(await runsOf(project.id)).toMatchObject([{ state: 'skipped', skip_reason: 'module_disabled:memory' }])
   expect(await runsOf(personal.id)).toMatchObject([{ state: 'succeeded' }])
   expect((await store.schedule(project.id))?.state).toBe('active')
+})
+
+it('omite el aviso archivado ya programado, entrega el personal y conserva el cron para el futuro', async () => {
+  const p = await schedule(), other = await schedule({ scope: 'owner', project_id: null })
+  await setProjectArchive(memory, projectId, { state: 'archived', version: 0 })
+  await run()
+  expect(await runsOf(p.id)).toMatchObject([{ state: 'skipped', skip_reason: 'project_archived' }])
+  const page = {limit:100,offset:0}
+  expect((await store.listSchedules(page)).items.map(s => s.id)).toEqual([other.id])
+  expect((await store.listRuns({...page,visibleProjectsOnly:true})).items.map(r => r.schedule_id)).toEqual([other.id])
+  expect((await withArchivedProject(projectId, () => store.listSchedules({...page,project_id:projectId}))).items.map(s => s.id)).toEqual([p.id])
+  expect(await runsOf(other.id)).toMatchObject([{ state: 'succeeded' }])
+  await setProjectArchive(memory, projectId, { state: 'active', version: 1 })
+  expect((await store.schedule(p.id))?.state).toBe('active')
+})
+
+it('recompone un brief ya persistido cuando se archiva uno de sus proyectos antes de la entrega', async () => {
+  const { dailyTemplates } = await import('../src/daily-templates.js')
+  registerScheduleTemplate(dailyTemplates.find(t => t.id === 'daily_brief')!)
+  const live = await memory.create({ kind: 'project', title: 'Continúa' })
+  runtime = build({ deps: () => ({
+    statusProjects: async () => [projectId, live.id],
+    attention: { pending_responses: async () => [
+      { project_id: projectId, ref: 'archivado', summary: 'Asunto retirado', at: now.toISOString() },
+      { project_id: live.id, ref: 'vigente', summary: 'Asunto vigente', at: now.toISOString() },
+    ] },
+  }) })
+  const original = store.addEvent.bind(store)
+  let archived = false
+  vi.spyOn(store, 'addEvent').mockImplementation(async event => {
+    if (event.type === 'run.persisted' && !archived) {
+      archived = true
+      expect((await store.artifactOfRun(event.run_id!))?.body_md).toContain('Asunto retirado')
+      await setProjectArchive(memory, projectId, { state: 'archived', version: 0 })
+    }
+    return original(event)
+  })
+  const s = await schedule({ template: 'daily_brief', project_id: null, scope: 'owner', params: {}, delivery: ['hub_inbox'] })
+  await run()
+  const [r] = await runsOf(s.id)
+  expect(archived).toBe(true)
+  expect(r).toMatchObject({ state: 'succeeded' })
+  const brief = await store.artifactOfRun(String(r!.id))
+  expect(brief?.body_md).toContain('Asunto vigente')
+  expect(brief?.body_md).not.toContain('Asunto retirado')
 })

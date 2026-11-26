@@ -1,6 +1,7 @@
 import type { ComponentType, LazyExoticComponent } from 'react'
 import type { ModuleId } from '@agenthub/shared/modules'
 import agents from './agents'
+import assistants from './assistants'
 import connections from './connections'
 import memory from './memory'
 import mcp from './mcp'
@@ -14,5 +15,5 @@ interface ModuleViews {
   routes: { path: string; Component: ComponentType }[]
 }
 export const moduleViews: Record<ModuleId, ModuleViews> = {
-  agents, connections, memory, mcp, skills, schedules, transcriptions, sharing,
+  agents, assistants, connections, memory, mcp, skills, schedules, transcriptions, sharing,
 }

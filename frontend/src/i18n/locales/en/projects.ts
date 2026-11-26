@@ -4,6 +4,12 @@ import type { Messages } from "../../types"
 const projects = {
   title: "Projects",
   actions: {
+    archive: "Archive project",
+    unarchive: "Unarchive",
+    archiveNamed: "Archive {{name}}",
+    restoreNamed: "Unarchive {{name}}",
+    archived: "{{name}} was archived",
+    restored: "{{name}} is active again",
     create: "New project",
     moreCreate: "More ways to add a project",
     join: "Join with an invitation",
@@ -11,6 +17,8 @@ const projects = {
     fromSuggestion: "Create from a suggestion",
   },
   filter: {
+    archived: "Archived",
+    allStages: "All stages",
     label: "Status",
     active: "Active",
     completed: "Completed",
@@ -62,6 +70,7 @@ const projects = {
     },
   },
   states: {
+    noArchived: "No archived projects yet",
     loading: "Loading projects",
     emptyTitle: "No projects yet",
     emptyDetail: "Create one and add meetings, documents and notes to it.",

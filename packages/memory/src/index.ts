@@ -44,3 +44,5 @@ export type { GoogleAuth } from './connectors/google-auth.js'
 export { DecisionReviewError } from './decisions/index.js'
 export type { DecisionReview, DecisionView, DecisionMutation, DecisionItemView } from './decisions/index.js'
 export type { ConsumeResult } from './decisions/index.js'
+
+export { briefEmailReminders } from './assistants/notifications.js'
