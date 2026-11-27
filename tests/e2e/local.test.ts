@@ -231,6 +231,15 @@ describe('hub local TypeScript completo', () => {
     expect(logs.some((l:any)=>l.decision==='deny')).toBe(true)
     await client.close()
 
-    core.kill('SIGTERM')
+    const closingAt = Date.now()
+    const closed = exitOf(core)
+    core.stdin!.end()
+    const termination = await closed
+    expect(termination.output).toContain('[core] el proceso padre terminó')
+    // Active connections may use the ten-second shutdown grace period after the parent disappears.
+    const elapsed = Date.now() - closingAt
+    expect([0, 1]).toContain(termination.code)
+    if (termination.code === 1) expect(elapsed).toBeGreaterThanOrEqual(9_900)
+    expect(elapsed).toBeLessThan(30_000)
   }, 90_000)
 })

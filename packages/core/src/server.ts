@@ -47,16 +47,20 @@ const shutdown = (): Promise<void> => {
 const exitAfterShutdown = (): void => void shutdown().then(() => process.exit(0))
 process.once('SIGINT', exitAfterShutdown)
 process.once('SIGTERM', exitAfterShutdown)
+let parentGone = false
+const exitAfterParent = (): void => {
+  if (parentGone) return
+  parentGone = true
+  console.error("[core] el proceso padre terminó; apagado ordenado")
+  setTimeout(() => process.exit(1), 10_000).unref()
+  exitAfterShutdown()
+}
 if (process.env.AGENTHUB_STDIN_LIFELINE === '1') {
   // La app de escritorio mantiene abierto stdin. Si muere sin poder detenernos, el EOF
   // apaga el core y libera el puerto en vez de dejar un huérfano que bloquee el
   // próximo arranque.
   process.stdin.resume()
-  process.stdin.once('end', exitAfterShutdown)
-  process.stdin.once('close', exitAfterShutdown)
+  process.stdin.once('end', exitAfterParent)
+  process.stdin.once('close', exitAfterParent)
 }
-exitWithParent(() => {
-  console.error("[core] el proceso padre terminó; apagado ordenado")
-  setTimeout(() => process.exit(1), 10_000).unref()
-  exitAfterShutdown()
-})
+exitWithParent(exitAfterParent)
