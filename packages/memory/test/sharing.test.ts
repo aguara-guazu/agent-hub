@@ -48,7 +48,8 @@ afterEach(async () => {
   for (const r of resources.splice(0)) { await r.network.stop(); await r.db.close(); await rm(r.directory, { recursive: true, force: true }) }
 })
 
-describe('proyectos compartidos cifrados', () => {
+// Each integration fixture starts multiple real Hubs with independent SQLite workers.
+describe('proyectos compartidos cifrados', { timeout: 20_000 }, () => {
   it('conserva las notas locales sin publicarlas mientras el módulo de compartición está apagado', async () => {
     const { a, id } = await fixture()
     let sharing = false
