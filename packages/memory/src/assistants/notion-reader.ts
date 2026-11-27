@@ -201,8 +201,6 @@ export async function readNotionContracts(
   const projectNames = new Map<string, string>()
   if (project.type === 'relation' && contracts.length) {
     check(project.dataSourceUrl, 'Notion no indicó la base relacionada con el proyecto', 502)
-    const projects = await source(read, project.dataSourceUrl!, signal)
-    const name = column(projects, [], ['title'])!.name
     const ids = [
       ...new Set(
         contracts.flatMap((row) =>
@@ -212,14 +210,40 @@ export async function readNotionContracts(
         ),
       ),
     ]
-    const batchSize = projects.view ? Math.max(ids.length, 1) : 40
-    for (let i = 0; i < ids.length; i += batchSize) {
-      const group = ids.slice(i, i + batchSize).map(flatId)
-      const wanted = new Set(group)
-      for (const row of await rows(read, projects, { name }, idColumn('url') + ' IN (' + marks(group) + ')', group, signal, (row) =>
-        wanted.has(flatId(notionId(String(row.url))!)),
-      ))
-        projectNames.set(notionId(String(row.url))!, String(row.name ?? '').trim())
+    if (s.view) {
+      // A full client directory can exceed Notion’s mention limit. Only these pages are referenced by contracts of the selected areas.
+      for (let i = 0; i < ids.length; i += 3) {
+        await Promise.all(
+          ids.slice(i, i + 3).map(async (id) => {
+            const page = await read('fetch', { id }, signal)
+            const parent = String(page?.text ?? '').match(/<parent-data-source url="\{*([^"}]+)\}*"/)?.[1]
+            check(
+              page?.metadata?.type === 'page' &&
+                notionId(String(page.url)) === id &&
+                parent === project.dataSourceUrl &&
+                typeof page.title === 'string',
+              'Notion no pudo confirmar la ficha del proyecto relacionado',
+              502,
+            )
+            projectNames.set(id, page.title.trim())
+          }),
+        )
+      }
+    } else {
+      const projects = await source(read, project.dataSourceUrl!, signal)
+      const name = column(projects, [], ['title'])!.name
+      for (let i = 0; i < ids.length; i += 40) {
+        const group = ids.slice(i, i + 40).map(flatId)
+        for (const row of await rows(
+          read,
+          { ...projects, view: undefined },
+          { name },
+          idColumn('url') + ' IN (' + marks(group) + ')',
+          group,
+          signal,
+        ))
+          projectNames.set(notionId(String(row.url))!, String(row.name ?? '').trim())
+      }
     }
   }
   return contracts.map((row) => {

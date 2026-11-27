@@ -191,6 +191,17 @@ it('lee las vistas completas por cursor cuando el plan de Notion carece de cupo 
   const query = vi.fn<NotionRead>(async (tool, args) => {
     if (tool === 'fetch') {
       const id = String(args.id)
+      const client = remote
+        .prepare('SELECT url, Name FROM "' + clients + '"')
+        .all()
+        .find((row) => notionId(String(row.url)) === notionId(id))
+      if (client)
+        return {
+          url: client.url,
+          title: client.Name,
+          metadata: { type: 'page' },
+          text: '<parent-data-source url="' + clients + '" name="Clientes"/>',
+        }
       const collection = columns[id] ? id : [...parents].find(([, url]) => url === id)![0]
       const schema = Object.fromEntries(columns[collection]!.map((f) => [f.name, f]))
       let text =
@@ -209,6 +220,7 @@ it('lee las vistas completas por cursor cuando el plan de Notion carece de cupo 
     const data = args.data as { mode: string; view_url: string; start_cursor?: string }
     if (data.mode !== 'view') throw Error('Cupo SQL agotado')
     const sourceId = [...views].find(([, url]) => url === data.view_url)![0]
+    if (sourceId === clients) throw Error('La vista de proyectos supera el límite de menciones de Notion')
     const all = remote.prepare('SELECT * FROM "' + sourceId + '" ORDER BY url').all()
     const offset = Number(data.start_cursor || 0)
     return { results: all.slice(offset, offset + 1), has_more: offset + 1 < all.length, next_cursor: String(offset + 1) }
