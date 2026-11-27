@@ -1,5 +1,54 @@
 import { describe, expect, it, vi } from "vitest"
-import { UpdateDrain, type AdmissionGateLike } from "../src/update-drain.js"
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
+import Fastify from "fastify"
+import { MemoryService } from "../src/service.js"
+import { databaseFile } from "../src/legacy-postgres.js"
+import { registerUpdateDrain, UpdateDrain, type AdmissionGateLike } from "../src/update-drain.js"
+
+it("distingue un perfil nuevo de una base cuyo estado de actualización es ilegible", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hub-startup-state-"))
+  const file = databaseFile(directory)
+  const service = new MemoryService(directory, "http://localhost/callback")
+  try {
+    expect(await service.startupUpdateTransaction()).toBeNull()
+    await expect(stat(file)).rejects.toMatchObject({ code: "ENOENT" })
+    await writeFile(file, "contenido ilegible")
+    await expect(service.startupUpdateTransaction()).rejects.toThrow()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it.each([false, true])("abre la sesión con un escritor de memoria ocupado y conserva el bloqueo de una actualización aplicada (%s)", async applied => {
+  const directory = await mkdtemp(join(tmpdir(), "hub-startup-"))
+  const writer = new DatabaseSync(databaseFile(directory))
+  const app = Fastify({ pluginTimeout: 350 })
+  const service = new MemoryService(directory, "http://localhost/callback")
+  const gate = new Gate()
+  vi.spyOn(service.admissionGate, "close").mockImplementation(() => gate.close())
+  const fullInitialization = vi.spyOn(service, "get").mockImplementation(() => new Promise(() => {}))
+  try {
+    writer.exec("PRAGMA journal_mode=WAL; CREATE TABLE hub_stops(state TEXT, reason TEXT, apply_transaction_id TEXT)")
+    writer.prepare("INSERT INTO hub_stops VALUES(?, 'update', 'tx-previous')").run(applied ? "applied" : "resumed")
+    writer.exec("BEGIN IMMEDIATE")
+    const drain = registerUpdateDrain(app, service, { authorize: async () => {} })
+    app.get("/health", async () => ({ ok: true }))
+    app.post("/api/memory/mcp", async () => ({ ok: true }))
+    await app.ready()
+    expect((await app.inject("/health")).statusCode).toBe(200)
+    expect((await app.inject({ method: "POST", url: "/api/memory/mcp" })).statusCode).toBe(applied ? 503 : 200)
+    expect(drain.status().startup_transaction).toBe(applied ? "tx-previous" : null)
+    expect(gate.closed).toBe(applied)
+    expect(fullInitialization).not.toHaveBeenCalled()
+  } finally {
+    writer.close()
+    await app.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 class Gate implements AdmissionGateLike {
   closed = false

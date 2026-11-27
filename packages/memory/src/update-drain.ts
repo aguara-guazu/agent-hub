@@ -537,8 +537,7 @@ export function registerUpdateDrain(app: FastifyInstance, service: MemoryService
     for (const delayMs of STARTUP_STATE_RETRY_MS) {
       if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs))
       try {
-        const current = await service.get()
-        durable = (await current.stop?.appliedTransaction?.()) ?? null
+        durable = await service.startupUpdateTransaction()
         failure = undefined
         break
       } catch (error) { failure = error }

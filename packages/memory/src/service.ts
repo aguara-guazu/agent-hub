@@ -1,4 +1,6 @@
 import type { ModuleEnabled } from '@agenthub/shared/modules'
+import { stat } from 'node:fs/promises'
+import { DatabaseSync } from 'node:sqlite'
 import { hubLog } from "./report.js"
 import { sweepIssueDrafts } from "./diagnostic-report.js"
 import { unavailableActivity, type FleetActivity } from './agents/fleet-activity.js'
@@ -134,6 +136,28 @@ export class MemoryService {
     if (this.current) return this.current
     this.initializing ??= this.initialize().finally(() => { this.initializing = null })
     return this.initializing
+  }
+  /** Before listening, only the persisted update gate matters. Full startup also needs the SQLite writer. */
+  async startupUpdateTransaction(): Promise<string | null> {
+    const file = databaseFile(this.directory)
+    const metadata = await stat(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (!metadata?.size && !needsMigration(this.directory, this.vault)) return null
+    if (metadata?.size) {
+      const reader = new DatabaseSync(file, { readOnly: true, timeout: 250 })
+      try {
+        if (reader.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='hub_stops'").get()) {
+          const stop = reader.prepare("SELECT apply_transaction_id FROM hub_stops WHERE reason='update' AND state='applied' LIMIT 1").get()
+          if (!stop) return null
+          if (typeof stop.apply_transaction_id !== 'string' || !stop.apply_transaction_id) throw new MemoryError(503, 'La actualización aplicada no tiene una transacción válida')
+          return stop.apply_transaction_id
+        }
+      } finally { reader.close() }
+    }
+    // Older databases need their normal migrations before the stop evidence can be checked.
+    return (await this.get()).stop.appliedTransaction()
   }
   private async initialize() {
     if (needsMigration(this.directory, this.vault)) {
