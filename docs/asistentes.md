@@ -4,6 +4,8 @@ Al habilitar el módulo, el asistente del Hub sigue automáticamente todos los p
 
 En **Ajustes → Asistentes** hay una sola configuración para el horario, la espera, la urgencia mínima, el trabajo nocturno, el estilo y la energía. Las preferencias se aplican a los proyectos actuales y futuros. El core mantiene el seguimiento al cerrar la ventana y recupera los chats al reiniciar.
 
+En **Tareas de Jira que generan pendientes**, el valor inicial es **Solo las asignadas a mí**. El asistente usa el ID de tu cuenta de Jira para reconocerlas. Elegí **Todas las tareas del proyecto** para incluir también las de otras personas y las que todavía están sin asignar. Al guardar, el asistente vuelve a revisar los proyectos y actualiza la bandeja.
+
 Un proyecto marcado con **Este proyecto es homebrew** en su ficha queda fuera del seguimiento: no genera asuntos, avisos ni microtareas. Al desmarcarlo, el asistente lo retoma en el ciclo siguiente. Un proyecto que ya estaba pausado a mano sigue pausado.
 
 ## Proyectos archivados

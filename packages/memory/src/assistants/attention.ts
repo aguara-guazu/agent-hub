@@ -135,8 +135,9 @@ export class Attention {
     if (expected !== undefined) check(existing?.revision === expected && existing.state === 'open', sameCase, 409)
     if (existing && ['sending', 'uncertain'].includes(existing.state)) return
     if (existing?.state === 'sent' && s.kind === 'slack' && Number(existing.source.ts) >= Number(s.source.ts)) return
-    if (existing && existing.fingerprint === s.fingerprint && existing.state !== 'open' && !existing.source.dismissed) return
-    if (s.kind !== 'slack' && existing?.state === 'open' && existing.fingerprint === s.fingerprint && !existing.source.refresh) return
+    const sameSignal = existing?.fingerprint === s.fingerprint && existing.source.jira_verification !== 'out_of_scope'
+    if (sameSignal && existing.state !== 'open' && !existing.source.dismissed) return
+    if (s.kind !== 'slack' && sameSignal && existing.state === 'open' && !existing.source.refresh) return
     const after = s.kind === 'slack' ? Date.parse(s.at) + p.delay_minutes * 60_000 : this.now().getTime()
     if (this.now().getTime() < after && !existing) return
     const threadQuery =
@@ -163,7 +164,7 @@ export class Attention {
       (existing?.fingerprint === s.fingerprint && existing?.source.jira_hash === jiraHash && existing?.source.used_memory === true))
     let evidence = [...(s.evidence ?? live?.evidence ?? []), ...(usedMemory ? await memory() : [])]
     let contextHash = contextHashOf(evidence, live)
-    const unchanged = existing?.fingerprint === s.fingerprint && existing.source.context_hash === contextHash
+    const unchanged = sameSignal && existing.source.context_hash === contextHash
     if (
       unchanged &&
       !instruction &&

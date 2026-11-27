@@ -66,6 +66,15 @@ function PolicyEditor({ data }: { data: PortfolioSettings }) {
         {num('delay_minutes', 'delay', 240)}
         {num('threshold', 'threshold', 10)}
       </div>
+      <Select
+        label={t('jiraAssigneeScope')}
+        value={p.jira_assignee_scope}
+        onChange={(value) => change('jira_assignee_scope', value)}
+        options={[
+          { value: 'mine', label: t('jiraAssignedToMe') },
+          { value: 'project', label: t('jiraWholeProject') },
+        ]}
+      />
       <fieldset>
         <legend>{t('notice')}</legend>
         <div className="assistant-grid">

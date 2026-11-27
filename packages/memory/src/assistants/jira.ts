@@ -4,7 +4,7 @@ import { effectiveJiraSite, jiraSiteUrl } from '../connectors/jira-settings.js'
 import type { Sql } from '../database.js'
 import { mapJiraStatus, normalizeJiraIssue, type JiraIssue, type JiraTaskReader } from '../projects/tasks.js'
 import { terms } from './context.js'
-import type { CaseRow, Evidence } from './contracts.js'
+import type { CaseRow, Evidence, Profile } from './contracts.js'
 
 export type JiraCase = Pick<CaseRow, 'kind' | 'title' | 'source' | 'source_key'>
 export interface LiveEvidence {
@@ -16,6 +16,9 @@ export interface LiveEvidence {
 }
 export interface LiveIssue extends JiraIssue {
   remote: boolean
+}
+export function assignedToOwner(profile: Profile, issue: LiveIssue) {
+  return !!profile.jira_owner && issue.assignee_account_id === profile.jira_owner
 }
 type Query = Parameters<JiraTaskReader>[0]
 interface ProjectScope {
@@ -43,7 +46,9 @@ const includesPhrase = (text: string, phrase: string) => (' ' + words(text) + ' 
 /** SQL parameters and aliases are supplied by the module, never by the user. */
 export const recentJira = (now: string, alias = 'c') => `coalesce(${alias}.source->>'jira_verification','')='verified' AND EXISTS(
   SELECT 1 FROM assistant_source_cursors j JOIN entities p ON p.id=j.project_id
+  JOIN assistant_profiles profile ON profile.project_id=j.project_id
   WHERE j.project_id=${alias}.project_id AND j.source_key='jira/verified'
+  AND (profile.config->>'jira_assignee_scope'='project' OR nullif(profile.config->>'jira_owner','')=${alias}.source->>'assignee_account_id')
   AND (${alias}.source->>'jira_scope_key' IS NULL OR (p.data->>'jira_project_key'=${alias}.source->>'jira_scope_key'
     AND coalesce(nullif(p.data->>'jira_site_url',''),(SELECT value->>'default_site_url' FROM settings WHERE key='jira'),
       ${alias}.source->>'jira_scope_site')=${alias}.source->>'jira_scope_site'))

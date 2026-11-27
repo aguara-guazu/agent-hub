@@ -12,12 +12,14 @@ import type { JiraTaskReader } from '../src/projects/tasks.js'
 
 const site = 'https://client.atlassian.net'
 const now = new Date('2026-11-25T12:00:00Z')
-const issue = (key: string, status = 'To Do', category = 'new') => ({
+const owner = 'account-owner'
+const issue = (key: string, status = 'To Do', category = 'new', assignee: string | null = owner) => ({
   key,
   fields: {
     summary: 'Entrega Acme',
     description: 'Preparar la entrega piloto',
     status: { name: status, statusCategory: { key: category } },
+    assignee: assignee ? { accountId: assignee, displayName: owner } : null,
     duedate: '2026-11-24',
     updated: '2026-11-20T11:00:00Z',
     project: { key: key.split('-')[0] },
@@ -82,12 +84,82 @@ beforeEach(async () => {
     undefined,
     reader,
   )
-  await resident.save(project, profile.parse({ active: true, timezone: 'UTC' }), 0)
+  await resident.save(project, profile.parse({ active: true, timezone: 'UTC', jira_owner: owner }), 0)
 })
 afterEach(async () => {
   await resident.stop()
   await db.close()
   await rm(dir, { recursive: true, force: true })
+})
+
+it('regenera los pendientes según el ID de cuenta, el alcance elegido y las reasignaciones', async () => {
+  const pending = async () => (await resident.inbox(project, 'attention')).map(row => row.source.issue_key).sort()
+  const scope = async (value: 'mine' | 'project') => {
+    const policy = await resident.policy()
+    await resident.setPolicy({ ...policy.config, jira_assignee_scope: value }, policy.version)
+    await resident.scanNow()
+  }
+  issues = [issue('NIN-1'), issue('NIN-2', 'To Do', 'new', 'other'), issue('NIN-3', 'To Do', 'new', null)]
+  await resident.scanNow()
+  expect(await pending()).toEqual(['NIN-1'])
+  expect((await resident.policy()).config.jira_assignee_scope).toBe('mine')
+  await scope('project')
+  expect(await pending()).toEqual(['NIN-1', 'NIN-2', 'NIN-3'])
+  const rows = await resident.inbox(project, 'attention')
+  const own = rows.find(row => row.source.issue_key === 'NIN-1')!
+  await resident.attention.dismiss([own.id])
+  await scope('mine')
+  expect(await pending()).toEqual([])
+  expect(await resident.notices()).toEqual([])
+  expect(await resident.attention.restore([own.id])).toEqual([own.id])
+  await scope('project')
+  expect(await pending()).toEqual(['NIN-1', 'NIN-2', 'NIN-3'])
+  await scope('mine')
+  issues = [issue('NIN-1', 'To Do', 'new', 'other'), issue('NIN-2')]
+  await resident.scan(project)
+  expect(await pending()).toEqual(['NIN-2'])
+  const [notice] = await resident.notices()
+  expect(notice?.entries.map(entry => entry.id)).toEqual([rows.find(row => row.source.issue_key === 'NIN-2')!.id])
+  // Looking up a teammate's ticket by key still uses the complete Jira source.
+  const live = await resident.liveEvidence(project, null, 'NIN-1', resident.signal(project))
+  expect(live.evidence[0]?.url).toBe(site + '/browse/NIN-1')
+})
+
+it('espera a identificar la cuenta en el alcance personal y permite revisar el proyecto completo sin ella', async () => {
+  const settings = await resident.settings(project)
+  await resident.save(project, { ...settings.config, jira_owner: '' }, settings.version)
+  issues = [issue('NIN-1'), issue('NIN-2', 'To Do', 'new', null)]
+  await resident.scan(project)
+  expect(await resident.inbox(project, 'attention')).toEqual([])
+  expect((await resident.settings(project)).last_error).toMatch(/cuenta de Jira/i)
+  const policy = await resident.policy()
+  await resident.setPolicy({ ...policy.config, jira_assignee_scope: 'project' }, policy.version)
+  await resident.scan(project)
+  expect(await resident.inbox(project, 'attention')).toHaveLength(2)
+})
+
+it('revalida los pendientes de versiones anteriores sin duplicarlos ni volver a notificar los propios', async () => {
+  const policy = await resident.policy()
+  await resident.setPolicy({ ...policy.config, jira_assignee_scope: 'project' }, policy.version)
+  issues = [issue('NIN-1'), issue('NIN-2', 'To Do', 'new', 'other')]
+  await resident.scan(project)
+  const rows = await resident.inbox(project, 'attention')
+  const own = rows.find(row => row.source.issue_key === 'NIN-1')!
+  const other = rows.find(row => row.source.issue_key === 'NIN-2')!
+  await db.query("UPDATE assistant_profiles SET config=json_remove(config,'$.jira_assignee_scope')")
+  await db.query("UPDATE assistant_portfolio_policy SET value=json_remove(value,'$.config.jira_assignee_scope')")
+  await db.query("UPDATE assistant_cases SET source=json_remove(source,'$.assignee_account_id')")
+  expect(await resident.inbox(project, 'attention')).toEqual([])
+  expect(await resident.notices()).toEqual([])
+  await resident.scanNow()
+  expect(await resident.inbox(project, 'attention')).toMatchObject([{ id: own.id, revision: own.revision }])
+  expect(await resident.inbox(project, 'history')).toMatchObject([{ id: other.id, reason: expect.stringContaining('asignadas a tu cuenta') }])
+
+  const { config, version } = await resident.settings(project)
+  const signal = resident.signal(project)
+  await resident.work.enqueue(project, config, version, { role: 'pm', key: 'attention/legacy', caseId: other.id, objective: 'Seguimiento' }, signal)
+  await resident.work.next(project, config, version, signal)
+  expect(await db.query('SELECT state,attempts FROM assistant_work WHERE case_id=$1', [other.id])).toEqual([{ state: 'queued', attempts: 0 }])
 })
 
 it('reconcilia el conjunto completo de Jira y conserva el historial local de un ticket ausente y de una tarea manual', async () => {

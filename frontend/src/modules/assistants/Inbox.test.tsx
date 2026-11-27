@@ -14,6 +14,7 @@ it('abre la bandeja, el chat y los ajustes generales sin elegir el primer proyec
   globalThis.IS_REACT_ACT_ENVIRONMENT = true
   const projects = ['Alfa', 'Beta'].map((title) => ({ id: title.toLowerCase(), title, active: true, last_scan: null, last_error: null }))
   const notice = 'b2413265-13b5-49c6-96c5-c0d1c5991d4d'
+  const put = vi.spyOn(api, 'put').mockResolvedValue({})
   const get = vi.spyOn(api, 'get').mockImplementation(async (path: string) => {
     if (path === '/modules') return { agents: true, connections: true }
     if (path === '/assistants/projects') return { items: projects }
@@ -123,6 +124,14 @@ it('abre la bandeja, el chat y los ajustes generales sin elegir el primer proyec
     expect(host.querySelector<HTMLInputElement>('input[min="1"][max="4"]')?.value).toBe('3')
     expect(host.querySelector<HTMLInputElement>('input[min="5"][max="240"]')?.value).toBe('30')
     expect(host.querySelector('[role="combobox"][aria-label$="9/10"]')).toBeTruthy()
+    const scope = host.querySelector<HTMLButtonElement>('button[role="combobox"][aria-label*="Jira"]')!
+    expect(scope.textContent).toMatch(/Solo las asignadas a mí|Only tasks assigned to me/)
+    await act(async () => scope.click())
+    const projectOption = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find(option => /Todas las tareas del proyecto|All tasks in the project/.test(option.textContent ?? ''))!
+    await act(async () => projectOption.click())
+    await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+    expect(put).toHaveBeenCalledWith('/assistants/settings', { version: 0, config: expect.objectContaining({ jira_assignee_scope: 'project' }) })
     expect(get.mock.calls.some(([path]) => path === '/assistants/settings')).toBe(true)
     expect(get.mock.calls.some(([path]) => path.startsWith('/assistants/projects/'))).toBe(false)
   } finally {
@@ -130,6 +139,7 @@ it('abre la bandeja, el chat y los ajustes generales sin elegir el primer proyec
     host.remove()
     cache.clear()
     get.mockRestore()
+    put.mockRestore()
   }
 })
 

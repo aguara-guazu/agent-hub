@@ -307,11 +307,14 @@ it('identifica dependencias de Jira en su dirección y quita reuniones cancelada
     occurred_at: '2026-11-25T12:45:00Z',
     project_ids: [project],
   })
-  const p = profile.parse({ jira_owner: 'me', timezone: 'UTC' }),
+  const p = profile.parse({ jira_owner: 'me', timezone: 'UTC', jira_assignee_scope: 'project' }),
     signals = await projectSignals(db, project, p, date, tickets)
   expect(signals.find((s) => s.title.startsWith('DEV-2'))?.reasons).toContain('Bloquea tus tareas DEV-1')
   expect(signals.find((s) => s.title.startsWith('DEV-1'))?.reasons).toContain('Jira marca como dependencias de tu tarea DEV-2, EXT-3')
   expect(signals.find((s) => s.kind === 'meeting')?.score).toBe(8)
+  const personal = await projectSignals(db, project, { ...p, jira_assignee_scope: 'mine' }, date, tickets)
+  expect(personal.filter(s => s.kind === 'jira').map(s => s.source.issue_key)).toEqual(['DEV-1'])
+  expect(personal.find(s => s.kind === 'jira')?.reasons).toContain('Jira marca como dependencias de tu tarea DEV-2, EXT-3')
   await db.query("UPDATE entities SET data=json_set(data,'$.status','cancelled') WHERE kind='event'")
   expect((await projectSignals(db, project, p, date)).some((s) => s.kind === 'meeting')).toBe(false)
 })

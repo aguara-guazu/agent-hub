@@ -18,7 +18,7 @@ async function project(title: string) {
   const p = await store.create({ kind: 'project', title })
   await db.query('INSERT INTO assistant_profiles(project_id,config) VALUES($1,$2)', [
     p.id,
-    profile.parse({ active: true, timezone: 'UTC', start: '00:00', end: '23:59' }),
+    profile.parse({ active: true, timezone: 'UTC', start: '00:00', end: '23:59', jira_owner: 'owner' }),
   ])
   return p.id
 }
@@ -33,7 +33,7 @@ async function issue(projectId: string, score: number, key: string) {
     ON CONFLICT(project_id,source_key) DO UPDATE SET scanned_at=excluded.scanned_at`, [projectId, now])
   await db.query(
     "INSERT INTO assistant_cases(id,project_id,source_key,kind,title,score,reason,state,source,fingerprint,notify_after,updated_at) VALUES($1,$2,$1,'jira',$3,$4,'Bloquea la entrega','open',$5,'v1',$6,$6)",
-    [id, projectId, key, score, { url: 'https://example.atlassian.net/browse/' + key, issue_key: key, jira_verification: 'verified' }, now],
+    [id, projectId, key, score, { url: 'https://example.atlassian.net/browse/' + key, issue_key: key, jira_verification: 'verified', assignee_account_id: 'owner' }, now],
   )
   return id
 }
@@ -206,7 +206,7 @@ it('explica y distingue un ticket crítico que vence hoy y descarta eventos que 
   const tickets = [['ATL-32', 'Highest'], ['ATL-34', 'Low']].map(([key, priority]) => ({
     ...normalizeJiraIssue({ key, summary:'Entrega', status:'To Do', duedate:'2026-11-26', priority }, 'https://atlas.atlassian.net')!, remote: true,
   }))
-  const signals = await projectSignals(db, a, profile.parse({ timezone: 'UTC' }), at, tickets)
+  const signals = await projectSignals(db, a, profile.parse({ timezone: 'UTC', jira_assignee_scope: 'project' }), at, tickets)
   const critical = signals.find((s) => s.title.includes('ATL-32'))!,
     low = signals.find((s) => s.title.includes('ATL-34'))!
   expect(critical.score).toBeGreaterThan(low.score)

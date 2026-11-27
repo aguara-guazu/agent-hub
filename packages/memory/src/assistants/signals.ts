@@ -5,7 +5,7 @@ import type { Sql } from '../database.js'
 import { localClock, type Profile, type Signal } from './contracts.js'
 import { digest } from './slack.js'
 import { mapJiraStatus } from '../projects/tasks.js'
-import { caseIssueKey, issueEvidence, type JiraCase, type LiveIssue } from './jira.js'
+import { assignedToOwner, caseIssueKey, issueEvidence, type JiraCase, type LiveIssue } from './jira.js'
 
 const day = 86_400_000
 /** The mirror contributes stable links to existing cases. Every field used to judge a ticket comes from this read of Jira. */
@@ -24,11 +24,10 @@ export async function projectSignals(db: Sql, project: string, p: Profile, now: 
   const tasks = issues.map(issue => {
     const ref = issue.site + '/' + issue.key
     const id = taskIds.get(ref) ?? taskIds.get('/' + issue.key)
-    return { ...issue, id, external_key: issue.key, title: issue.summary, state: mapJiraStatus(issue.status, issue.category),
+    return { ...issue, id, external_key: issue.key, title: issue.summary, state: mapJiraStatus(issue.status, issue.category), owned: assignedToOwner(p, issue),
       caseKey: previousKeys.get(ref) ?? previousKeys.get('/' + issue.key) ?? ('jira/' + (id ?? ref)) }
   })
-  const owned = (t: LiveIssue) => !!p.jira_owner && [t.assignee_account_id, t.assignee].includes(p.jira_owner)
-  const mine = new Set(tasks.filter(t => owned(t) && !['done','dropped'].includes(t.state)).map(t => t.key))
+  const mine = new Set(tasks.filter(t => t.owned && !['done','dropped'].includes(t.state)).map(t => t.key))
   const closed = new Set(tasks.filter(t => ['done','dropped'].includes(t.state)).map(t => t.key))
   const dependents = new Map<string, Set<string>>()
   const prerequisites = new Map<string, Set<string>>()
@@ -47,12 +46,12 @@ export async function projectSignals(db: Sql, project: string, p: Profile, now: 
       if (!linked?.key || closed.has(linked.key) || linked.fields?.status?.statusCategory?.key === 'done') continue
       const verb = String(link.outwardIssue ? link.type?.outward : link.type?.inward).trim()
       if (/^(blocks|bloquea)$/i.test(verb) && mine.has(linked.key)) blocks(t.external_key, linked.key)
-      if (/^(is blocked by|es bloquead[oa] por|está bloquead[oa] por)$/i.test(verb) && owned(t)) blocks(linked.key, t.external_key)
+      if (/^(is blocked by|es bloquead[oa] por|está bloquead[oa] por)$/i.test(verb) && t.owned) blocks(linked.key, t.external_key)
     }
   }
   const signals: Signal[] = []
   for (const t of tasks) {
-    if (closed.has(t.key)) continue
+    if (closed.has(t.key) || (p.jira_assignee_scope === 'mine' && !t.owned)) continue
     const due = String(t.due_at ?? '').slice(0, 10)
     const late = !!due && due < today
     const priority = String(t.priority ?? '').trim()
@@ -74,14 +73,14 @@ export async function projectSignals(db: Sql, project: string, p: Profile, now: 
       upstream.length && 'Jira marca como dependencias de tu tarea ' + upstream.join(', '),
     ].filter(Boolean) as string[]
     if (!reasons.length) continue
-    if (owned(t)) reasons.push('Está asignada a vos')
+    if (t.owned) reasons.push('Está asignada a vos')
     const title = t.external_key + ' · ' + t.title
     const evidence = issueEvidence(t)
     const url = evidence.url
     const score = Math.min(
       10,
       3 +
-        Number(owned(t)) * 2 +
+        Number(t.owned) * 2 +
         (late ? 2 : Number(due === today)) +
         priorityWeight +
         Number(t.state === 'blocked') +
@@ -110,7 +109,8 @@ export async function projectSignals(db: Sql, project: string, p: Profile, now: 
         priority,
         downstream,
         assignee: t.assignee,
-        owned: owned(t),
+        assignee_account_id: t.assignee_account_id,
+        owned: t.owned,
       },
     })
   }

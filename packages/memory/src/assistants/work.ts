@@ -63,9 +63,13 @@ export class WorkQueue {
   async next(project: string, p: Profile, version: number, signal: AbortSignal) {
     const [job] = await this.db.query(
       `UPDATE assistant_work SET state='running',lease_pid=$3,attempts=attempts+1,started_at=COALESCE(started_at,now()),updated_at=now()
-      WHERE id=(SELECT id FROM assistant_work WHERE project_id=$1 AND state='queued' AND scope->>'version'=$2 ORDER BY updated_at,id LIMIT 1)
+      WHERE id=(SELECT w.id FROM assistant_work w WHERE w.project_id=$1 AND w.state='queued' AND w.scope->>'version'=$2
+        AND ($4='project' OR NOT EXISTS(SELECT 1 FROM assistant_cases c WHERE c.id=w.case_id AND c.kind='jira'
+          AND (w.request_key LIKE 'attention/%' OR w.request_key LIKE 'child/%') AND c.source->>'jira_verification' IS NOT 'not_visible'
+          AND coalesce(c.source->>'assignee_account_id'=nullif($5,''),0)=0))
+        ORDER BY w.updated_at,w.id LIMIT 1)
       AND state='queued' RETURNING *`,
-      [project, version, process.pid],
+      [project, version, process.pid, p.jira_assignee_scope, p.jira_owner],
     )
     if (!job) return
     const save = async (checkpoint: unknown) => {

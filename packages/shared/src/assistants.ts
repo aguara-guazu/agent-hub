@@ -45,6 +45,7 @@ const profileFields = z
       .max(12)
       .default([]),
     jira_owner: z.string().max(180).default(''),
+    jira_assignee_scope: z.enum(['mine', 'project']).default('mine'),
     style: z.string().trim().max(2000).default(''),
     repository: z.string().max(2000).default(''),
     files: z.array(z.string().trim().min(1).max(300)).max(30).default([]),
@@ -76,6 +77,7 @@ const portfolioFields = profileFields
   .pick({
     delay_minutes: true,
     threshold: true,
+    jira_assignee_scope: true,
     timezone: true,
     start: true,
     end: true,

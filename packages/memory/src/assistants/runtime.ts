@@ -12,7 +12,7 @@ import { acceptance, Attention, watcher, type Lookup, type Access } from './atte
 import { historyAllowsRemote, localModelRequired, modelRequired, terms, type AgentModel, type ModelGap } from './context.js'
 import { localClock, profile, type PortfolioPolicy, type Profile, type CaseRow, type Signal } from './contracts.js'
 import { projectSignals, pullRequests } from './signals.js'
-import { AssistantJira, caseIssueKey, issueEvidence, presentCase, recentJira, type JiraCase, type LiveIssue } from './jira.js'
+import { assignedToOwner, AssistantJira, caseIssueKey, issueEvidence, presentCase, recentJira, type JiraCase, type LiveIssue } from './jira.js'
 import type { JiraTaskReader } from '../projects/tasks.js'
 import { digest } from './slack.js'
 import { WorkQueue } from './work.js'
@@ -147,19 +147,21 @@ export class Resident {
       project,
       config,
     ])
-    await sql.query(
-      `UPDATE assistant_cases SET state=CASE WHEN $2 AND
+    const changes = (Object.keys(config) as (keyof Profile)[]).filter(key => JSON.stringify(previous[key]) !== JSON.stringify(config[key]))
+    // A change of Jira assignee scope only needs a new scan. Keep other sources and existing dismissals intact.
+    if (changes.some(key => key !== 'jira_assignee_scope')) {
+      await sql.query(
+        `UPDATE assistant_cases SET state=CASE WHEN $2 AND
         (kind<>'slack' OR EXISTS(SELECT 1 FROM json_each($3) w WHERE w.value->>'channel'=source->>'channel'
           AND w.value->>'connector_id'=source->>'connector_id' AND w.value->>'team'=source->>'team'))
         AND (kind<>'pr' OR source->>'repo' IN (SELECT value FROM json_each($4))) THEN 'open' ELSE 'closed' END,
         draft=NULL,revision=revision+1,fingerprint='',source=json_set(source,'$.refresh',1,'$.deferred',1),updated_at=now()
         WHERE project_id=$1 AND (state='open' OR (state='closed' AND source->>'refresh'=1))`,
-      [project, config.active, config.slack, config.github_repos],
-    )
-    await sql.query('DELETE FROM assistant_source_cursors WHERE project_id=$1', [project])
-    const scopeChanged = ['repository', 'files', 'verify', 'jira_owner', 'slack', 'github_repos'].some(
-      (key) => JSON.stringify(previous[key as keyof Profile]) !== JSON.stringify(config[key as keyof Profile]),
-    )
+        [project, config.active, config.slack, config.github_repos],
+      )
+      await sql.query('DELETE FROM assistant_source_cursors WHERE project_id=$1', [project])
+    }
+    const scopeChanged = changes.some(key => ['repository', 'files', 'verify', 'jira_owner', 'slack', 'github_repos'].includes(key))
     if (scopeChanged)
       await sql.query(
         "UPDATE assistant_work SET state='cancelled',updated_at=now() WHERE project_id=$1 AND state IN ('queued','running','blocked','paused')",
@@ -392,6 +394,10 @@ export class Resident {
       try {
         issues = await this.jira.projectIssues(project, signal)
         if (issues?.length) await this.mirrorJira?.(project, issues)
+        if (issues && p.jira_assignee_scope === 'mine' && !p.jira_owner) {
+          issues = null
+          error = 'No se pudo identificar tu cuenta de Jira para revisar las tareas asignadas a vos.'
+        }
       } catch (e) {
         signal.throwIfAborted()
         issues = null
@@ -402,7 +408,7 @@ export class Resident {
     } else if (last.error) errors.push(last.error)
     const currentSignals = await projectSignals(this.db, project, p, now, issues ?? [])
     signal.throwIfAborted()
-    if (readJira) await this.reconcileJira(project, version, issues, currentSignals, this.jiraAttempts.get(project)?.error)
+    if (readJira) await this.reconcileJira(project, p, version, issues, currentSignals, this.jiraAttempts.get(project)?.error)
     const closeMissing = async (kind: string, keys: string[], repo?: string) => {
       await this.db.query(
         `UPDATE assistant_cases SET state='closed',draft=NULL,revision=revision+1,source=json_remove(source,'$.refresh'),updated_at=now() WHERE project_id=$1 AND kind=$2 AND state='open'
@@ -540,7 +546,7 @@ export class Resident {
     return this.jira.evidence(project, row, question, signal)
   }
 
-  private async reconcileJira(project: string, version: number, issues: LiveIssue[] | null, signals: Signal[], error?: string | null) {
+  private async reconcileJira(project: string, config: Profile, version: number, issues: LiveIssue[] | null, signals: Signal[], error?: string | null) {
     const active = new Set(signals.filter(s => s.kind === 'jira').map(s => s.key))
     const byKey = new Map(issues?.map(issue => [issue.key, issue]))
     await this.db.transaction(async sql => {
@@ -550,20 +556,28 @@ export class Resident {
         WHERE c.project_id=$1 AND p.version=$2 AND c.kind='jira' AND (c.state='open' OR
           ($3=1 AND c.state='closed' AND c.source->>'owner_dismissed'=1))`, [project, version, issues !== null])
       for (const row of rows) {
-        if (active.has(row.source_key)) continue
         const key = caseIssueKey(row)
         const candidate = key && byKey.get(key)
         const site = String(row.source.url ?? '').match(/^(https:\/\/[^/]+)\/browse\//i)?.[1]
         const issue = candidate && (!site || site === candidate.site) ? candidate : undefined
-        const status = !issues ? 'unavailable' : issue ? 'verified' : 'not_visible'
+        const outsideScope = issue && config.jira_assignee_scope === 'mine' && !assignedToOwner(config, issue)
+        if (active.has(row.source_key) || (outsideScope && row.source.owner_dismissed)) {
+          // Older cases have no account ID. Reconfirm ownership without reopening a dismissal or repeating a notice.
+          if (issue && row.source.assignee_account_id !== issue.assignee_account_id)
+            await sql.query("UPDATE assistant_cases SET source=json_set(source,'$.assignee_account_id',$2) WHERE id=$1", [row.id, issue.assignee_account_id])
+          continue
+        }
+        const status = !issues ? 'unavailable' : outsideScope ? 'out_of_scope' : issue ? 'verified' : 'not_visible'
         const reason = !issues ? error || 'Jira sin confirmar. El proyecto no tiene una clave de Jira vinculada.' :
+          outsideScope ? 'El asistente sigue solo las tareas asignadas a tu cuenta de Jira.' :
           issue ? 'Jira indica «' + issue.status + '». La lectura actual no confirmó el motivo del aviso anterior.' :
           'El ticket ya no figura entre los resultados visibles de Jira para este proyecto.'
         if (row.source.jira_verification === status && row.reason === reason) continue
-        await sql.query(`UPDATE assistant_cases SET state=$2,score=0,reason=$3,draft=NULL,evidence=$4,revision=revision+1,fingerprint='',
-          source=json_set(json_remove(source,'$.refresh','$.owner_dismissed','$.text','$.status','$.due_at','$.downstream','$.priority','$.owned','$.assignee','$.query'),'$.jira_verification',$5),
+        await sql.query(`UPDATE assistant_cases SET state=$2,score=0,reason=$3,draft=NULL,evidence=$4,revision=revision+1,
+          fingerprint=CASE WHEN $5='out_of_scope' THEN fingerprint ELSE '' END,
+          source=json_set(json_remove(source,'$.refresh','$.owner_dismissed','$.text','$.status','$.due_at','$.downstream','$.priority','$.owned','$.assignee','$.query'),'$.jira_verification',$5,'$.assignee_account_id',$7),
           updated_at=now() WHERE id=$1 AND revision=$6`, [row.id, issues ? 'closed' : 'open', reason,
-          issue ? [issueEvidence(issue)] : [], status, row.revision])
+          issue ? [issueEvidence(issue)] : [], status, row.revision, issue?.assignee_account_id ?? null])
       }
     })
   }

@@ -33,13 +33,14 @@ it('opens the owner inbox headless, gates it when disabled and restores it indep
     expect((await post(path + '/scan', {})).json()).toMatchObject({ version: 1, last_error: null })
     const policy = (await get('/api/assistants/settings')).json()
     expect(policy.config.delay_minutes).toBe(10)
+    expect(policy.config.jira_assignee_scope).toBe('mine')
     expect(
       (
         await app.fastify.inject({
           method: 'PUT',
           url: '/api/assistants/settings',
           headers,
-          payload: { version: policy.version, config: { ...policy.config, threshold: 7 } },
+          payload: { version: policy.version, config: { ...policy.config, threshold: 7, jira_assignee_scope: 'project' } },
         })
       ).statusCode,
     ).toBe(200)
@@ -50,7 +51,7 @@ it('opens the owner inbox headless, gates it when disabled and restores it indep
         expect.objectContaining({ id: second.json().id, last_scan: expect.any(String) }),
       ]),
     )
-    expect((await get('/api/assistants/projects/' + second.json().id)).json().config).toMatchObject({ active: true, threshold: 7 })
+    expect((await get('/api/assistants/projects/' + second.json().id)).json().config).toMatchObject({ active: true, threshold: 7, jira_assignee_scope: 'project' })
     expect((await get('/api/assistants/chat')).json().messages).toEqual([])
     expect((await get('/api/assistants/inbox?state=history&limit=1')).json().has_more).toBe(false)
     const general = await post('/api/assistants/chat', { text: '¿Qué pendientes hay?' })
@@ -120,7 +121,7 @@ it('opens the owner inbox headless, gates it when disabled and restores it indep
     await toggle('assistants', true)
     expect((await focused()).json().messages.at(-1).case_id).toBe(selectedId)
     expect((await claim()).statusCode).toBe(200)
-    expect((await get('/api/assistants/settings')).json().config.threshold).toBe(7)
+    expect((await get('/api/assistants/settings')).json().config).toMatchObject({ threshold: 7, jira_assignee_scope: 'project' })
     expect((await post('/api/assistants/scan', {})).statusCode).toBe(200)
     const reopened = (await get('/api/assistants/inbox')).json().items
     expect(reopened.map((item: { title: string }) => item.title)).toEqual(expect.arrayContaining(['Revisión uno', 'Revisión dos']))
