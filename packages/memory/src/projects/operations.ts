@@ -283,7 +283,11 @@ export async function callProjectOperation(deps: ProjectServices, operation: str
       for (const row of rows) await store.enqueue('process', { version_id: row.current_version_id, ...(identityOnly ? { identity_only: true } : { force: input.force }) }, `${identityOnly ? 'identities' : 'process'}:${row.current_version_id}`)
       return { queued: rows.length }
     }
-    case 'timeline': return store.list({ project_id: input.project_id, limit: input.limit, offset: input.offset })
+    case 'timeline': {
+      const activity = await store.list({ project_id: input.project_id, limit: input.limit, offset: input.offset })
+      const [project] = await store.db.query(`SELECT data->'notion_contracts' AS "contracts:json" FROM entities WHERE id=$1 AND kind='project'`, [input.project_id])
+      return project?.contracts ? { ...activity, contracts: project.contracts } : activity
+    }
     case 'review': return { items: await db.query(`SELECT e.* FROM entities e WHERE ${visibleEntity("e.id")} AND ((e.kind='fact' AND (e.data->>'review_state'='pending' OR (e.data->>'stale') IN (1,'true')))
       OR (e.kind='person' AND e.data->>'merged_into' IS NULL AND (COALESCE(e.data->>'identity_status','unresolved')='unresolved' OR NULLIF(e.data->>'email','') IS NULL))
       OR (e.kind IN ('meeting','document','message','issue','note') AND NOT EXISTS(SELECT 1 FROM links l WHERE l.from_id=e.id AND l.type='project')))

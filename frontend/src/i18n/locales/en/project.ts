@@ -170,6 +170,13 @@ const project = {
     },
   },
   summary: {
+    contracts: 'Contracts for my area',
+    contractStart: 'Start',
+    contractEnd: 'Planned end',
+    contractExtension: 'Extended until',
+    contractClosed: 'Recorded closure',
+    contractLastVerified: 'Last verified',
+    contractUnverified: 'Could not refresh from Notion',
     noDescription: "No description",
     addDescription: "Add description",
     recent: "Recent activity",

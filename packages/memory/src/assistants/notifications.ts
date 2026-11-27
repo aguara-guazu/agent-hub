@@ -6,6 +6,7 @@ import { check } from '../contracts.js'
 import { localClock, profile } from './contracts.js'
 import { readPolicy } from './portfolio.js'
 import { recentJira } from './jira.js'
+import { recentContract } from './notion-contracts.js'
 import { notificationAgenda, proximity, type ReadCalendar, type Upcoming } from './agenda.js'
 
 const minute = 60_000
@@ -29,6 +30,7 @@ function sourceLabel(c: Row) {
   if (c.kind === 'slack') return 'Slack · ' + (c.source.channel_name || c.source.channel || 'canal')
   if (c.kind === 'jira') return 'Jira'
   if (c.kind === 'meeting') return 'Calendario'
+  if (c.kind === 'contract') return 'Notion'
   if (c.kind === 'pr') return 'GitHub PR'
   return 'Microtarea'
 }
@@ -147,6 +149,7 @@ async function attentionRows(sql: Sql, work: boolean, date: string, asOf: string
     JOIN assistant_profiles p ON p.project_id=c.project_id JOIN entities e ON e.id=c.project_id
     LEFT JOIN assistant_notice_days d ON d.item_id=c.id AND d.local_day=$1 WHERE ${tracked}
     AND (c.kind<>'jira' OR ($3=1 AND ${recentJira('$2')}))
+    AND (c.kind<>'contract' OR ($3=1 AND ${recentContract('$2')}))
     AND c.state IN ('open','sent','uncertain') AND coalesce(c.source->>'dismissed',0)=0 ${ids ? '' : "AND (c.state='open' OR c.notified_revision<c.revision)"} ${where}`,
     params,
   )
@@ -160,6 +163,8 @@ async function attentionRows(sql: Sql, work: boolean, date: string, asOf: string
     LEFT JOIN assistant_notice_days d ON d.item_id=c.id AND d.local_day=$1 WHERE ${tracked}
     AND NOT EXISTS(SELECT 1 FROM assistant_cases origin WHERE origin.id=c.case_id AND origin.kind='jira'
       AND (origin.state<>'open' OR $3=0 OR NOT (${recentJira('$2','origin')})))
+    AND NOT EXISTS(SELECT 1 FROM assistant_cases origin WHERE origin.id=c.case_id AND origin.kind='contract'
+      AND (origin.state<>'open' OR $3=0 OR NOT (${recentContract('$2','origin')})))
     AND c.state IN ('done','blocked') ${ids ? '' : 'AND c.notified_attempt<c.attempts'} ${where}`,
         params,
       )),
@@ -324,8 +329,9 @@ export async function briefEmailReminders(db: Sql, now: Date, connections = true
   const rows = await db.query(
     `SELECT c.id,c.title,c.reason,c.kind,c.source,c.score,e.title AS project FROM assistant_cases c
     JOIN entities e ON e.id=c.project_id JOIN assistant_profiles p ON p.project_id=e.id
-    WHERE ${tracked} AND c.state='open' AND coalesce(c.source->>'dismissed',0)=0 AND ($2=1 OR c.kind NOT IN ('pr','slack','jira'))
+    WHERE ${tracked} AND c.state='open' AND coalesce(c.source->>'dismissed',0)=0 AND ($2=1 OR c.kind NOT IN ('pr','slack','jira','contract'))
     AND (c.kind<>'jira' OR ($3=1 AND ${recentJira('$1')}))
+    AND (c.kind<>'contract' OR ($3=1 AND ${recentContract('$1')}))
     AND EXISTS(SELECT 1 FROM assistant_notice_days d WHERE d.item_id=c.id AND d.capped_at<=$1 AND d.capped_at>coalesce((
       SELECT max(sd.updated_at) FROM schedule_deliveries sd JOIN schedule_runs r ON r.id=sd.run_id
       JOIN schedules s ON s.id=r.schedule_id WHERE s.template='daily_brief' AND sd.target='gmail_self' AND sd.state='sent'),''))

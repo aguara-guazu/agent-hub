@@ -16,13 +16,17 @@ import { assignedToOwner, AssistantJira, caseIssueKey, issueEvidence, presentCas
 import type { JiraTaskReader } from '../projects/tasks.js'
 import { digest } from './slack.js'
 import { WorkQueue } from './work.js'
+import { contractTrackingModules } from '@agenthub/shared/modules'
+import { ContractTracker, contractSignals, forgetContracts, recentContract, withContractContext } from './notion-contracts.js'
+import type { NotionRead } from './notion-reader.js'
 
 import { channelWithinProject, discoverBindings, enroll, readPolicy, type Bindings, type Identities } from './portfolio.js'
 import { overviewChat, type OverviewInput } from './overview.js'
 
 const jiraInterval = 300_000
 
-const currentSource = `(c.kind<>'jira' OR c.state<>'open' OR ($5=1 AND ${recentJira('$4')}))`
+const currentSource = `(c.state<>'open' OR ((c.kind<>'jira' OR ($5=1 AND ${recentJira('$4')}))
+  AND (c.kind<>'contract' OR ($5=1 AND ${recentContract('$4')}))))`
 // $1 project, $2 view, $3 search text, $4 verification time, $5 Jira availability. `dismissed` marks cases the model judged irrelevant; owner dismissals stay listed as history.
 const listed = `coalesce(e.data->>'memory_state','')<>'archived' AND e.id NOT IN (SELECT project_id FROM archived_projects)
   AND ($2<>'attention' OR ${currentSource}) AND ($1 IS NULL OR c.project_id=$1) AND coalesce(c.source->>'dismissed',0)=0
@@ -34,6 +38,7 @@ export class Resident {
   readonly attention: Attention
   readonly work: WorkQueue
   readonly jira: AssistantJira
+  readonly contracts: ContractTracker
   private readonly controllers = new Map<string, AbortController>()
   private readonly scans = new Map<string, { operation: Promise<void>; force: boolean }>()
   private readonly effects = new Set<Promise<unknown>>()
@@ -52,15 +57,17 @@ export class Resident {
     calendar?: ReadCalendar,
     jiraReader?: JiraTaskReader,
     readonly mirrorJira?: (project: string, issues: LiveIssue[]) => Promise<unknown>,
+    notionRead?: NotionRead,
   ) {
     this.jira = new AssistantJira(db, enabled, jiraReader)
+    this.contracts = new ContractTracker(db, notionRead, () => contractTrackingModules.every(enabled), now)
     this.notifications = new NotificationQueue(db, now, enabled, calendar)
     this.attention = new Attention(db, model, lookup, access, now, async (project, version) => {
       const p = await this.settings(project)
       return this.on() && p.config.active && p.version === version
     }, (project, row, text, signal) => this.liveEvidence(project, row, text, signal),
-      () => this.enabled('connections') && this.enabled('mcp'))
-    this.work = new WorkQueue(db, model, lookup, db.directory, (project, row, text, signal) => this.liveEvidence(project, row, text, signal))
+      () => this.enabled('connections') && this.enabled('mcp'), project => this.contracts.evidence(project))
+    this.work = new WorkQueue(db, model, lookup, db.directory, (project, row, text, signal) => this.liveEvidence(project, row, text, signal), this.contracts)
   }
   on() {
     return this.enabled('assistants') && this.enabled('memory')
@@ -131,6 +138,7 @@ export class Resident {
   }
   trackingChanged(project: string) {
     this.jiraAttempts.delete(project)
+    this.contracts.clearProgress(project)
     this.controllers.get(project)?.abort()
     this.controllers.delete(project)
   }
@@ -149,7 +157,8 @@ export class Resident {
     ])
     const changes = (Object.keys(config) as (keyof Profile)[]).filter(key => JSON.stringify(previous[key]) !== JSON.stringify(config[key]))
     // A change of Jira assignee scope only needs a new scan. Keep other sources and existing dismissals intact.
-    if (changes.some(key => key !== 'jira_assignee_scope')) {
+    if (changes.includes('notion_project')) await forgetContracts(sql, project)
+    if (changes.some(key => key !== 'jira_assignee_scope' && key !== 'notion_project')) {
       await sql.query(
         `UPDATE assistant_cases SET state=CASE WHEN $2 AND
         (kind<>'slack' OR EXISTS(SELECT 1 FROM json_each($3) w WHERE w.value->>'channel'=source->>'channel'
@@ -186,7 +195,11 @@ export class Resident {
         (k) => JSON.stringify(current.config[k]) !== JSON.stringify(config[k]),
       )
       if (!keys.length) return
-      const patch = Object.fromEntries(keys.filter((k) => k !== 'notifications').map((k) => [k, config[k]]))
+      const patch = Object.fromEntries(keys.filter((k) => k !== 'notifications' && k !== 'notion_contracts').map((k) => [k, config[k]]))
+      if (keys.includes('notion_contracts')) {
+        this.contracts.invalidate()
+        await forgetContracts(sql)
+      }
       await sql.query(
         'INSERT INTO assistant_portfolio_policy(singleton,value) VALUES(1,$1) ON CONFLICT(singleton) DO UPDATE SET value=excluded.value',
         [{ version: version + 1, config }],
@@ -223,6 +236,7 @@ export class Resident {
   }
   async stop() {
     this.epoch++
+    this.contracts.invalidate()
     this.jiraAttempts.clear()
     for (const c of this.controllers.values()) c.abort()
     this.controllers.clear()
@@ -280,6 +294,7 @@ export class Resident {
       this.awake = null
     }
     if (!active.length) return
+    await this.contracts.refresh(force)
     const { upcoming } = await this.notifications.agenda()
     const priority = (r: (typeof active)[number]) => r.urgency * 10 + proximity(upcoming.get(r.project_id))
     active.sort((a, b) => priority(b) - priority(a))
@@ -289,7 +304,7 @@ export class Resident {
         for (const p of waiting) {
           if (epoch !== this.epoch || !this.on()) return
           try {
-            await this.scan(p.project_id, force)
+            await this.scan(p.project_id, force, true)
           } catch (e) {
             await this.db.query('UPDATE assistant_profiles SET last_error=$2 WHERE project_id=$1', [
               p.project_id,
@@ -331,7 +346,7 @@ export class Resident {
       if (changed) this.trackingChanged(row.project_id)
     }
   }
-  scan(project: string, force = true): Promise<void> {
+  scan(project: string, force = true, contractsChecked = false): Promise<void> {
     const pending = this.scans.get(project)
     if (pending) {
       if (!force || pending.force) return pending.operation
@@ -341,13 +356,13 @@ export class Resident {
         if (this.jiraAttempts.get(project) === attempt) return this.scan(project, true)
       })
     }
-    const next = this.scanOnce(project, force).finally(() => {
+    const next = this.scanOnce(project, force, contractsChecked).finally(() => {
       this.scans.delete(project)
     })
     this.scans.set(project, { operation: next, force })
     return next
   }
-  private async scanOnce(project: string, force: boolean) {
+  private async scanOnce(project: string, force: boolean, contractsChecked: boolean) {
     const { config: p, version } = await this.settings(project)
     check(this.on() && p.active, 'El asistente está pausado', 409)
     const signal = this.signal(project),
@@ -406,17 +421,25 @@ export class Resident {
       this.jiraAttempts.set(project, {at: +now, error})
       if (error) errors.push(error)
     } else if (last.error) errors.push(last.error)
-    const currentSignals = await projectSignals(this.db, project, p, now, issues ?? [])
+    const contractError = await this.contracts.refresh(force && !contractsChecked)
+    if (contractError) errors.push(contractError)
+    const {items: contracts, remote} = await this.contracts.project(project)
+    if (readJira) this.contracts.recordProgress(project,p,contracts.length ? issues : null)
+    const today = localClock(p,now).date
+    const currentSignals = (await projectSignals(this.db, project, p, now, issues ?? []))
+      .map(s => withContractContext(s,contracts,today,remote))
+    currentSignals.push(...contractSignals(contracts,today,remote))
     signal.throwIfAborted()
     if (readJira) await this.reconcileJira(project, p, version, issues, currentSignals, this.jiraAttempts.get(project)?.error)
     const closeMissing = async (kind: string, keys: string[], repo?: string) => {
       await this.db.query(
-        `UPDATE assistant_cases SET state='closed',draft=NULL,revision=revision+1,source=json_remove(source,'$.refresh'),updated_at=now() WHERE project_id=$1 AND kind=$2 AND state='open'
+        `UPDATE assistant_cases SET state='closed',draft=NULL,revision=revision+1,fingerprint=CASE WHEN kind='contract' THEN '' ELSE fingerprint END,source=json_remove(source,'$.refresh'),updated_at=now() WHERE project_id=$1 AND kind=$2 AND state='open'
         AND source_key NOT IN (SELECT value FROM json_each($3)) AND ($4 IS NULL OR source->>'repo'=$4)`,
         [project, kind, keys, repo ?? null],
       )
     }
     await closeMissing('meeting', currentSignals.filter(s => s.kind === 'meeting').map(s => s.key))
+    if (!contractError && this.contracts.enabled()) await closeMissing('contract', currentSignals.filter(s => s.kind === 'contract').map(s => s.key))
     if (this.enabled('connections'))
       for (const repo of p.github_repos)
         await collect(async () => {
@@ -645,7 +668,7 @@ export class Resident {
         await add('secretary', answer.reply, answer.evidence)
       })
     } else {
-      const evidence = await this.lookup(project, [text, ...history.slice(0, 2).map((m) => m.body)].filter(Boolean).join(' '))
+      const evidence = [...await this.contracts.evidence(project), ...await this.lookup(project, [text, ...history.slice(0, 2).map((m) => m.body)].filter(Boolean).join(' '))]
       const items = (await this.inbox(project)).slice(0, 12)
       const tasks = await this.db.query(
         'SELECT role,objective,state,result FROM assistant_work WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',

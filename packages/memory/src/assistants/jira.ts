@@ -56,6 +56,8 @@ export const recentJira = (now: string, alias = 'c') => `coalesce(${alias}.sourc
 
 export function presentCase(row: CaseRow & { current_source: number }): CaseRow {
   const { current_source, ...item } = row
+  if (item.kind === 'contract' && item.state === 'open' && !current_source)
+    return { ...item, score: 0, draft: null, evidence: [], reason: 'Pendiente de confirmar el contrato del área en Notion.', source: { url: item.source.url } }
   if (item.kind !== 'jira' || item.state !== 'open' || current_source) return item
   const { url, issue_key, task_id, remote } = item.source
   return {

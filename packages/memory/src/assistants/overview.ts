@@ -109,7 +109,7 @@ export async function overviewChat(r: Resident, input?: OverviewInput) {
     const ordered = named.length ? named : open
     const evidence: Evidence[] = []
     for (const project of ordered) {
-      const hits = await shareable(r.model, await r.lookup(project.id, text))
+      const hits = await shareable(r.model, [...await r.contracts.evidence(project.id), ...await r.lookup(project.id, text)])
       evidence.push(...hits.slice(0, 3).map((e) => ({ ...e, title: project.title + ' · ' + e.title })))
     }
     const selected = (

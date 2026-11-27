@@ -42,6 +42,7 @@ function PolicyEditor({ data }: { data: PortfolioSettings }) {
   const { t } = useT('assistants'),
     cache = useQueryClient(),
     [p, set] = useState(data.config)
+  const contracts = p.notion_contracts ?? { database: '', areas: [], area_property: '' }
   function change<K extends keyof PortfolioPolicy>(key: K, value: PortfolioPolicy[K]) {
     set((current) => ({ ...current, [key]: value }))
   }
@@ -75,6 +76,14 @@ function PolicyEditor({ data }: { data: PortfolioSettings }) {
           { value: 'project', label: t('jiraWholeProject') },
         ]}
       />
+      <fieldset>
+        <legend>{t('contractSettings')}</legend>
+        <Field label={t('contractDatabase')}><Input value={contracts.database} onChange={e => change('notion_contracts', { ...contracts, database: e.target.value })} /></Field>
+        <Field label={t('contractAreas')} hint={t('contractAreasHelp')}>
+          <Input defaultValue={contracts.areas.join(', ')} onChange={e => change('notion_contracts', { ...contracts, areas: e.target.value.split(',').map(a => a.trim()).filter(Boolean) })} />
+        </Field>
+        <Field label={t('contractAreaProperty')}><Input value={contracts.area_property} onChange={e => change('notion_contracts', { ...contracts, area_property: e.target.value })} /></Field>
+      </fieldset>
       <fieldset>
         <legend>{t('notice')}</legend>
         <div className="assistant-grid">
@@ -279,6 +288,9 @@ function Editor({ data }: { data: SettingsData }) {
         <div className="assistant-form">
           <Field label={t('jira')}>
             <Input value={p.jira_owner} onChange={(e) => change('jira_owner', e.target.value)} />
+          </Field>
+          <Field label={t('notionProject')} hint={t('notionProjectHelp')}>
+            <Input value={p.notion_project ?? ''} onChange={e => change('notion_project', e.target.value)} />
           </Field>
           <Field label={t('repo')}>
             <Input value={p.repository} onChange={(e) => change('repository', e.target.value)} />

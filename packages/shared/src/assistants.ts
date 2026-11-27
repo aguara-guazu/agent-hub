@@ -1,6 +1,39 @@
 import { z } from 'zod'
 const id = z.string().uuid()
 
+/** Notion database links may contain a title slug and a separate view ID in the query. */
+export function notionId(input: string): string | null {
+  let value = input.trim()
+  if (value.includes('://')) {
+    try {
+      const url = new URL(value)
+      if (url.protocol === 'collection:') value = url.hostname
+      else if (url.protocol === 'https:' && /^(?:[\w-]+\.)?notion\.(?:so|com|site)$/.test(url.hostname))
+        value = url.pathname.split('/').filter(Boolean).at(-1) ?? ''
+      else return null
+    } catch { return null }
+  }
+  const suffix = value.match(/(?:^|-)([\da-f]{32}|[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12})$/i)?.[1]
+  if (!suffix) return null
+  const hex = suffix.replaceAll('-', '').toLowerCase()
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-')
+}
+const notionRef = z.string().trim().max(1200).refine(value => !value || !!notionId(value), 'Ingresá el enlace o ID de Notion').default('')
+const notionContracts = z.object({
+  database: notionRef,
+  areas: z.array(z.string().trim().min(1).max(120)).max(12).default([]),
+  area_property: z.string().trim().max(120).default(''),
+}).strict().refine(value => !value.areas.length || !!value.database, 'Elegí la base de contratos de Notion')
+export type NotionContractSettings = z.infer<typeof notionContracts>
+const contractDay = z.iso.date().nullable()
+const projectContract = z.object({
+  id, url: z.string(), title: z.string(), areas: z.array(z.string()),
+  start: contractDay, end: contractDay, extension: contractDay, closed: contractDay,
+})
+export const projectContracts = z.object({ items: z.array(projectContract), verified_at: z.iso.datetime(), status: z.enum(['verified','unavailable']) })
+export type ProjectContract = z.infer<typeof projectContract>
+export type ProjectContracts = z.infer<typeof projectContracts>
+
 const hhmm = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/)
 const zone = z
   .string()
@@ -45,6 +78,7 @@ const profileFields = z
       .max(12)
       .default([]),
     jira_owner: z.string().max(180).default(''),
+    notion_project: notionRef,
     jira_assignee_scope: z.enum(['mine', 'project']).default('mine'),
     style: z.string().trim().max(2000).default(''),
     repository: z.string().max(2000).default(''),
@@ -86,7 +120,7 @@ const portfolioFields = profileFields
     keep_awake: true,
     style: true,
   })
-  .extend({ notifications: noticeSettings.prefault({}) })
+  .extend({ notifications: noticeSettings.prefault({}), notion_contracts: notionContracts.prefault({}) })
   .refine(differentHours, hoursMessage)
 export const portfolioPolicy = z.preprocess(readPreviousSettings, portfolioFields)
 export type PortfolioPolicy = z.infer<typeof portfolioPolicy>
@@ -102,7 +136,7 @@ export interface Evidence {
 }
 export interface Signal {
   key: string
-  kind: 'slack' | 'jira' | 'meeting' | 'pr'
+  kind: 'slack' | 'jira' | 'meeting' | 'pr' | 'contract'
   title: string
   text: string
   at: string

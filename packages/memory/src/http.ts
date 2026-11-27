@@ -14,6 +14,7 @@ export interface MemoryRouteOptions {
   /** Scan of gateways started from a bundle older than the versioned runtime; logged by an update stop, never blocking. */
   legacyGateways?(): Promise<LegacyGatewayScan>
   residentReadTools?: import('./assistants/sessions.js').AssistantTerminalPorts['readTools']
+  notionRead?: import('./assistants/notion-reader.js').NotionRead
   collaborationEnabled?(): boolean
   chatAgentEnabled?(agentId: string): boolean
   usageAgentEnabled?(agentId: string): boolean

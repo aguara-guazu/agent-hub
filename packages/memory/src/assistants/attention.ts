@@ -6,6 +6,7 @@ import type { CaseRow, Evidence, Profile, Signal, Watch } from './contracts.js'
 import { abandonedAtStartup } from './contracts.js'
 import { digest, type ChannelAccess, type SlackRead } from './slack.js'
 import { presentCase, recentJira, type JiraCase, type LiveEvidence } from './jira.js'
+import { recentContract } from './notion-contracts.js'
 
 export type Lookup = (project: string, text: string, exclude?: { channel?: string; root?: string; key?: string; jira?: boolean }) => Promise<Evidence[]>
 export type Access = (project: string, w: Watch, signal: AbortSignal) => Promise<ChannelAccess>
@@ -36,11 +37,12 @@ export class Attention {
     readonly current: (project: string, version: number) => Promise<boolean>,
     readonly liveEvidence: (project: string, row: JiraCase, text: string, signal: AbortSignal) => Promise<LiveEvidence>,
     readonly jiraEnabled: () => boolean,
+    readonly contractEvidence: (project: string) => Promise<Evidence[]> = async () => [],
   ) {}
 
   async get(id: string) {
     const [row] = await this.db.query<CaseRow & {current_source: number}>(
-      `SELECT c.*,($3=1 AND ${recentJira('$2')}) AS current_source FROM assistant_cases c WHERE c.id=$1`,
+      `SELECT c.*,($3=1 AND CASE WHEN kind='contract' THEN ${recentContract('$2')} ELSE ${recentJira('$2')} END) AS current_source FROM assistant_cases c WHERE c.id=$1`,
       [id, this.now().toISOString(), this.jiraEnabled()])
     check(row, 'El asunto no existe', 404)
     return presentCase(row)
@@ -71,6 +73,7 @@ export class Attention {
         `UPDATE assistant_cases AS c SET state='open',revision=revision+1,source=json_remove(source,'$.owner_dismissed'),updated_at=now()
         WHERE id IN (SELECT value FROM json_each($1)) AND state='closed' AND source->>'owner_dismissed'=1
         AND (kind<>'jira' OR ($2=1 AND ${recentJira('$3')}))
+        AND (kind<>'contract' OR ($2=1 AND ${recentContract('$3')}))
         AND project_id NOT IN (SELECT project_id FROM archived_projects) RETURNING id`,
         [ids, this.jiraEnabled(), this.now().toISOString()],
       )
@@ -162,7 +165,8 @@ export class Attention {
     }
     let usedMemory = s.kind !== 'jira' && (!live?.evidence.length ||
       (existing?.fingerprint === s.fingerprint && existing?.source.jira_hash === jiraHash && existing?.source.used_memory === true))
-    let evidence = [...(s.evidence ?? live?.evidence ?? []), ...(usedMemory ? await memory() : [])]
+    const contracts = s.kind === 'slack' ? await shareable(this.model, await this.contractEvidence(project)) : []
+    let evidence = [...(s.evidence ?? live?.evidence ?? []), ...contracts, ...(usedMemory ? await memory() : [])]
     let contextHash = contextHashOf(evidence, live)
     const unchanged = sameSignal && existing.source.context_hash === contextHash
     if (
@@ -323,7 +327,7 @@ export class Attention {
     check(row.state === 'open' && row.revision === revision && row.draft, sameCase, 409)
     const { channel, thread } = await this.live(row, p, signal)
     const live = await this.sharedJira(row.project_id, row, row.source.query ?? row.title, signal)
-    const evidence = [...live.evidence]
+    const evidence = [...live.evidence, ...await shareable(this.model, await this.contractEvidence(row.project_id))]
     if (row.source.used_memory !== false || !live.evidence.length)
       evidence.push(...await shareable(this.model, await this.lookup(row.project_id, row.source.query ?? row.title, {
         channel: row.source.channel, root: row.source.root, key: row.source_key, jira: true,

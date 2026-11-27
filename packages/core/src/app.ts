@@ -76,6 +76,7 @@ import {
   delegatedPushPolicy,
 } from '@agenthub/memory'
 import { createJiraTaskReader } from './memory-jira.js'
+import { notionReader } from './modules/assistants/notion.js'
 import { createPoolCallAudit } from './effects/call-audit.js'
 import { createCoreScheduleEffects } from './effects/wiring.js'
 import { createJiraAdapters } from './effects/jira.js'
@@ -328,6 +329,7 @@ export function buildApp(options: BuildAppOptions = {}): CoreApp {
       automationsEnabled: () => automationsEnabled(store),
       scheduleEffects,
       jiraMcp: createJiraTaskReader(store, owner.id, jiraPool, oauthStore),
+      notionRead: notionReader(store, owner.id, jiraPool, oauthStore),
       residentReadTools: provider => assistantReadTools(store, owner.id, hostname(), provider, baseUrl),
       usageAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='usage_status')),
       chatAgentEnabled: agentId => !!store.agent(agentId) && computeSnapshot(store,agentId).servers.some(s=>s.id===store.setting(MEMORY_CATALOG_SERVER_SETTING) && s.tools.some(t=>t.name==='chat_join') && s.tools.some(t=>t.name==='chat_inbox')),

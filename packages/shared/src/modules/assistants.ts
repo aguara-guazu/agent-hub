@@ -1,5 +1,7 @@
 import type { ModuleDefinition } from './definition.js'
 
+export const contractTrackingModules = ['assistants', 'memory', 'connections', 'mcp'] as const
+
 export const assistants = {
   id: 'assistants',
   label: 'Asistentes',

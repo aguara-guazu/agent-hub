@@ -13,6 +13,7 @@ export * from './projects/identity-inference.js'
 export * from './skill.js'
 export * from './connectors/google-setup.js'
 export type { JiraTaskReader } from './projects/tasks.js'
+export type { NotionRead } from './assistants/notion-reader.js'
 
 export { collaborationSkill } from './sharing/skill.js'
 

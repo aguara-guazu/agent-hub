@@ -74,7 +74,7 @@ export function registerMemory(app: FastifyInstance, options: MemoryRouteOptions
   const openResidentTeams = registerResidentTeams(app, { backend: async () => (await service.get()).operations.teams,
     available: () => operationModules('resident_team').every(enabled) && collaborationEnabled(),
     baseUrl: options.baseUrl, admission: service.admission })
-  const assistants = registerAssistants(app, service, auth, enabled, () => options.scheduleEffects?.jira, openResidentTeams, options.residentReadTools)
+  const assistants = registerAssistants(app, service, auth, enabled, () => options.scheduleEffects?.jira, openResidentTeams, options.residentReadTools, options.notionRead)
   const credentialReference = registerMemoryMcp(app, service, enabled, collaborationEnabled)
   registerConnections(app, service, auth, enabled)
   registerProjectRoutes(app, service, auth, enabled, assistants.trackingChanged)

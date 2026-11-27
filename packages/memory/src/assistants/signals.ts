@@ -136,7 +136,7 @@ export async function projectSignals(db: Sql, project: string, p: Profile, now: 
       score: soon ? 8 : 5,
       reasons,
       fingerprint: digest([e.updated_at, soon]),
-      source: { url, event_id: e.id },
+      source: { url, event_id: e.id, calendar_day: localClock(p,new Date(at)).date },
     })
   }
   return signals

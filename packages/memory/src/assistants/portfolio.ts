@@ -11,7 +11,7 @@ export async function readPolicy(sql: Sql) {
 }
 
 export async function enroll(sql: Sql, project?: string) {
-  const { notifications: _notifications, ...defaults } = (await readPolicy(sql)).config
+  const { notifications: _notifications, notion_contracts: _contracts, ...defaults } = (await readPolicy(sql)).config
   const base = profile.parse({ ...defaults, active: true })
   await sql.query(
     `INSERT INTO assistant_profiles(project_id,config,version)

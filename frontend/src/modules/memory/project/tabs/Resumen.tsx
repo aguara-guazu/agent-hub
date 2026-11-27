@@ -2,6 +2,7 @@ import { Button, Chip, Empty, ErrorState, List, Row, RowLink, SkeletonRows, Tag,
 import { useT } from "../../../../i18n"
 import { entityPath, useMemory, type Page } from "../../../../lib/memory"
 import type { Entity } from "../../../../lib/types"
+import { projectContracts } from "@agenthub/shared/assistants"
 import { ListDate, entityDate, entityDetail, useKindLabel, useProjectNavigation } from "../shared"
 
 interface TaskRow { id: string; title: string; status: string; source_title?: string | null; external_key?: string | null }
@@ -17,6 +18,7 @@ export default function Resumen({ project }: { project: Entity }) {
   const { t, plural } = useT("project")
   const go = useProjectNavigation()
   const description = typeof project.data.description === "string" ? project.data.description.trim() : ""
+  const contracts = projectContracts.safeParse(project.data.notion_contracts).data
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-5)" }}>
       {description
@@ -25,6 +27,17 @@ export default function Resumen({ project }: { project: Entity }) {
             <span className="t3">{t("summary.noDescription")}</span>
             <Button small variant="ghost" icon="add" onClick={() => go({ panel: "details" })}>{t("summary.addDescription")}</Button>
           </div>}
+      {!!contracts?.items?.length && (
+        <section className="section">
+          <div className="section-h"><h2 className="h2">{t("summary.contracts")}</h2></div>
+          <List>{contracts.items.map(c => (
+            <Row key={c.id} title={<a href={'https://www.notion.so/' + c.id.replaceAll('-', '')} target="_blank" rel="noreferrer">{c.title}</a>}
+              sub={[c.areas.join(', '), c.start && t('summary.contractStart') + ' ' + c.start, c.end && t('summary.contractEnd') + ' ' + c.end,
+                c.extension && t('summary.contractExtension') + ' ' + c.extension, c.closed && t('summary.contractClosed') + ' ' + c.closed].filter(Boolean).join(' · ')} />
+          ))}</List>
+          <p className="t3">{contracts.status === 'unavailable' && t('summary.contractUnverified') + ' · '}{t('summary.contractLastVerified')} {contracts.verified_at.slice(0,10)}</p>
+        </section>
+      )}
       <RecentActivity projectId={project.id} />
       <OpenTasks projectId={project.id} viewAll={count => plural("summary.viewTasks", count)} onViewAll={() => go({ tab: "tareas" })} />
     </div>

@@ -1,4 +1,5 @@
 import { assistants } from './assistants.js'
+export { contractTrackingModules } from './assistants.js'
 import { connections } from './connections.js'
 import { agents } from './agents.js'
 import { memory } from './memory.js'

@@ -22,6 +22,14 @@ El orden tiene en cuenta la próxima reunión del proyecto, las preguntas de Sla
 
 El primer recordatorio espera **30 minutos** por defecto y cada intervalo siguiente se duplica. Con el máximo inicial de **tres presentaciones por asunto y día**, un primer aviso a las 9:00 puede repetirse a las 9:30 y a las 10:30. Podés elegir hasta cuatro presentaciones. Al llegar al límite, los asuntos que siguen abiertos se incluyen en el próximo correo del brief diario si tenés esa entrega habilitada. El contador se reinicia al cambiar de día en la zona horaria de Asistentes y se conserva al reiniciar el Hub.
 
+## Contratos del área en Notion
+
+En **Ajustes → Asistentes → Contratos de mi área en Notion**, elegí la base y los nombres de tus áreas o tipos de servicio. El Hub lee la base con la cuenta conectada en Servidores MCP. Si tu base usa un nombre de propiedad propio para el área, podés indicarlo en ese ajuste. Cada proyecto se vincula por su nombre, sus alias o una empresa inequívoca. En las excepciones del proyecto podés indicar el enlace exacto a su ficha en Notion.
+
+Cuando la base ofrece una vista de tabla completa, el Hub recorre sus páginas y aplica el filtro de área a la propiedad de cada contrato. Esa lectura también funciona con el cupo SQL de Notion agotado. Para fuentes que solo ofrecen vistas filtradas, consulta la fuente mediante SQL.
+
+La ficha y la línea de tiempo conservan el contrato y su enlace, las fechas de inicio y fin, las prórrogas y la fecha de cierre registrada. El asistente contrasta esos períodos con las actividades de calendario y los avances de Jira al preparar el seguimiento. Avisa durante los siete días previos al inicio y los catorce previos al fin, y durante siete días después del fin previsto si sigue faltando el cierre. Revisa la fuente cada quince minutos y en cada revisión manual. Ante un problema de acceso, la ficha muestra la última verificación y los avisos contractuales esperan una nueva lectura.
+
 ## Atención a clientes
 
 El asistente reutiliza las cuentas y los canales autorizados en Conexiones. Reconoce la identidad de usuario de Slack y asocia canales por asignación existente, por enlace en memoria o por coincidencia inequívoca entre el nombre del canal y el del proyecto o cliente. Una cuenta puede servir a varios proyectos. Si un nombre coincide con dos clientes, podés precisar el destino en las excepciones. Una cuenta bot requiere identificar a la persona cuyas respuestas atienden el hilo. Slack muestra como remitente al usuario o bot autenticado por esa conexión.

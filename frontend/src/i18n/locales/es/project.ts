@@ -167,6 +167,13 @@ const project = {
     },
   },
   summary: {
+    contracts: 'Contratos de mi área',
+    contractStart: 'Inicio',
+    contractEnd: 'Fin previsto',
+    contractExtension: 'Prórroga hasta',
+    contractClosed: 'Cierre registrado',
+    contractLastVerified: 'Última verificación',
+    contractUnverified: 'No se pudo actualizar desde Notion',
     noDescription: "Sin descripción",
     addDescription: "Agregar descripción",
     recent: "Última actividad",

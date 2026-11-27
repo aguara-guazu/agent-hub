@@ -123,6 +123,8 @@ it('abre la bandeja, el chat y los ajustes generales sin elegir el primer proyec
     })
     expect(host.querySelector<HTMLInputElement>('input[min="1"][max="4"]')?.value).toBe('3')
     expect(host.querySelector<HTMLInputElement>('input[min="5"][max="240"]')?.value).toBe('30')
+    const contracts = [...host.querySelectorAll('fieldset')].find(field => /Contratos de mi área en Notion|Contracts for my area in Notion/.test(field.textContent ?? ''))
+    expect(contracts?.querySelectorAll('input')).toHaveLength(3)
     expect(host.querySelector('[role="combobox"][aria-label$="9/10"]')).toBeTruthy()
     const scope = host.querySelector<HTMLButtonElement>('button[role="combobox"][aria-label*="Jira"]')!
     expect(scope.textContent).toMatch(/Solo las asignadas a mí|Only tasks assigned to me/)

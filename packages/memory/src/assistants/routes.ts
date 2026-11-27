@@ -39,6 +39,7 @@ export function registerAssistants(
   jira: () => JiraGuard | undefined,
   openTeams?: OpenResidentTeams,
   readTools?: MemoryRouteOptions['residentReadTools'],
+  notionRead?: MemoryRouteOptions['notionRead'],
 ) {
   const guard = { preHandler: authorize }
   const available = () => enabled('assistants') && enabled('memory') && !service.admission.isClosed()
@@ -105,6 +106,7 @@ export function registerAssistants(
           calendarAvailability(db, service.google),
           service.jiraMcp,
           (project, issues) => upsertJiraIssues(store, issues, 'assistant:jira-sync', project),
+          notionRead,
         )
         await Promise.all([r.work.recover(), r.attention.recover()])
         return r

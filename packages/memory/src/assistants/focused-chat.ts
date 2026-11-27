@@ -47,7 +47,8 @@ export async function answerAbout(
   const memory = needsMemory ? await r.lookup(project, query, {
     channel: row?.source.channel, root: row?.source.root, ...(row?.kind === 'slack' ? { jira: true } : {}),
   }) : []
-  const evidence = [...live.evidence, ...(await shareable(r.model, memory)).slice(0, 8)]
+  const contracts = await shareable(r.model, await r.contracts.evidence(project))
+  const evidence = [...live.evidence, ...contracts, ...(await shareable(r.model, memory)).slice(0, 8)]
   const historyAllowed = await historyAllowsRemote(r.db, project)
   const external = !!(await r.model.external?.())
   const previous = (jiraOnly || external) && !historyAllowed ? [] : history
