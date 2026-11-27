@@ -363,9 +363,12 @@ describe('proyectos compartidos cifrados', () => {
           fragments: Array.from({ length: 300 }, (_, i) => ({ text: `Documento ${index}, parte ${i}. ` + 'contenido '.repeat(5000) })) })
         await peer.sharing.publish(id, source.entity_id)
       }
-      // Establish the project set before connecting: adding one later intentionally
-      // reconnects peers, which resets the per-connection acknowledgement cursor.
-      const other = await a.store.create({ kind: 'project', title: 'Otro' }); await a.sharing.create(other.id)
+      // Mirrored documents can generate observations during later ticks. Measure
+      // exact acknowledgement counts in a project with only our two messages.
+      const progressProject = await a.store.create({ kind: 'project', title: 'Prueba de progreso' })
+      await a.sharing.create(progressProject.id)
+      await b.sharing.importInvitation(await a.sharing.changeMember(progressProject.id, publicIdentity(await b.sharing.identity()), 'maintainer', false))
+      await a.sharing.message(progressProject.id, 'Primer cambio', new Date(Date.now() + 120_000).toISOString())
       expect((await a.network.settings()).enabled).toBe(true) // ignores a pre-upgrade saved false
       await a.network.configure({ enabled: false, bind_host: '127.0.0.1', bootstrap: [address] }); await b.network.configure({ enabled: true, bind_host: '127.0.0.1', bootstrap: [address] })
       await vi.waitFor(async () => { expect((await b.sharing.messages(id)).items.some(m => m.text === 'Mensaje transportado por P2P'), JSON.stringify({ a: await a.network.status(), b: await b.network.status() })).toBe(true) }, { timeout: 30_000, interval: 300 })
@@ -375,22 +378,24 @@ describe('proyectos compartidos cifrados', () => {
       }, { timeout: 30_000, interval: 300 })
       expect((await a.sharing.messages(id)).items.some(m => m.text === 'No debe propagarse después de revocar')).toBe(false)
       const remoteId = (await b.sharing.identity()).id
-      const progress = async () => (await a.network.status()).peers.find(p => p.project_id === id && p.member_id === remoteId)
-      await vi.waitFor(async () => { expect(await progress()).toMatchObject({ state: 'synced' }) }, { timeout: 30_000 })
-      const previous = (await progress())!
-      expect(previous.confirmed).toBe(previous.total)
+      const progress = async () => (await a.network.status()).peers.find(p => p.project_id === progressProject.id && p.member_id === remoteId)
+      await vi.waitFor(async () => { expect(await progress()).toMatchObject({ state: 'synced', confirmed: 1, total: 1 }) }, { timeout: 30_000 })
       // Bruno acknowledges a page only after storing it; holding that keeps the 10 s
       // background ticks from confirming the new event before progress is read.
       let release!: () => void
       const held = new Promise<void>(resolve => { release = resolve }), receive = b.sharing.receive.bind(b.sharing)
       const intake = vi.spyOn(b.sharing, 'receive').mockImplementation(async (...args) => { await held; return receive(...args) })
-      // Unrelated events leave holes in the global sequence, not in project progress.
-      for (let i = 0; i < 3; i++) await a.sharing.message(other.id, `Otro ${i}`, new Date(Date.now() + 120_000).toISOString())
-      await a.sharing.message(id, 'Nuevo cambio pendiente', new Date(Date.now() + 120_000).toISOString())
-      expect(await progress()).toMatchObject({ state: 'syncing', confirmed: previous.confirmed, total: previous.total + 1 })
-      release(); intake.mockRestore()
+      try {
+        // Unrelated events leave holes in the global sequence, not in project progress.
+        for (let i = 0; i < 3; i++) await a.sharing.message(id, `Otro ${i}`, new Date(Date.now() + 120_000).toISOString())
+        await a.sharing.message(progressProject.id, 'Nuevo cambio pendiente', new Date(Date.now() + 120_000).toISOString())
+        expect(await progress()).toMatchObject({ state: 'syncing', confirmed: 1, total: 2 })
+      } finally {
+        release()
+        intake.mockRestore()
+      }
       await a.network.tick()
-      await vi.waitFor(async () => { expect(await progress()).toMatchObject({ state: 'synced', total: previous.total + 1 }) }, { timeout: 30_000 })
+      await vi.waitFor(async () => { expect(await progress()).toMatchObject({ state: 'synced', confirmed: 2, total: 2 }) }, { timeout: 30_000 })
 
       const recovered = await hub('Nuevo owner con masterkey'), recoveredId = (await recovered.sharing.identity()).id
       await recovered.sharing.join(await a.sharing.invitation(id), phrase)
