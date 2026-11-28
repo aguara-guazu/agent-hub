@@ -45,8 +45,9 @@ it.each(['claude_code','codex_cli','gemini_cli','kiro','opencode','antigravity']
   const launcher=changes.find(c=>/agenthub-(claude|codex|gemini|kiro|opencode|agy)(\.ps1)?$/.test(c.path))!
   expect(launcher).toBeTruthy()
   const content=readFileSync(launcher.path,'utf8')
-  expect(content).toContain("'chat'");expect(content).toContain("'--agent' 'agent'")
-  expect(content).toMatch(/'--' (?:"\$@"|@args)/)
+  expect(content).toContain("'chat'")
+  expect(content).toMatch(/'--agent',? 'agent'/)
+  expect(content).toMatch(/'--'(?: "\$@"|\) \+ \$args)/)
   expect(content).not.toMatch(/trust-all|yolo|skip-permissions/)
   expect(planMemoryHooks(snapshot,endpoint,home)[0]).toHaveLength(0)
   writeFileSync(launcher.path,content+'# editado\n')
@@ -123,4 +124,39 @@ it.each(['claude_code','codex_cli','gemini_cli'] as const)('no registra hooks de
   const hooks=JSON.parse(readFileSync(path,'utf8')).hooks
   expect(hooks).not.toHaveProperty('PostToolUse')
   expect(hooks).not.toHaveProperty('PostToolUseFailure')
+})
+
+it.skipIf(process.platform !== 'win32').each([false, true])('espera Electron y conserva stdin, stdout, stderr y el código 2 (encoded=%s)', async encoded => {
+  const { hookCommand } = await import('./memory-hooks.js')
+  const { createRequire } = await import('node:module')
+  const { spawnSync } = await import('node:child_process')
+  const electron: string = createRequire(import.meta.url)('electron')
+  const fixture = join(home, "bloqueo d'ejemplo.cjs")
+  writeFileSync(fixture, `
+    const input = require('node:fs').readFileSync(0, 'utf8')
+    // Like the Codex quota probe, this helper may outlive the hook deadline.
+    require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 12000)'],
+      { stdio: 'ignore', detached: true }).unref()
+    setTimeout(() => { console.log(input); console.error('rewake'); process.exitCode = 2 }, 150)
+  `)
+  const command = hookCommand(electron, [fixture], encoded)
+  const args = encoded ? command.split(' ').slice(1) : ['-NoProfile', '-NonInteractive', '-Command', command]
+  const result = spawnSync('powershell.exe', args, { input: 'hook payload', encoding: 'utf8', timeout: 10000 })
+  expect(result.error).toBeUndefined()
+  expect(result.stdout.trim()).toBe('hook payload')
+  expect(result.stderr.trim()).toBe('rewake')
+  expect(result.status).toBe(2)
+}, 120000)
+
+it('reactiva Watch al habilitar Agentes de nuevo y mantiene el hook de notas durante el ciclo', () => {
+  const endpoint = gatewayEndpoint({ command: 'node', args: ['cli.js', 'gateway', '--state-dir', home] })
+  const file = join(home, '.claude/settings.json')
+  for (const chat of [true, false, true]) {
+    const tools = chat ? [{ name: 'finish_notes' }, { name: 'chat_join' }] : [{ name: 'finish_notes' }]
+    const snapshot = { cli_kind: 'claude_code', servers: [{ tools }] } as PolicySnapshot
+    expect(applyChanges(planMemoryHooks(snapshot, endpoint, home)[0]).drift).toEqual([])
+    const hooks = JSON.parse(readFileSync(file, 'utf8')).hooks
+    expect(hooks.Stop[0].hooks.some((h: { asyncRewake?: boolean }) => h.asyncRewake)).toBe(chat)
+    expect(hooks.PreToolUse[0].hooks[0].command).toContain('--agenthub-memory-hook')
+  }
 })

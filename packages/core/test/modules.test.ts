@@ -3,9 +3,9 @@ import { applyProbeResult, MEMORY_CATALOG_SERVER_SETTING } from '../src/catalog/
 import { memoryTools } from '@agenthub/memory'
 import { appModules, operationModules } from '@agenthub/shared/modules'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { buildApp, type CoreApp } from '../src/app.js'
 import { ensureLocalOwner } from '../src/local.js'
 import { createAccessToken } from '../src/security.js'
@@ -95,4 +95,18 @@ it('keeps the shell reachable with every module off and restores a single module
   expect((await get('/api/catalog/skills')).statusCode).toBe(200)
   await toggle('memory', true)
   expect((await get('/api/memory/projects/any/repositories/branches')).json()).toMatchObject({ code: 'module_disabled', module: 'schedules' })
+})
+
+it('desactiva y reactiva la consulta de proveedores de extracción conservando el catálogo MCP', async () => {
+  const pkg = join(directory, 'node_modules', '@anthropic-ai', 'claude-code')
+  mkdirSync(pkg, { recursive: true })
+  const reply = { type: 'control_response', response: { subtype: 'success', request_id: 'models', response: { models: [{ value: 'fixture' }] } } }
+  writeFileSync(join(pkg, 'cli.js'), `process.stdin.once('data', () => console.log(JSON.stringify(${JSON.stringify(reply)})))`)
+  vi.stubEnv('PATH', directory + delimiter + process.env.PATH)
+  for (const enabled of [true, false, true]) {
+    await app.fastify.inject({ method: 'PUT', url: '/api/modules/memory', headers, payload: { enabled } })
+    const response = await app.fastify.inject({ method: 'GET', url: '/api/memory/extraction-cli/claude_code', headers })
+    expect(response.json()).toMatchObject(enabled ? { installed: true, models: [{ id: 'fixture' }] } : { code: 'module_disabled', module: 'memory' })
+    expect((await app.fastify.inject({ method: 'GET', url: '/api/catalog/servers', headers })).statusCode).toBe(200)
+  }
 })

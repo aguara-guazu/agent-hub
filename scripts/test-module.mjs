@@ -6,8 +6,8 @@ import { fileURLToPath, URL } from 'node:url'
 const suites = {
   assistants: ['packages/memory/src/assistants/', 'packages/memory/test/assistants', 'packages/core/test/assistants', 'desktop/src/modules/assistants/', 'frontend/src/modules/assistants/'],
   connections: ['packages/memory/test/connectors', 'packages/memory/test/google-', 'packages/memory/test/gmail-', 'packages/core/test/jira-server-route'],
-  agents: ['packages/memory/test/local-chat', 'packages/memory/test/chat-read-access', 'packages/memory/test/team-', 'packages/memory/test/fleet-', 'packages/memory/test/usage-'],
-  memory: ['packages/core/test/project-archive','packages/memory/test/project-archive','frontend/src/modules/memory/projects/','packages/memory/test/remember', 'packages/memory/test/memory.test', 'packages/memory/test/global-search', 'packages/memory/test/project-assistance', 'packages/memory/test/attachments', 'packages/memory/test/work-tracking'],
+  agents: ['packages/daemon/src/local-chat-hook.test', 'packages/daemon/src/adapters/memory-hooks.test', 'packages/memory/test/local-chat', 'packages/memory/test/chat-read-access', 'packages/memory/test/team-', 'packages/memory/test/fleet-', 'packages/memory/test/usage-'],
+  memory: ['packages/memory/test/extraction-cli-path', 'packages/core/test/project-archive','packages/memory/test/project-archive','frontend/src/modules/memory/projects/','packages/memory/test/remember', 'packages/memory/test/memory.test', 'packages/memory/test/global-search', 'packages/memory/test/project-assistance', 'packages/memory/test/attachments', 'packages/memory/test/work-tracking'],
   mcp: ['packages/core/test/probe', 'packages/core/test/oauth', 'packages/gateway/src/server.test', 'packages/gateway/src/tool-schema', 'packages/gateway/src/memory-bridge'],
   skills: ['packages/core/test/skill-sync', 'packages/memory/test/skill.test', 'packages/daemon/src/adapters/skills.test'],
   transcriptions: ['desktop/src/modules/transcriptions/', 'packages/memory/test/media-', 'packages/memory/test/recording-', 'packages/memory/test/transcript', 'packages/memory/test/diarization-'],

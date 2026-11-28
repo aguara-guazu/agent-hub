@@ -94,7 +94,7 @@ const settings = {
         transaction_in_flight: "an earlier update was left unfinished",
         blockers_unknown: "could not check for work in progress",
         core_unreachable: "waiting for the hub to be available",
-        mcp_bridges: "MCP connections are open",
+        mcp_bridges: "quit the MCP clients connected to Agent Hub, such as Claude Desktop or Claude Code, and reopen them after the update",
         recording_active: "a meeting recording is in progress",
         stop_waiting_leaders_one: "waiting for {{count}} leader to finish their turn",
         stop_waiting_leaders_other: "waiting for {{count}} leaders to finish their turn",

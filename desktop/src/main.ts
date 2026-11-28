@@ -544,12 +544,18 @@ function startHubStop(intent: StopIntent, onView: (view: HubStopView) => void, b
   return run
 }
 
-async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<boolean> {
+async function applyUpdate(update: Extract<UpdateStatus, { state: 'downloaded' }>): Promise<boolean | 'mcp_bridges'> {
   if (quitting || updateExiting) return false
   if (recordings.active) return postpone(update.version, [{ code: 'recording_active' }])
   // NSIS closes executables in the installation folder. Wait automatically rather
   // than breaking a client's live stdio MCP connection or asking the user to act.
-  if (update.strategy === 'nsis' && await updater.bridgesAtRisk() > 0) return postpone(update.version, [{ code: 'mcp_bridges' }])
+  if (update.strategy === 'nsis') {
+    const bridges = await updater.bridgesAtRisk()
+    if (bridges > 0) {
+      postpone(update.version, [{ code: Number.isFinite(bridges) ? 'mcp_bridges' : 'blockers_unknown' }])
+      return 'mcp_bridges'
+    }
+  }
   if (!updateStore.isEnabled()) return false
   // Después de una parada que no llegó al commit no se pide otra antes del enfriamiento: cada una avisa de nuevo a los líderes.
   if (cooldownUntilMs(updateStore.readStopIntent()) > Date.now()) return false

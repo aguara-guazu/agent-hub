@@ -175,3 +175,19 @@ it('reporta to_model de PostModelSwitch como el modelo observado y no confunde e
   await localChatHook(state,'agent','claude_code',{session_id:'session',cwd:'/worktree',hook_event_name:'PostModelSwitch',from_model:'claude-a',model:'ignored'})
   expect(sent()).not.toHaveProperty('model')
 })
+
+it('abandona Watch cuando desaparece Claude entre dos esperas', async () => {
+  vi.mocked(inspectNativeProcess).mockResolvedValue({ parent: 1, started: 'birth', command: '"C:\\Program Files\\Claude\\claude.exe" --resume' })
+  const state = { loadCredentials: () => ({ token: 'test', controlPlaneUrl: 'http://localhost' }),
+    loadSnapshot: () => ({ servers: [{ tools: [{ name: 'chat_join' }] }] }) } as unknown as DaemonState
+  const probe = vi.spyOn(process, 'kill').mockReturnValue(true)
+  vi.stubGlobal('fetch', vi.fn().mockImplementationOnce(async () => {
+    probe.mockImplementation(() => { throw Object.assign(new Error(), { code: 'ESRCH' }) })
+    return { ok: true, json: async () => ({}) }
+  }).mockResolvedValue({ ok: true, json: async () => ({ closed: true }) }))
+  try {
+    await localChatHook(state, 'agent', 'claude_code', { session_id: 'session', cwd: '/work' }, 'Watch')
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toHaveProperty('process_id', process.ppid)
+  } finally { probe.mockRestore() }
+})

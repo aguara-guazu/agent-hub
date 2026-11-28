@@ -92,7 +92,7 @@ const settings = {
         transaction_in_flight: "una actualización anterior quedó sin cerrar",
         blockers_unknown: "no se pudo comprobar si hay trabajo en curso",
         core_unreachable: "esperando a que el hub esté disponible",
-        mcp_bridges: "hay conexiones MCP abiertas",
+        mcp_bridges: "cerrá los clientes MCP conectados a Agent Hub, como Claude Desktop o Claude Code, y volvé a abrirlos después de la actualización",
         recording_active: "hay una grabación de reunión en curso",
         stop_waiting_leaders_one: "esperando a {{count}} líder que termine su turno",
         stop_waiting_leaders_other: "esperando a {{count}} líderes que terminen su turno",
