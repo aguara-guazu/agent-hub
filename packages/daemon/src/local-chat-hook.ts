@@ -19,7 +19,7 @@ export async function cliProcess(kind: string): Promise<{ process_id: number; pr
       const info=await inspectNativeProcess(pid,controller.signal)
       if(!info||controller.signal.aborted)return undefined
       const invocation=info.command.split(/\s+-c\s+/)[0]!
-      if(name && new RegExp(`(?:^|[/\\\\])${name}(?:\\.exe)?(?:\\s|$)`).test(invocation) && !/\b(daemon|app-server|queue)\b/.test(invocation))
+      if(name && new RegExp(`(?:^|[/\\\\])${name}(?:\\.exe)?"?(?:\\s|$)`).test(invocation) && !/\b(daemon|app-server|queue)\b/.test(invocation))
         return {process_id:pid,process_started:info.started}
       pid=info.parent
     }
@@ -63,9 +63,16 @@ export async function localChatHook(state: DaemonState, agentId: string, kind: s
     return await response.json() as any
   }
   if (event==='Watch' && kind==='claude_code') {
-    // Held by the native asyncRewake hook. No model polling and no detached orphan shell.
-    // The native host kills this process when the conversation ends.
+    // PowerShell can disappear independently of Claude. Its PID also covers
+    // a slow or unavailable ancestry lookup on Windows.
+    const owners = new Set([processInfo?.process_id, ...(process.platform === 'win32' ? [process.ppid] : [])])
     for (;;) {
+      for (const pid of owners) {
+        if (!pid || pid <= 1) continue
+        try { process.kill(pid, 0) } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ESRCH') return {}
+        }
+      }
       try {
         const result = await send('Watch',30000)
         if (result.closed || result.session?.closed_at) return {}

@@ -8,7 +8,7 @@ type Downloaded = Extract<UpdateStatus, { state: 'downloaded' }>
 interface Dependencies {
   check(): Promise<UpdateStatus>
   /** false means installation must wait for active client connections. */
-  apply(update: Downloaded): Promise<boolean>
+  apply(update: Downloaded): Promise<boolean | 'mcp_bridges'>
   log(message: string): void
   /** Interruptor de Ajustes; apagado, no se consulta ni se aplica nada. */
   enabled?(): boolean
@@ -20,6 +20,7 @@ export class SilentUpdates {
   private running: Promise<void> | null = null
   private pending: Downloaded | null = null
   private stopped = false
+  private bridgeDelay = GATE_RETRY_MS
   private failures = 0
   private lastTrigger = 0
   constructor(private readonly deps: Dependencies) {}
@@ -52,6 +53,7 @@ export class SilentUpdates {
     try {
       if (this.deps.enabled && !this.deps.enabled()) { this.pending = null; return }
       if (!this.pending) {
+        this.bridgeDelay = GATE_RETRY_MS
         const status = await this.deps.check()
         if (this.stopped) return
         if (status.state === 'failed') throw new Error(status.error)
@@ -64,7 +66,14 @@ export class SilentUpdates {
       }
       if (this.stopped) return
       // Keep the download while waiting for Windows MCP bridges to finish.
-      if (!await this.deps.apply(this.pending)) { this.schedule(GATE_RETRY_MS); return }
+      const applied = await this.deps.apply(this.pending)
+      if (applied === 'mcp_bridges') {
+        this.schedule(this.bridgeDelay)
+        this.bridgeDelay = Math.min(this.bridgeDelay * 2, 15 * 60_000)
+        return
+      }
+      this.bridgeDelay = GATE_RETRY_MS
+      if (!applied) { this.schedule(GATE_RETRY_MS); return }
       this.pending = null; this.failures = 0
     } catch (error) {
       this.pending = null

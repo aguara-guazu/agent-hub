@@ -439,17 +439,17 @@ export async function installNsis(installerPath: string, spawnFn: SpawnFn = defa
  * cliente lanzaron con el ejecutable de esta instalación. El instalador NSIS los cierra
  * y el cliente pierde el hub hasta reiniciarlos. Si no se puede consultar, pospone la instalación para proteger las conexiones.
  */
-export async function liveBridges(execPath: string, run: RunFn = defaultRun): Promise<number> {
+async function bridgePids(execPath: string, run: RunFn): Promise<number[] | null> {
   const literal = (value: string) => `'${value.replace(/'/g, "''")}'`
-  const script = `@(Get-CimInstance Win32_Process -Filter ${literal(`Name='${basename(execPath).replace(/'/g, "\\'")}'`)} | ` +
-    `Where-Object { $_.ProcessId -ne ${process.pid} -and $_.ExecutablePath -eq ${literal(execPath)} -and $_.CommandLine -like '*--agenthub-headless*' -and $_.CommandLine -notlike '*memory-hook*' }).Count`
+  const script = `$ErrorActionPreference='Stop'; ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter ${literal(`Name='${basename(execPath).replace(/'/g, "\\'")}'`)} | ` +
+    `Where-Object { $_.ProcessId -ne ${process.pid} -and $_.ExecutablePath -eq ${literal(execPath)} -and $_.CommandLine -like '*--agenthub-headless*' -and $_.CommandLine -notlike '*memory-hook*' } | Select-Object -ExpandProperty ProcessId)`
   const powershell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   try {
     const { stdout } = await run(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')])
-    const count = Number(stdout.trim())
-    return stdout.trim() && Number.isSafeInteger(count) && count >= 0 ? count : Infinity
+    const pids: unknown = JSON.parse(stdout)
+    return Array.isArray(pids) && pids.every(pid => Number.isSafeInteger(pid) && pid > 0) ? pids : null
   } catch {
-    return Infinity
+    return null
   }
 }
 
@@ -516,6 +516,8 @@ export class AutoUpdater {
   private readonly log: (line: string) => void
   readonly strategy: Strategy
   private readonly feed: Feed
+  private knownBridgePids: number[] = []
+  private bridgeScanAt = 0
   private downloading: Promise<UpdateStatus> | null = null
 
   constructor(deps: AutoUpdaterDeps) {
@@ -661,7 +663,20 @@ export class AutoUpdater {
 
   /** Puentes MCP vivos que cerraría el instalador; sólo aplica a NSIS. */
   async bridgesAtRisk(): Promise<number> {
-    return this.strategy === 'nsis' ? liveBridges(this.deps.execPath, this.deps.run ?? defaultRun) : 0
+    if (this.strategy !== 'nsis') return 0
+    // A cached PID can only postpone. Re-enumerate before clearing the gate and
+    // periodically discard old identities in case Windows has reused a PID.
+    if (Date.now() - this.bridgeScanAt < 60 * 60_000) {
+      this.knownBridgePids = this.knownBridgePids.filter(pid => {
+        try { process.kill(pid, 0); return true }
+        catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH' }
+      })
+      if (this.knownBridgePids.length) return this.knownBridgePids.length
+    }
+    const pids = await bridgePids(this.deps.execPath, this.deps.run ?? defaultRun)
+    this.knownBridgePids = pids ?? []
+    this.bridgeScanAt = Date.now()
+    return pids?.length ?? Infinity
   }
 
   /**

@@ -21,6 +21,29 @@ function powershellWord(value: string): string {
   return `'${value.replace(/['\u2018\u2019\u201A\u201B]/g, '$&$&')}'`
 }
 
+/** A GUI-subsystem Electron executable can outlive a plain PowerShell call.
+ * Use the same console handles (hook JSON, stderr and interactive terminal).
+ * PowerShell 5.1 has ProcessStartInfo.Arguments, a single Windows command line.
+ */
+function windowsInvocation(command: string, args: string[], forwardArgs = false): string {
+  const words = `@(${args.map(powershellWord).join(', ')})${forwardArgs ? ' + $args' : ''}`
+  const quote = String.raw`{ '"' + (($_ -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"' }`
+  return [
+    "$ErrorActionPreference='Stop'",
+    "$env:ELECTRON_RUN_AS_NODE='1'",
+    `$argv = ((${words}) | ForEach-Object ${quote}) -join ' '`,
+    '$start = New-Object System.Diagnostics.ProcessStartInfo',
+    `$start.FileName = ${powershellWord(command)}`,
+    '$start.Arguments = $argv',
+    '$start.UseShellExecute = $false',
+    '$start.WorkingDirectory = (Get-Location).ProviderPath',
+    '$child = [System.Diagnostics.Process]::Start($start)',
+    // Only the hook owns this exit code. A detached quota probe can outlive it.
+    '$child.WaitForExit()',
+    'exit $child.ExitCode',
+  ].join('; ')
+}
+
 /**
  * En Windows Claude Code (`shell: 'powershell'`) y Gemini CLI corren el hook con PowerShell, que puede ser 5.1: sin
  * `&&`, con `;`. Codex no documenta su shell en Windows: `-EncodedCommand` reduce el script a un token base64 de
@@ -28,7 +51,7 @@ function powershellWord(value: string): string {
  */
 export function hookCommand(command: string, args: string[], encoded: boolean): string {
   if (!WINDOWS) return `ELECTRON_RUN_AS_NODE=1 ${[command, ...args].map(shellWord).join(' ')}`
-  const script = `$env:ELECTRON_RUN_AS_NODE='1'; & ${[command, ...args].map(powershellWord).join(' ')}`
+  const script = windowsInvocation(command, args)
   if (!encoded) return script
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`
 }
@@ -49,7 +72,7 @@ export function planMemoryHooks(snapshot: Snapshot, endpoint: GatewayEndpoint, h
     try {
       const launchArgs=endpoint.args.map(a=>a==='gateway'?'chat':a).concat('--')
       const content=WINDOWS
-        ? `$env:ELECTRON_RUN_AS_NODE='1'\n& ${[endpoint.command,...launchArgs].map(powershellWord).join(' ')} @args\nexit $LASTEXITCODE\n`
+        ? `\uFEFF${windowsInvocation(endpoint.command, launchArgs, true)}\n`
         : `#!/bin/sh\nexport ELECTRON_RUN_AS_NODE=1\nexec ${[endpoint.command,...launchArgs].map(shellWord).join(' ')} "$@"\n`
       const [change,drift]=planFileWrite({home,path,content,manifest,cliKind:kind,mode:0o700})
       if(change)launchChanges.push(change)

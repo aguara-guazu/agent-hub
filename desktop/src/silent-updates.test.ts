@@ -38,3 +38,24 @@ it('todo relanzamiento de actualización queda oculto, sin acumular argumentos',
   expect(hiddenUpdateLaunch([])).toBe(false)
   expect(updateRelaunchArgs(['--hidden', '--updated', '--test'])).toEqual(['--test', '--hidden', '--updated'])
 })
+
+it('espacia los reintentos por puentes persistentes y aplica la misma descarga al liberarse', async () => {
+  vi.useFakeTimers()
+  const check = vi.fn().mockResolvedValue(update)
+  const apply = vi.fn().mockResolvedValue('mcp_bridges')
+  const loop = new SilentUpdates({ check, apply, log: vi.fn() })
+  try {
+    await loop.run()
+    for (const delay of [15, 30, 60, 120, 240, 480, 900, 900]) {
+      const calls = apply.mock.calls.length
+      await vi.advanceTimersByTimeAsync(delay * 1000 - 1)
+      expect(apply).toHaveBeenCalledTimes(calls)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(apply).toHaveBeenCalledTimes(calls + 1)
+    }
+    apply.mockResolvedValue(true)
+    await vi.advanceTimersByTimeAsync(900_000)
+    expect(apply).toHaveBeenCalledTimes(10)
+    expect(check).toHaveBeenCalledTimes(1)
+  } finally { loop.stop() }
+})

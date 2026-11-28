@@ -45,12 +45,14 @@ function nativeModelLimits(model: any): { context_window_tokens?: number; rate_m
 }
 
 /** Native installers and npm entrypoints, including GUI launches without a shell PATH. */
-export function findExtractionCli(provider: ExtractionCli, env = process.env, home = homedir()): string | undefined {
+export function findExtractionCli(provider: ExtractionCli, env = process.env, home = homedir(), platform = process.platform): string | undefined {
   const dirs = [...(env.PATH ?? '').split(delimiter).filter(Boolean), join(home, '.local/bin'), join(home, '.bun/bin'),
-    join(home, '.volta/bin'), ...(process.platform === 'win32' ? [] : ['/opt/homebrew/bin', '/usr/local/bin']), ...(env.APPDATA ? [join(env.APPDATA, 'npm')] : [])]
+    join(home, '.volta/bin'), ...(platform === 'win32' ? [] : ['/opt/homebrew/bin', '/usr/local/bin']), ...(env.APPDATA ? [join(env.APPDATA, 'npm')] : [])]
   try { for (const version of readdirSync(join(home, '.nvm/versions/node'))) dirs.push(join(home, '.nvm/versions/node', version, 'bin')) } catch { /* optional */ }
   for (const dir of dirs) {
-    const candidates = [join(dir, binaries[provider] + (process.platform === 'win32' ? '.exe' : ''))]
+    const candidates = [join(dir, binaries[provider] + (platform === 'win32' ? '.exe' : ''))]
+    // npm's claude.cmd points here. Spawn its target directly to preserve argv and stdio.
+    if (platform === 'win32' && provider === 'claude_code') candidates.push(join(dir, 'node_modules/@anthropic-ai/claude-code/bin/claude.exe'))
     if (npmEntries[provider]) candidates.push(join(dir, 'node_modules', npmEntries[provider]))
     for (const path of candidates) {
       try { accessSync(path, path.endsWith('.js') ? constants.R_OK : constants.X_OK); if (statSync(path).isFile()) return path } catch { /* next */ }
