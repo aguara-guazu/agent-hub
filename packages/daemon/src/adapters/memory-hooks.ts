@@ -37,9 +37,19 @@ function windowsInvocation(command: string, args: string[], forwardArgs = false)
     '$start.Arguments = $argv',
     '$start.UseShellExecute = $false',
     '$start.WorkingDirectory = (Get-Location).ProviderPath',
+    // GUI-subsystem children do not reliably inherit redirected console handles.
+    // Keep terminal handles for the interactive launcher, relay hook pipes as bytes.
+    `$start.RedirectStandardInput = ${forwardArgs ? '[Console]::IsInputRedirected' : '$true'}`,
+    `$start.RedirectStandardOutput = ${forwardArgs ? '[Console]::IsOutputRedirected' : '$true'}`,
+    `$start.RedirectStandardError = ${forwardArgs ? '[Console]::IsErrorRedirected' : '$true'}`,
     '$child = [System.Diagnostics.Process]::Start($start)',
+    'if ($start.RedirectStandardOutput) { $out = $child.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput()) }',
+    'if ($start.RedirectStandardError) { $err = $child.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError()) }',
+    'if ($start.RedirectStandardInput) { try { [Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream) } catch [System.IO.IOException] {} finally { $child.StandardInput.Close() } }',
     // Only the hook owns this exit code. A detached quota probe can outlive it.
     '$child.WaitForExit()',
+    'if ($out) { $out.Wait() }',
+    'if ($err) { $err.Wait() }',
     'exit $child.ExitCode',
   ].join('; ')
 }
